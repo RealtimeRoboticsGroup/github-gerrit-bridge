@@ -12,7 +12,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +19,6 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/events"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/queue"
-	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
 // Key is a unit of reconciliation. Exactly one field is set.
@@ -51,47 +49,9 @@ type Reconciler interface {
 	Reconcile(ctx context.Context, k Key) error
 }
 
-// DryRun logs the keys it would reconcile, with what the bridge has
-// stored about them.
-type DryRun struct {
-	Store  *state.Store
-	GitHub *github.Client
-	Logger *slog.Logger
-}
-
-// Reconcile logs k.
-func (d DryRun) Reconcile(ctx context.Context, k Key) error {
-	change := k.Change
-	if k.PR != 0 {
-		change = d.Store.ChangeForPR(k.PR)
-		pr, err := d.GitHub.GetPull(ctx, k.PR)
-		if err != nil {
-			return err
-		}
-		attrs := []any{"key", k.String(), "title", pr.Title, "state", pr.State,
-			"head", pr.Head.Ref, "base", pr.Base.Ref, "linked_change", change}
-		if pr.Stack != nil {
-			attrs = append(attrs, "stack", pr.Stack.Number, "position", fmt.Sprintf("%d/%d", pr.Stack.Position, pr.Stack.Size))
-		}
-		d.Logger.Info("dry run: would reconcile", attrs...)
-		return nil
-	}
-	if change == 0 {
-		d.Logger.Info("dry run: would reconcile", "key", k.String(), "linked_change", "none")
-		return nil
-	}
-	c, err := d.Store.Load(ctx, change)
-	if err != nil {
-		return err
-	}
-	d.Logger.Info("dry run: would reconcile", "key", k.String(), "change", change,
-		"pr", c.State.PR, "stack", c.State.Stack, "revisions", len(c.Revisions), "threads", len(c.Threads))
-	return nil
-}
-
 // Lister lists the keys a full resync must visit.
 type Lister interface {
-	OpenChanges(ctx context.Context) ([]int, error)
+	ResyncKeys(ctx context.Context) ([]Key, error)
 }
 
 // Router turns Gerrit events, GitHub webhooks and resync requests into
@@ -109,11 +69,15 @@ func NewRouter(project string, q *queue.Queue[Key], logger *slog.Logger) *Router
 	return &Router{Project: project, Queue: q, Logger: logger, resync: make(chan string, 1)}
 }
 
-var changeRef = regexp.MustCompile(`^refs/changes/\d\d/(\d+)/`)
-
 // Event queues the key a Gerrit event is about.
 func (r *Router) Event(e *events.Event) {
 	if e.Project() != r.Project {
+		return
+	}
+	if e.Change != nil && e.Change.Branch != "" {
+		// Changes are reconciled a whole target branch at a time, so
+		// chains and stacks are planned together.
+		r.Queue.Add(Key{Branch: e.Change.Branch})
 		return
 	}
 	if e.Change != nil && e.Change.Number > 0 {
@@ -127,12 +91,10 @@ func (r *Router) Event(e *events.Event) {
 	switch {
 	case strings.HasPrefix(ref, "refs/heads/"):
 		r.Queue.Add(Key{Branch: strings.TrimPrefix(ref, "refs/heads/")})
-	case changeRef.MatchString(ref):
-		n, _ := strconv.Atoi(changeRef.FindStringSubmatch(ref)[1])
-		r.Queue.Add(Key{Change: n})
 	}
-	// Everything else, notably refs/bridge/* (our own state writes), is
-	// ignored so the bridge does not wake itself up.
+	// Everything else is ignored. Change refs (refs/changes/*, including
+	// NoteDb meta) always come with a change event that names the branch.
+	// refs/bridge/* are our own state writes, which must not wake us up.
 }
 
 // Resync requests a full resync. Requests made while one is pending are
@@ -154,7 +116,7 @@ func (r *Router) Delivery(d *github.Delivery) {
 }
 
 // RunResync performs requested resyncs until ctx is done: it lists every
-// open change and queues it. A failed listing is retried with backoff, and
+// key to visit and queues it. A failed listing is retried with backoff, and
 // keeps the request pending.
 func (r *Router) RunResync(ctx context.Context, l Lister) error {
 	const minBackoff, maxBackoff = time.Second, 2 * time.Minute
@@ -166,7 +128,7 @@ func (r *Router) RunResync(ctx context.Context, l Lister) error {
 			return ctx.Err()
 		case reason = <-r.resync:
 		}
-		changes, err := l.OpenChanges(ctx)
+		keys, err := l.ResyncKeys(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -182,10 +144,10 @@ func (r *Router) RunResync(ctx context.Context, l Lister) error {
 			continue
 		}
 		backoff = minBackoff
-		for _, n := range changes {
-			r.Queue.Add(Key{Change: n})
+		for _, k := range keys {
+			r.Queue.Add(k)
 		}
-		r.Logger.Info("resync queued open changes", "reason", reason, "count", len(changes))
+		r.Logger.Info("resync queued", "reason", reason, "keys", len(keys))
 	}
 }
 

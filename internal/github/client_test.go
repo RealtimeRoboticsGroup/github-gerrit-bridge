@@ -234,3 +234,34 @@ func TestNextLink(t *testing.T) {
 		}
 	}
 }
+
+func TestGraphQLAndDraft(t *testing.T) {
+	var queries []string
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		queries = append(queries, in.Query)
+		if in.Variables["id"] == "bad" {
+			io.WriteString(w, `{"data":null,"errors":[{"message":"Could not resolve to a node"}]}`)
+			return
+		}
+		io.WriteString(w, `{"data":{"x":{"pullRequest":{"isDraft":true}}}}`)
+	})
+	ctx := context.Background()
+	if err := c.SetDraft(ctx, "PR_1", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetDraft(ctx, "PR_1", false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(queries[0], "convertPullRequestToDraft") || !strings.Contains(queries[1], "markPullRequestReadyForReview") {
+		t.Errorf("queries = %q", queries)
+	}
+	var ge *GraphQLError
+	if err := c.SetDraft(ctx, "bad", true); !errors.As(err, &ge) || !strings.Contains(err.Error(), "Could not resolve") {
+		t.Errorf("err = %v", err)
+	}
+}

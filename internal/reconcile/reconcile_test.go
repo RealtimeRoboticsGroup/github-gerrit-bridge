@@ -48,7 +48,8 @@ func TestRouterEvents(t *testing.T) {
 	q := queue.New[Key]()
 	r := NewRouter("p", q, slog.Default())
 	for _, s := range []string{
-		`{"type":"patchset-created","change":{"project":"p","number":5}}`,
+		`{"type":"patchset-created","change":{"project":"p","branch":"main","number":5}}`,
+		`{"type":"comment-added","change":{"project":"p","branch":"rel","number":7}}`,
 		`{"type":"comment-added","change":{"project":"other","number":6}}`,
 		`{"type":"comment-added","change":{"project":"p","number":5}}`,
 		`{"type":"ref-updated","refUpdate":{"project":"p","refName":"refs/heads/main"}}`,
@@ -60,7 +61,7 @@ func TestRouterEvents(t *testing.T) {
 	}
 	r.Delivery(&github.Delivery{PR: 9})
 	r.Delivery(&github.Delivery{Event: "push"})
-	want := []string{"change/5", "branch/main", "change/1234", "pr/9"}
+	want := []string{"branch/main", "branch/rel", "change/5", "pr/9"}
 	if got := drain(q); !equal(got, want) {
 		t.Errorf("queued %v, want %v", got, want)
 	}
@@ -72,7 +73,7 @@ type fakeLister struct {
 	calls int
 }
 
-func (f *fakeLister) OpenChanges(context.Context) ([]int, error) {
+func (f *fakeLister) ResyncKeys(context.Context) ([]Key, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -80,7 +81,7 @@ func (f *fakeLister) OpenChanges(context.Context) ([]int, error) {
 		f.fails--
 		return nil, errors.New("gerrit down")
 	}
-	return []int{1, 2, 3}, nil
+	return []Key{{Change: 1}, {Change: 2}, {Change: 3}}, nil
 }
 
 func TestResyncCoalescesAndQueues(t *testing.T) {

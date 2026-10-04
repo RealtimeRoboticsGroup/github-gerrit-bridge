@@ -80,7 +80,7 @@ func sshConfig(t *testing.T, u *testgerrit.User) gerritssh.Config {
 
 func mirror(t *testing.T, u *testgerrit.User) *gitmirror.Repo {
 	t.Helper()
-	cfg, envv := gitmirror.HTTPCredentials(u.Username, u.HTTPPassword)
+	cfg, envv := gitmirror.HTTPCredentials(srv.URL, u.Username, u.HTTPPassword)
 	r := &gitmirror.Repo{
 		Dir:    filepath.Join(t.TempDir(), "mirror.git"),
 		Remote: srv.URL + "/a/" + project,
@@ -97,7 +97,7 @@ func mirror(t *testing.T, u *testgerrit.User) *gitmirror.Repo {
 func pushChange(t *testing.T, u *testgerrit.User, file string) {
 	t.Helper()
 	dir := t.TempDir()
-	cfg, envv := gitmirror.HTTPCredentials(u.Username, u.HTTPPassword)
+	cfg, envv := gitmirror.HTTPCredentials(srv.URL, u.Username, u.HTTPPassword)
 	run := func(args ...string) string {
 		var full []string
 		for _, c := range cfg {

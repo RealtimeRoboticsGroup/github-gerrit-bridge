@@ -4,6 +4,7 @@ go_library(
     name = "github",
     srcs = [
         "client.go",
+        "graphql.go",
         "pulls.go",
         "stacks.go",
         "token.go",

@@ -51,6 +51,14 @@ type ChangeState struct {
 	Stack      int    `json:"stack,omitempty"`
 	// Lifecycle mirrors the Gerrit status: NEW, ABANDONED, MERGED.
 	Lifecycle string `json:"lifecycle,omitempty"`
+	// Title is the PR title the bridge last wrote, and BodyHash the hash
+	// of the commit-message part of the body. They tell a commit message
+	// edit (rewrite) from a GitHub edit (keep).
+	Title    string `json:"title,omitempty"`
+	BodyHash string `json:"body_hash,omitempty"`
+	// ClosedNoticePosted records that the "merged/abandoned in Gerrit"
+	// comment was posted on the PR.
+	ClosedNoticePosted bool `json:"closed_notice_posted,omitempty"`
 }
 
 // Revision links a patch set to the GitHub commit with the same diff
@@ -115,8 +123,9 @@ const refPrefix = "refs/bridge/changes/"
 type Store struct {
 	Repo *gitmirror.Repo
 
-	mu   sync.Mutex
-	byPR map[int]int // PR number -> change number
+	mu       sync.Mutex
+	byPR     map[int]int             // PR number -> change number
+	byBranch map[string]map[int]bool // target branch -> changes with state
 }
 
 // Fetch updates the mirror's refs/bridge/* from Gerrit and rebuilds the
@@ -135,6 +144,7 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 		return err
 	}
 	idx := map[int]int{}
+	byBranch := map[string]map[int]bool{}
 	for _, ref := range strings.Fields(string(out)) {
 		var st ChangeState
 		b, err := s.Repo.Git(ctx, nil, "cat-file", "blob", ref+":state.json")
@@ -147,11 +157,42 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 		if st.PR != 0 {
 			idx[st.PR] = st.Change
 		}
+		if byBranch[st.Branch] == nil {
+			byBranch[st.Branch] = map[int]bool{}
+		}
+		byBranch[st.Branch][st.Change] = true
 	}
 	s.mu.Lock()
 	s.byPR = idx
+	s.byBranch = byBranch
 	s.mu.Unlock()
 	return nil
+}
+
+// ChangesOnBranch returns the changes with state whose target is branch.
+func (s *Store) ChangesOnBranch(branch string) []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var nums []int
+	for n := range s.byBranch[branch] {
+		nums = append(nums, n)
+	}
+	sort.Ints(nums)
+	return nums
+}
+
+// Branches returns every target branch that has state.
+func (s *Store) Branches() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var bs []string
+	for b, m := range s.byBranch {
+		if len(m) > 0 {
+			bs = append(bs, b)
+		}
+	}
+	sort.Strings(bs)
+	return bs
 }
 
 // ChangeForPR returns the change linked to pr, or 0.
@@ -244,6 +285,9 @@ func (s *Store) Save(ctx context.Context, n int, c *Change, msg string) error {
 	if len(res) != 1 || res[0].Ref != ref {
 		return fmt.Errorf("push %s: unexpected result %+v", ref, res)
 	}
+	if res[0].Rejected && !isLeaseFailure(res[0].Reason) {
+		return fmt.Errorf("push %s rejected: %s", ref, res[0].Reason)
+	}
 	if res[0].Rejected {
 		// Someone else wrote it. Refresh our copy so the retry sees theirs.
 		if _, err := s.Repo.Git(ctx, nil, "fetch", "--quiet", "origin", "+"+ref+":"+ref); err != nil {
@@ -268,6 +312,16 @@ func (s *Store) Save(ctx context.Context, n int, c *Change, msg string) error {
 	if c.State.PR != 0 {
 		s.byPR[c.State.PR] = n
 	}
+	if s.byBranch == nil {
+		s.byBranch = map[string]map[int]bool{}
+	}
+	for _, m := range s.byBranch {
+		delete(m, n)
+	}
+	if s.byBranch[c.State.Branch] == nil {
+		s.byBranch[c.State.Branch] = map[int]bool{}
+	}
+	s.byBranch[c.State.Branch][n] = true
 	s.mu.Unlock()
 	return nil
 }
@@ -327,4 +381,15 @@ func nilIfEmpty[T any](s []T) []T {
 		return nil
 	}
 	return s
+}
+
+// isLeaseFailure reports whether a push rejection means the ref moved
+// (the lease failed), as opposed to a permission or validation error.
+func isLeaseFailure(reason string) bool {
+	for _, r := range []string{"stale info", "fetch first", "non-fast-forward", "failed to lock", "lock"} {
+		if strings.Contains(reason, r) {
+			return true
+		}
+	}
+	return false
 }

@@ -167,6 +167,12 @@ func TestFetchBuildsIndex(t *testing.T) {
 	if err := s[1].Fetch(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if got := s[1].ChangesOnBranch("main"); !reflect.DeepEqual(got, []int{300, 301}) {
+		t.Errorf("ChangesOnBranch = %v", got)
+	}
+	if got := s[1].Branches(); !reflect.DeepEqual(got, []string{"main"}) {
+		t.Errorf("Branches = %v", got)
+	}
 	if s[1].ChangeForPR(11) != 300 {
 		t.Errorf("ChangeForPR(11) = %d", s[1].ChangeForPR(11))
 	}

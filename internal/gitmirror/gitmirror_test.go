@@ -41,24 +41,43 @@ func TestInitIdempotentAndRevParse(t *testing.T) {
 	}
 }
 
-func TestHTTPCredentialsHelper(t *testing.T) {
+func TestHTTPCredentialsScopedToURL(t *testing.T) {
 	ctx := context.Background()
-	cfg, env := HTTPCredentials("bridge", "pa ss")
-	r := &Repo{Dir: filepath.Join(t.TempDir(), "m.git"), Remote: "/a", Config: cfg, Env: env}
+	gCfg, gEnv := HTTPCredentials("https://gerrit.example.com", "bridge", "pa ss")
+	hCfg, hEnv := HTTPCredentials("https://github.com", "x-access-token", "ghp_tok")
+	r := &Repo{
+		Dir: filepath.Join(t.TempDir(), "m.git"), Remote: "/a",
+		Config: append(gCfg, hCfg...), Env: append(gEnv, hEnv...),
+	}
 	if err := r.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	out, err := r.Git(ctx, []byte("protocol=https\nhost=gerrit.example.com\n\n"), "credential", "fill")
-	if err != nil {
-		t.Fatal(err)
+	fill := func(host string) string {
+		out, err := r.Git(ctx, []byte("protocol=https\nhost="+host+"\n\n"), "credential", "fill")
+		if err != nil {
+			return "error: " + err.Error()
+		}
+		return string(out)
 	}
-	if !strings.Contains(string(out), "username=bridge\n") || !strings.Contains(string(out), "password=pa ss\n") {
-		t.Errorf("credential fill = %q", out)
+	if out := fill("gerrit.example.com"); !strings.Contains(out, "username=bridge\n") || !strings.Contains(out, "password=pa ss\n") {
+		t.Errorf("gerrit credential fill = %q", out)
 	}
-	// The password must not be in the arguments (visible in ps).
-	for _, c := range cfg {
-		if strings.Contains(c, "pa ss") {
-			t.Error("password leaked into -c config")
+	if out := fill("github.com"); !strings.Contains(out, "username=x-access-token\n") || strings.Contains(out, "pa ss") {
+		t.Errorf("github credential fill = %q", out)
+	}
+	// Unknown hosts get nothing (git fails rather than prompting).
+	if out := fill("evil.example.com"); strings.Contains(out, "password=") {
+		t.Errorf("credentials offered to another host: %q", out)
+	}
+	// A per-command env overrides the token, for refreshed tokens.
+	out, _ := r.GitEnv(ctx, CredentialEnv("https://github.com", "x-access-token", "new"),
+		[]byte("protocol=https\nhost=github.com\n\n"), "credential", "fill")
+	if !strings.Contains(string(out), "password=new\n") {
+		t.Errorf("override = %q", out)
+	}
+	for _, c := range r.Config {
+		if strings.Contains(c, "pa ss") || strings.Contains(c, "ghp_tok") {
+			t.Error("secret leaked into -c config")
 		}
 	}
 }

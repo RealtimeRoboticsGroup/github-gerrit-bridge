@@ -48,9 +48,6 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	if configPath == "" {
 		return errors.New("--config is required")
 	}
-	if !dryRun {
-		return errors.New("only --dry_run is implemented so far")
-	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -92,14 +89,24 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	gitCfg, gitEnv := gitmirror.HTTPCredentials(cfg.Gerrit.HTTPUser, gerritPassword)
+	// Gerrit only accepts commits (here, refs/bridge state) authored by
+	// the pushing account, so use its real name and email.
+	var self gerrit.AccountInfo
+	if err := rest.Do(ctx, http.MethodGet, "accounts/self", nil, &self); err != nil {
+		return fmt.Errorf("checking Gerrit REST access: %w", err)
+	}
+	if self.Email == "" {
+		return fmt.Errorf("gerrit account %s has no preferred email; state commits need one", cfg.Gerrit.HTTPUser)
+	}
+	gitCfg, gitEnv := gitmirror.HTTPCredentials(cfg.Gerrit.URL, cfg.Gerrit.HTTPUser, gerritPassword)
 	mirror := &gitmirror.Repo{
 		Dir:    cfg.Gerrit.MirrorDir,
 		Remote: cfg.Gerrit.URL + "/a/" + cfg.Gerrit.Project,
-		Config: gitCfg,
+		// GitHub pushes get the token per command (it can rotate).
+		Config: append(gitCfg, gitmirror.CredentialHelper("https://github.com")),
 		Env:    gitEnv,
-		Name:   "GitHub Bridge",
-		Email:  cfg.Gerrit.HTTPUser + "@bridge.invalid",
+		Name:   self.Name,
+		Email:  self.Email,
 	}
 	if err := mirror.Init(ctx); err != nil {
 		return err
@@ -166,10 +173,21 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	var wg sync.WaitGroup
 	errc := make(chan error, 1)
 	wg.Go(func() { stream.Run(ctx) })
-	wg.Go(func() { router.RunResync(ctx, openChanges{rest, cfg.Gerrit.Project}) })
 	wg.Go(func() {
-		reconcile.Work(ctx, q, reconcile.DryRun{Store: store, GitHub: gh, Logger: logger}, cfg.Workers, logger)
+		router.RunResync(ctx, reconcile.BranchLister{Gerrit: rest, Project: cfg.Gerrit.Project, Store: store})
 	})
+	code := &reconcile.Code{
+		Project:       cfg.Gerrit.Project,
+		Gerrit:        rest,
+		GitHub:        gh,
+		GitHubURL:     "https://github.com/" + repo + ".git",
+		Mirror:        mirror,
+		Store:         store,
+		DefaultBranch: ghRepo.DefaultBranch,
+		DryRun:        dryRun,
+		Logger:        logger,
+	}
+	wg.Go(func() { reconcile.Work(ctx, q, code, cfg.Workers, logger) })
 	wg.Go(func() {
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
@@ -189,22 +207,4 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	q.ShutDown()
 	wg.Wait()
 	return err
-}
-
-// openChanges lists the project's open changes for a full resync.
-type openChanges struct {
-	c       *gerrit.Client
-	project string
-}
-
-func (o openChanges) OpenChanges(ctx context.Context) ([]int, error) {
-	changes, err := o.c.QueryChanges(ctx, "project:"+gerrit.QueryString(o.project)+" status:open")
-	if err != nil {
-		return nil, err
-	}
-	nums := make([]int, len(changes))
-	for i, ch := range changes {
-		nums[i] = ch.Number
-	}
-	return nums, nil
 }

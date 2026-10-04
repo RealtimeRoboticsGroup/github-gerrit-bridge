@@ -34,6 +34,10 @@ type User struct {
 type Ref struct {
 	Ref string `json:"ref"`
 	SHA string `json:"sha"`
+	// Repo is the repository the branch is in (a fork for fork PRs).
+	Repo *struct {
+		FullName string `json:"full_name"`
+	} `json:"repo,omitempty"`
 }
 
 // PullRequest is the subset of a pull request the bridge reads.
@@ -105,4 +109,13 @@ func (c *Client) UpdatePull(ctx context.Context, n int, u PullUpdate) (*PullRequ
 	var pr PullRequest
 	_, err := c.Do(ctx, http.MethodPatch, c.RepoPath("pulls/"+strconv.Itoa(n)), u, &pr)
 	return &pr, err
+}
+
+// HeadRepo is the owner/name of the repository holding the PR's head
+// branch, or "" if GitHub did not say (deleted fork).
+func (pr *PullRequest) HeadRepo() string {
+	if pr.Head.Repo == nil {
+		return ""
+	}
+	return pr.Head.Repo.FullName
 }

@@ -9,6 +9,7 @@ package gitmirror
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -30,17 +31,34 @@ type Repo struct {
 }
 
 // HTTPCredentials returns Config and Env entries that answer git's
-// credential prompts with user and password. The password is passed in the
-// environment, not on the command line, so it does not show up in ps.
-func HTTPCredentials(user, password string) (config, env []string) {
-	return []string{
-		// Clear any helpers from system config, then add ours.
-		"credential.helper=",
-		`credential.helper=!f() { test "$1" = get && printf 'username=%s\npassword=%s\n' "$BRIDGE_GIT_USER" "$BRIDGE_GIT_PASSWORD"; }; f`,
-	}, []string{
-		"BRIDGE_GIT_USER=" + user,
-		"BRIDGE_GIT_PASSWORD=" + password,
-	}
+// credential prompts for URLs under baseURL with user and password. The
+// helper is scoped to baseURL, so credentials for Gerrit are never offered
+// to GitHub or vice versa. The password is passed in the environment, not
+// on the command line, so it does not show up in ps.
+func HTTPCredentials(baseURL, user, password string) (config, env []string) {
+	config = []string{CredentialHelper(baseURL)}
+	return config, CredentialEnv(baseURL, user, password)
+}
+
+// CredentialEnv is the environment half of HTTPCredentials. Use it alone
+// to supply a password that changes between commands (a refreshed token)
+// while the helper itself stays in Repo.Config.
+func CredentialEnv(baseURL, user, password string) []string {
+	v := credentialVar(baseURL)
+	return []string{v + "_USER=" + user, v + "_PASSWORD=" + password}
+}
+
+// CredentialHelper returns the -c setting for a helper scoped to baseURL
+// that reads CredentialEnv's variables.
+func CredentialHelper(baseURL string) string {
+	v := credentialVar(baseURL)
+	return fmt.Sprintf(`credential.%s.helper=!f() { test "$1" = get && printf 'username=%%s\npassword=%%s\n' "$%s_USER" "$%s_PASSWORD"; }; f`,
+		strings.TrimRight(baseURL, "/"), v, v)
+}
+
+func credentialVar(baseURL string) string {
+	h := sha256.Sum256([]byte(strings.TrimRight(baseURL, "/")))
+	return fmt.Sprintf("BRIDGE_CRED_%X", h[:4])
 }
 
 // Error is a failed git command.
@@ -76,6 +94,11 @@ func (r *Repo) Init(ctx context.Context) error {
 
 // Git runs git in the repository with stdin and returns stdout.
 func (r *Repo) Git(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	return r.GitEnv(ctx, nil, stdin, args...)
+}
+
+// GitEnv is Git with extra environment for this one command.
+func (r *Repo) GitEnv(ctx context.Context, env []string, stdin []byte, args ...string) ([]byte, error) {
 	full := make([]string, 0, 2*len(r.Config)+len(args))
 	for _, c := range r.Config {
 		full = append(full, "-c", c)
@@ -96,6 +119,7 @@ func (r *Repo) Git(ctx context.Context, stdin []byte, args ...string) ([]byte, e
 			"GIT_COMMITTER_NAME="+r.Name, "GIT_COMMITTER_EMAIL="+r.Email)
 	}
 	cmd.Env = append(cmd.Env, r.Env...)
+	cmd.Env = append(cmd.Env, env...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}

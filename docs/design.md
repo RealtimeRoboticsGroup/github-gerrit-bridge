@@ -90,8 +90,12 @@ only lands one way.
 
 ### 4.1 Level-triggered reconciliation (the key design rule)
 
-Events are only *hints*. Every event reduces to "reconcile the stack that
-contains change C". The reconciler then:
+Events are only *hints*. Every event reduces to "reconcile the target
+branch that change C is on". The whole branch is the unit, not one change
+or one stack: a rebase can move a change between chains, so stacks can only
+be planned with every chain on the branch in view. It costs one Gerrit
+query and a few GitHub list calls per reconcile, and bursts of events
+collapse into one reconcile. The reconciler then:
 
 1. Fetches the current full state of C (and the rest of its chain) from
    **both** systems.
@@ -103,9 +107,17 @@ contains change C". The reconciler then:
 
 This survives dropped webhooks, restarts, races and bridge downtime. A
 periodic poller re-queues every open change, so missed events are
-self-healing. The queue is de-duplicated per stack, and only one worker
-handles a given stack at a time, so there are no concurrent edits to one
-chain.
+self-healing. The queue is de-duplicated per branch, and only one worker
+handles a given branch at a time, so there are no concurrent edits to one
+chain. (Routing a change's own `ref-updated` events to a per-change key
+broke this in testing: two reconciles of one branch raced and each posted
+the Gerrit link message. Change refs are now ignored; the change events
+that accompany them carry the branch.)
+
+Each reconcile plans (a pure function from a snapshot of both sides to an
+ordered action list), applies, and re-plans until the plan is empty. New
+PRs need one pass to get numbers before the next can stack them and fill
+in the chain links, so it usually takes two or three passes.
 
 ### 4.2 Gerrit event stream
 
@@ -120,7 +132,7 @@ service:
 |---|---|---|
 | `json.Decoder.DisallowUnknownFields()` | Any new field Gerrit adds (it has added many in 3.x) makes the whole event fail to parse, and it is silently dropped. | Lenient decode. Read `type` first, then only the fields we use. Keep the raw JSON for debug logs. |
 | `bufio.Scanner` with a 1 MiB limit | A big commit message or comment ends the scan with `ErrTooLong`, which kills the stream until it reconnects. | `bufio.Reader.ReadBytes('\n')` with no fixed limit (plus a large sanity cap that logs and skips). |
-| Handles events inline on the read goroutine. A failed build trigger retries every 30 s **while blocking the read**. | Gerrit's per-client queue fills, and it sends `dropped-output` and discards events. | The read loop only parses and enqueues a key (project, change) into the de-duplicating work queue. It never blocks on the network. |
+| Handles events inline on the read goroutine. A failed build trigger retries every 30 s **while blocking the read**. | Gerrit's per-client queue fills, and it sends `dropped-output` and discards events. | The read loop only parses and enqueues a key (the change's target branch) into the de-duplicating work queue. It never blocks on the network. |
 | Reconnects right away in a tight loop | If Gerrit is down, the loop spins hot. | Exponential backoff with jitter, capped at 1 min. |
 | No catch-up after a disconnect | Events sent while disconnected are lost. | Every (re)connect, and every `dropped-output` event, queues a full resync of open changes. Reconciliation is level-triggered, so that is all the recovery needed. |
 | Subscribes to every event type | Volume. | `stream-events -s patchset-created -s comment-added -s change-abandoned -s change-restored -s change-merged -s change-deleted -s wip-state-changed -s private-state-changed -s reviewer-added -s reviewer-deleted -s vote-deleted -s hashtags-changed -s topic-changed -s ref-updated -s dropped-output`. |
@@ -436,12 +448,12 @@ The bridge moves branch `gerrit/B` to B2. On GitHub, PR-C's base is
   restacking. The difference is that the bridge has to keep both diffs
   equal.
 
-The fix. The bridge creates a branch `gerrit/<C's Change-Id>/base`
+The fix. The bridge creates a branch `gerrit-base/<C's Change-Id>`
 pointing **at B1**, and changes PR-C's base to it:
 
 ```
 Gerrit                         GitHub
-  C   parent = B1                PR-C   base: gerrit/C/base (= B1)  ← own stack
+  C   parent = B1                PR-C   base: gerrit-base/C (= B1)  ← own stack
   B2  parent = A                 PR-B   base: gerrit/A    ┐ stack
   A   parent = main              PR-A   base: main        ┘
 ```
@@ -449,12 +461,12 @@ Gerrit                         GitHub
 - GitHub now diffs PR-C against B1, exactly as Gerrit does.
 - The cost: PR-C has to **leave the stack**. GitHub only allows PRs in one
   stack when each PR's base is the head branch of the PR below it, and
-  `gerrit/C/base` isn't PR-B's head branch. So the stack becomes [A, B],
+  `gerrit-base/C` isn't PR-B's head branch. So the stack becomes [A, B],
   and C, with anything above it, forms its own stack.
 - The bridge comments on PR-C: "Based on an outdated version of PR-B.
   Rebase in Gerrit or run `gh stack rebase`."
 - When someone rebases C onto B2, from either side, PR-C's base goes back
-  to `gerrit/B`, the stack becomes [A, B, C] again, and `gerrit/C/base` is
+  to `gerrit/B`, the stack becomes [A, B, C] again, and `gerrit-base/C` is
   deleted.
 
 **What splitting or rejoining a stack costs** (measured 2026-10-03 on
@@ -487,7 +499,20 @@ Gerrit                         GitHub
 
 The general form: for every PR, if its head's parent is the current head
 of the PR below it, the PR stays in the stack. Otherwise it gets a frozen
-`…/base` branch at its real parent and starts a new stack.
+`gerrit-base/…` branch at its real parent and starts a new stack.
+
+Frozen bases are not named `gerrit/<Change-Id>/base`: git refs cannot be
+both a file and a directory, so that branch could never coexist with
+`gerrit/<Change-Id>`.
+
+**Verified live (2026-10-04)** with a 3-change chain mirrored from the test
+Gerrit to `bridge-scratch` (PRs #7, #8, #9): amending only the middle change
+moved PR #9 to `gerrit-base/…` (diff still only its own file) and the
+stack became [#7, #8]; rebasing it rejoined the stack through
+`/stacks/{n}/add` and deleted the frozen branch; abandoning the middle
+change closed its PR with one comment and froze the layer above;
+restoring it reopened the PR and rebuilt the stack; WIP toggled draft; a
+fourth layer was added to the existing stack.
 
 The alternative would be to leave PR-C in the stack and accept the bloated
 diff, as native GitHub does. That is rejected because comments made on the
@@ -530,7 +555,7 @@ The scenarios:
   changes 3 and 4 are still on patch set 1 of change 2, which Gerrit shows
   as "needs rebase".
   - GitHub: PR2's branch moves to patch set 2.
-  - PR3 moves to a frozen base `gerrit/<C3>/base` (pointing at C2 patch
+  - PR3 moves to a frozen base `gerrit-base/<C3>` (pointing at C2 patch
     set 1) under Rule 2, so its diff stays exactly C3.
   - The stack splits into [PR1, PR2] and [PR3, PR4].
   - The bridge does **not** rebase anything on its own. Gerrit users
@@ -855,7 +880,10 @@ changes, so it must stay off for the bridged repo.
    (`token_file` or `token_command: [gh, auth, token]`) behind a
    `TokenSource` interface; a GitHub App source comes once the bridge works.
 2. **Gerrit → GitHub code:** branches, PRs, stacks, and lifecycle (read-only
-   mirror). Useful on its own.
+   mirror). Useful on its own. *Done* (`internal/reconcile/plan.go` and
+   `code.go`); verified live against `bridge-scratch` (§5.4). Pushes to
+   `gerrit/*` branches on GitHub are overwritten until milestone 5, so
+   protect them (or tell people not to push there) in the meantime.
 3. **Comments both ways:** threads, anchoring, resolution, batching.
 4. **Votes and CI:** labels ⇄ reviews and checks; identity mapping.
 5. **GitHub → Gerrit code:** deterministic squash and stack import to `refs/for`.
@@ -871,7 +899,7 @@ changes, so it must stay off for the bridged repo.
 - One repo pair. State lives in `refs/bridge/*` in the Gerrit repo, with no
   separate database.
 - Gerrit-born branches are named `gerrit/<Change-Id>`. Frozen bases are named
-  `gerrit/<Change-Id>/base`.
+  `gerrit-base/<Change-Id>`.
 - CI runs only in Gerrit. GitHub shows the mirrored `gerrit/*` check runs.
 - Changes are owned by the real user (SSH `suexec` with a peer key). An
   existing Change-Id on GitHub commits is reused.
