@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "bridge_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/cmd/bridge",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "bridge",
+    embed = [":bridge_lib"],
+    visibility = ["//visibility:public"],
+)

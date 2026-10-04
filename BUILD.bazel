@@ -1,0 +1,4 @@
+load("@gazelle//:def.bzl", "gazelle")
+
+# gazelle:prefix github.com/AustinSchuh/github-gerrit-bridge
+gazelle(name = "gazelle")
