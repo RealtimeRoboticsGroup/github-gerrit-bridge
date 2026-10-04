@@ -65,6 +65,7 @@ func (w *world) snapshot() *Snapshot {
 		}
 	}
 	s.AppendOK = map[int]bool{}
+	s.SameTree = map[int]string{}
 	for n, st := range w.state {
 		if st.State.Origin == "github" {
 			s.GitHubBranches[st.State.HeadBranch] = w.branch[st.State.HeadBranch]
@@ -223,6 +224,10 @@ func (w *world) apply(p *Plan) {
 		}
 		st.State.Title = w.gerrit[n].Subject
 		st.State.BodyHash = d.BodyHash
+		if st.State.Origin == "github" {
+			title, body := prTextFromMessage(w.gerrit[n].Message)
+			st.State.GerritMessageHash = hashString(title + "\x00" + body)
+		}
 		st.State.ClosedNoticePosted = false
 	}
 }
@@ -685,5 +690,46 @@ func TestGitHubBornFrozenBaseUsesGitHubCommit(t *testing.T) {
 	w.checkBase(t, 2, "gerrit-base/"+cid(2))
 	if got := w.branch["gerrit-base/"+cid(2)]; got != "h1" {
 		t.Errorf("frozen base at %s, want the GitHub commit h1 (not Gerrit's s1)", got)
+	}
+}
+
+func TestGerritMessageEditUpdatesGitHubBornPR(t *testing.T) {
+	w := bornWorld(t)
+	w.gerrit[1].Message = "User title\n\nUser body.\n\nGitHub-PR: https://github.com/o/r/pull/1\nChange-Id: " + cid(1)
+	w.state[1].State.GerritMessageHash = hashString("User title\x00User body.")
+	w.converge()
+	if w.prs[1].Title != "User title" {
+		t.Fatalf("title changed without an edit: %q", w.prs[1].Title)
+	}
+	// Edited in Gerrit (a new patch set with the same tree, say).
+	w.gerrit[1].Message = "Better title\n\nClearer body.\n\nGitHub-PR: https://github.com/o/r/pull/1\nChange-Id: " + cid(1)
+	w.converge()
+	pr := w.prs[1]
+	if pr.Title != "Better title" || !strings.HasPrefix(pr.Body, "Clearer body.\n\n"+linksStart) {
+		t.Errorf("PR not updated from Gerrit: %q / %q", pr.Title, pr.Body)
+	}
+	if strings.Contains(pr.Body, "Change-Id") || strings.Contains(pr.Body, "GitHub-PR:") {
+		t.Errorf("bridge trailers leaked into the PR body: %q", pr.Body)
+	}
+}
+
+func TestPRTextFromMessage(t *testing.T) {
+	title, body := prTextFromMessage("Subject\n\nPara one.\n\nGitHub-PR: u\nChange-Id: I1\n")
+	if title != "Subject" || body != "Para one." {
+		t.Errorf("%q %q", title, body)
+	}
+}
+
+func TestGitHubBornMessageOnlyEditPushesNothing(t *testing.T) {
+	w := bornWorld(t)
+	w.converge()
+	w.upload(1, "s1msg", "m0") // same tree, new message
+	s := w.snapshot()
+	s.SameTree[1] = "h1"
+	p := MakePlan(s)
+	for _, a := range p.Actions {
+		if a.Kind == PushBranches {
+			t.Errorf("pushed for a message-only edit: %v", a)
+		}
 	}
 }

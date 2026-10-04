@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -47,6 +48,11 @@ type Snapshot struct {
 	// same parent tree as the one last synced to GitHub, so a Gerrit edit
 	// can be appended to the user's branch as a fast-forward (design §5.2).
 	AppendOK map[int]bool
+	// SameTree maps a GitHub-born change to its GitHub head when that head
+	// has the current patch set's tree and parent tree: rule 1 says they
+	// are the same revision (e.g. a commit-message edit in Gerrit), so
+	// nothing is pushed.
+	SameTree map[int]string
 }
 
 // githubBorn reports whether change n came from a GitHub PR.
@@ -287,6 +293,8 @@ func MakePlan(s *Snapshot) *Plan {
 		switch ge, known := synced[gh]; {
 		case onGitHub && known && ge == c.Revision:
 			// Rule 1: GitHub already has this revision.
+		case born && onGitHub && known && s.SameTree[n] == gh:
+			// Rule 1: same tree and parent tree; record, don't push.
 		case !born && ghParent == c.Parent:
 			refs[d.Head] = c.Revision
 		case !born:
@@ -338,9 +346,18 @@ func MakePlan(s *Snapshot) *Plan {
 			curBody = pr.Body
 		}
 		body, hash := composeBody(curBody, c.Message, lastHash, block)
+		bornTitle := ""
 		if born {
-			// The PR text is the user's: only the links block is ours.
+			// The PR text is the user's: only the links block is ours,
+			// unless the commit message was edited in Gerrit, which then
+			// becomes the PR's title and body.
 			user, _ := splitBody(curBody)
+			title, msgBody := prTextFromMessage(c.Message)
+			mh := hashString(title + "\x00" + msgBody)
+			if st := s.State[n]; st != nil && st.State.GerritMessageHash != "" && st.State.GerritMessageHash != mh &&
+				(pr == nil || title != pr.Title || msgBody != prBodyForMessage(curBody)) {
+				user, bornTitle = msgBody, title
+			}
 			body = strings.TrimSpace(user + "\n\n" + block)
 		}
 		d.BodyHash = hash
@@ -367,6 +384,10 @@ func MakePlan(s *Snapshot) *Plan {
 		// title edited on GitHub survives.
 		if !born && pr.Title != c.Subject && lastTitle != c.Subject {
 			u.Title = ptr(c.Subject)
+			changed = true
+		}
+		if bornTitle != "" && pr.Title != bornTitle {
+			u.Title = ptr(bornTitle)
 			changed = true
 		}
 		if pr.Body != body {
@@ -601,4 +622,16 @@ func sortedKeys[V any](m map[int]V) []int {
 	}
 	sort.Ints(ks)
 	return ks
+}
+
+// bridgeTrailers are the trailers the bridge adds to imported commits.
+var bridgeTrailers = regexp.MustCompile(`(?m)^(Change-Id|GitHub-PR): .*$`)
+
+// prTextFromMessage is the PR title and body a commit message stands for:
+// the subject, and the rest without the bridge's trailers.
+func prTextFromMessage(msg string) (title, body string) {
+	msg = strings.ReplaceAll(msg, "\r\n", "\n")
+	title, body, _ = strings.Cut(strings.TrimSpace(msg), "\n")
+	body = strings.TrimSpace(bridgeTrailers.ReplaceAllString(body, ""))
+	return strings.TrimSpace(title), body
 }

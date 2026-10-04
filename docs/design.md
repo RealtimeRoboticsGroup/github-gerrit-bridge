@@ -1028,10 +1028,26 @@ changes, so it must stay off for the bridged repo.
    that head commit, else the GitHub user of the head commit's committer
    (its author for web edits by `web-flow`). The first upload stays the PR
    author's, since it decides the owner.
-   Not yet: draft toggles without a push and Gerrit-side commit
-   message edits are not mirrored for GitHub-born PRs; non-linear
-   GitHub-born trees; `gerrit/sync` status for import errors (they are
-   logged).
+   Added later (2026-10-04), verified live with PRs #22/#23:
+   - **`gerrit/sync`** status on every GitHub-born PR head: success ("In
+     sync with Gerrit change N, patch set P", noting when the bridge owns
+     the change), pending ("Restack needed…", "Waiting for PR #X to
+     import", "No commits of its own yet"), failure (a Change-Id that
+     belongs to another change) or error. Set only when it changes, and
+     import failures are logged only then.
+   - **Draft toggles** without a push set Gerrit's WIP flag through
+     `/wip` and `/ready`, as the change owner (Run-As), since a re-upload
+     of the same commit is "no new changes". The PR text hash no longer
+     includes the draft state, so a toggle never makes a patch set.
+   - **Commit-message edits in Gerrit** become the PR's title and body
+     (bridge trailers removed, links block kept). The new PR text is then
+     recorded as already imported, so it does not come back as a patch
+     set; a PR edit whose import is still pending is never marked
+     imported.
+   - **Rule 1 for GitHub-born changes**: a patch set with the same tree
+     and parent tree as the GitHub head (a message-only edit) is recorded
+     as that head; nothing is pushed.
+   Not yet: non-linear GitHub-born trees.
 6. **Submit from GitHub:** `/submit`, plus a merge-queue investigation.
    *Done* (§6.7). Fixed on the way: GitHub refuses to retarget a stacked
    PR, so a stack whose members need a new base is now dissolved first;

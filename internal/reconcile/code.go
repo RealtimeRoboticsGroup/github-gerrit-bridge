@@ -235,6 +235,7 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 	// GitHub-born changes live on the user's branch: take its head from
 	// the PR, and check whether a Gerrit edit can be appended to it.
 	s.AppendOK = map[int]bool{}
+	s.SameTree = map[int]string{}
 	for n, ch := range s.Changes {
 		st := s.State[n]
 		if !s.githubBorn(n) || st.State.PR == 0 || s.PRs[st.State.PR] == nil {
@@ -247,8 +248,11 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 		s.GitHubBranches[st.State.HeadBranch] = pr.Head.SHA
 		for _, r := range st.Revisions {
 			if r.GitHubSHA == pr.Head.SHA && r.GerritSHA != ch.Revision {
-				_, parentTree := c.trees(ctx, ch.Revision)
+				tree, parentTree := c.trees(ctx, ch.Revision)
 				s.AppendOK[n] = parentTree != "" && parentTree == r.ParentTree
+				if s.AppendOK[n] && tree == r.Tree {
+					s.SameTree[n] = pr.Head.SHA
+				}
 			}
 		}
 	}
@@ -499,11 +503,26 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan) error {
 			st.State.Title = ch.Subject
 			st.State.BodyHash = d.BodyHash
 			st.State.ClosedNoticePosted = false
+			if st.State.Origin == "github" {
+				// The PR now says what the commit message says: neither
+				// side has news for the other.
+				title, body := prTextFromMessage(ch.Message)
+				st.State.GerritMessageHash = hashString(title + "\x00" + body)
+				if pr != nil && title == strings.TrimSpace(pr.Title) && body == prBodyForMessage(pr.Body) {
+					st.State.ImportHash = prTextHash(pr)
+				}
+			}
 			// Commits the bridge built (imports, appends, re-parented
 			// exports) are recorded where they are made, with both SHAs.
 			known := false
 			for _, r := range st.Revisions {
 				known = known || r.GerritSHA == ch.Revision
+			}
+			if gh := s.SameTree[n]; st.State.Origin == "github" && !known && gh != "" {
+				// Same revision as the GitHub head (rule 1).
+				st.Revisions = append(st.Revisions, state.Revision{PatchSet: ch.PatchSet, GerritSHA: ch.Revision,
+					GitHubSHA: gh, Tree: tree, ParentTree: parentTree})
+				newRevision[n] = true
 			}
 			if st.State.Origin != "github" && !known {
 				newRevision[n] = true

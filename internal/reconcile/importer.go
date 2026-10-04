@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
@@ -42,6 +43,9 @@ type Importer struct {
 	DryRun  bool
 	Logger  *slog.Logger
 
+	mu       sync.Mutex
+	lastSync map[int]string // PR -> last gerrit/sync status set
+
 	// onImported runs after a patch set is imported (Code.OnExported).
 	onImported func(ctx context.Context, n int) error
 	// link records a new PR <-> change link (Code.link).
@@ -61,7 +65,19 @@ type imported struct {
 	// heads maps GitHub commits of this layer to the Gerrit patch set
 	// commits they correspond to.
 	heads map[string]string
+	// change and patchSet are where the PR's head lives in Gerrit.
+	change, patchSet int
+	// bridgeOwned is set when the uploader could not be the user.
+	bridgeOwned bool
 }
+
+// syncError is an import problem to show on the PR as gerrit/sync.
+type syncError struct {
+	state string // pending (the user can fix it by pushing), failure
+	msg   string
+}
+
+func (e *syncError) Error() string { return e.msg }
 
 var changeIDTrailer = regexp.MustCompile(`(?m)^Change-Id: (I[0-9a-f]{40})\s*$`)
 
@@ -165,16 +181,63 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 	done := map[*layer]*imported{}
 	for _, l := range order {
 		if l.parent != nil && done[l.parent] == nil {
-			continue // parent failed or needs a restack
+			im.setSync(ctx, l.pr, "pending", fmt.Sprintf("Waiting for PR #%d to import", l.parent.pr.Number), "")
+			continue
 		}
 		res, err := im.importLayer(ctx, branch, l, done)
 		if err != nil {
-			im.Logger.Warn("import failed", "pr", l.pr.Number, "err", err)
+			var se *syncError
+			changed := false
+			if errors.As(err, &se) {
+				changed = im.setSync(ctx, l.pr, se.state, se.msg, "")
+			} else {
+				changed = im.setSync(ctx, l.pr, "error", "Import failed: "+err.Error(), "")
+			}
+			if changed {
+				// Logged once per new problem, not on every resync.
+				im.Logger.Warn("import failed", "pr", l.pr.Number, "err", err)
+			}
 			continue
 		}
 		done[l] = res
+		desc := fmt.Sprintf("In sync with Gerrit change %d, patch set %d", res.change, res.patchSet)
+		if res.bridgeOwned {
+			desc += "; owned by the bridge (link your GitHub account to own it)"
+		}
+		im.setSync(ctx, l.pr, "success", desc, im.Gerrit.ChangeURL(im.Project, res.change))
 	}
 	return nil
+}
+
+// SyncStatus is the commit status context reporting a GitHub-born PR's
+// import (design §5.2).
+const SyncStatus = "gerrit/sync"
+
+// setSync sets gerrit/sync on the PR's head, unless it already says that,
+// and reports whether it changed.
+func (im *Importer) setSync(ctx context.Context, pr *github.PullRequest, state, desc, url string) bool {
+	desc = truncateDesc(desc)
+	key := strings.Join([]string{pr.Head.SHA, state, desc, url}, "\x00")
+	im.mu.Lock()
+	if im.lastSync == nil {
+		im.lastSync = map[int]string{}
+	}
+	same := im.lastSync[pr.Number] == key
+	im.mu.Unlock()
+	if same {
+		return false
+	}
+	if !im.DryRun {
+		err := im.GitHub.CreateStatus(ctx, pr.Head.SHA, github.Status{State: state, Description: desc, TargetURL: url, Context: SyncStatus})
+		if err != nil {
+			im.Logger.Warn("setting gerrit/sync", "pr", pr.Number, "err", err)
+			return true
+		}
+	}
+	im.mu.Lock()
+	im.lastSync[pr.Number] = key
+	im.mu.Unlock()
+	return true
 }
 
 // knownHeads maps GitHub commits of change n's revisions to Gerrit commits.
@@ -226,12 +289,22 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			res.heads[gh] = ge
 		}
 	}
-	importHash := hashString(fmt.Sprintf("%s\x00%s\x00%v", pr.Title, prBodyForMessage(pr.Body), pr.Draft))
+	importHash := prTextHash(pr)
 	if st != nil && res.heads[h] != "" && st.State.ImportHash == importHash {
-		return res, nil // already imported, and the PR text is unchanged
+		// Already imported and the PR text is unchanged. A draft toggle
+		// is not a new patch set: mirror it to Gerrit's WIP flag.
+		res.change = st.State.Change
+		for _, r := range st.Revisions {
+			if r.GitHubSHA == h {
+				res.patchSet = r.PatchSet
+			}
+		}
+		var err error
+		res.bridgeOwned, err = im.syncWIP(ctx, st.State.Change, pr)
+		return res, err
 	}
 	if len(own) == 0 {
-		return nil, fmt.Errorf("PR #%d has no commits of its own", pr.Number)
+		return nil, &syncError{"pending", "No commits of its own yet"}
 	}
 
 	// The change's identity.
@@ -263,7 +336,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		cur = &existing[0]
 		if st == nil || st.State.Change != cur.Number {
 			// Never let two PRs fight over one change.
-			return nil, fmt.Errorf("Change-Id %s already belongs to change %d, which is not linked to PR #%d", changeID, cur.Number, pr.Number)
+			return nil, &syncError{"failure", fmt.Sprintf("Change-Id %s already belongs to Gerrit change %d; give this PR's commits a new Change-Id", changeID, cur.Number)}
 		}
 	}
 
@@ -300,6 +373,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	}
 	if cur != nil && cur.CurrentRevision == s {
 		res.heads[h] = s
+		res.change, res.patchSet = cur.Number, cur.Revisions[s].Number
 		return res, nil
 	}
 	if im.DryRun {
@@ -343,6 +417,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		return nil, err
 	}
 	res.heads[h] = s
+	res.change, res.patchSet, res.bridgeOwned = ch.Number, ps, user == ""
 	if im.onImported != nil {
 		if err := im.onImported(ctx, ch.Number); err != nil {
 			im.Logger.Warn("post-import sync failed", "change", ch.Number, "err", err)
@@ -393,7 +468,7 @@ func (im *Importer) realParent(ctx context.Context, branch, h string, parentHead
 			return commits[:i], ge, nil
 		}
 	}
-	return nil, "", errors.New("restack needed: the PR is not on top of any version of the PR below it that Gerrit knows")
+	return nil, "", &syncError{"pending", "Restack needed: this PR is not on top of any version of the PR below it that Gerrit knows"}
 }
 
 // prBodyForMessage is the PR body without the bridge's links block and
@@ -535,4 +610,42 @@ func (im *Importer) pusher(ctx context.Context, sha string) string {
 		}
 	}
 	return commitPusher(ctx, im.GitHub, sha)
+}
+
+// prTextHash identifies the PR text a commit message is built from.
+func prTextHash(pr *github.PullRequest) string {
+	return hashString(pr.Title + "\x00" + prBodyForMessage(pr.Body))
+}
+
+// syncWIP makes Gerrit's work-in-progress flag follow the PR's draft
+// state, acting as the change owner (Run-As) since only the owner may
+// toggle it.
+// It reports whether the bridge owns the change.
+func (im *Importer) syncWIP(ctx context.Context, n int, pr *github.PullRequest) (bool, error) {
+	ch, err := im.Gerrit.GetChange(ctx, n, "DETAILED_ACCOUNTS")
+	if err != nil {
+		return false, err
+	}
+	bridgeOwned := ch.Owner.AccountID == im.Bridge.AccountID
+	if ch.Status != "NEW" || ch.WorkInProgress == pr.Draft {
+		return bridgeOwned, nil
+	}
+	action := "ready"
+	if pr.Draft {
+		action = "wip"
+	}
+	if im.DryRun {
+		im.Logger.Info("dry run: would mark change "+action, "change", n, "pr", pr.Number)
+		return bridgeOwned, nil
+	}
+	gc := im.Gerrit
+	if !bridgeOwned && ch.Owner.Username != "" {
+		gc = gc.As(ch.Owner.Username)
+	}
+	msg := fmt.Sprintf("PR #%d marked %s on GitHub.", pr.Number, map[bool]string{true: "draft", false: "ready for review"}[pr.Draft])
+	if err := gc.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/%s", n, action), map[string]string{"message": msg}, nil); err != nil {
+		return bridgeOwned, fmt.Errorf("marking change %d %s: %w", n, action, err)
+	}
+	im.Logger.Info("mirrored draft state to Gerrit", "change", n, "pr", pr.Number, "wip", pr.Draft)
+	return bridgeOwned, nil
 }

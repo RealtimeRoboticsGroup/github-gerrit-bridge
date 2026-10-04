@@ -59,6 +59,9 @@ type ChangeState struct {
 	// ImportHash identifies the PR title/body/draft state last imported
 	// for a GitHub-born change; a change re-imports the message.
 	ImportHash string `json:"import_hash,omitempty"`
+	// GerritMessageHash is the hash of the Gerrit commit message last
+	// synced to a GitHub-born PR's title and body.
+	GerritMessageHash string `json:"gerrit_message_hash,omitempty"`
 	// ClosedNoticePosted records that the "merged/abandoned in Gerrit"
 	// comment was posted on the PR.
 	ClosedNoticePosted bool `json:"closed_notice_posted,omitempty"`
