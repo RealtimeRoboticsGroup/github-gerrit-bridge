@@ -249,7 +249,15 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	// Statuses need the patch set on GitHub; refresh them as soon as the
 	// code mirror puts it there.
 	code.OnExported = checks.Sync
-	dispatch := &reconcile.Dispatcher{Code: code, Comments: comments, Checks: checks, Store: store, Logger: logger}
+	commands := &reconcile.Commands{
+		GitHub:    gh,
+		Submitter: reconcile.RunAsSubmitter{Gerrit: rest},
+		Store:     store,
+		Identity:  cfg.Identity.GitHubToGerrit,
+		DryRun:    dryRun,
+		Logger:    logger,
+	}
+	dispatch := &reconcile.Dispatcher{Code: code, Comments: comments, Commands: commands, Checks: checks, Store: store, Logger: logger}
 	wg.Go(func() { reconcile.Work(ctx, q, dispatch, cfg.Workers, logger) })
 	wg.Go(func() {
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {

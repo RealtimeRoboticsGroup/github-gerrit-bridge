@@ -21,6 +21,16 @@ type Client struct {
 	User     string
 	Password string // HTTP password
 	HTTP     *http.Client
+	// RunAs makes requests on behalf of this account (X-Gerrit-RunAs);
+	// the authenticated account needs the Run As capability.
+	RunAs string
+}
+
+// As returns a client acting as user via Run-As.
+func (c *Client) As(user string) *Client {
+	cp := *c
+	cp.RunAs = user
+	return &cp
 }
 
 // ChangeInfo is the subset of Gerrit's ChangeInfo the bridge reads.
@@ -174,6 +184,9 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 	}
 	req.SetBasicAuth(c.User, c.Password)
 	req.Header.Set("Accept", "application/json")
+	if c.RunAs != "" {
+		req.Header.Set("X-Gerrit-RunAs", c.RunAs)
+	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -367,4 +380,11 @@ func (c *Client) GroupMembers(ctx context.Context, group string) ([]AccountInfo,
 	var out []AccountInfo
 	err := c.Do(ctx, http.MethodGet, "groups/"+url.PathEscape(group)+"/members/?recursive", nil, &out)
 	return out, err
+}
+
+// Submit submits a change (with its unsubmitted ancestors).
+func (c *Client) Submit(ctx context.Context, change int) (*ChangeInfo, error) {
+	var ci ChangeInfo
+	err := c.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/submit", change), map[string]any{}, &ci)
+	return &ci, err
 }

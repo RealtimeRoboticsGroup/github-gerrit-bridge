@@ -13,6 +13,7 @@ import (
 type Dispatcher struct {
 	Code     *Code
 	Comments *Comments
+	Commands *Commands
 	Checks   *Checks
 	Store    *state.Store
 	Logger   *slog.Logger
@@ -57,6 +58,11 @@ func (d *Dispatcher) syncComments(ctx context.Context, n int) error {
 	defer d.Code.lock(st.State.Branch)()
 	if err := d.Comments.Sync(ctx, n); err != nil {
 		return err
+	}
+	if d.Commands != nil {
+		if err := d.Commands.Run(ctx, n); err != nil {
+			return err
+		}
 	}
 	// Votes and CI results arrive as replies, so they ride along.
 	return d.Checks.Sync(ctx, n)

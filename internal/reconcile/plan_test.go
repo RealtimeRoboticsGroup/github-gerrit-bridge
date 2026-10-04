@@ -212,6 +212,7 @@ func (w *world) apply(p *Plan) {
 				w.log = append(w.log, fmt.Sprintf("comment #%d: %s", a.PR, a.Comment))
 			}
 			w.state[a.Change].State.ClosedNoticePosted = true
+			w.state[a.Change].State.Lifecycle = w.gerrit[a.Change].Status
 		}
 	}
 	// Record state the way the applier does.
@@ -419,6 +420,53 @@ func TestAbandonMiddle(t *testing.T) {
 		t.Error("restored change's PR not reopened")
 	}
 	if got := w.stacksAsChanges(); !reflect.DeepEqual(got, [][]int{{1, 2, 3, 4}}) {
+		t.Errorf("stacks = %v", got)
+	}
+}
+
+func TestMergedChainDeletesBridgeBranches(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.upload(2, "b1", "a1")
+	w.upload(3, "c1", "b1")
+	w.converge()
+	// Submit 1 and 2 (fast-forward); 3 stays open on top.
+	for _, n := range []int{1, 2} {
+		w.gerrit[n].Status = "MERGED"
+	}
+	w.onMain["a1"], w.onMain["b1"] = true, true
+	w.converge()
+	w.checkBase(t, 3, "main")
+	for _, n := range []int{1, 2} {
+		if _, ok := w.branch["gerrit/"+cid(n)]; ok {
+			t.Errorf("branch of merged change %d not deleted", n)
+		}
+		if w.pr(n).State != "closed" {
+			t.Errorf("PR of merged change %d still open", n)
+		}
+	}
+	if _, ok := w.branch["gerrit/"+cid(3)]; !ok {
+		t.Error("open change's branch deleted")
+	}
+}
+
+func TestMergedUnderFrozenStackRetargets(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.upload(2, "b1", "a1")
+	w.upload(3, "c1", "b1")
+	w.converge()
+	w.upload(1, "a2", "m0") // 2 now sits on an outdated parent: frozen
+	w.converge()
+	if got := w.stacksAsChanges(); !reflect.DeepEqual(got, [][]int{{2, 3}}) {
+		t.Fatalf("stacks = %v", got)
+	}
+	// a1 gets onto main some other way (say an old submit): 2's base must
+	// become main, which GitHub only allows outside a stack.
+	w.onMain["a1"] = true
+	w.converge()
+	w.checkBase(t, 2, "main")
+	if got := w.stacksAsChanges(); !reflect.DeepEqual(got, [][]int{{2, 3}}) {
 		t.Errorf("stacks = %v", got)
 	}
 }

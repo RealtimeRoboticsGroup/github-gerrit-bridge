@@ -782,9 +782,43 @@ change. This matches the semantics on both sides.
     `submit` label). The bridge calls Gerrit
     `POST /changes/{id}/submit` as that user (or on their behalf), which
     submits the whole chain up to that layer.
-  - **To investigate:** whether a GitHub App can intercept the native stack
-    merge, for example through merge queue integration, so the real merge
-    button works. Merge queue with an external "merger" would be ideal.
+  - **Implemented** (`internal/reconcile/commands.go`): `/submit` on a
+    line of its own in a PR conversation comment submits the change, and
+    with it the changes below it, **as the commenter's mapped Gerrit
+    account** through `X-Gerrit-RunAs` (the bridge account needs the global
+    Run As capability). Gerrit's permissions and submit rules decide;
+    a refusal is quoted back on the PR, and unmapped users are told why
+    nothing happened. Each command runs once: the reply carries
+    `<!-- bridge:cmd/<comment id> -->`, so no state is needed. After the
+    merge, Gerrit's events close the PRs, and the bridge deletes its own
+    `gerrit/<Change-Id>` branches once no open PR is based on them
+    (GitHub-born branches belong to their authors and are kept).
+    Verified live on `bridge-scratch`: `/submit` on the top of a two-layer
+    GitHub-born stack first quoted Gerrit's refusal (the layer below had a
+    newer patch set), then after a restack on GitHub submitted both changes
+    as alice; the same on a Gerrit-born chain retargeted the remaining
+    layer to `main`.
+  - **The native merge button (investigated 2026-10-04).** GitHub merges
+    stacks itself: bottom-up, through the merge queue or the asynchronous
+    merge API, which is the only merge API that supports stacks
+    ([docs](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs)).
+    Either way GitHub writes `main`, which Gerrit owns, so the button
+    cannot simply be allowed. Options:
+    1. **Block it (recommended now).** Protect `main` so only the
+       replication account may push; the merge box then says merging is
+       blocked, `gerrit/submittable` shows why, and people use `/submit`.
+    2. **Treat "add to merge queue" as `/submit`.** With a required merge
+       queue, enqueueing fires a `merge_group` `checks_requested` webhook
+       and the queue waits for required checks. The bridge could submit
+       the PR's change in Gerrit and then fail its check on the merge
+       group, so GitHub never merges; replication lands the commits, and
+       GitHub marks the PRs merged if their head SHAs reach `main`
+       (fast-forward or merge-if-necessary submits only). The queue would
+       show the entry as failed, which is confusing, and merge queues need
+       an organization-owned repository, so this cannot be tried on
+       `bridge-scratch`. Worth an experiment on an org repo.
+    3. Letting GitHub merge and replaying into Gerrit would make GitHub the
+       source of truth for `main`, contradicting §3.
 
 ## 7. Identity
 
@@ -971,6 +1005,10 @@ changes, so it must stay off for the bridged repo.
    GitHub-born trees; `gerrit/sync` status for import errors (they are
    logged).
 6. **Submit from GitHub:** `/submit`, plus a merge-queue investigation.
+   *Done* (§6.7). Fixed on the way: GitHub refuses to retarget a stacked
+   PR, so a stack whose members need a new base is now dissolved first;
+   and branches of merged changes are cleaned up even when the merge was
+   seen in an earlier reconcile.
 
 ## 12. Decisions
 
@@ -1000,5 +1038,6 @@ changes, so it must stay off for the bridged repo.
 
 1. ~~Verify the SSH `suexec` peer-key flow for `git-receive-pack` on
    3.14.4.~~ Verified; see §5.2 step 2.
-2. Can the native stack merge button be routed to a Gerrit submit (through
-   merge queue integration)? Needs an experiment.
+2. ~~Can the native stack merge button be routed to a Gerrit submit?~~
+   Not directly; see §6.7 for the options. Option 2 (merge queue entry as
+   `/submit`) needs an experiment on an organization-owned repo.

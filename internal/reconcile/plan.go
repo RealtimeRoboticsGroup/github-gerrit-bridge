@@ -412,6 +412,14 @@ func MakePlan(s *Snapshot) *Plan {
 		}
 		paths = append(paths, prs)
 	}
+	// GitHub refuses to change the base of a stacked PR, so a stack whose
+	// members get a new base must be dissolved and rebuilt.
+	retarget := map[int]bool{}
+	for _, a := range p.Actions {
+		if a.Kind == UpdatePR && a.Update.Base != nil {
+			retarget[a.PR] = true
+		}
+	}
 	claimed := map[int]bool{} // index into paths
 	inKept := map[int]bool{}
 	for _, st := range s.Stacks {
@@ -419,7 +427,7 @@ func MakePlan(s *Snapshot) *Plan {
 		i := slices.IndexFunc(paths, func(w []int) bool {
 			return len(w) >= len(nums) && slices.Equal(w[:len(nums)], nums)
 		})
-		if i < 0 || claimed[i] {
+		if i < 0 || claimed[i] || slices.ContainsFunc(nums, func(n int) bool { return retarget[n] }) {
 			p.Actions = append(p.Actions, Action{Kind: Unstack, Stack: st.Number})
 			continue
 		}
@@ -457,7 +465,7 @@ func MakePlan(s *Snapshot) *Plan {
 		var msg string
 		switch {
 		case c.Status == "MERGED":
-			msg = fmt.Sprintf("Merged in Gerrit: [change %d](%s). Closing this mirror PR.", n, c.URL)
+			msg = fmt.Sprintf("Merged in Gerrit: [change %d](%s). Closing this PR.", n, c.URL)
 		case c.Status == "ABANDONED":
 			msg = fmt.Sprintf("Abandoned in Gerrit: [change %d](%s). Restoring it there reopens this PR.", n, c.URL)
 		default:
@@ -469,10 +477,29 @@ func MakePlan(s *Snapshot) *Plan {
 		p.Actions = append(p.Actions, Action{Kind: ClosePR, Change: n, PR: pr.Number, Comment: msg})
 	}
 
-	// Frozen bases nothing needs any more.
+	// Frozen bases nothing needs any more, and the bridge's branches of
+	// merged changes (design §6.7). Abandoned changes keep theirs, so a
+	// restore can reopen the PR.
+	merged := map[string]bool{}
+	for n, c := range s.Changes {
+		if c.Status == "MERGED" && !s.githubBorn(n) {
+			merged[HeadBranch(s.Branch, s.DefaultBranch, c.ChangeID)] = true
+		}
+	}
+	for _, st := range s.State { // merged earlier, branch maybe left over
+		if st.State.Lifecycle == "MERGED" && st.State.Origin == "gerrit" && st.State.HeadBranch != "" {
+			merged[st.State.HeadBranch] = true
+		}
+	}
+	closing := map[int]bool{}
+	for _, a := range p.Actions {
+		if a.Kind == ClosePR {
+			closing[a.PR] = true
+		}
+	}
 	del := Action{Kind: DeleteBranches, Refs: map[string]string{}, Leases: map[string]string{}}
 	for name, sha := range s.GitHubBranches {
-		if _, ok := frozenFor(name, s.Branch, s.DefaultBranch); !ok || refs[name] != "" {
+		if _, ok := frozenFor(name, s.Branch, s.DefaultBranch); (!ok && !merged[name]) || refs[name] != "" {
 			continue
 		}
 		used := false
@@ -481,7 +508,7 @@ func MakePlan(s *Snapshot) *Plan {
 			if !ok {
 				base = pr.Base.Ref
 			}
-			used = used || (pr.State == "open" && base == name)
+			used = used || (pr.State == "open" && !closing[pr.Number] && base == name)
 		}
 		if !used {
 			del.Refs[name] = ""
