@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "gerritssh",
+    srcs = ["gerritssh.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/gerritssh",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@org_golang_x_crypto//ssh",
+        "@org_golang_x_crypto//ssh/knownhosts",
+    ],
+)
+
+go_test(
+    name = "gerritssh_test",
+    srcs = ["gerritssh_test.go"],
+    embed = [":gerritssh"],
+    deps = ["//internal/gerrit/gerritssh/sshtest"],
+)

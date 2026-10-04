@@ -1,0 +1,33 @@
+# Example bridge configuration. Secrets live in the files named by *_file.
+
+# HTTP listener for GitHub webhooks (POST /webhook) and GET /healthz.
+listen: ":8080"
+workers: 4
+
+gerrit:
+  url: https://gerrit.example.com
+  project: frc971/971-Robot-Code
+  # REST API account and its HTTP password (Settings > HTTP Credentials).
+  http_user: github-bridge
+  http_password_file: /etc/github-gerrit-bridge/gerrit-http-password
+  ssh:
+    address: gerrit.example.com:29418
+    user: github-bridge
+    # Unencrypted private key registered for http_user.
+    key_file: /etc/github-gerrit-bridge/id_ed25519
+    # e.g. ssh-keyscan -p 29418 gerrit.example.com > known_hosts
+    known_hosts_file: /etc/github-gerrit-bridge/known_hosts
+    keepalive_interval: 15s
+    keepalive_count_max: 3
+    # Reconnect and resync if no event arrives for this long; 0 disables.
+    watchdog: 0s
+
+github:
+  owner: frc971
+  repo: 971-Robot-Code
+  webhook_secret_file: /etc/github-gerrit-bridge/webhook-secret
+
+ci:
+  # Uploads by members of this group are built automatically by
+  # gerrit-buildkite. The bridge account must not be a member.
+  trusted_group: Verified Users

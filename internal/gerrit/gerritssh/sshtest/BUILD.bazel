@@ -1,0 +1,12 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "sshtest",
+    srcs = ["sshtest.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/gerritssh/sshtest",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@org_golang_x_crypto//ssh",
+        "@org_golang_x_crypto//ssh/knownhosts",
+    ],
+)

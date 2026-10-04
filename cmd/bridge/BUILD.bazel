@@ -5,6 +5,15 @@ go_library(
     srcs = ["main.go"],
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/cmd/bridge",
     visibility = ["//visibility:private"],
+    deps = [
+        "//internal/config",
+        "//internal/gerrit",
+        "//internal/gerrit/events",
+        "//internal/gerrit/gerritssh",
+        "//internal/github",
+        "//internal/queue",
+        "//internal/reconcile",
+    ],
 )
 
 go_binary(

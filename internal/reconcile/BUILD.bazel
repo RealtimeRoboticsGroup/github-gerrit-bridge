@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "reconcile",
+    srcs = ["reconcile.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/gerrit/events",
+        "//internal/github",
+        "//internal/queue",
+    ],
+)
+
+go_test(
+    name = "reconcile_test",
+    srcs = ["reconcile_test.go"],
+    embed = [":reconcile"],
+    deps = [
+        "//internal/gerrit/events",
+        "//internal/github",
+        "//internal/queue",
+    ],
+)

@@ -123,7 +123,7 @@ service:
 | Handles events inline on the read goroutine. A failed build trigger retries every 30 s **while blocking the read**. | Gerrit's per-client queue fills, and it sends `dropped-output` and discards events. | The read loop only parses and enqueues a key (project, change) into the de-duplicating work queue. It never blocks on the network. |
 | Reconnects right away in a tight loop | If Gerrit is down, the loop spins hot. | Exponential backoff with jitter, capped at 1 min. |
 | No catch-up after a disconnect | Events sent while disconnected are lost. | Every (re)connect, and every `dropped-output` event, queues a full resync of open changes. Reconciliation is level-triggered, so that is all the recovery needed. |
-| Subscribes to every event type | Volume. | `stream-events -s patchset-created -s comment-added -s change-abandoned -s change-restored -s change-merged -s wip-state-changed -s private-state-changed -s reviewer-added -s reviewer-deleted -s vote-deleted -s hashtags-changed -s topic-changed -s ref-updated -s dropped-output`. |
+| Subscribes to every event type | Volume. | `stream-events -s patchset-created -s comment-added -s change-abandoned -s change-restored -s change-merged -s change-deleted -s wip-state-changed -s private-state-changed -s reviewer-added -s reviewer-deleted -s vote-deleted -s hashtags-changed -s topic-changed -s ref-updated -s dropped-output`. |
 | Shells out to `ssh` | Fine, and it reuses `~/.ssh/config`. | `golang.org/x/crypto/ssh` with `knownhosts`, protocol-level keepalives, and context cancellation. That keeps it one static binary with no subprocess to babysit. The same client runs `suexec` (§5.2) and `gerrit ls-members`. |
 
 There is also a watchdog. If no event (including keepalives) arrives for N

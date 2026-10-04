@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "github",
+    srcs = ["webhook.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/github",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "github_test",
+    srcs = ["webhook_test.go"],
+    embed = [":github"],
+)

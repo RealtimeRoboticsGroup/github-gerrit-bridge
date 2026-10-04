@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "events",
+    srcs = [
+        "event.go",
+        "ssh.go",
+        "stream.go",
+    ],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/events",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/gerrit/gerritssh"],
+)
+
+go_test(
+    name = "events_test",
+    srcs = [
+        "event_test.go",
+        "stream_test.go",
+    ],
+    embed = [":events"],
+    deps = [
+        "//internal/gerrit/gerritssh",
+        "//internal/gerrit/gerritssh/sshtest",
+    ],
+)

@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "gerrit",
+    srcs = ["rest.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "gerrit_test",
+    srcs = ["rest_test.go"],
+    embed = [":gerrit"],
+)
