@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -74,6 +75,12 @@ type CI struct {
 	// TrustedGroup is the Gerrit group whose uploads CI builds
 	// automatically. The bridge account must not be a member.
 	TrustedGroup string `yaml:"trusted_group"`
+	// Labels are voted by CI: shown on GitHub only as statuses, never in
+	// the votes comment.
+	Labels []string `yaml:"labels"`
+	// MessagePattern matches CI messages; group 1 must be Started,
+	// Succeeded or Failed and group 2 the build URL.
+	MessagePattern string `yaml:"message_pattern"`
 }
 
 // Load reads and validates the config file at path.
@@ -99,7 +106,11 @@ func Parse(b []byte) (*Config, error) {
 			KeepaliveInterval: 15 * time.Second,
 			KeepaliveCountMax: 3,
 		}},
-		CI: CI{TrustedGroup: "Verified Users"},
+		CI: CI{
+			TrustedGroup:   "Verified Users",
+			Labels:         []string{"Verified"},
+			MessagePattern: `Build (Started|Succeeded|Failed): (\S+)`,
+		},
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
@@ -134,6 +145,9 @@ func (c *Config) validate() error {
 	req("github.webhook_secret_file", c.GitHub.WebhookSecretFile)
 	if (c.GitHub.TokenFile == "") == (len(c.GitHub.TokenCommand) == 0) {
 		errs = append(errs, errors.New("exactly one of github.token_file and github.token_command is required"))
+	}
+	if _, err := regexp.Compile(c.CI.MessagePattern); err != nil {
+		errs = append(errs, fmt.Errorf("ci.message_pattern: %w", err))
 	}
 	if c.Workers < 1 {
 		errs = append(errs, errors.New("workers must be at least 1"))

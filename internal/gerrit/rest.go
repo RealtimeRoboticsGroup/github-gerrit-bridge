@@ -40,6 +40,63 @@ type ChangeInfo struct {
 	WorkInProgress  bool                    `json:"work_in_progress"`
 	IsPrivate       bool                    `json:"is_private"`
 	MoreChanges     bool                    `json:"_more_changes"`
+
+	// With DETAILED_LABELS.
+	Labels map[string]LabelInfo `json:"labels"`
+	// With SUBMITTABLE.
+	Submittable bool `json:"submittable"`
+	// With SUBMIT_REQUIREMENTS.
+	SubmitRequirements []SubmitRequirementResult `json:"submit_requirements"`
+	// With MESSAGES.
+	Messages []ChangeMessage `json:"messages"`
+}
+
+// LabelInfo is a label's votes (DETAILED_LABELS).
+type LabelInfo struct {
+	All []ApprovalInfo `json:"all"`
+	// Values maps " 0", "+1", "-2" ... to descriptions.
+	Values map[string]string `json:"values"`
+}
+
+// Range returns the label's lowest and highest values.
+func (l LabelInfo) Range() (lo, hi int) {
+	first := true
+	for k := range l.Values {
+		var v int
+		if _, err := fmt.Sscanf(strings.TrimSpace(k), "%d", &v); err != nil {
+			continue
+		}
+		if first || v < lo {
+			lo = v
+		}
+		if first || v > hi {
+			hi = v
+		}
+		first = false
+	}
+	return lo, hi
+}
+
+// ApprovalInfo is one account's vote on a label.
+type ApprovalInfo struct {
+	AccountInfo
+	Value int `json:"value"`
+}
+
+// SubmitRequirementResult is one submit requirement's status.
+type SubmitRequirementResult struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // SATISFIED, UNSATISFIED, OVERRIDDEN, NOT_APPLICABLE, ERROR, FORCED
+}
+
+// ChangeMessage is an entry in a change's log.
+type ChangeMessage struct {
+	ID             string      `json:"id"`
+	Author         AccountInfo `json:"author"`
+	Message        string      `json:"message"`
+	Tag            string      `json:"tag"`
+	Date           string      `json:"date"`
+	RevisionNumber int         `json:"_revision_number"`
 }
 
 // Current returns the current revision, if it was requested.
@@ -302,4 +359,12 @@ func (c *Client) GetChange(ctx context.Context, change int, opts ...string) (*Ch
 // ChangeURL is the web URL of a change.
 func (c *Client) ChangeURL(project string, number int) string {
 	return fmt.Sprintf("%s/c/%s/+/%d", c.BaseURL, project, number)
+}
+
+// GroupMembers returns a group's members, including those of included
+// groups.
+func (c *Client) GroupMembers(ctx context.Context, group string) ([]AccountInfo, error) {
+	var out []AccountInfo
+	err := c.Do(ctx, http.MethodGet, "groups/"+url.PathEscape(group)+"/members/?recursive", nil, &out)
+	return out, err
 }

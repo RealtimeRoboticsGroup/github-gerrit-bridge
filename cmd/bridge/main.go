@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"sync"
 	"syscall"
 	"time"
@@ -196,7 +197,18 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		DryRun:        dryRun,
 		Logger:        logger,
 	}
-	dispatch := &reconcile.Dispatcher{Code: code, Comments: comments, Store: store, Logger: logger}
+	checks := &reconcile.Checks{
+		Project:      cfg.Gerrit.Project,
+		Gerrit:       rest,
+		GitHub:       gh,
+		Store:        store,
+		CILabels:     cfg.CI.Labels,
+		TrustedGroup: cfg.CI.TrustedGroup,
+		CIMessage:    regexp.MustCompile(cfg.CI.MessagePattern),
+		DryRun:       dryRun,
+		Logger:       logger,
+	}
+	dispatch := &reconcile.Dispatcher{Code: code, Comments: comments, Checks: checks, Store: store, Logger: logger}
 	wg.Go(func() { reconcile.Work(ctx, q, dispatch, cfg.Workers, logger) })
 	wg.Go(func() {
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {

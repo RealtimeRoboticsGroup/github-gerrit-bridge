@@ -36,3 +36,7 @@ ci:
   # Uploads by members of this group are built automatically by
   # gerrit-buildkite. The bridge account must not be a member.
   trusted_group: Verified Users
+  # Labels voted by CI; mirrored as gerrit/<Label> statuses.
+  labels: [Verified]
+  # CI messages: group 1 Started|Succeeded|Failed, group 2 the build URL.
+  message_pattern: 'Build (Started|Succeeded|Failed): (\S+)'

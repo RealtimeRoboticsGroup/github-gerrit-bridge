@@ -75,3 +75,26 @@ func (c *Client) Unstack(ctx context.Context, n int) error {
 	_, err := c.Do(ctx, http.MethodPost, c.RepoPath("stacks/"+strconv.Itoa(n)+"/unstack"), nil, nil)
 	return err
 }
+
+// Status is a commit status. State is pending, success, failure or error.
+type Status struct {
+	State       string `json:"state"`
+	TargetURL   string `json:"target_url,omitempty"`
+	Description string `json:"description,omitempty"`
+	Context     string `json:"context"`
+}
+
+// CreateStatus sets the status for context on commit sha.
+func (c *Client) CreateStatus(ctx context.Context, sha string, s Status) error {
+	_, err := c.Do(ctx, http.MethodPost, c.RepoPath("statuses/"+sha), s, nil)
+	return err
+}
+
+// Statuses returns the latest status per context on commit sha.
+func (c *Client) Statuses(ctx context.Context, sha string) ([]Status, error) {
+	var out struct {
+		Statuses []Status `json:"statuses"`
+	}
+	_, err := c.Do(ctx, http.MethodGet, c.RepoPath("commits/"+sha+"/status?per_page=100"), nil, &out)
+	return out.Statuses, err
+}

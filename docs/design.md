@@ -909,6 +909,29 @@ changes, so it must stay off for the bridged repo.
      lands file-level on the current patch set with a note), and GitHub
      review states other than as text (votes are milestone 4).
 4. **Votes and CI:** labels ⇄ reviews and checks; identity mapping.
+   *Done for Gerrit → GitHub, on a personal token* (decision 2026-10-04:
+   no GitHub App yet). Consequences of the token:
+   - Check runs need an App, so the bridge sets **commit statuses**
+     `gerrit/<Label>` and `gerrit/submittable` on the PR head instead
+     (`internal/reconcile/checks.go`). Same states and links as §6.5/§6.7:
+     CI labels link to the build from gerrit-buildkite's "Build
+     Started/Succeeded/Failed: <url>" messages (`ci.message_pattern`),
+     an untrusted uploader gets "CI not started: uploader is not in
+     Verified Users…", and `gerrit/submittable` lists the unsatisfied
+     submit requirements. Branch protection can require these contexts.
+   - GitHub won't let the token's user approve PRs it authored, so
+     Gerrit votes on non-CI labels are mirrored as one PR comment per
+     change in votes ("**Alice**: Code-Review +2"), tracked in
+     `votes.json`, not as GitHub reviews.
+   - GitHub approvals stay text in Gerrit ("Approved on GitHub." in the
+     mirrored review body). The bridge does not vote on anyone's behalf
+     until identity mapping (§7) exists.
+   Verified live on PR #8 / change 4 (build started → running with the
+   build link; CR+2 and Verified+1 → success; resolving the last thread on
+   GitHub → `gerrit/submittable` success) and PR #14 (untrusted uploader).
+   Note: replies posted through REST with only a `message` (bots, CLI) are
+   change messages, not comments, so they are not mirrored; the web UI's
+   reply text is a `/PATCHSET_LEVEL` comment and is.
 5. **GitHub → Gerrit code:** deterministic squash and stack import to `refs/for`.
 6. **Submit from GitHub:** `/submit`, plus a merge-queue investigation.
 
