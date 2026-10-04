@@ -5,7 +5,10 @@ go_library(
     srcs = ["main.go"],
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/cmd/testgerrit",
     visibility = ["//visibility:private"],
-    deps = ["//internal/testgerrit"],
+    deps = [
+        "//internal/config",
+        "//internal/testgerrit",
+    ],
 )
 
 go_binary(

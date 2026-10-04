@@ -1,0 +1,116 @@
+# The bridge test instance
+
+A complete, disposable copy of the production setup, for trying the bridge
+by hand before it goes near the real Gerrit:
+
+| Piece | Where | Real or stand-in |
+|---|---|---|
+| Gerrit 3.14.4 | `http://127.0.0.1:18080`, ssh `127.0.0.1:29418`, site `~/tmp/gerrit-test` | real (dev-mode login) |
+| Replication | Gerrit's bundled plugin → `github.com/AustinSchuh/bridge-scratch` | real |
+| CI | your `gerrit-buildkite` (`~/tmp/gerrit-buildkite`, plus a local `-api_url` patch) | real |
+| Buildkite | `cmd/fakebuildkite` on `http://127.0.0.1:18090` | stand-in |
+| The bridge | `cmd/bridge`, config `~/tmp/gerrit-test/bridge/bridge-scratch.yaml` | real |
+| GitHub webhooks | `gh webhook forward` → `127.0.0.1:18081/webhook` | real (needs `admin:repo_hook`) |
+| GitHub | `AustinSchuh/bridge-scratch` | real |
+
+Everything listens on 127.0.0.1 only: dev-mode Gerrit lets anyone become
+anyone. From your desktop, tunnel the web UIs:
+
+```
+ssh -L 18080:127.0.0.1:18080 -L 18090:127.0.0.1:18090 server1868-4
+```
+
+then open <http://127.0.0.1:18080> (Gerrit) and <http://127.0.0.1:18090>
+(builds). Links the bridge posts on GitHub point at these URLs too.
+
+## Services
+
+```
+tools/testenv/install.sh                   # build, (re)install and restart everything
+systemctl --user status 'bridge-test-*'
+systemctl --user restart bridge-test-bridge  # after changing only the bridge (install.sh rebuilds)
+journalctl is not used: logs are in ~/tmp/bridge-test/logs/<service>.log
+```
+
+| Service | What |
+|---|---|
+| `bridge-test-gerrit` | Gerrit; replication pushes `bridge-scratch`'s `refs/heads/*` to GitHub (force: Gerrit owns them) |
+| `bridge-test-buildkite` | fake Buildkite |
+| `bridge-test-ci` | gerrit-buildkite, using the `buildkite` account (`~/tmp/gerrit-test/ci/`) |
+| `bridge-test-bridge` | the bridge, `--dry_run=false`, resyncing every 20 s |
+| `bridge-test-webhooks` | webhook forwarding (installed once the token has `admin:repo_hook`) |
+
+Gerrit's own logs are in `~/tmp/gerrit-test/logs/` (`replication_log`,
+`sshd_log`, `error_log`).
+
+## Accounts
+
+| Account | Who | Notes |
+|---|---|---|
+| `admin` | administrator | log in at `/login/?user_name=admin` |
+| `alice` | trusted developer | in **Verified Users**, so CI builds her uploads. Your GitHub login `AustinSchuh` maps to her, so your GitHub pushes and `/submit` act as alice |
+| `bob` | newcomer | not in Verified Users: CI does not start for his uploads |
+| `github-bridge` | the bridge | Service Users, Run As, owns `refs/bridge/*` |
+| `buildkite` | CI | Service Users, votes Verified |
+
+Log in as anyone with `http://127.0.0.1:18080/login/?user_name=<name>`.
+HTTP passwords and SSH keys are in `~/tmp/gerrit-test/bridge/`
+(`alice.http-password`, `alice_id_ed25519`, and the same for bob).
+
+## Things to try
+
+Work in a clone that can talk to both sides:
+
+```
+git clone http://alice:$(cat ~/tmp/gerrit-test/bridge/alice.http-password)@127.0.0.1:18080/a/bridge-scratch
+cd bridge-scratch
+curl -so .git/hooks/commit-msg http://127.0.0.1:18080/tools/hooks/commit-msg && chmod +x .git/hooks/commit-msg
+git remote add github https://github.com/AustinSchuh/bridge-scratch.git
+```
+
+**From Gerrit**
+
+- Upload a chain: commit two or three times, `git push origin HEAD:refs/for/main`.
+  Each change gets a `gerrit/<Change-Id>` branch and a PR, stacked.
+  CI runs (alice is trusted) and `gerrit/Verified` follows it on GitHub.
+- Make a build fail: add a file whose path contains `FAIL`.
+- Comment, reply, resolve, vote, attach an "Apply fix" suggestion: all
+  show up on the PR.
+- Amend only the middle change of a chain and push: the PR above moves to
+  a `gerrit-base/…` branch and leaves the stack until you rebase.
+- Abandon, restore, mark WIP / ready.
+- Submit in Gerrit: replication lands it on GitHub's `main`, and the PRs
+  close as merged.
+
+**From GitHub**
+
+- Push a branch (`git push github HEAD:refs/heads/my-feature`), open a PR
+  against `main`, and stack more on top (`gh stack` or the UI). Each layer
+  becomes one Gerrit change owned by alice; `gerrit/sync` on the PR says
+  how the import went.
+- Push more commits, restack, force-push: new patch sets.
+- Review on GitHub: comments, suggestions (```` ```suggestion ````),
+  replies, resolving, edits.
+- Toggle draft / ready.
+- Comment `/submit` to submit the change and everything below it, as alice.
+- Comment `retest` in **Gerrit** to rerun CI. (A `retest` on GitHub is
+  mirrored by the bridge account, which CI does not trust, until Run-As
+  mirroring exists.)
+
+## Resetting
+
+```
+systemctl --user stop 'bridge-test-*'
+rm -rf ~/tmp/gerrit-test ~/tmp/gerrit-test.home ~/tmp/bridge-test/buildkite.db
+tools/testenv/install.sh
+```
+
+A fresh site recreates the accounts, creates `bridge-scratch` from GitHub's
+current `main`, writes `~/tmp/gerrit-test/bridge/bridge-scratch.yaml` (with
+`import_created_after` set to now, so existing GitHub PRs are left alone),
+and sets up CI. Bridge state lives in the Gerrit site (`refs/bridge/*`), so
+it goes with it; PRs the old site mirrored are then simply ignored.
+
+The GitHub token used by replication is a copy of `gh auth token` in
+`~/tmp/bridge-test/github-token` and the site's `etc/secure.config`; both
+are mode 600, but delete them when you are done with the test instance.

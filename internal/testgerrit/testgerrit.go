@@ -7,6 +7,7 @@
 package testgerrit
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -45,6 +46,18 @@ type Options struct {
 	HTTPPort, SSHPort int
 	// Log receives Gerrit's console output; nil discards it.
 	Log *os.File
+	// Replicate, if set, installs the bundled replication plugin and
+	// pushes refs/heads/* of the given projects to a remote.
+	Replicate *Replication
+}
+
+// Replication configures the replication plugin for one remote.
+type Replication struct {
+	Name     string   // remote name, e.g. "github"
+	URL      string   // e.g. https://github.com/owner/${name}.git
+	Projects []string // projects to replicate
+	User     string   // HTTP user, e.g. x-access-token
+	Password string   // HTTP password or token; stored in etc/secure.config
 }
 
 // Server is a running Gerrit.
@@ -131,6 +144,12 @@ func Start(ctx context.Context, o Options) (*Server, error) {
 		c := exec.CommandContext(ctx, "git", "config", "-f", filepath.Join(o.Site, "etc", "gerrit.config"), kv[0], kv[1])
 		if out, err := c.CombinedOutput(); err != nil {
 			return nil, fmt.Errorf("git config %s: %w: %s", kv[0], err, out)
+		}
+	}
+
+	if o.Replicate != nil {
+		if err := installReplication(o.War, o.Site, o.Replicate); err != nil {
+			return nil, fmt.Errorf("replication: %w", err)
 		}
 	}
 
@@ -337,4 +356,107 @@ func randomPassword() string {
 	b := make([]byte, 18)
 	rand.Read(b)
 	return fmt.Sprintf("%x", b)
+}
+
+// installReplication copies the replication plugin out of the war and
+// writes its configuration. Branches are force-pushed: the Gerrit site owns
+// them, as in production (design §3).
+func installReplication(war, site string, r *Replication) error {
+	zr, err := zip.OpenReader(war)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+	var jar *zip.File
+	for _, f := range zr.File {
+		if f.Name == "WEB-INF/plugins/replication.jar" {
+			jar = f
+		}
+	}
+	if jar == nil {
+		return errors.New("no replication plugin in the war")
+	}
+	in, err := jar.Open()
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Join(site, "plugins"), 0o755); err != nil {
+		return err
+	}
+	out, err := os.Create(filepath.Join(site, "plugins", "replication.jar"))
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+
+	cfg := filepath.Join(site, "etc", "replication.config")
+	os.Remove(cfg)
+	set := func(file string, kv ...string) error {
+		for i := 0; i < len(kv); i += 2 {
+			args := []string{"config", "-f", file}
+			if strings.HasSuffix(kv[i], "+") {
+				args = append(args, "--add", strings.TrimSuffix(kv[i], "+"), kv[i+1])
+			} else {
+				args = append(args, kv[i], kv[i+1])
+			}
+			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+				return fmt.Errorf("git %v: %w: %s", args, err, out)
+			}
+		}
+		return nil
+	}
+	rem := "remote." + r.Name + "."
+	kv := []string{
+		"gerrit.replicateOnStartup", "true",
+		"replication.lockErrorMaxRetries", "5",
+		rem + "url", r.URL,
+		rem + "push", "+refs/heads/*:refs/heads/*",
+		rem + "replicationDelay", "2",
+		rem + "threads", "1",
+		rem + "createMissingRepositories", "false",
+	}
+	for _, p := range r.Projects {
+		kv = append(kv, rem+"projects+", p)
+	}
+	if err := set(cfg, kv...); err != nil {
+		return err
+	}
+	secure := filepath.Join(site, "etc", "secure.config")
+	if err := set(secure, rem+"username", r.User, rem+"password", r.Password); err != nil {
+		return err
+	}
+	return os.Chmod(secure, 0o600)
+}
+
+// SetupCI creates a CI account like gerrit-buildkite's: in Service Users
+// (stream-events) and a "CI" group that may vote Verified on project.
+func (s *Server) SetupCI(ctx context.Context, project, username string) (*User, error) {
+	if err := s.CreateGroup(ctx, "CI"); err != nil {
+		return nil, err
+	}
+	u, err := s.CreateUser(ctx, username, "Buildkite", "CI", "Service Users")
+	if err != nil {
+		return nil, err
+	}
+	var ci struct {
+		ID string `json:"id"`
+	}
+	if err := s.Admin.Do(ctx, http.MethodGet, "groups/CI", nil, &ci); err != nil {
+		return nil, err
+	}
+	access := map[string]any{"add": map[string]any{"refs/heads/*": map[string]any{"permissions": map[string]any{
+		"label-Verified": map[string]any{"label": "Verified", "rules": map[string]any{
+			ci.ID: map[string]any{"action": "ALLOW", "min": -1, "max": 1}}},
+	}}}}
+	if err := s.Admin.Do(ctx, http.MethodPost, "projects/"+url.PathEscape(project)+"/access", access, nil); err != nil {
+		return nil, err
+	}
+	return u, nil
 }

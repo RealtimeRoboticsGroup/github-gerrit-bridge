@@ -10,6 +10,7 @@ go_library(
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/gerrit",
+        "//internal/gitmirror",
         "@org_golang_x_crypto//ssh",
         "@rules_go//go/runfiles",
     ],
