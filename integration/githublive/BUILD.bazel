@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "githublive_test",
+    srcs = ["github_test.go"],
+    # Talks to api.github.com; needs --test_env=GITHUB_TOKEN/GITHUB_REPO.
+    tags = [
+        "external",
+        "manual",
+        "requires-network",
+    ],
+    deps = ["//internal/github"],
+)

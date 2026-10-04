@@ -28,6 +28,7 @@ github:
   owner: frc971
   repo: 971-Robot-Code
   webhook_secret_file: /etc/bridge/webhook-secret
+  token_file: /etc/bridge/github-token
 `
 
 func TestParse(t *testing.T) {
@@ -81,6 +82,16 @@ func TestMissingRequired(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "gerrit.url") {
 		t.Errorf("error mentions gerrit.url, which was set: %v", err)
+	}
+}
+
+func TestExactlyOneToken(t *testing.T) {
+	both := strings.Replace(full, "  token_file:", "  token_command: [gh, auth, token]\n  token_file:", 1)
+	none := strings.Replace(full, "  token_file: /etc/bridge/github-token\n", "", 1)
+	for name, in := range map[string]string{"both": both, "none": none} {
+		if _, err := Parse([]byte(in)); err == nil || !strings.Contains(err.Error(), "token") {
+			t.Errorf("%s: err = %v", name, err)
+		}
 	}
 }
 

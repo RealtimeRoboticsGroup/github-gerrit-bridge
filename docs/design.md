@@ -851,7 +851,9 @@ changes, so it must stay off for the bridged repo.
 ## 11. Milestones
 
 1. **Skeleton:** config, refs/bridge state, queue, Gerrit and GitHub clients, webhook
-   ingest, dry-run reconciler.
+   ingest, dry-run reconciler. *Done.* GitHub auth is a personal token
+   (`token_file` or `token_command: [gh, auth, token]`) behind a
+   `TokenSource` interface; a GitHub App source comes once the bridge works.
 2. **Gerrit → GitHub code:** branches, PRs, stacks, and lifecycle (read-only
    mirror). Useful on its own.
 3. **Comments both ways:** threads, anchoring, resolution, batching.

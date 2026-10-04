@@ -137,6 +137,7 @@ github:
   owner: %s
   repo: %s
   webhook_secret_file: %s
+  token_command: [gh, auth, token]
 ci:
   trusted_group: %s
 `, listen, s.URL, e.Project, e.Bridge.Username, filepath.Join(dir, "gerrit-http-password"), filepath.Join(dir, "mirror.git"),

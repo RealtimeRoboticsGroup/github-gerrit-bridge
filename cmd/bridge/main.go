@@ -104,6 +104,29 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	if err := mirror.Init(ctx); err != nil {
 		return err
 	}
+	var tokens github.TokenSource
+	if cfg.GitHub.TokenFile != "" {
+		tok, err := config.ReadSecret(cfg.GitHub.TokenFile)
+		if err != nil {
+			return err
+		}
+		tokens = github.StaticToken(tok)
+	} else {
+		tokens = &github.CommandToken{Command: cfg.GitHub.TokenCommand}
+	}
+	gh := &github.Client{
+		Owner:  cfg.GitHub.Owner,
+		Repo:   cfg.GitHub.Repo,
+		Tokens: tokens,
+		HTTP:   &http.Client{Timeout: time.Minute},
+	}
+	ghRepo, err := gh.GetRepo(ctx)
+	if err != nil {
+		return fmt.Errorf("checking GitHub access: %w", err)
+	}
+	logger.Info("github ok", "repo", ghRepo.FullName, "default_branch", ghRepo.DefaultBranch,
+		"rate_remaining", gh.RateLimit().Remaining)
+
 	store := &state.Store{Repo: mirror}
 	if err := store.Fetch(ctx); err != nil {
 		return fmt.Errorf("fetching refs/bridge/*: %w", err)
@@ -131,7 +154,8 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		if t := stream.LastEvent(); !t.IsZero() {
 			last = t.UTC().Format(time.RFC3339)
 		}
-		fmt.Fprintf(w, "ok\nlast_gerrit_event %s\nqueue_depth %d\n", last, q.Len())
+		rl := gh.RateLimit()
+		fmt.Fprintf(w, "ok\nlast_gerrit_event %s\nqueue_depth %d\ngithub_rate_remaining %d\n", last, q.Len(), rl.Remaining)
 	})
 	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
@@ -143,7 +167,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	errc := make(chan error, 1)
 	wg.Go(func() { stream.Run(ctx) })
 	wg.Go(func() { router.RunResync(ctx, openChanges{rest, cfg.Gerrit.Project}) })
-	wg.Go(func() { reconcile.Work(ctx, q, reconcile.DryRun{Store: store, Logger: logger}, cfg.Workers, logger) })
+	wg.Go(func() {
+		reconcile.Work(ctx, q, reconcile.DryRun{Store: store, GitHub: gh, Logger: logger}, cfg.Workers, logger)
+	})
 	wg.Go(func() {
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errc <- err

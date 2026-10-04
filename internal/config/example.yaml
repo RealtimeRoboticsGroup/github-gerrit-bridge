@@ -28,6 +28,9 @@ github:
   owner: frc971
   repo: 971-Robot-Code
   webhook_secret_file: /etc/github-gerrit-bridge/webhook-secret
+  # API token: either a file, or a command that prints one.
+  token_command: [gh, auth, token]
+  # token_file: /etc/github-gerrit-bridge/github-token
 
 ci:
   # Uploads by members of this group are built automatically by

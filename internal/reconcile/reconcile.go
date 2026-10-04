@@ -55,6 +55,7 @@ type Reconciler interface {
 // stored about them.
 type DryRun struct {
 	Store  *state.Store
+	GitHub *github.Client
 	Logger *slog.Logger
 }
 
@@ -63,6 +64,17 @@ func (d DryRun) Reconcile(ctx context.Context, k Key) error {
 	change := k.Change
 	if k.PR != 0 {
 		change = d.Store.ChangeForPR(k.PR)
+		pr, err := d.GitHub.GetPull(ctx, k.PR)
+		if err != nil {
+			return err
+		}
+		attrs := []any{"key", k.String(), "title", pr.Title, "state", pr.State,
+			"head", pr.Head.Ref, "base", pr.Base.Ref, "linked_change", change}
+		if pr.Stack != nil {
+			attrs = append(attrs, "stack", pr.Stack.Number, "position", fmt.Sprintf("%d/%d", pr.Stack.Position, pr.Stack.Size))
+		}
+		d.Logger.Info("dry run: would reconcile", attrs...)
+		return nil
 	}
 	if change == 0 {
 		d.Logger.Info("dry run: would reconcile", "key", k.String(), "linked_change", "none")

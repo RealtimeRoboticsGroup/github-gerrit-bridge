@@ -63,6 +63,10 @@ type GitHub struct {
 	Owner             string `yaml:"owner"`
 	Repo              string `yaml:"repo"`
 	WebhookSecretFile string `yaml:"webhook_secret_file"`
+	// The API token comes from exactly one of these. TokenCommand is run
+	// (e.g. [gh, auth, token]) and its output cached for a few minutes.
+	TokenFile    string   `yaml:"token_file"`
+	TokenCommand []string `yaml:"token_command"`
 }
 
 // CI configures how Gerrit CI is mirrored to GitHub (design §6.5).
@@ -128,6 +132,9 @@ func (c *Config) validate() error {
 	req("github.owner", c.GitHub.Owner)
 	req("github.repo", c.GitHub.Repo)
 	req("github.webhook_secret_file", c.GitHub.WebhookSecretFile)
+	if (c.GitHub.TokenFile == "") == (len(c.GitHub.TokenCommand) == 0) {
+		errs = append(errs, errors.New("exactly one of github.token_file and github.token_command is required"))
+	}
 	if c.Workers < 1 {
 		errs = append(errs, errors.New("workers must be at least 1"))
 	}
