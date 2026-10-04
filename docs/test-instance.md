@@ -37,8 +37,8 @@ journalctl is not used: logs are in ~/tmp/bridge-test/logs/<service>.log
 | `bridge-test-gerrit` | Gerrit; replication pushes `bridge-scratch`'s `refs/heads/*` to GitHub (force: Gerrit owns them) |
 | `bridge-test-buildkite` | fake Buildkite |
 | `bridge-test-ci` | gerrit-buildkite, using the `buildkite` account (`~/tmp/gerrit-test/ci/`) |
-| `bridge-test-bridge` | the bridge, `--dry_run=false`, resyncing every 20 s |
-| `bridge-test-webhooks` | webhook forwarding (installed once the token has `admin:repo_hook`) |
+| `bridge-test-bridge` | the bridge, `--dry_run=false`; a full resync every 5 min backs up the webhooks |
+| `bridge-test-webhooks` | `gh webhook forward`: GitHub events reach the bridge in seconds |
 
 Gerrit's own logs are in `~/tmp/gerrit-test/logs/` (`replication_log`,
 `sshd_log`, `error_log`).
