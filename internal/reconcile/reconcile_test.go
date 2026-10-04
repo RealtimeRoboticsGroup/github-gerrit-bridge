@@ -50,6 +50,7 @@ func TestRouterEvents(t *testing.T) {
 	for _, s := range []string{
 		`{"type":"patchset-created","change":{"project":"p","branch":"main","number":5}}`,
 		`{"type":"comment-added","change":{"project":"p","branch":"rel","number":7}}`,
+		`{"type":"change-abandoned","change":{"project":"p","branch":"rel","number":7}}`,
 		`{"type":"comment-added","change":{"project":"other","number":6}}`,
 		`{"type":"comment-added","change":{"project":"p","number":5}}`,
 		`{"type":"ref-updated","refUpdate":{"project":"p","refName":"refs/heads/main"}}`,
@@ -59,9 +60,12 @@ func TestRouterEvents(t *testing.T) {
 	} {
 		r.Event(parse(t, s))
 	}
-	r.Delivery(&github.Delivery{PR: 9})
+	r.Delivery(&github.Delivery{Event: "pull_request", PR: 9})
+	r.Delivery(&github.Delivery{Event: "pull_request_review_comment", PR: 9})
 	r.Delivery(&github.Delivery{Event: "push"})
-	want := []string{"branch/main", "branch/rel", "change/5", "pr/9"}
+	// patchset-created: code and comments; comment-added: comments only;
+	// change-abandoned: code only.
+	want := []string{"branch/main", "comments/5", "comments/7", "branch/rel", "pr/9", "pr-comments/9"}
 	if got := drain(q); !equal(got, want) {
 		t.Errorf("queued %v, want %v", got, want)
 	}
@@ -81,7 +85,7 @@ func (f *fakeLister) ResyncKeys(context.Context) ([]Key, error) {
 		f.fails--
 		return nil, errors.New("gerrit down")
 	}
-	return []Key{{Change: 1}, {Change: 2}, {Change: 3}}, nil
+	return []Key{{Comments: 1}, {Comments: 2}, {Comments: 3}}, nil
 }
 
 func TestResyncCoalescesAndQueues(t *testing.T) {
@@ -100,7 +104,7 @@ func TestResyncCoalescesAndQueues(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if got := drain(q); !equal(got, []string{"change/1", "change/2", "change/3"}) {
+	if got := drain(q); !equal(got, []string{"comments/1", "comments/2", "comments/3"}) {
 		t.Errorf("queued %v", got)
 	}
 	l.mu.Lock()
@@ -137,9 +141,9 @@ func (f *flaky) Reconcile(_ context.Context, k Key) error {
 	defer f.mu.Unlock()
 	f.calls[k]++
 	switch {
-	case k.Change == 1 && f.calls[k] == 1:
+	case k.Comments == 1 && f.calls[k] == 1:
 		return errors.New("transient")
-	case k.Change == 2 && f.calls[k] == 1:
+	case k.Comments == 2 && f.calls[k] == 1:
 		panic("bug")
 	}
 	return nil
@@ -154,13 +158,13 @@ func TestWorkRetries(t *testing.T) {
 		Work(context.Background(), q, f, 2, slog.Default())
 		close(done)
 	}()
-	q.Add(Key{Change: 1})
-	q.Add(Key{Change: 2})
-	q.Add(Key{Change: 3})
+	q.Add(Key{Comments: 1})
+	q.Add(Key{Comments: 2})
+	q.Add(Key{Comments: 3})
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		f.mu.Lock()
-		ok := f.calls[Key{Change: 1}] == 2 && f.calls[Key{Change: 2}] == 2 && f.calls[Key{Change: 3}] == 1
+		ok := f.calls[Key{Comments: 1}] == 2 && f.calls[Key{Comments: 2}] == 2 && f.calls[Key{Comments: 3}] == 1
 		f.mu.Unlock()
 		if ok {
 			break
@@ -171,7 +175,7 @@ func TestWorkRetries(t *testing.T) {
 	<-done
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.calls[Key{Change: 1}] != 2 || f.calls[Key{Change: 2}] != 2 || f.calls[Key{Change: 3}] != 1 {
+	if f.calls[Key{Comments: 1}] != 2 || f.calls[Key{Comments: 2}] != 2 || f.calls[Key{Comments: 3}] != 1 {
 		t.Errorf("calls = %v; want an error and a panic each retried once", f.calls)
 	}
 }

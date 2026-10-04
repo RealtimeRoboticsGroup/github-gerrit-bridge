@@ -187,7 +187,17 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		DryRun:        dryRun,
 		Logger:        logger,
 	}
-	wg.Go(func() { reconcile.Work(ctx, q, code, cfg.Workers, logger) })
+	comments := &reconcile.Comments{
+		Project:       cfg.Gerrit.Project,
+		Gerrit:        rest,
+		GitHub:        gh,
+		Store:         store,
+		BridgeAccount: self.AccountID,
+		DryRun:        dryRun,
+		Logger:        logger,
+	}
+	dispatch := &reconcile.Dispatcher{Code: code, Comments: comments, Store: store, Logger: logger}
+	wg.Go(func() { reconcile.Work(ctx, q, dispatch, cfg.Workers, logger) })
 	wg.Go(func() {
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errc <- err

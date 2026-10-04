@@ -4,6 +4,7 @@ package gerrit
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -179,11 +180,107 @@ func QueryString(s string) string {
 
 // ReviewInput is the body of a set-review call.
 type ReviewInput struct {
-	Message string         `json:"message,omitempty"`
-	Tag     string         `json:"tag,omitempty"`
-	Labels  map[string]int `json:"labels,omitempty"`
+	Message  string                    `json:"message,omitempty"`
+	Tag      string                    `json:"tag,omitempty"`
+	Labels   map[string]int            `json:"labels,omitempty"`
+	Comments map[string][]CommentInput `json:"comments,omitempty"`
 	// Notify is NONE, OWNER, OWNER_REVIEWERS or ALL.
 	Notify string `json:"notify,omitempty"`
+	// OmitDuplicateComments drops comments identical to existing ones,
+	// which makes a retried post idempotent.
+	OmitDuplicateComments bool `json:"omit_duplicate_comments,omitempty"`
+}
+
+// Range is a character range in a file. Lines are 1-based, characters
+// 0-based; end_character is exclusive.
+type Range struct {
+	StartLine      int `json:"start_line"`
+	StartCharacter int `json:"start_character"`
+	EndLine        int `json:"end_line"`
+	EndCharacter   int `json:"end_character"`
+}
+
+// CommentInput is a comment in a ReviewInput.
+type CommentInput struct {
+	Side       string `json:"side,omitempty"` // "PARENT" or empty for REVISION
+	Line       int    `json:"line,omitempty"`
+	Range      *Range `json:"range,omitempty"`
+	InReplyTo  string `json:"in_reply_to,omitempty"`
+	Message    string `json:"message"`
+	Unresolved *bool  `json:"unresolved,omitempty"`
+}
+
+// CommentInfo is a published comment.
+type CommentInfo struct {
+	ID         string      `json:"id"`
+	Path       string      `json:"path"`
+	PatchSet   int         `json:"patch_set"`
+	CommitID   string      `json:"commit_id"`
+	Side       string      `json:"side"`
+	Line       int         `json:"line"`
+	Range      *Range      `json:"range"`
+	InReplyTo  string      `json:"in_reply_to"`
+	Message    string      `json:"message"`
+	Updated    string      `json:"updated"`
+	Author     AccountInfo `json:"author"`
+	Tag        string      `json:"tag"`
+	Unresolved bool        `json:"unresolved"`
+}
+
+// Special file paths.
+const (
+	PatchSetLevel = "/PATCHSET_LEVEL"
+	CommitMsg     = "/COMMIT_MSG"
+)
+
+// ListComments returns every published comment on a change, with Path
+// filled in.
+func (c *Client) ListComments(ctx context.Context, change int) ([]CommentInfo, error) {
+	var byPath map[string][]CommentInfo
+	if err := c.Do(ctx, http.MethodGet, fmt.Sprintf("changes/%d/comments", change), nil, &byPath); err != nil {
+		return nil, err
+	}
+	var all []CommentInfo
+	for path, cs := range byPath {
+		for _, ci := range cs {
+			ci.Path = path
+			all = append(all, ci)
+		}
+	}
+	return all, nil
+}
+
+// FileContent returns a file's content in a revision. Gerrit serves it
+// base64-encoded.
+func (c *Client) FileContent(ctx context.Context, change int, revision, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/a/changes/%d/revisions/%s/files/%s/content", c.BaseURL, change, url.PathEscape(revision), url.PathEscape(path)), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(c.User, c.Password)
+	hc := c.HTTP
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &Error{Method: http.MethodGet, Path: req.URL.Path, Status: resp.StatusCode, Body: string(b)}
+	}
+	return base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
+}
+
+// CommentURL links to a comment in the Gerrit UI.
+func (c *Client) CommentURL(project string, change int, id string) string {
+	return fmt.Sprintf("%s/c/%s/+/%d/comment/%s/", c.BaseURL, project, change, id)
 }
 
 // SetReview posts a review on a revision ("current" for the latest).

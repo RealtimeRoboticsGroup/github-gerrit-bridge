@@ -58,33 +58,9 @@ func (c *Code) lock(branch string) func() {
 // to exist before a second can stack them and fill in the chain links.
 const maxPasses = 5
 
-// Reconcile brings the target branch named by k (or owning k's change or
-// PR) in sync.
+// Reconcile mirrors the target branch named by k.Branch.
 func (c *Code) Reconcile(ctx context.Context, k Key) error {
 	branch := k.Branch
-	switch {
-	case k.PR != 0:
-		n := c.Store.ChangeForPR(k.PR)
-		if n == 0 {
-			c.Logger.Debug("PR not linked to a Gerrit change; ignoring", "pr", k.PR)
-			return nil
-		}
-		k.Change = n
-		fallthrough
-	case k.Change != 0:
-		st, err := c.Store.Load(ctx, k.Change)
-		if err != nil {
-			return err
-		}
-		branch = st.State.Branch
-		if branch == "" {
-			ch, err := c.Gerrit.GetChange(ctx, k.Change)
-			if err != nil {
-				return err
-			}
-			branch = ch.Branch
-		}
-	}
 	defer c.lock(branch)()
 	for pass := 0; pass < maxPasses; pass++ {
 		snap, err := c.observe(ctx, branch)
@@ -325,7 +301,7 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		return err
 	case ClosePR:
 		if a.Comment != "" {
-			if _, err := gh.CreateIssueComment(ctx, a.PR, a.Comment); err != nil {
+			if _, err := gh.CreateIssueComment(ctx, a.PR, a.Comment+"\n\n"+noticeMarker); err != nil {
 				return err
 			}
 		}
@@ -474,6 +450,16 @@ func (l BranchLister) ResyncKeys(ctx context.Context) ([]Key, error) {
 	}
 	for _, b := range l.Store.Branches() {
 		add(b)
+		// Comments of every mirrored open change.
+		for _, n := range l.Store.ChangesOnBranch(b) {
+			st, err := l.Store.Load(ctx, n)
+			if err != nil {
+				return nil, err
+			}
+			if st.State.PR != 0 && st.State.Lifecycle == "NEW" {
+				keys = append(keys, Key{Comments: n})
+			}
+		}
 	}
 	return keys, nil
 }

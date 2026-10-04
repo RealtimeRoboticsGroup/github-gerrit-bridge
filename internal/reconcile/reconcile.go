@@ -23,22 +23,24 @@ import (
 
 // Key is a unit of reconciliation. Exactly one field is set.
 type Key struct {
-	// Change is a Gerrit change number.
-	Change int
-	// PR is a GitHub PR number. The reconciler maps it to a change via
-	// refs/bridge state, or imports it if it is new.
-	PR int
-	// Branch is a target branch that moved; changes stacked on it may
-	// need their GitHub base updated.
+	// Branch: mirror the code (branches, PRs, stacks) of a target branch.
 	Branch string
+	// Comments: sync the comments of a Gerrit change.
+	Comments int
+	// PR: something about a PR changed; mirror its change's branch.
+	PR int
+	// PRComments: a PR's reviews or comments changed.
+	PRComments int
 }
 
 func (k Key) String() string {
 	switch {
-	case k.Change != 0:
-		return "change/" + strconv.Itoa(k.Change)
+	case k.Comments != 0:
+		return "comments/" + strconv.Itoa(k.Comments)
 	case k.PR != 0:
 		return "pr/" + strconv.Itoa(k.PR)
+	case k.PRComments != 0:
+		return "pr-comments/" + strconv.Itoa(k.PRComments)
 	default:
 		return "branch/" + k.Branch
 	}
@@ -74,14 +76,17 @@ func (r *Router) Event(e *events.Event) {
 	if e.Project() != r.Project {
 		return
 	}
-	if e.Change != nil && e.Change.Branch != "" {
-		// Changes are reconciled a whole target branch at a time, so
-		// chains and stacks are planned together.
-		r.Queue.Add(Key{Branch: e.Change.Branch})
-		return
-	}
-	if e.Change != nil && e.Change.Number > 0 {
-		r.Queue.Add(Key{Change: e.Change.Number})
+	if e.Change != nil {
+		// Code is reconciled a whole target branch at a time, so chains
+		// and stacks are planned together.
+		if e.Change.Branch != "" && e.Type != "comment-added" {
+			r.Queue.Add(Key{Branch: e.Change.Branch})
+		}
+		// New comments come with replies and with uploads that publish
+		// drafts.
+		if e.Change.Number > 0 && (e.Type == "comment-added" || e.Type == "patchset-created") {
+			r.Queue.Add(Key{Comments: e.Change.Number})
+		}
 		return
 	}
 	if e.RefUpdate == nil {
@@ -108,11 +113,16 @@ func (r *Router) Resync(reason string) {
 
 // Delivery queues the key a GitHub webhook is about.
 func (r *Router) Delivery(d *github.Delivery) {
-	if d.PR != 0 {
-		r.Queue.Add(Key{PR: d.PR})
+	if d.PR == 0 {
+		r.Logger.Debug("webhook without a PR", "event", d.Event, "action", d.Action)
 		return
 	}
-	r.Logger.Debug("webhook without a PR", "event", d.Event, "action", d.Action)
+	switch d.Event {
+	case "pull_request_review", "pull_request_review_comment", "pull_request_review_thread", "issue_comment":
+		r.Queue.Add(Key{PRComments: d.PR})
+	default:
+		r.Queue.Add(Key{PR: d.PR})
+	}
 }
 
 // RunResync performs requested resyncs until ctx is done: it lists every

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // GraphQLError is an error reported in a GraphQL response body.
@@ -55,9 +56,11 @@ func (c *Client) SetDraft(ctx context.Context, prNodeID string, draft bool) erro
 
 // IssueComment is a top-level PR conversation comment.
 type IssueComment struct {
-	ID   int64  `json:"id"`
-	Body string `json:"body"`
-	User User   `json:"user"`
+	ID        int64     `json:"id"`
+	Body      string    `json:"body"`
+	User      User      `json:"user"`
+	HTMLURL   string    `json:"html_url"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // CreateIssueComment posts a conversation comment on PR (or issue) n.

@@ -6,6 +6,7 @@ go_library(
         "client.go",
         "graphql.go",
         "pulls.go",
+        "reviews.go",
         "stacks.go",
         "token.go",
         "webhook.go",

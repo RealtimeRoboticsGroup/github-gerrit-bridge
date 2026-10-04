@@ -75,12 +75,12 @@ type Revision struct {
 // Thread links a Gerrit comment thread to a GitHub review thread
 // (threads.json).
 type Thread struct {
-	GerritRoot     string `json:"gerrit_root"`
-	GitHubThread   string `json:"github_thread"` // GraphQL node id
-	GitHubRootID   int64  `json:"github_root_id"`
-	Resolved       bool   `json:"resolved"`
-	GitHubPatchSet int    `json:"github_patch_set,omitempty"`
-	GerritPatchSet int    `json:"gerrit_patch_set,omitempty"`
+	GerritRoot   string `json:"gerrit_root"`
+	GitHubThread string `json:"github_thread,omitempty"` // GraphQL node id
+	GitHubRootID int64  `json:"github_root_id"`
+	// Resolved is the state both sides last agreed on; a side that
+	// differs from it has changed.
+	Resolved bool `json:"resolved"`
 }
 
 // Comment links one comment on each side (comments.json).

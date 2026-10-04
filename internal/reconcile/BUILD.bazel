@@ -5,6 +5,8 @@ go_library(
     srcs = [
         "body.go",
         "code.go",
+        "comments.go",
+        "dispatch.go",
         "naming.go",
         "plan.go",
         "reconcile.go",
@@ -24,13 +26,16 @@ go_library(
 go_test(
     name = "reconcile_test",
     srcs = [
+        "comments_test.go",
         "plan_test.go",
         "reconcile_test.go",
     ],
     embed = [":reconcile"],
     deps = [
+        "//internal/gerrit",
         "//internal/gerrit/events",
         "//internal/github",
+        "//internal/gitmirror",
         "//internal/queue",
         "//internal/state",
     ],

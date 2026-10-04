@@ -884,7 +884,30 @@ changes, so it must stay off for the bridged repo.
    `code.go`); verified live against `bridge-scratch` (§5.4). Pushes to
    `gerrit/*` branches on GitHub are overwritten until milestone 5, so
    protect them (or tell people not to push there) in the meantime.
-3. **Comments both ways:** threads, anchoring, resolution, batching.
+3. **Comments both ways:** threads, anchoring, resolution, batching. *Done*
+   (`internal/reconcile/comments.go`), verified live on PR #8 / change 4:
+   a Gerrit reply became one GitHub review (line and multi-line range
+   comments) plus an issue comment for the patch-set-level text; a GitHub
+   reply landed in the right Gerrit thread, a GitHub review became one
+   `SetReview`, and resolving or "Done" on either side resolved the other.
+   How it is built:
+   - Comment sync is keyed per change (`comment-added`, `patchset-created`,
+     and review/comment webhooks) and shares the branch lock with the
+     code mirror.
+   - Mirrors are recognisable without state: GitHub bodies carry
+     `<!-- bridge:gerrit/<change>/<id> -->`, bridge notices carry
+     `<!-- bridge:notice -->`, and Gerrit mirrors are authored by the
+     bridge account and link the GitHub original (`#discussion_r…`,
+     `#issuecomment-…`, `#pullrequestreview-…`). Lost `refs/bridge` state
+     is rebuilt from these without duplicates.
+   - Resolution: `threads.json` stores the state both sides last agreed
+     on; whichever side differs from it changed (Gerrit wins if both did).
+     A GitHub resolve becomes a bridge reply "Resolved on GitHub." with
+     `unresolved=false`.
+   - Not yet: suggestion ⇄ fix conversion, comment edits, porting comments
+     between patch sets by diff (a comment on a commit GitHub never saw
+     lands file-level on the current patch set with a note), and GitHub
+     review states other than as text (votes are milestone 4).
 4. **Votes and CI:** labels ⇄ reviews and checks; identity mapping.
 5. **GitHub → Gerrit code:** deterministic squash and stack import to `refs/for`.
 6. **Submit from GitHub:** `/submit`, plus a merge-queue investigation.
