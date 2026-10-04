@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "testgerrit",
+    srcs = [
+        "bridge.go",
+        "testgerrit.go",
+    ],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/testgerrit",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/gerrit",
+        "@org_golang_x_crypto//ssh",
+        "@rules_go//go/runfiles",
+    ],
+)

@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "state",
+    srcs = ["state.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/state",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/gitmirror"],
+)
+
+go_test(
+    name = "state_test",
+    srcs = ["state_test.go"],
+    embed = [":state"],
+    deps = ["//internal/gitmirror"],
+)

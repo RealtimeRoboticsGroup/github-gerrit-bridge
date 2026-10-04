@@ -9,3 +9,32 @@ go_sdk.download(version = "1.27.1")
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
 use_repo(go_deps, "in_gopkg_yaml_v3", "org_golang_x_crypto")
+
+# A local Gerrit for integration tests and manual testing (//cmd/testgerrit).
+
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_file(
+    name = "gerrit_war",
+    downloaded_file_path = "gerrit.war",
+    sha256 = "fac0065c142590414a31ee137f4c9f668e52766d4c114c4eb57037adf48d46a7",
+    urls = ["https://gerrit-releases.storage.googleapis.com/gerrit-3.14.4.war"],
+)
+
+http_archive(
+    name = "temurin21",
+    build_file_content = """
+filegroup(
+    name = "jdk",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["bin/java"])
+""",
+    sha256 = "ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94",
+    strip_prefix = "jdk-21.0.12.1+1",
+    urls = ["https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz"],
+)

@@ -16,6 +16,7 @@ gerrit:
   project: frc971/971-Robot-Code
   http_user: github-bridge
   http_password_file: /etc/bridge/gerrit-password
+  mirror_dir: /var/cache/bridge/mirror.git
   ssh:
     address: gerrit.example.com:29418
     user: github-bridge

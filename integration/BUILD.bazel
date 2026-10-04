@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "integration_test",
+    size = "large",
+    srcs = ["gerrit_test.go"],
+    data = [
+        "@gerrit_war//file",
+        "@temurin21//:bin/java",
+        "@temurin21//:jdk",
+    ],
+    env = {
+        "TESTGERRIT_JAVA": "$(rlocationpath @temurin21//:bin/java)",
+        "TESTGERRIT_WAR": "$(rlocationpath @gerrit_war//file)",
+    },
+    # Starts a real Gerrit (~30s). Skip with --test_tag_filters=-integration.
+    tags = ["integration"],
+    deps = [
+        "//internal/gerrit/events",
+        "//internal/gerrit/gerritssh",
+        "//internal/gitmirror",
+        "//internal/state",
+        "//internal/testgerrit",
+        "@org_golang_x_crypto//ssh",
+    ],
+)

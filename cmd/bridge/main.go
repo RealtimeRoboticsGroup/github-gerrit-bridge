@@ -19,8 +19,10 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/events"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/gerritssh"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/queue"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
 func main() {
@@ -90,6 +92,23 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	gitCfg, gitEnv := gitmirror.HTTPCredentials(cfg.Gerrit.HTTPUser, gerritPassword)
+	mirror := &gitmirror.Repo{
+		Dir:    cfg.Gerrit.MirrorDir,
+		Remote: cfg.Gerrit.URL + "/a/" + cfg.Gerrit.Project,
+		Config: gitCfg,
+		Env:    gitEnv,
+		Name:   "GitHub Bridge",
+		Email:  cfg.Gerrit.HTTPUser + "@bridge.invalid",
+	}
+	if err := mirror.Init(ctx); err != nil {
+		return err
+	}
+	store := &state.Store{Repo: mirror}
+	if err := store.Fetch(ctx); err != nil {
+		return fmt.Errorf("fetching refs/bridge/*: %w", err)
+	}
+
 	q := queue.New[reconcile.Key]()
 	router := reconcile.NewRouter(cfg.Gerrit.Project, q, logger)
 	stream := &events.Stream{
@@ -124,7 +143,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	errc := make(chan error, 1)
 	wg.Go(func() { stream.Run(ctx) })
 	wg.Go(func() { router.RunResync(ctx, openChanges{rest, cfg.Gerrit.Project}) })
-	wg.Go(func() { reconcile.Work(ctx, q, reconcile.DryRun{Logger: logger}, cfg.Workers, logger) })
+	wg.Go(func() { reconcile.Work(ctx, q, reconcile.DryRun{Store: store, Logger: logger}, cfg.Workers, logger) })
 	wg.Go(func() {
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errc <- err

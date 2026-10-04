@@ -282,10 +282,14 @@ exactly one Gerrit change**:
      the bridge didn't create, refuse and explain in `gerrit/sync`. That
      prevents two PRs from fighting over one change.
    - author: taken from `H_k`, which is the person who wrote the code.
-     Committer: the bridge.
+     Committer: the Gerrit account the push runs as (step 2). Gerrit
+     rejects a push whose committer email is not one of the uploader's
+     emails unless the uploader has Forge Committer, and with `suexec` the
+     uploader is the user, not the bridge.
    - **No-op squash:** if the layer is exactly one commit, that commit
-     already has the chosen Change-Id, and its parent is the Gerrit commit
-     chosen above, then `S_k = H_k`. Nothing is rewritten, and the SHAs
+     already has the chosen Change-Id, its parent is the Gerrit commit
+     chosen above, and its committer email belongs to the pushing Gerrit
+     account, then `S_k = H_k`. Nothing is rewritten, and the SHAs
      match on both sides. Users with the commit-msg hook and one commit per
      layer always end up here.
    - author/committer dates: taken from `H_k`. **Squashing is deterministic.**
@@ -302,8 +306,22 @@ exactly one Gerrit change**:
    - Gerrit's SSH `suexec` command runs `git-receive-pack` as another user.
      It is only open to keys listed in `$site_path/etc/peer_keys`, so the
      bridge gets one of those. The bridge then runs
-     `ssh gerrit suexec --as <account> -- git-receive-pack '/<project>'`
-     through `GIT_SSH_COMMAND`. **To verify on 3.14.4** (§13).
+     `git push --receive-pack='suexec --as <account> -- git-receive-pack'
+     'ssh://Gerrit%20Code%20Review@gerrit:29418/<project>' …`.
+     **Verified on 3.14.4** (`integration/gerrit_test.go`,
+     `TestSuexecPushOwnership`): the change's owner and uploader are
+     `<account>`. Details that matter:
+     - The SSH user name must be exactly `Gerrit Code Review`.
+     - `peer_keys` is not `authorized_keys` format. Each line is the
+       base64 key blob plus an optional *one-word* comment, with no key
+       type. A line with more fields makes Gerrit silently ignore the
+       whole file. Gerrit picks up changes to the file without a restart.
+     - The peer user can do nothing except `suexec`. A plain fetch as
+       the peer hangs instead of failing, so fetches go through `suexec`
+       too, or use the bridge's own account.
+     - `suexec` can act as *any* account, administrators included. The
+       peer key is the most sensitive secret the bridge holds, so use a
+       separate key from the bridge account's SSH key.
    - The patch set uploader is that user too. Later patch sets imported
      from GitHub are pushed as whoever pushed to GitHub (the `sender` of the
      push event, mapped).
@@ -821,8 +839,14 @@ changes, so it must stay off for the bridged repo.
   GitHub interfaces (table tests over state pairs).
 - `internal/anchor` has golden tests covering in-hunk lines, out-of-hunk
   lines, PARENT side, deleted lines, ranges and renames.
-- Integration: the `gerritcodereview/gerrit` Docker image, plus either a
-  scratch GitHub repo (behind a flag) or a recorded-HTTP fake for CI.
+- Integration: `internal/testgerrit` runs a real Gerrit 3.14.4 from the
+  release war, with a pinned JDK, both fetched by Bazel (no Docker). It
+  listens on 127.0.0.1 only and uses dev-mode auth. `SetupBridge` creates
+  the bridge account, a trusted CI group, users, the project, the
+  `refs/bridge/*` ACLs and the Verified label. `//integration` tests use
+  it (tagged `integration`, ~15 s); `bazel run //cmd/testgerrit` keeps
+  one running in `~/tmp/gerrit-test` and writes a ready-to-use bridge
+  config. GitHub: a scratch repo (behind a flag) or a recorded-HTTP fake.
 
 ## 11. Milestones
 
@@ -861,7 +885,7 @@ changes, so it must stay off for the bridged repo.
 
 ## 13. Open questions
 
-1. Verify the SSH `suexec` peer-key flow for `git-receive-pack` on 3.14.4,
-   so changes are owned by the right user (§5.2 step 2).
+1. ~~Verify the SSH `suexec` peer-key flow for `git-receive-pack` on
+   3.14.4.~~ Verified; see §5.2 step 2.
 2. Can the native stack merge button be routed to a Gerrit submit (through
    merge queue integration)? Needs an experiment.

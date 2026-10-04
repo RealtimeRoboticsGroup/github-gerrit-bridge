@@ -10,6 +10,8 @@ gerrit:
   # REST API account and its HTTP password (Settings > HTTP Credentials).
   http_user: github-bridge
   http_password_file: /etc/github-gerrit-bridge/gerrit-http-password
+  # Local bare mirror (a cache; safe to delete).
+  mirror_dir: /var/cache/github-gerrit-bridge/mirror.git
   ssh:
     address: gerrit.example.com:29418
     user: github-bridge

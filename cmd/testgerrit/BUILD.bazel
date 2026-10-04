@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "testgerrit_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/cmd/testgerrit",
+    visibility = ["//visibility:private"],
+    deps = ["//internal/testgerrit"],
+)
+
+go_binary(
+    name = "testgerrit",
+    data = [
+        "@gerrit_war//file",
+        "@temurin21//:bin/java",
+        "@temurin21//:jdk",
+    ],
+    embed = [":testgerrit_lib"],
+    env = {
+        "TESTGERRIT_JAVA": "$(rlocationpath @temurin21//:bin/java)",
+        "TESTGERRIT_WAR": "$(rlocationpath @gerrit_war//file)",
+    },
+    visibility = ["//visibility:public"],
+)

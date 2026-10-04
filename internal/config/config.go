@@ -37,6 +37,9 @@ type Gerrit struct {
 	HTTPUser         string `yaml:"http_user"`
 	HTTPPasswordFile string `yaml:"http_password_file"`
 	SSH              SSH    `yaml:"ssh"`
+	// MirrorDir is the bridge's bare mirror of the project, created if
+	// missing. It is a cache: deleting it loses nothing.
+	MirrorDir string `yaml:"mirror_dir"`
 }
 
 // SSH configures the connection used for stream-events and SSH commands.
@@ -117,6 +120,7 @@ func (c *Config) validate() error {
 	req("gerrit.project", c.Gerrit.Project)
 	req("gerrit.http_user", c.Gerrit.HTTPUser)
 	req("gerrit.http_password_file", c.Gerrit.HTTPPasswordFile)
+	req("gerrit.mirror_dir", c.Gerrit.MirrorDir)
 	req("gerrit.ssh.address", c.Gerrit.SSH.Address)
 	req("gerrit.ssh.user", c.Gerrit.SSH.User)
 	req("gerrit.ssh.key_file", c.Gerrit.SSH.KeyFile)

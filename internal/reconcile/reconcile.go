@@ -20,6 +20,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/events"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/queue"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
 // Key is a unit of reconciliation. Exactly one field is set.
@@ -50,14 +51,29 @@ type Reconciler interface {
 	Reconcile(ctx context.Context, k Key) error
 }
 
-// DryRun logs the keys it would reconcile.
+// DryRun logs the keys it would reconcile, with what the bridge has
+// stored about them.
 type DryRun struct {
+	Store  *state.Store
 	Logger *slog.Logger
 }
 
 // Reconcile logs k.
-func (d DryRun) Reconcile(_ context.Context, k Key) error {
-	d.Logger.Info("dry run: would reconcile", "key", k.String())
+func (d DryRun) Reconcile(ctx context.Context, k Key) error {
+	change := k.Change
+	if k.PR != 0 {
+		change = d.Store.ChangeForPR(k.PR)
+	}
+	if change == 0 {
+		d.Logger.Info("dry run: would reconcile", "key", k.String(), "linked_change", "none")
+		return nil
+	}
+	c, err := d.Store.Load(ctx, change)
+	if err != nil {
+		return err
+	}
+	d.Logger.Info("dry run: would reconcile", "key", k.String(), "change", change,
+		"pr", c.State.PR, "stack", c.State.Stack, "revisions", len(c.Revisions), "threads", len(c.Threads))
 	return nil
 }
 
