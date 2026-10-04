@@ -194,6 +194,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		GitHub:        gh,
 		Store:         store,
 		BridgeAccount: self.AccountID,
+		CIMessage:     regexp.MustCompile(cfg.CI.MessagePattern),
 		DryRun:        dryRun,
 		Logger:        logger,
 	}
