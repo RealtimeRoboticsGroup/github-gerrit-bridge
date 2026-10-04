@@ -938,10 +938,34 @@ changes, so it must stay off for the bridged repo.
      on; whichever side differs from it changed (Gerrit wins if both did).
      A GitHub resolve becomes a bridge reply "Resolved on GitHub." with
      `unresolved=false`.
-   - Not yet: suggestion ⇄ fix conversion, comment edits, porting comments
-     between patch sets by diff (a comment on a commit GitHub never saw
-     lands file-level on the current patch set with a note), and GitHub
-     review states other than as text (votes are milestone 4).
+   - Added later (2026-10-04), verified live on PR #9 / change 5:
+     - **Suggestions ⇄ fixes** (§8). A Gerrit fix with one replacement in
+       the commented file becomes a GitHub ```` ```suggestion ```` on the
+       whole lines it touches (partial-line edits are expanded using the
+       file). A GitHub suggestion becomes a Gerrit `fix_suggestion`
+       ("Apply fix"). Gerrit 3.14 only accepts fix suggestions on human
+       comments with `experiments.enabled =
+       GerritBackendFeature__allow_fix_suggestions_in_comments`; without
+       it the post fails with a 500, and the bridge re-posts the comment
+       with the suggestion kept as text.
+     - **Edits.** A GitHub edit becomes a reply "edited their comment" in
+       the Gerrit thread (published Gerrit comments are immutable). The
+       reply links the PR, not the comment, so it is never mistaken for a
+       new comment. A Gerrit comment whose text changes (an admin deleting
+       it) updates the bridge's GitHub copy. `body_hash` holds the source
+       text's hash as last mirrored.
+     - **Porting** (`internal/anchor`, an LCS line diff). A Gerrit comment
+       GitHub refuses on its own patch set's commit is moved to the same
+       unchanged lines of the current patch set ("Ported from patch set
+       N"). A GitHub comment on a commit Gerrit never saw (an intermediate
+       commit of a layer) is ported into the first patch set whose GitHub
+       head contains it (compare API + file contents). Only when the lines
+       changed does a comment fall back to file level.
+     - Comments are posted against the *GitHub* commit of a patch set,
+       which differs from Gerrit's for GitHub-born and re-parented
+       revisions.
+   - Not yet: GitHub review states other than as text (votes are
+     milestone 4).
 4. **Votes and CI:** labels ⇄ reviews and checks; identity mapping.
    *Done for Gerrit → GitHub, on a personal token* (decision 2026-10-04:
    no GitHub App yet). Consequences of the token:
@@ -999,8 +1023,12 @@ changes, so it must stay off for the bridged repo.
      pending `gerrit/*` statuses on their commits cannot be deleted.)
    - `resync_interval` re-queues everything periodically, for webhooks that
      cannot reach the bridge.
-   Not yet: the uploader of later patch sets is the PR author, not the
-   GitHub pusher; draft toggles without a push and Gerrit-side commit
+   Later patch sets are uploaded as whoever pushed them: the `sender` of
+   the `pull_request` (opened/synchronize/reopened) or `push` webhook for
+   that head commit, else the GitHub user of the head commit's committer
+   (its author for web edits by `web-flow`). The first upload stays the PR
+   author's, since it decides the owner.
+   Not yet: draft toggles without a push and Gerrit-side commit
    message edits are not mirrored for GitHub-born PRs; non-linear
    GitHub-born trees; `gerrit/sync` status for import errors (they are
    logged).

@@ -278,23 +278,40 @@ type CommentInput struct {
 	InReplyTo  string `json:"in_reply_to,omitempty"`
 	Message    string `json:"message"`
 	Unresolved *bool  `json:"unresolved,omitempty"`
+	// FixSuggestions are suggested edits ("Apply fix" in Gerrit).
+	FixSuggestions []FixSuggestion `json:"fix_suggestions,omitempty"`
+}
+
+// FixSuggestion is a suggested edit attached to a comment.
+type FixSuggestion struct {
+	FixID        string           `json:"fix_id,omitempty"`
+	Description  string           `json:"description"`
+	Replacements []FixReplacement `json:"replacements"`
+}
+
+// FixReplacement replaces Range of Path with Replacement.
+type FixReplacement struct {
+	Path        string `json:"path"`
+	Range       Range  `json:"range"`
+	Replacement string `json:"replacement"`
 }
 
 // CommentInfo is a published comment.
 type CommentInfo struct {
-	ID         string      `json:"id"`
-	Path       string      `json:"path"`
-	PatchSet   int         `json:"patch_set"`
-	CommitID   string      `json:"commit_id"`
-	Side       string      `json:"side"`
-	Line       int         `json:"line"`
-	Range      *Range      `json:"range"`
-	InReplyTo  string      `json:"in_reply_to"`
-	Message    string      `json:"message"`
-	Updated    string      `json:"updated"`
-	Author     AccountInfo `json:"author"`
-	Tag        string      `json:"tag"`
-	Unresolved bool        `json:"unresolved"`
+	ID             string          `json:"id"`
+	Path           string          `json:"path"`
+	PatchSet       int             `json:"patch_set"`
+	CommitID       string          `json:"commit_id"`
+	Side           string          `json:"side"`
+	Line           int             `json:"line"`
+	Range          *Range          `json:"range"`
+	InReplyTo      string          `json:"in_reply_to"`
+	Message        string          `json:"message"`
+	Updated        string          `json:"updated"`
+	Author         AccountInfo     `json:"author"`
+	Tag            string          `json:"tag"`
+	Unresolved     bool            `json:"unresolved"`
+	FixSuggestions []FixSuggestion `json:"fix_suggestions"`
 }
 
 // Special file paths.

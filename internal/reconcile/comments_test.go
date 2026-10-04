@@ -17,6 +17,9 @@ import (
 const bridgeID = 99
 
 type fakeGerrit struct {
+	// noFixes makes SetReview fail like a site without the fix
+	// suggestions feature flag.
+	noFixes  bool
 	messages []gerrit.ChangeMessage
 	comments []gerrit.CommentInfo
 	revs     map[string]int // sha -> ps
@@ -37,6 +40,9 @@ func (f *fakeGerrit) ListComments(context.Context, int) ([]gerrit.CommentInfo, e
 }
 
 func (f *fakeGerrit) SetReview(_ context.Context, _ int, rev string, in gerrit.ReviewInput) error {
+	if f.noFixes && hasFixes(in.Comments) {
+		return &gerrit.Error{Status: 500, Body: "Internal server error"}
+	}
 	f.reviews++
 	ts := f.tick()
 	var ps int
@@ -52,6 +58,7 @@ func (f *fakeGerrit) SetReview(_ context.Context, _ int, rev string, in gerrit.R
 				ID: fmt.Sprintf("b%d", f.nextID), Path: path, PatchSet: ps, Side: ci.Side, Line: line, Range: ci.Range,
 				InReplyTo: ci.InReplyTo, Message: ci.Message, Updated: ts,
 				Author: gerrit.AccountInfo{AccountID: bridgeID, Name: "GitHub Bridge"}, Unresolved: ci.Unresolved != nil && *ci.Unresolved,
+				FixSuggestions: ci.FixSuggestions,
 			})
 		}
 	}
@@ -66,7 +73,10 @@ func (f *fakeGerrit) GetChange(context.Context, int, ...string) (*gerrit.ChangeI
 	return ci, nil
 }
 
-func (f *fakeGerrit) FileContent(_ context.Context, _ int, _ string, path string) ([]byte, error) {
+func (f *fakeGerrit) FileContent(_ context.Context, _ int, rev string, path string) ([]byte, error) {
+	if c, ok := f.files[rev+"/"+path]; ok {
+		return []byte(c), nil
+	}
 	return []byte(f.files[path]), nil
 }
 
@@ -91,13 +101,54 @@ type fakeGitHub struct {
 	ics      []github.IssueComment
 	reviews  []github.Review
 	resolved map[int64]bool // thread root -> resolved
-	// diff lines per path that accept line comments.
-	diff   map[string]map[int]bool
-	nextID int64
-	posts  int
+	// diff lines per path that accept line comments; diffAt overrides it
+	// per "commit/path".
+	diff     map[string]map[int]bool
+	diffAt   map[string]map[int]bool
+	files    map[string]string // "commit/path" -> content
+	ancestor map[string]bool   // "a..b"
+	nextID   int64
+	posts    int
 }
 
 func (f *fakeGitHub) id() int64 { f.nextID++; return 1000 + f.nextID }
+
+func (f *fakeGitHub) lineOK(commit, path string, line int) bool {
+	if d, ok := f.diffAt[commit+"/"+path]; ok {
+		return d[line]
+	}
+	return f.diff[path][line]
+}
+
+func (f *fakeGitHub) UpdateReviewComment(_ context.Context, id int64, body string) error {
+	for i := range f.rcs {
+		if f.rcs[i].ID == id {
+			f.rcs[i].Body = body
+		}
+	}
+	return nil
+}
+
+func (f *fakeGitHub) UpdateIssueComment(_ context.Context, id int64, body string) error {
+	for i := range f.ics {
+		if f.ics[i].ID == id {
+			f.ics[i].Body = body
+		}
+	}
+	return nil
+}
+
+func (f *fakeGitHub) FileAt(_ context.Context, ref, path string) ([]byte, error) {
+	c, ok := f.files[ref+"/"+path]
+	if !ok {
+		return nil, &github.APIError{Status: 404}
+	}
+	return []byte(c), nil
+}
+
+func (f *fakeGitHub) IsAncestor(_ context.Context, a, b string) (bool, error) {
+	return a == b || f.ancestor[a+".."+b], nil
+}
 
 func (f *fakeGitHub) ListReviewComments(context.Context, int) ([]github.ReviewComment, error) {
 	return append([]github.ReviewComment(nil), f.rcs...), nil
@@ -122,7 +173,7 @@ var errUnprocessable = &github.APIError{Status: 422, Message: "Line could not be
 
 func (f *fakeGitHub) CreateReview(_ context.Context, _ int, r github.NewReview) (*github.Review, error) {
 	for _, d := range r.Comments {
-		if !f.diff[d.Path][d.Line] {
+		if !f.lineOK(r.CommitID, d.Path, d.Line) {
 			return nil, errUnprocessable
 		}
 	}
@@ -142,7 +193,7 @@ func (f *fakeGitHub) CreateReviewComment(_ context.Context, _ int, rc github.New
 		if f.diff[rc.Path] == nil {
 			return nil, errUnprocessable
 		}
-	} else if !f.diff[rc.Path][rc.Line] {
+	} else if !f.lineOK(rc.CommitID, rc.Path, rc.Line) {
 		return nil, errUnprocessable
 	}
 	f.posts++
@@ -151,7 +202,7 @@ func (f *fakeGitHub) CreateReviewComment(_ context.Context, _ int, rc github.New
 	if st == "" {
 		st = "line"
 	}
-	c := github.ReviewComment{ID: id, Path: rc.Path, Line: rc.Line, OriginalLine: rc.Line, Side: rc.Side, CommitID: rc.CommitID,
+	c := github.ReviewComment{ID: id, Path: rc.Path, Line: rc.Line, OriginalLine: rc.Line, StartLine: rc.StartLine, Side: rc.Side, CommitID: rc.CommitID,
 		OriginalCommitID: rc.CommitID, Body: rc.Body, SubjectType: st, User: github.User{Login: "bridge"}}
 	f.rcs = append(f.rcs, c)
 	return &c, nil
@@ -222,7 +273,8 @@ func newCommentsEnv(t *testing.T) *commentsEnv {
 	}
 	g := &fakeGerrit{revs: map[string]int{"sha1": 1, "sha2": 2}, current: "sha2",
 		files: map[string]string{"a.txt": "one\ntwo\nthree\nfour\nfive\n"}}
-	h := &fakeGitHub{resolved: map[int64]bool{}, diff: map[string]map[int]bool{"a.txt": {2: true, 3: true}}}
+	h := &fakeGitHub{resolved: map[int64]bool{}, diff: map[string]map[int]bool{"a.txt": {2: true, 3: true}},
+		diffAt: map[string]map[int]bool{}, files: map[string]string{}, ancestor: map[string]bool{}}
 	return &commentsEnv{g: g, h: h, st: store, c: &Comments{
 		Project: "p", Gerrit: g, GitHub: h, Store: store, BridgeAccount: bridgeID, Logger: slog.Default(),
 	}}
@@ -416,6 +468,145 @@ func TestChangeMessages(t *testing.T) {
 	}
 	if strings.Contains(b, "Code-Review") {
 		t.Errorf("vote header leaked:\n%s", b)
+	}
+	e.settled(t)
+}
+
+func TestGerritCommentPortedToCurrentPatchSet(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.g.files["1/a.txt"] = "a\nb\nc\n"
+	e.g.files["2/a.txt"] = "new\na\nb\nc\n"
+	e.h.diffAt["sha1/a.txt"] = map[int]bool{} // PS1's lines are no longer in the PR's diff
+	e.h.diffAt["sha2/a.txt"] = map[int]bool{3: true}
+	e.g.user("c1", "a.txt", 1, 2, "About b.", "", true)
+	e.sync(t)
+	if len(e.h.rcs) != 1 {
+		t.Fatalf("got %+v", e.h.rcs)
+	}
+	rc := e.h.rcs[0]
+	if rc.CommitID != "sha2" || rc.Line != 3 || rc.SubjectType != "line" || !strings.Contains(rc.Body, "Ported from patch set 1, line 2.") {
+		t.Errorf("ported comment = %s:%d %s\n%s", rc.CommitID, rc.Line, rc.SubjectType, rc.Body)
+	}
+	e.settled(t)
+}
+
+func TestGerritFixBecomesSuggestion(t *testing.T) {
+	e := newCommentsEnv(t) // a.txt = one..five, lines 2-3 in the diff
+	e.g.user("c1", "a.txt", 2, 2, "Shout it.", "", true)
+	e.g.comments[0].FixSuggestions = []gerrit.FixSuggestion{{Replacements: []gerrit.FixReplacement{{
+		Path: "a.txt", Range: gerrit.Range{StartLine: 2, EndLine: 3}, Replacement: "TWO\n"}}}}
+	e.g.user("c2", "a.txt", 2, 3, "Partial.", "", true)
+	e.g.comments[1].FixSuggestions = []gerrit.FixSuggestion{{Replacements: []gerrit.FixReplacement{{
+		Path: "a.txt", Range: gerrit.Range{StartLine: 3, StartCharacter: 1, EndLine: 3, EndCharacter: 3}, Replacement: "H"}}}}
+	e.sync(t)
+	if len(e.h.rcs) != 2 {
+		t.Fatalf("got %+v", e.h.rcs)
+	}
+	if b := e.h.rcs[0].Body; !strings.Contains(b, "```suggestion\nTWO\n```") || e.h.rcs[0].Line != 2 {
+		t.Errorf("whole-line fix:\n%s", b)
+	}
+	if b := e.h.rcs[1].Body; !strings.Contains(b, "```suggestion\ntHee\n```") || e.h.rcs[1].Line != 3 {
+		t.Errorf("partial-line fix:\n%s", b)
+	}
+}
+
+func TestGitHubSuggestionBecomesFix(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.h.human("a.txt", 3, "sha2", "Caps please:\n```suggestion\nTHREE\n```\nThanks.", 0)
+	e.sync(t)
+	gc := e.g.comments[len(e.g.comments)-1]
+	if len(gc.FixSuggestions) != 1 {
+		t.Fatalf("no fix: %+v", gc)
+	}
+	r := gc.FixSuggestions[0].Replacements[0]
+	if r.Path != "a.txt" || r.Range != (gerrit.Range{StartLine: 3, EndLine: 3, EndCharacter: 5}) || r.Replacement != "THREE" {
+		t.Errorf("replacement = %+v", r)
+	}
+	if strings.Contains(gc.Message, "```suggestion") || !strings.Contains(gc.Message, "Apply fix") || !strings.Contains(gc.Message, "Thanks.") {
+		t.Errorf("message = %q", gc.Message)
+	}
+}
+
+func TestGitHubEditBecomesReply(t *testing.T) {
+	e := newCommentsEnv(t)
+	root := e.h.human("a.txt", 3, "sha2", "Typo.", 0)
+	e.sync(t)
+	n := len(e.g.comments)
+	mirrored := e.g.comments[n-1].ID
+	for i := range e.h.rcs {
+		if e.h.rcs[i].ID == root {
+			e.h.rcs[i].Body = "Typo on this line, and the next."
+		}
+	}
+	e.sync(t)
+	if len(e.g.comments) != n+1 {
+		t.Fatalf("got %d new Gerrit comments, want 1", len(e.g.comments)-n)
+	}
+	gc := e.g.comments[n]
+	if gc.InReplyTo != mirrored || !strings.Contains(gc.Message, "edited their comment") || !strings.Contains(gc.Message, "and the next.") {
+		t.Errorf("edit reply = %+v", gc)
+	}
+	if strings.Contains(gc.Message, "#discussion_r") {
+		t.Error("edit reply would be mistaken for a mirror of a new comment")
+	}
+	e.settled(t)
+}
+
+func TestGerritContentRemovalUpdatesGitHub(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.g.user("c1", "a.txt", 2, 2, "Something rude.", "", true)
+	e.sync(t)
+	e.g.comments[0].Message = "Comment removed by: Administrator"
+	e.sync(t)
+	if b := e.h.rcs[0].Body; !strings.Contains(b, "Comment removed by") || strings.Contains(b, "rude") {
+		t.Errorf("GitHub copy = %q", b)
+	}
+	e.settled(t)
+}
+
+func TestGitHubCommentOnIntermediateCommitIsPorted(t *testing.T) {
+	e := newCommentsEnv(t)
+	ctx := context.Background()
+	updateStateFn(ctx, e.st, 5, "revs", func(s *state.Change) {
+		s.Revisions = []state.Revision{{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "h1"}, {PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "h2"}}
+	})
+	e.h.ancestor["c0..h2"] = true // c0 is an earlier commit in the layer that became PS2
+	e.h.files["c0/a.txt"] = "x\ny\n"
+	e.h.files["h2/a.txt"] = "w\nx\ny\n"
+	e.h.human("a.txt", 2, "c0", "About y.", 0)
+	e.sync(t)
+	gc := e.g.comments[len(e.g.comments)-1]
+	if gc.PatchSet != 2 || gc.Line != 3 || !strings.Contains(gc.Message, "Ported from GitHub commit c0") {
+		t.Errorf("ported = ps%d L%d %q", gc.PatchSet, gc.Line, gc.Message)
+	}
+}
+
+func TestApplyReplacement(t *testing.T) {
+	lines := strings.Split("one\ntwo\nthree\n", "\n")
+	for _, tc := range []struct {
+		r           gerrit.Range
+		rep, want   string
+		first, last int
+	}{
+		{gerrit.Range{StartLine: 2, EndLine: 3}, "TWO\n", "TWO\n", 2, 2},
+		{gerrit.Range{StartLine: 1, EndLine: 3}, "", "", 1, 2},
+		{gerrit.Range{StartLine: 2, StartCharacter: 0, EndLine: 3, EndCharacter: 2}, "X", "Xree\n", 2, 3},
+	} {
+		got, f, l, ok := applyReplacement(lines, gerrit.FixReplacement{Range: tc.r, Replacement: tc.rep})
+		if !ok || got != tc.want || f != tc.first || l != tc.last {
+			t.Errorf("%+v %q -> %q %d-%d %v, want %q %d-%d", tc.r, tc.rep, got, f, l, ok, tc.want, tc.first, tc.last)
+		}
+	}
+}
+
+func TestGitHubSuggestionWithoutGerritFeatureFlag(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.g.noFixes = true
+	e.h.human("a.txt", 3, "sha2", "Caps please:\n```suggestion\nTHREE\n```", 0)
+	e.sync(t)
+	gc := e.g.comments[len(e.g.comments)-1]
+	if len(gc.FixSuggestions) != 0 || !strings.Contains(gc.Message, "```suggestion\nTHREE\n```") {
+		t.Errorf("fallback comment = %+v", gc)
 	}
 	e.settled(t)
 }

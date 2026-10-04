@@ -13,11 +13,13 @@ go_library(
         "naming.go",
         "plan.go",
         "push.go",
+        "pushers.go",
         "reconcile.go",
     ],
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile",
     visibility = ["//:__subpackages__"],
     deps = [
+        "//internal/anchor",
         "//internal/gerrit",
         "//internal/gerrit/events",
         "//internal/github",

@@ -62,6 +62,8 @@ type Router struct {
 	Project string
 	Queue   *queue.Queue[Key]
 	Logger  *slog.Logger
+	// Pushers, if set, records who pushed what from webhooks.
+	Pushers *Pushers
 
 	resync chan string
 }
@@ -113,6 +115,9 @@ func (r *Router) Resync(reason string) {
 
 // Delivery queues the key a GitHub webhook is about.
 func (r *Router) Delivery(d *github.Delivery) {
+	if r.Pushers != nil {
+		r.Pushers.FromDelivery(d)
+	}
 	if d.PR == 0 {
 		r.Logger.Debug("webhook without a PR", "event", d.Event, "action", d.Action)
 		return

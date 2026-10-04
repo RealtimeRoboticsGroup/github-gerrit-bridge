@@ -2,8 +2,12 @@ package github
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -191,4 +195,52 @@ func (c *Client) Login(ctx context.Context) (string, error) {
 	var u User
 	_, err := c.Do(ctx, http.MethodGet, "/user", nil, &u)
 	return u.Login, err
+}
+
+// UpdateReviewComment replaces a review comment's body.
+func (c *Client) UpdateReviewComment(ctx context.Context, id int64, body string) error {
+	_, err := c.Do(ctx, http.MethodPatch, c.RepoPath("pulls/comments/"+strconv.FormatInt(id, 10)), map[string]string{"body": body}, nil)
+	return err
+}
+
+// UpdateIssueComment replaces an issue comment's body.
+func (c *Client) UpdateIssueComment(ctx context.Context, id int64, body string) error {
+	_, err := c.Do(ctx, http.MethodPatch, c.RepoPath("issues/comments/"+strconv.FormatInt(id, 10)), map[string]string{"body": body}, nil)
+	return err
+}
+
+// FileAt returns a file's content at ref (a commit SHA or branch).
+func (c *Client) FileAt(ctx context.Context, ref, path string) ([]byte, error) {
+	var out struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	u := c.RepoPath("contents/"+escapePath(path)) + "?ref=" + url.QueryEscape(ref)
+	if _, err := c.Do(ctx, http.MethodGet, u, nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Encoding != "base64" {
+		return nil, fmt.Errorf("contents of %s@%s: unexpected encoding %q", path, ref, out.Encoding)
+	}
+	return base64.StdEncoding.DecodeString(strings.ReplaceAll(out.Content, "\n", ""))
+}
+
+// IsAncestor reports whether commit a is an ancestor of (or equal to) b.
+func (c *Client) IsAncestor(ctx context.Context, a, b string) (bool, error) {
+	var out struct {
+		Status string `json:"status"` // ahead, behind, diverged, identical
+	}
+	_, err := c.Do(ctx, http.MethodGet, c.RepoPath("compare/"+a+"..."+b+"?per_page=1"), nil, &out)
+	if err != nil {
+		return false, err
+	}
+	return out.Status == "ahead" || out.Status == "identical", nil
+}
+
+func escapePath(p string) string {
+	parts := strings.Split(p, "/")
+	for i, s := range parts {
+		parts[i] = url.PathEscape(s)
+	}
+	return strings.Join(parts, "/")
 }

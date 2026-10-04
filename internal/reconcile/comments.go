@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/anchor"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
@@ -38,6 +39,10 @@ type GitHubAPI interface {
 	ReplyToReviewComment(ctx context.Context, n int, id int64, body string) (*github.ReviewComment, error)
 	CreateIssueComment(ctx context.Context, n int, body string) (*github.IssueComment, error)
 	SetThreadResolved(ctx context.Context, threadID string, resolved bool) error
+	UpdateReviewComment(ctx context.Context, id int64, body string) error
+	UpdateIssueComment(ctx context.Context, id int64, body string) error
+	FileAt(ctx context.Context, ref, path string) ([]byte, error)
+	IsAncestor(ctx context.Context, a, b string) (bool, error)
 }
 
 // Comments mirrors review comments, replies and thread resolution between
@@ -92,17 +97,30 @@ func githubKind(frag string) string {
 // snapshot is one change's comments on both sides.
 type commentSnapshot struct {
 	messages []gerrit.ChangeMessage
-	gerrit   []gerrit.CommentInfo
-	byID     map[string]*gerrit.CommentInfo
-	rcs      []github.ReviewComment
-	rcByID   map[int64]*github.ReviewComment
-	ics      []github.IssueComment
-	reviews  []github.Review
-	threads  []github.ReviewThread
-	psToSHA  map[int]string
-	shaToPS  map[string]int
-	current  int
-	revision string
+	// psGitHub is the GitHub commit for each patch set, where it differs
+	// from Gerrit's (GitHub-born and re-parented revisions).
+	psGitHub map[int]string
+	// revisions are the change's recorded revisions, oldest first.
+	revisions []state.Revision
+	gerrit    []gerrit.CommentInfo
+	byID      map[string]*gerrit.CommentInfo
+	rcs       []github.ReviewComment
+	rcByID    map[int64]*github.ReviewComment
+	ics       []github.IssueComment
+	reviews   []github.Review
+	threads   []github.ReviewThread
+	psToSHA   map[int]string
+	shaToPS   map[string]int
+	current   int
+	revision  string
+}
+
+// ghSHA is the GitHub commit standing for patch set ps.
+func (s *commentSnapshot) ghSHA(ps int) string {
+	if sha, ok := s.psGitHub[ps]; ok {
+		return sha
+	}
+	return s.psToSHA[ps]
 }
 
 type commentMap struct {
@@ -176,6 +194,11 @@ func (c *Comments) Sync(ctx context.Context, n int) error {
 		if err != nil {
 			return err
 		}
+		p3, err := c.mirrorEdits(ctx, n, pr, snap, m)
+		if err != nil {
+			return err
+		}
+		p2 = p2 || p3
 		if c.DryRun {
 			return nil
 		}
@@ -226,9 +249,12 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	s.messages = ch.Messages
 	s.current = s.shaToPS[ch.CurrentRevision]
 	// GitHub-born revisions have their own SHAs (design §5.2).
+	s.psGitHub = map[int]string{}
+	s.revisions = st.Revisions
 	for _, r := range st.Revisions {
 		if r.GitHubSHA != "" && r.GitHubSHA != r.GerritSHA {
 			s.shaToPS[r.GitHubSHA] = r.PatchSet
+			s.psGitHub[r.PatchSet] = r.GitHubSHA
 		}
 	}
 	if s.rcs, err = c.GitHub.ListReviewComments(ctx, pr); err != nil {
@@ -254,7 +280,11 @@ func (c *Comments) recover(n int, s *commentSnapshot, m *commentMap) {
 	mark := func(body string, kind string, id int64) {
 		for _, sm := range gerritMarker.FindAllStringSubmatch(body, -1) {
 			if sm[1] == strconv.Itoa(n) {
-				m.add(state.Comment{GerritID: sm[2], GitHubID: id, Kind: kind, Origin: "gerrit", BodyHash: hashString(body)})
+				mc := state.Comment{GerritID: sm[2], GitHubID: id, Kind: kind, Origin: "gerrit"}
+				if gc := s.byID[sm[2]]; gc != nil {
+					mc.BodyHash = hashString(gc.Message)
+				}
+				m.add(mc)
 			}
 		}
 	}
@@ -270,7 +300,11 @@ func (c *Comments) recover(n int, s *commentSnapshot, m *commentMap) {
 		}
 		if sm := githubRef.FindStringSubmatch(gc.Message); sm != nil {
 			id, _ := strconv.ParseInt(sm[2], 10, 64)
-			m.add(state.Comment{GerritID: gc.ID, GitHubID: id, Kind: githubKind(sm[1]), Origin: "github", BodyHash: hashString(gc.Message)})
+			mc := state.Comment{GerritID: gc.ID, GitHubID: id, Kind: githubKind(sm[1]), Origin: "github"}
+			if body, _, _, ok := s.githubBody(mc.Kind, id); ok {
+				mc.BodyHash = hashString(body)
+			}
+			m.add(mc)
 		}
 	}
 }
@@ -315,16 +349,20 @@ func (c *Comments) gerritHeader(n int, gc *gerrit.CommentInfo, current int) stri
 
 func gerritFooter(n int, id string) string { return fmt.Sprintf("<!-- bridge:gerrit/%d/%s -->", n, id) }
 
-// ghBody is the GitHub body for a Gerrit comment, with an optional
-// context line (quoted code, the true anchor) between header and message.
-func (c *Comments) ghBody(n int, gc *gerrit.CommentInfo, current int, context string) string {
+// ghBody is the GitHub body for a Gerrit comment, with an optional note
+// (quoted code, the true anchor) above the message and an optional
+// suggestion block below it.
+func (c *Comments) ghBody(n int, gc *gerrit.CommentInfo, current int, note, suggestion string) string {
 	var b strings.Builder
 	b.WriteString(c.gerritHeader(n, gc, current))
 	b.WriteString("\n\n")
-	if context != "" {
-		b.WriteString(context + "\n\n")
+	if note != "" {
+		b.WriteString(note + "\n\n")
 	}
 	b.WriteString(strings.TrimSpace(gc.Message))
+	if suggestion != "" {
+		b.WriteString("\n\n" + suggestion)
+	}
 	b.WriteString("\n\n" + gerritFooter(n, gc.ID))
 	return b.String()
 }
@@ -371,22 +409,22 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			if rc := s.rcByID[root]; rc != nil && rc.InReplyTo != 0 {
 				root = rc.InReplyTo
 			}
-			out, err := c.GitHub.ReplyToReviewComment(ctx, pr, root, c.ghBody(n, gc, s.current, ""))
+			out, err := c.GitHub.ReplyToReviewComment(ctx, pr, root, c.ghBody(n, gc, s.current, "", ""))
 			if err != nil {
 				return posted, err
 			}
-			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindReviewComment, Origin: "gerrit"})
+			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindReviewComment, Origin: "gerrit", BodyHash: hashString(gc.Message)})
 			posted = true
 		case gc.Path == gerrit.PatchSetLevel || parent != nil || gc.Path == gerrit.CommitMsg:
 			ctxLine := ""
 			if gc.Path == gerrit.CommitMsg {
 				ctxLine = c.quote(ctx, n, gc, "commit message")
 			}
-			out, err := c.GitHub.CreateIssueComment(ctx, pr, c.ghBody(n, gc, s.current, ctxLine))
+			out, err := c.GitHub.CreateIssueComment(ctx, pr, c.ghBody(n, gc, s.current, ctxLine, ""))
 			if err != nil {
 				return posted, err
 			}
-			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindIssueComment, Origin: "gerrit"})
+			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindIssueComment, Origin: "gerrit", BodyHash: hashString(gc.Message)})
 			posted = true
 		default:
 			k := gc.Author.Username + "|" + gc.Updated + "|" + strconv.Itoa(gc.PatchSet)
@@ -436,29 +474,64 @@ func ghSide(gerritSide string) string {
 	return "RIGHT"
 }
 
+// ghAnchor is where a Gerrit comment goes on GitHub.
+type ghAnchor struct {
+	sha         string // GitHub commit
+	first, last int    // lines; 0 means file level
+	side        string // LEFT, RIGHT
+	note        string // shown above the message
+	suggestion  string // a ```suggestion block valid on first..last
+}
+
+// anchorFor translates a Gerrit comment's anchor (design §6.1).
+func (c *Comments) anchorFor(ctx context.Context, n int, s *commentSnapshot, gc *gerrit.CommentInfo) ghAnchor {
+	a := ghAnchor{sha: s.ghSHA(gc.PatchSet), side: ghSide(gc.Side), first: gc.Line, last: gc.Line}
+	if r := gc.Range; r != nil {
+		a.first, a.last = r.StartLine, r.EndLine
+		if r.EndCharacter == 0 && r.EndLine > r.StartLine {
+			a.last-- // the range ends at the start of EndLine
+		}
+		a.note = rangeNote(gc)
+	}
+	if sug, first, last, ok := c.toSuggestion(ctx, n, gc); ok {
+		a.first, a.last, a.suggestion, a.note = first, last, sug, ""
+	}
+	return a
+}
+
+func (a ghAnchor) draft(path, body string) github.DraftReviewComment {
+	d := github.DraftReviewComment{Path: path, Body: body, Line: a.last, Side: a.side}
+	if a.first != a.last {
+		d.StartLine, d.StartSide = a.first, a.side
+	}
+	return d
+}
+
+func (a ghAnchor) comment(path, body string) github.NewReviewComment {
+	nc := github.NewReviewComment{CommitID: a.sha, Path: path, Body: body, Line: a.last, Side: a.side}
+	if a.first != a.last {
+		nc.StartLine, nc.StartSide = a.first, a.side
+	}
+	return nc
+}
+
 // postReview posts one Gerrit reply's line and file comments as a single
 // GitHub review. If GitHub refuses (a line outside the diff), each comment
-// is posted on its own, falling back to file level.
+// is posted on its own, which ports or falls back as needed.
 func (c *Comments) postReview(ctx context.Context, n, pr int, s *commentSnapshot, m *commentMap, ps int, items []*gerrit.CommentInfo) error {
-	sha := s.psToSHA[ps]
+	sha := s.ghSHA(ps)
 	var lineItems []*gerrit.CommentInfo
 	var drafts []github.DraftReviewComment
 	for _, gc := range items {
-		if gc.Line == 0 && gc.Range == nil {
-			if err := c.postSingle(ctx, n, pr, s, m, sha, gc); err != nil {
+		a := c.anchorFor(ctx, n, s, gc)
+		if a.first == 0 {
+			if err := c.postSingle(ctx, n, pr, s, m, gc); err != nil {
 				return err
 			}
 			continue
 		}
-		d := github.DraftReviewComment{Path: gc.Path, Body: c.ghBody(n, gc, s.current, rangeNote(gc)), Line: gc.Line, Side: ghSide(gc.Side)}
-		if r := gc.Range; r != nil {
-			d.Line = r.EndLine
-			if r.StartLine != r.EndLine {
-				d.StartLine, d.StartSide = r.StartLine, d.Side
-			}
-		}
 		lineItems = append(lineItems, gc)
-		drafts = append(drafts, d)
+		drafts = append(drafts, a.draft(gc.Path, c.ghBody(n, gc, s.current, a.note, a.suggestion)))
 	}
 	if len(drafts) == 0 {
 		return nil
@@ -473,7 +546,7 @@ func (c *Comments) postReview(ctx context.Context, n, pr int, s *commentSnapshot
 	}
 	c.Logger.Info("GitHub refused the batch; posting comments one by one", "change", n, "pr", pr, "err", err)
 	for _, gc := range lineItems {
-		if err := c.postSingle(ctx, n, pr, s, m, sha, gc); err != nil {
+		if err := c.postSingle(ctx, n, pr, s, m, gc); err != nil {
 			return err
 		}
 	}
@@ -488,53 +561,76 @@ func rangeNote(gc *gerrit.CommentInfo) string {
 	return fmt.Sprintf("<sub>Gerrit range: L%d:%d–L%d:%d</sub>", r.StartLine, r.StartCharacter, r.EndLine, r.EndCharacter)
 }
 
-// postSingle posts one comment: on its line, else on its file with the
-// line quoted, else (file not in the diff, or old commit) on the PR.
-func (c *Comments) postSingle(ctx context.Context, n, pr int, s *commentSnapshot, m *commentMap, sha string, gc *gerrit.CommentInfo) error {
-	line, start := gc.Line, 0
-	if r := gc.Range; r != nil {
-		line = r.EndLine
-		if r.StartLine != r.EndLine {
-			start = r.StartLine
-		}
-	}
-	if line != 0 {
-		nc := github.NewReviewComment{CommitID: sha, Path: gc.Path, Body: c.ghBody(n, gc, s.current, rangeNote(gc)), Line: line, Side: ghSide(gc.Side)}
-		if start != 0 {
-			nc.StartLine, nc.StartSide = start, nc.Side
-		}
+// postSingle posts one comment, trying in turn: its own lines on its own
+// patch set; the same lines ported to the current patch set (design §6.1
+// step 6); file level with the lines quoted; and a PR comment.
+func (c *Comments) postSingle(ctx context.Context, n, pr int, s *commentSnapshot, m *commentMap, gc *gerrit.CommentInfo) error {
+	a := c.anchorFor(ctx, n, s, gc)
+	try := func(nc github.NewReviewComment) (bool, error) {
 		out, err := c.GitHub.CreateReviewComment(ctx, pr, nc)
 		if err == nil {
-			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindReviewComment, Origin: "gerrit"})
-			return nil
+			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindReviewComment, Origin: "gerrit", BodyHash: hashString(gc.Message)})
+			return true, nil
 		}
-		if !isUnprocessable(err) {
+		if isUnprocessable(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if a.first != 0 {
+		if ok, err := try(a.comment(gc.Path, c.ghBody(n, gc, s.current, a.note, a.suggestion))); ok || err != nil {
 			return err
+		}
+		if p, ok := c.portToCurrent(ctx, n, s, gc, a); ok {
+			if ok, err := try(p.comment(gc.Path, c.ghBody(n, gc, s.current, p.note, p.suggestion))); ok || err != nil {
+				return err
+			}
 		}
 	}
 	quote := ""
-	if line != 0 {
+	if a.first != 0 {
 		quote = c.quote(ctx, n, gc, gc.Path)
 	}
-	out, err := c.GitHub.CreateReviewComment(ctx, pr, github.NewReviewComment{
-		CommitID: sha, Path: gc.Path, Body: c.ghBody(n, gc, s.current, quote), SubjectType: "file",
-	})
-	if err == nil {
-		m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindReviewComment, Origin: "gerrit"})
-		return nil
-	}
-	if !isUnprocessable(err) {
-		return err
+	for _, sha := range []string{a.sha, s.ghSHA(s.current)} {
+		nc := github.NewReviewComment{CommitID: sha, Path: gc.Path, Body: c.ghBody(n, gc, s.current, quote, ""), SubjectType: "file"}
+		if ok, err := try(nc); ok || err != nil {
+			return err
+		}
 	}
 	if quote == "" {
 		quote = fmt.Sprintf("`%s`", gc.Path)
 	}
-	ic, err := c.GitHub.CreateIssueComment(ctx, pr, c.ghBody(n, gc, s.current, quote))
+	ic, err := c.GitHub.CreateIssueComment(ctx, pr, c.ghBody(n, gc, s.current, quote, ""))
 	if err != nil {
 		return err
 	}
-	m.add(state.Comment{GerritID: gc.ID, GitHubID: ic.ID, Kind: kindIssueComment, Origin: "gerrit"})
+	m.add(state.Comment{GerritID: gc.ID, GitHubID: ic.ID, Kind: kindIssueComment, Origin: "gerrit", BodyHash: hashString(gc.Message)})
 	return nil
+}
+
+// portToCurrent moves a comment's lines from its patch set to the current
+// one, if they are unchanged in between.
+func (c *Comments) portToCurrent(ctx context.Context, n int, s *commentSnapshot, gc *gerrit.CommentInfo, a ghAnchor) (ghAnchor, bool) {
+	if gc.PatchSet == s.current || gc.Side == "PARENT" {
+		return a, false
+	}
+	oldC, err1 := c.Gerrit.FileContent(ctx, n, strconv.Itoa(gc.PatchSet), gc.Path)
+	newC, err2 := c.Gerrit.FileContent(ctx, n, strconv.Itoa(s.current), gc.Path)
+	if err1 != nil || err2 != nil {
+		return a, false
+	}
+	first, last, ok := anchor.NewMap(anchor.Lines(string(oldC)), anchor.Lines(string(newC))).Range(a.first, a.last)
+	if !ok {
+		return a, false
+	}
+	p := a
+	p.sha, p.first, p.last = s.ghSHA(s.current), first, last
+	where := fmt.Sprintf("line %d", a.first)
+	if a.last != a.first {
+		where = fmt.Sprintf("lines %d-%d", a.first, a.last)
+	}
+	p.note = strings.TrimSpace(fmt.Sprintf("<sub>Ported from patch set %d, %s.</sub> %s", gc.PatchSet, where, a.note))
+	return p, true
 }
 
 // quote renders the commented lines as "`path` L3-L5" plus a quote block.
@@ -590,18 +686,27 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 	type batch struct {
 		ps       int
 		comments map[string][]gerrit.CommentInput
+		// plain is comments without fix suggestions (the suggestion
+		// stays in the text), for Gerrit sites that do not allow them.
+		plain map[string][]gerrit.CommentInput
 	}
 	var order []string
 	batches := map[string]*batch{}
-	add := func(key string, ps int, path string, ci gerrit.CommentInput) {
+	// add queues ci; plain is its message for sites without fix
+	// suggestions ("" if ci has none).
+	add := func(key string, ps int, path string, ci gerrit.CommentInput, plain ...string) {
 		k := key + "|" + strconv.Itoa(ps)
 		b := batches[k]
 		if b == nil {
-			b = &batch{ps: ps, comments: map[string][]gerrit.CommentInput{}}
+			b = &batch{ps: ps, comments: map[string][]gerrit.CommentInput{}, plain: map[string][]gerrit.CommentInput{}}
 			batches[k] = b
 			order = append(order, k)
 		}
 		b.comments[path] = append(b.comments[path], ci)
+		if ci.FixSuggestions != nil && len(plain) > 0 {
+			ci.FixSuggestions, ci.Message = nil, plain[0]
+		}
+		b.plain[path] = append(b.plain[path], ci)
 	}
 	for i := range s.rcs {
 		rc := &s.rcs[i]
@@ -634,27 +739,47 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		if commit == "" {
 			commit = rc.CommitID
 		}
+		line := rc.OriginalLine
+		if line == 0 {
+			line = rc.Line
+		}
+		first := rc.OriginalStart
+		if first == 0 || first > line {
+			first = line
+		}
 		ps, ok := s.shaToPS[commit]
+		if !ok && rc.SubjectType != "file" && rc.Side != "LEFT" {
+			// A commit Gerrit never saw, e.g. an intermediate commit of
+			// a multi-commit layer: port to the patch set built from the
+			// first later head that contains it (design §6.1).
+			if p, f, l, ok2 := c.portFromGitHub(ctx, s, commit, rc.Path, first, line); ok2 {
+				ps, first, line, ok = p, f, l, true
+				ci.Message = fmt.Sprintf("%s\n\n<sub>(Ported from GitHub commit %s.)</sub>", ci.Message, short(commit))
+			}
+		}
 		if !ok {
-			// Not a patch set Gerrit knows: keep the comment, on the
-			// current patch set at file level, saying where it was.
+			// Nowhere to anchor it: keep the comment, on the current
+			// patch set at file level, saying where it was.
 			ps = s.current
 			ci.Message = fmt.Sprintf("%s\n\n<sub>(on GitHub commit %s, line %d)</sub>", body, short(commit), rc.OriginalLine)
 			add(key, ps, rc.Path, ci)
 			continue
 		}
 		if rc.SubjectType != "file" {
-			line := rc.OriginalLine
-			if line == 0 {
-				line = rc.Line
-			}
 			if rc.Side == "LEFT" {
 				ci.Side = "PARENT"
 			}
-			if start := rc.OriginalStart; start != 0 && start != line {
-				ci.Range = &gerrit.Range{StartLine: start, EndLine: line, EndCharacter: c.lineLen(ctx, n, ps, rc.Path, line, ci.Side)}
+			lastLen := c.lineLen(ctx, n, ps, rc.Path, line, ci.Side)
+			if first != line {
+				ci.Range = &gerrit.Range{StartLine: first, EndLine: line, EndCharacter: lastLen}
 			} else {
 				ci.Line = line
+			}
+			if ci.Side == "" {
+				plain := ci.Message
+				ci.Message, ci.FixSuggestions = fromSuggestion(ci.Message, rc.Path, first, line, lastLen)
+				add(key, ps, rc.Path, ci, plain)
+				continue
 			}
 		}
 		add(key, ps, rc.Path, ci)
@@ -698,6 +823,16 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		err := c.Gerrit.SetReview(ctx, n, strconv.Itoa(b.ps), gerrit.ReviewInput{
 			Comments: b.comments, Tag: commentTag, OmitDuplicateComments: true,
 		})
+		var ge *gerrit.Error
+		if errors.As(err, &ge) && ge.Status >= 500 && hasFixes(b.comments) {
+			// Fix suggestions in human comments are behind Gerrit's
+			// experiments.enabled = GerritBackendFeature__allow_fix_suggestions_in_comments
+			// flag; without it, keep the suggestion as text.
+			c.Logger.Warn("Gerrit refused fix suggestions; posting them as text", "change", n, "err", err)
+			err = c.Gerrit.SetReview(ctx, n, strconv.Itoa(b.ps), gerrit.ReviewInput{
+				Comments: b.plain, Tag: commentTag, OmitDuplicateComments: true,
+			})
+		}
 		if err != nil {
 			return true, fmt.Errorf("posting %s to change %d: %w", k, n, err)
 		}
@@ -857,4 +992,236 @@ func (c *Comments) messageText(msg gerrit.ChangeMessage) string {
 
 func (c *Comments) messageURL(n int, msg gerrit.ChangeMessage) string {
 	return fmt.Sprintf("%s#message-%s", c.Gerrit.ChangeURL(c.Project, n), msg.ID)
+}
+
+// --- suggestions (design §8) ---
+
+var suggestionBlock = regexp.MustCompile("(?s)```suggestion[^\n]*\n(.*?)```")
+
+// toSuggestion renders a Gerrit fix suggestion as a GitHub suggestion
+// block, and the lines it must be anchored on. Only a single replacement in
+// the commented file, on the revision side, converts.
+func (c *Comments) toSuggestion(ctx context.Context, n int, gc *gerrit.CommentInfo) (string, int, int, bool) {
+	if len(gc.FixSuggestions) == 0 || gc.Side == "PARENT" {
+		return "", 0, 0, false
+	}
+	reps := gc.FixSuggestions[0].Replacements
+	if len(reps) != 1 || reps[0].Path != gc.Path {
+		return "", 0, 0, false
+	}
+	content, err := c.Gerrit.FileContent(ctx, n, strconv.Itoa(gc.PatchSet), gc.Path)
+	if err != nil {
+		return "", 0, 0, false
+	}
+	text, first, last, ok := applyReplacement(strings.Split(string(content), "\n"), reps[0])
+	if !ok {
+		return "", 0, 0, false
+	}
+	return "```suggestion\n" + text + "```", first, last, true
+}
+
+// applyReplacement returns the new text of the whole lines a replacement
+// touches (ending in a newline unless empty), and those lines.
+func applyReplacement(lines []string, r gerrit.FixReplacement) (string, int, int, bool) {
+	rg := r.Range
+	first, last := rg.StartLine, rg.EndLine
+	wholeLines := rg.EndCharacter == 0 && last > first
+	if wholeLines {
+		last-- // ends at the start of EndLine
+	}
+	if first < 1 || last < first || last > len(lines) || rg.StartCharacter > len(lines[first-1]) {
+		return "", 0, 0, false
+	}
+	prefix := lines[first-1][:rg.StartCharacter]
+	suffix := ""
+	if !wholeLines {
+		if rg.EndCharacter > len(lines[last-1]) {
+			return "", 0, 0, false
+		}
+		suffix = lines[last-1][rg.EndCharacter:]
+	}
+	text := prefix + r.Replacement + suffix
+	if wholeLines {
+		text = strings.TrimSuffix(text, "\n")
+	}
+	if text != "" {
+		text += "\n"
+	}
+	return text, first, last, true
+}
+
+// fromSuggestion turns a GitHub suggestion block into a Gerrit fix on
+// lines first..last of path, returning the message without the block.
+func fromSuggestion(body, path string, first, last, lastLen int) (string, []gerrit.FixSuggestion) {
+	sm := suggestionBlock.FindStringSubmatchIndex(body)
+	if sm == nil || first < 1 || last < first {
+		return body, nil
+	}
+	replacement := strings.TrimSuffix(body[sm[2]:sm[3]], "\n")
+	msg := strings.TrimSpace(body[:sm[0]] + "_(Suggested change attached: use Apply fix.)_" + body[sm[1]:])
+	return msg, []gerrit.FixSuggestion{{
+		Description: "Suggested on GitHub",
+		Replacements: []gerrit.FixReplacement{{
+			Path:        path,
+			Range:       gerrit.Range{StartLine: first, EndLine: last, EndCharacter: lastLen},
+			Replacement: replacement,
+		}},
+	}}
+}
+
+// portFromGitHub maps lines of path in GitHub commit commit to the first
+// recorded revision whose GitHub head contains commit.
+func (c *Comments) portFromGitHub(ctx context.Context, s *commentSnapshot, commit, path string, first, last int) (int, int, int, bool) {
+	for _, r := range s.revisions {
+		if r.GitHubSHA == "" {
+			continue
+		}
+		if ok, err := c.GitHub.IsAncestor(ctx, commit, r.GitHubSHA); err != nil || !ok {
+			continue
+		}
+		oldC, err1 := c.GitHub.FileAt(ctx, commit, path)
+		newC, err2 := c.GitHub.FileAt(ctx, r.GitHubSHA, path)
+		if err1 != nil || err2 != nil {
+			return 0, 0, 0, false
+		}
+		f, l, ok := anchor.NewMap(anchor.Lines(string(oldC)), anchor.Lines(string(newC))).Range(first, last)
+		if !ok {
+			return 0, 0, 0, false
+		}
+		return r.PatchSet, f, l, true
+	}
+	return 0, 0, 0, false
+}
+
+// --- edits (design §8) ---
+
+// githubBody returns a GitHub comment's current body, author and URL.
+func (s *commentSnapshot) githubBody(kind string, id int64) (body, login, url string, ok bool) {
+	switch kind {
+	case kindReviewComment:
+		if rc := s.rcByID[id]; rc != nil {
+			return rc.Body, rc.User.Login, rc.HTMLURL, true
+		}
+	case kindIssueComment:
+		for _, ic := range s.ics {
+			if ic.ID == id {
+				return ic.Body, ic.User.Login, ic.HTMLURL, true
+			}
+		}
+	case kindReviewBody:
+		for _, rv := range s.reviews {
+			if rv.ID == id {
+				return rv.Body, rv.User.Login, rv.HTMLURL, true
+			}
+		}
+	}
+	return "", "", "", false
+}
+
+// mirrorEdits mirrors comments edited since they were mirrored.
+//
+// GitHub -> Gerrit: published Gerrit comments are immutable, so an edit
+// becomes a reply in the same thread with the new text. The reply links
+// the PR, not the comment, so it is never taken for a mirror of a new
+// GitHub comment. Deleted GitHub comments are left alone.
+//
+// Gerrit -> GitHub: Gerrit comments only change when an administrator
+// deletes their content; the bridge's GitHub copy is updated to match.
+//
+// BodyHash in comments.json is the hash of the source side's text as last
+// mirrored.
+func (c *Comments) mirrorEdits(ctx context.Context, n, pr int, s *commentSnapshot, m *commentMap) (bool, error) {
+	posted := false
+	for _, k := range sortedStringKeys(m.byGitHub) {
+		mc := m.byGitHub[k]
+		gc := s.byID[mc.GerritID]
+		body, login, url, ok := s.githubBody(mc.Kind, mc.GitHubID)
+		if !ok || gc == nil {
+			continue
+		}
+		switch mc.Origin {
+		case "github":
+			h := hashString(body)
+			if mc.BodyHash == h {
+				continue
+			}
+			if mc.BodyHash == "" || mc.BodyHash == hashString(gc.Message) {
+				mc.BodyHash = h // first sight, or an older state format
+				continue
+			}
+			if c.DryRun {
+				c.Logger.Info("dry run: would mirror GitHub edit to Gerrit", "change", n, "github_id", mc.GitHubID)
+				continue
+			}
+			prURL, _, _ := strings.Cut(url, "#")
+			f := false
+			ci := gerrit.CommentInput{
+				InReplyTo: gc.ID, Line: gc.Line, Range: gc.Range, Side: gc.Side,
+				Message:    fmt.Sprintf("**@%s** edited their comment ([GitHub](%s)):\n\n%s", login, prURL, strings.TrimSpace(body)),
+				Unresolved: &f,
+			}
+			if mc.Kind == kindReviewComment {
+				unresolved := !gerritResolved(s, threadRoot(s, gc.ID))
+				ci.Unresolved = &unresolved
+			}
+			err := c.Gerrit.SetReview(ctx, n, strconv.Itoa(gc.PatchSet), gerrit.ReviewInput{
+				Tag: commentTag, Comments: map[string][]gerrit.CommentInput{gc.Path: {ci}},
+			})
+			if err != nil {
+				return posted, err
+			}
+			c.Logger.Info("mirrored GitHub edit to Gerrit", "change", n, "pr", pr, "github_id", mc.GitHubID)
+			mc.BodyHash = h
+			posted = true
+		case "gerrit":
+			h := hashString(gc.Message)
+			if mc.BodyHash == h {
+				continue
+			}
+			if mc.BodyHash == "" || mc.BodyHash == hashString(body) {
+				mc.BodyHash = h
+				continue
+			}
+			if c.DryRun {
+				continue
+			}
+			nb := c.ghBody(n, gc, s.current, "<sub>(Changed in Gerrit.)</sub>", "")
+			var err error
+			if mc.Kind == kindReviewComment {
+				err = c.GitHub.UpdateReviewComment(ctx, mc.GitHubID, nb)
+			} else {
+				err = c.GitHub.UpdateIssueComment(ctx, mc.GitHubID, nb)
+			}
+			if err != nil {
+				return posted, err
+			}
+			mc.BodyHash = h
+		}
+	}
+	return posted, nil
+}
+
+// threadRoot walks in_reply_to up to a thread's first comment.
+func threadRoot(s *commentSnapshot, id string) string {
+	seen := map[string]bool{}
+	for !seen[id] {
+		seen[id] = true
+		gc := s.byID[id]
+		if gc == nil || gc.InReplyTo == "" {
+			return id
+		}
+		id = gc.InReplyTo
+	}
+	return id
+}
+
+func hasFixes(cs map[string][]gerrit.CommentInput) bool {
+	for _, l := range cs {
+		for _, ci := range l {
+			if len(ci.FixSuggestions) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }

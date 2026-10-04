@@ -142,6 +142,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 
 	q := queue.New[reconcile.Key]()
 	router := reconcile.NewRouter(cfg.Gerrit.Project, q, logger)
+	router.Pushers = &reconcile.Pushers{}
 	stream := &events.Stream{
 		Source:   events.SSHSource(sshCfg, events.Types),
 		Handler:  router,
@@ -222,6 +223,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Bridge:        self,
 		DefaultBranch: ghRepo.DefaultBranch,
 		CreatedAfter:  cfg.GitHub.ImportCreatedAfter,
+		Pushers:       router.Pushers,
 		DryRun:        dryRun,
 		Logger:        logger,
 	}

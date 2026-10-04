@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "anchor",
+    srcs = ["anchor.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/anchor",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "anchor_test",
+    srcs = ["anchor_test.go"],
+    embed = [":anchor"],
+)

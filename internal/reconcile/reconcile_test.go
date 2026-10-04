@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -177,5 +178,27 @@ func TestWorkRetries(t *testing.T) {
 	defer f.mu.Unlock()
 	if f.calls[Key{Comments: 1}] != 2 || f.calls[Key{Comments: 2}] != 2 || f.calls[Key{Comments: 3}] != 1 {
 		t.Errorf("calls = %v; want an error and a panic each retried once", f.calls)
+	}
+}
+
+func TestPushersFromWebhooks(t *testing.T) {
+	q := queue.New[Key]()
+	r := NewRouter("p", q, slog.Default())
+	r.Pushers = &Pushers{}
+	r.Delivery(&github.Delivery{Event: "pull_request", Action: "synchronize", PR: 3,
+		Payload: []byte(`{"sender":{"login":"bob"},"pull_request":{"number":3,"head":{"sha":"abc"}}}`)})
+	r.Delivery(&github.Delivery{Event: "push",
+		Payload: []byte(`{"sender":{"login":"carol"},"after":"def","ref":"refs/heads/x"}`)})
+	r.Delivery(&github.Delivery{Event: "pull_request", Action: "edited", PR: 3,
+		Payload: []byte(`{"sender":{"login":"mallory"},"pull_request":{"number":3,"head":{"sha":"abc"}}}`)})
+	if r.Pushers.Lookup("abc") != "bob" || r.Pushers.Lookup("def") != "carol" {
+		t.Errorf("abc=%q def=%q", r.Pushers.Lookup("abc"), r.Pushers.Lookup("def"))
+	}
+	p := &Pushers{}
+	for i := range maxPushers + 10 {
+		p.Record(fmt.Sprint(i), "x")
+	}
+	if p.Lookup("0") != "" || p.Lookup(fmt.Sprint(maxPushers+9)) != "x" || len(p.bySHA) != maxPushers {
+		t.Error("pusher log not bounded")
 	}
 }

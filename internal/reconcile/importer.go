@@ -37,8 +37,10 @@ type Importer struct {
 	DefaultBranch string
 	// CreatedAfter skips PRs opened before it (zero: import all).
 	CreatedAfter time.Time
-	DryRun       bool
-	Logger       *slog.Logger
+	// Pushers says who pushed which commit (from webhooks).
+	Pushers *Pushers
+	DryRun  bool
+	Logger  *slog.Logger
 
 	// onImported runs after a patch set is imported (Code.OnExported).
 	onImported func(ctx context.Context, n int) error
@@ -265,8 +267,15 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		}
 	}
 
-	// Who uploads, and so owns the change.
-	user := im.Identity[pr.User.Login]
+	// Who uploads. The first upload decides the owner, so it is the PR's
+	// author; later patch sets are uploaded as whoever pushed them.
+	login := pr.User.Login
+	if st != nil {
+		if p := im.pusher(ctx, h); p != "" {
+			login = p
+		}
+	}
+	user := im.Identity[login]
 	if user != "" && !im.Uploader.CanActAs() {
 		user = ""
 	}
@@ -274,7 +283,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	if user != "" {
 		var acct gerrit.AccountInfo
 		if err := im.Gerrit.Do(ctx, http.MethodGet, "accounts/"+url.PathEscape(user), nil, &acct); err != nil {
-			return nil, fmt.Errorf("Gerrit account %s for @%s: %w", user, pr.User.Login, err)
+			return nil, fmt.Errorf("Gerrit account %s for @%s: %w", user, login, err)
 		}
 		committer = acct
 	}
@@ -515,4 +524,15 @@ func (im *Importer) logicalBase(ctx context.Context, branch string, pr int) (str
 		}
 	}
 	return branch, nil
+}
+
+// pusher is who pushed GitHub commit sha: from a webhook if one said, else
+// the commit's GitHub committer.
+func (im *Importer) pusher(ctx context.Context, sha string) string {
+	if im.Pushers != nil {
+		if p := im.Pushers.Lookup(sha); p != "" {
+			return p
+		}
+	}
+	return commitPusher(ctx, im.GitHub, sha)
 }

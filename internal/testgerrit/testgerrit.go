@@ -124,6 +124,9 @@ func Start(ctx context.Context, o Options) (*Server, error) {
 		{"sendemail.enable", "false"},
 		{"container.javaHome", filepath.Dir(filepath.Dir(o.Java))},
 		{"index.batchThreads", "1"},
+		// Let people attach "Apply fix" suggestions to comments, which
+		// the bridge maps to GitHub suggestions.
+		{"experiments.enabled", "GerritBackendFeature__allow_fix_suggestions_in_comments"},
 	} {
 		c := exec.CommandContext(ctx, "git", "config", "-f", filepath.Join(o.Site, "etc", "gerrit.config"), kv[0], kv[1])
 		if out, err := c.CombinedOutput(); err != nil {
