@@ -95,11 +95,18 @@ func (c *Checks) Sync(ctx context.Context, n int) error {
 	if !ok {
 		return fmt.Errorf("change %d: no current revision", n)
 	}
-	sha := ch.CurrentRevision
+	// Statuses go on the GitHub commit for the current patch set, which
+	// exists only once the code mirror has exported (or imported) it; the
+	// code mirror calls Sync again when it has.
+	sha := ""
 	for _, r := range st.Revisions {
-		if r.GerritSHA == sha && r.GitHubSHA != "" {
+		if r.GerritSHA == ch.CurrentRevision && r.GitHubSHA != "" {
 			sha = r.GitHubSHA
 		}
+	}
+	if sha == "" {
+		c.Logger.Debug("current patch set not on GitHub yet; statuses wait", "change", n)
+		return nil
 	}
 
 	trusted, known := c.isTrusted(ctx, rev.Uploader.AccountID)

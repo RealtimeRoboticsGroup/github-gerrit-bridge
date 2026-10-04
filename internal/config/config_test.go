@@ -29,6 +29,7 @@ github:
   repo: 971-Robot-Code
   webhook_secret_file: /etc/bridge/webhook-secret
   token_file: /etc/bridge/github-token
+  import_created_after: 2026-10-04T07:50:00Z
 `
 
 func TestParse(t *testing.T) {
@@ -47,6 +48,9 @@ func TestParse(t *testing.T) {
 	}
 	if c.Gerrit.SSH.Watchdog != time.Hour {
 		t.Errorf("Watchdog = %v", c.Gerrit.SSH.Watchdog)
+	}
+	if want := time.Date(2026, 10, 4, 7, 50, 0, 0, time.UTC); !c.GitHub.ImportCreatedAfter.Equal(want) {
+		t.Errorf("ImportCreatedAfter = %v", c.GitHub.ImportCreatedAfter)
 	}
 	// Defaults survive for keys that were not set.
 	if c.Gerrit.SSH.KeepaliveCountMax != 3 || c.Workers != 4 || c.CI.TrustedGroup != "Verified Users" {

@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
@@ -28,9 +29,13 @@ func (d *Dispatcher) Reconcile(ctx context.Context, k Key) error {
 		pr := max(k.PR, k.PRComments)
 		n := d.Store.ChangeForPR(pr)
 		if n == 0 {
-			// Not a mirrored PR (GitHub-born PRs come with milestone 5).
-			d.Logger.Debug("PR not linked to a Gerrit change; ignoring", "pr", pr)
-			return nil
+			// Maybe a new GitHub-born PR: reconcile the branch its chain
+			// targets, which imports it.
+			branch, err := d.targetBranch(ctx, pr)
+			if err != nil || branch == "" {
+				return err
+			}
+			return d.Code.Reconcile(ctx, Key{Branch: branch})
 		}
 		if k.PRComments != 0 {
 			return d.syncComments(ctx, n)
@@ -55,4 +60,45 @@ func (d *Dispatcher) syncComments(ctx context.Context, n int) error {
 	}
 	// Votes and CI results arrive as replies, so they ride along.
 	return d.Checks.Sync(ctx, n)
+}
+
+// targetBranch follows PR bases down a stack to the branch the chain
+// targets: the first base that is neither another open PR's head nor a
+// bridge branch.
+func (d *Dispatcher) targetBranch(ctx context.Context, pr int) (string, error) {
+	p, err := d.Code.GitHub.GetPull(ctx, pr)
+	if err != nil {
+		return "", err
+	}
+	if p.State != "open" {
+		return "", nil
+	}
+	open, err := d.Code.GitHub.ListPulls(ctx, "open")
+	if err != nil {
+		return "", err
+	}
+	baseOf := map[string]string{}
+	for _, o := range open {
+		baseOf[o.Head.Ref] = o.Base.Ref
+	}
+	base := p.Base.Ref
+	for i := 0; i < 50; i++ {
+		switch next, ok := baseOf[base]; {
+		case strings.HasPrefix(base, headPrefix) || strings.HasPrefix(base, frozenPrefix):
+			// On a bridge branch: find the Gerrit change behind it.
+			for _, b := range d.Store.Branches() {
+				for _, n := range d.Store.ChangesOnBranch(b) {
+					if st, err := d.Store.Load(ctx, n); err == nil && st.State.HeadBranch == base {
+						return b, nil
+					}
+				}
+			}
+			return "", nil
+		case ok:
+			base = next
+		default:
+			return base, nil
+		}
+	}
+	return "", nil
 }

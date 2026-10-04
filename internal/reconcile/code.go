@@ -32,6 +32,11 @@ type Code struct {
 	DefaultBranch string
 	DryRun        bool
 	Logger        *slog.Logger
+	// Importer, if set, imports GitHub-born PRs before each reconcile.
+	Importer *Importer
+	// OnExported, if set, is called (under the branch lock) for each
+	// change whose current patch set reached GitHub in this reconcile.
+	OnExported func(ctx context.Context, n int) error
 
 	// locks serializes reconciles of one target branch. The queue already
 	// does for Branch keys; Change and PR keys resolve to a branch here.
@@ -62,6 +67,13 @@ const maxPasses = 5
 func (c *Code) Reconcile(ctx context.Context, k Key) error {
 	branch := k.Branch
 	defer c.lock(branch)()
+	if c.Importer != nil {
+		c.Importer.link = c.linkPR
+		c.Importer.onImported = c.exported
+		if err := c.Importer.Import(ctx, branch); err != nil {
+			return fmt.Errorf("importing GitHub PRs for %s: %w", branch, err)
+		}
+	}
 	for pass := 0; pass < maxPasses; pass++ {
 		snap, err := c.observe(ctx, branch)
 		if err != nil {
@@ -194,8 +206,8 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 	}
 
 	heads := map[string]bool{}
-	for _, ch := range s.Changes {
-		heads[HeadBranch(branch, c.DefaultBranch, ch.ChangeID)] = true
+	for n, ch := range s.Changes {
+		heads[s.head(n, ch.ChangeID)] = true
 	}
 	prs, err := c.GitHub.ListPulls(ctx, "open")
 	if err != nil {
@@ -220,6 +232,27 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 			s.PRs[pr] = got
 		}
 	}
+	// GitHub-born changes live on the user's branch: take its head from
+	// the PR, and check whether a Gerrit edit can be appended to it.
+	s.AppendOK = map[int]bool{}
+	for n, ch := range s.Changes {
+		st := s.State[n]
+		if !s.githubBorn(n) || st.State.PR == 0 || s.PRs[st.State.PR] == nil {
+			continue
+		}
+		pr := s.PRs[st.State.PR]
+		if pr.State != "open" || pr.Head.SHA == "" {
+			continue
+		}
+		s.GitHubBranches[st.State.HeadBranch] = pr.Head.SHA
+		for _, r := range st.Revisions {
+			if r.GitHubSHA == pr.Head.SHA && r.GerritSHA != ch.Revision {
+				_, parentTree := c.trees(ctx, ch.Revision)
+				s.AppendOK[n] = parentTree != "" && parentTree == r.ParentTree
+			}
+		}
+	}
+
 	stacks, err := c.GitHub.ListStacks(ctx)
 	if err != nil {
 		return nil, err
@@ -267,6 +300,19 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			ref := "refs/heads/" + name
 			args = append(args, "--force-with-lease="+ref+":"+a.Leases[name], a.Refs[name]+":"+ref)
 		}
+		appended := map[string]string{}
+		for _, name := range sortedStringKeys(a.Appends) {
+			commit := a.Appends[name].Revision
+			if !a.Appends[name].Force {
+				var err error
+				if commit, err = c.appendCommit(ctx, a.Appends[name]); err != nil {
+					return err
+				}
+			}
+			appended[name] = commit
+			ref := "refs/heads/" + name
+			args = append(args, "--force-with-lease="+ref+":"+a.Leases[name], commit+":"+ref)
+		}
 		env, err := c.githubEnv(ctx)
 		if err != nil {
 			return err
@@ -274,6 +320,20 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		out, err := c.Mirror.GitEnv(ctx, env, nil, args...)
 		if err != nil {
 			return fmt.Errorf("%w\n%s", err, out)
+		}
+		for name, commit := range appended {
+			ap := a.Appends[name]
+			tree, parentTree := c.trees(ctx, ap.Revision)
+			err := c.updateState(ctx, ap.Change, fmt.Sprintf("Export patch set %d to %s", ap.PatchSet, name), func(st *state.Change) {
+				st.Revisions = append(st.Revisions, state.Revision{PatchSet: ap.PatchSet, GerritSHA: ap.Revision,
+					GitHubSHA: commit, Tree: tree, ParentTree: parentTree})
+			})
+			if err != nil {
+				return err
+			}
+			if err := c.exported(ctx, ap.Change); err != nil {
+				return err
+			}
 		}
 		return nil
 	case CreatePR:
@@ -318,17 +378,25 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 
 // link records a new change <-> PR link and announces it on the change.
 func (c *Code) link(ctx context.Context, s *Snapshot, n int, pr *github.PullRequest) error {
-	ch := s.Changes[n]
+	origin := "gerrit"
+	if s.githubBorn(n) {
+		origin = "github"
+	}
+	return c.linkPR(ctx, n, origin, s.Branch, s.Changes[n].ChangeID, pr)
+}
+
+func (c *Code) linkPR(ctx context.Context, n int, origin, branch, changeID string, pr *github.PullRequest) error {
 	err := c.updateState(ctx, n, fmt.Sprintf("Link PR #%d", pr.Number), func(st *state.Change) {
-		st.State.ChangeID = ch.ChangeID
-		st.State.Branch = s.Branch
+		st.State.Change = n
+		st.State.ChangeID = changeID
+		st.State.Branch = branch
 		if st.State.Origin == "" {
-			st.State.Origin = "gerrit"
+			st.State.Origin = origin
 		}
 		st.State.PR = pr.Number
 		st.State.PRNodeID = pr.NodeID
 		st.State.HeadBranch = pr.Head.Ref
-		st.State.Lifecycle = ch.Status
+		st.State.Lifecycle = "NEW"
 	})
 	if err != nil {
 		return err
@@ -340,8 +408,57 @@ func (c *Code) link(ctx context.Context, s *Snapshot, n int, pr *github.PullRequ
 	})
 }
 
+// appendCommit makes a commit with a patch set's tree on top of the
+// user's GitHub head (design §5.2: a fast-forward, so `git pull` works).
+func (c *Code) appendCommit(ctx context.Context, a Append) (string, error) {
+	out, err := c.Mirror.Git(ctx, nil, "log", "-1", "--format=%T%x00%an%x00%ae%x00%ad", "--date=raw", a.Revision)
+	if err != nil {
+		return "", err
+	}
+	f := strings.SplitN(strings.TrimSpace(string(out)), "\x00", 4)
+	if len(f) != 4 {
+		return "", fmt.Errorf("parsing %s", a.Revision)
+	}
+	env := []string{"GIT_AUTHOR_NAME=" + f[1], "GIT_AUTHOR_EMAIL=" + f[2], "GIT_AUTHOR_DATE=" + f[3]}
+	msg := fmt.Sprintf("Patch set %d from Gerrit\n\n%s\n", a.PatchSet, c.changeURL(a.Change))
+	if a.KeepMessage {
+		// Same message, author and dates: deterministic, so a retry
+		// makes the same commit.
+		raw, err := c.Mirror.Git(ctx, nil, "log", "-1", "--format=%B%x00%cn%x00%ce%x00%cd", "--date=raw", a.Revision)
+		if err != nil {
+			return "", err
+		}
+		g := strings.SplitN(string(raw), "\x00", 4)
+		if len(g) != 4 {
+			return "", fmt.Errorf("parsing %s", a.Revision)
+		}
+		msg = g[0]
+		env = append(env, "GIT_COMMITTER_NAME="+g[1], "GIT_COMMITTER_EMAIL="+g[2], "GIT_COMMITTER_DATE="+strings.TrimSpace(g[3]))
+	}
+	commit, err := c.Mirror.GitEnv(ctx, env, []byte(msg), "commit-tree", f[0], "-p", a.Onto, "-F", "-")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(commit)), nil
+}
+
+func (c *Code) exported(ctx context.Context, n int) error {
+	if c.OnExported == nil {
+		return nil
+	}
+	return c.OnExported(ctx, n)
+}
+
 // record saves the converged state of every linked change.
 func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan) error {
+	newRevision := map[int]bool{}
+	defer func() {
+		for _, n := range sortedKeys(newRevision) {
+			if err := c.exported(ctx, n); err != nil {
+				c.Logger.Warn("post-export sync failed", "change", n, "err", err)
+			}
+		}
+	}()
 	stackOf := map[int]int{}
 	for _, st := range s.Stacks {
 		for _, n := range st.Numbers() {
@@ -382,7 +499,14 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan) error {
 			st.State.Title = ch.Subject
 			st.State.BodyHash = d.BodyHash
 			st.State.ClosedNoticePosted = false
-			if k := len(st.Revisions); k == 0 || st.Revisions[k-1].GerritSHA != ch.Revision {
+			// Commits the bridge built (imports, appends, re-parented
+			// exports) are recorded where they are made, with both SHAs.
+			known := false
+			for _, r := range st.Revisions {
+				known = known || r.GerritSHA == ch.Revision
+			}
+			if st.State.Origin != "github" && !known {
+				newRevision[n] = true
 				st.Revisions = append(st.Revisions, state.Revision{
 					PatchSet: ch.PatchSet, GerritSHA: ch.Revision, GitHubSHA: ch.Revision,
 					Tree: tree, ParentTree: parentTree,

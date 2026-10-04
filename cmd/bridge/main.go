@@ -177,6 +177,20 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	wg.Go(func() {
 		router.RunResync(ctx, reconcile.BranchLister{Gerrit: rest, Project: cfg.Gerrit.Project, Store: store})
 	})
+	if cfg.ResyncInterval > 0 {
+		wg.Go(func() {
+			t := time.NewTicker(cfg.ResyncInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					router.Resync("periodic")
+				}
+			}
+		})
+	}
 	code := &reconcile.Code{
 		Project:       cfg.Gerrit.Project,
 		Gerrit:        rest,
@@ -185,6 +199,29 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Mirror:        mirror,
 		Store:         store,
 		DefaultBranch: ghRepo.DefaultBranch,
+		DryRun:        dryRun,
+		Logger:        logger,
+	}
+	var uploader reconcile.Uploader = reconcile.HTTPUploader{Mirror: mirror}
+	if cfg.Gerrit.SSH.PeerKeyFile != "" {
+		uploader = reconcile.SuexecUploader{
+			Mirror: mirror, Address: cfg.Gerrit.SSH.Address, Project: cfg.Gerrit.Project,
+			PeerKeyFile: cfg.Gerrit.SSH.PeerKeyFile, KnownHostsFile: cfg.Gerrit.SSH.KnownHostsFile,
+			Bridge: uploader,
+		}
+	}
+	code.Importer = &reconcile.Importer{
+		Project:       cfg.Gerrit.Project,
+		Gerrit:        rest,
+		GitHub:        gh,
+		GitHubURL:     code.GitHubURL,
+		Mirror:        mirror,
+		Store:         store,
+		Uploader:      uploader,
+		Identity:      cfg.Identity.GitHubToGerrit,
+		Bridge:        self,
+		DefaultBranch: ghRepo.DefaultBranch,
+		CreatedAfter:  cfg.GitHub.ImportCreatedAfter,
 		DryRun:        dryRun,
 		Logger:        logger,
 	}
@@ -209,6 +246,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		DryRun:       dryRun,
 		Logger:       logger,
 	}
+	// Statuses need the patch set on GitHub; refresh them as soon as the
+	// code mirror puts it there.
+	code.OnExported = checks.Sync
 	dispatch := &reconcile.Dispatcher{Code: code, Comments: comments, Checks: checks, Store: store, Logger: logger}
 	wg.Go(func() { reconcile.Work(ctx, q, dispatch, cfg.Workers, logger) })
 	wg.Go(func() {

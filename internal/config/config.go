@@ -24,9 +24,13 @@ type Config struct {
 	// Listen is the address of the HTTP server for webhooks and /healthz.
 	Listen  string `yaml:"listen"`
 	Workers int    `yaml:"workers"`
-	Gerrit  Gerrit `yaml:"gerrit"`
-	GitHub  GitHub `yaml:"github"`
-	CI      CI     `yaml:"ci"`
+	// ResyncInterval queues a full resync periodically, so missed events
+	// (or webhooks that cannot reach the bridge) heal. Zero disables.
+	ResyncInterval time.Duration `yaml:"resync_interval"`
+	Gerrit         Gerrit        `yaml:"gerrit"`
+	GitHub         GitHub        `yaml:"github"`
+	Identity       Identity      `yaml:"identity"`
+	CI             CI            `yaml:"ci"`
 }
 
 // Gerrit is the Gerrit side of the repo pair.
@@ -54,6 +58,10 @@ type SSH struct {
 	// ServerAliveInterval and ServerAliveCountMax.
 	KeepaliveInterval time.Duration `yaml:"keepalive_interval"`
 	KeepaliveCountMax int           `yaml:"keepalive_count_max"`
+	// PeerKeyFile is a key listed in Gerrit's etc/peer_keys. With it,
+	// imports from GitHub are pushed as the mapped Gerrit user (suexec),
+	// so that user owns the change. Without it, the bridge owns them.
+	PeerKeyFile string `yaml:"peer_key_file"`
 	// Watchdog reconnects (and resyncs) if no event arrives for this long.
 	// Zero disables it; quiet servers can legitimately send nothing.
 	Watchdog time.Duration `yaml:"watchdog"`
@@ -68,6 +76,16 @@ type GitHub struct {
 	// (e.g. [gh, auth, token]) and its output cached for a few minutes.
 	TokenFile    string   `yaml:"token_file"`
 	TokenCommand []string `yaml:"token_command"`
+	// ImportCreatedAfter limits importing GitHub-born PRs to those opened
+	// after this time, so turning the bridge on does not sweep up every
+	// existing PR. Zero imports all.
+	ImportCreatedAfter time.Time `yaml:"import_created_after"`
+}
+
+// Identity maps GitHub users to Gerrit accounts (design §7).
+type Identity struct {
+	// GitHubToGerrit maps a GitHub login to a Gerrit username.
+	GitHubToGerrit map[string]string `yaml:"github_to_gerrit"`
 }
 
 // CI configures how Gerrit CI is mirrored to GitHub (design §6.5).
@@ -148,6 +166,9 @@ func (c *Config) validate() error {
 	}
 	if _, err := regexp.Compile(c.CI.MessagePattern); err != nil {
 		errs = append(errs, fmt.Errorf("ci.message_pattern: %w", err))
+	}
+	if c.ResyncInterval < 0 {
+		errs = append(errs, errors.New("resync_interval must not be negative"))
 	}
 	if c.Workers < 1 {
 		errs = append(errs, errors.New("workers must be at least 1"))

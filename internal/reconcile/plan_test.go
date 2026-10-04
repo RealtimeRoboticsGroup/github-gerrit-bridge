@@ -14,22 +14,23 @@ import (
 // world is an in-memory GitHub plus Gerrit, enough to run plans to a fixed
 // point. It enforces the GitHub rules the planner must respect.
 type world struct {
-	t       *testing.T
-	gerrit  map[int]*GerritChange
-	branch  map[string]string // all GitHub branches
-	prs     map[int]*github.PullRequest
-	stacks  map[int]*github.Stack
-	state   map[int]*state.Change
-	onMain  map[string]bool
-	nextNum int
-	log     []string
+	t        *testing.T
+	gerrit   map[int]*GerritChange
+	branch   map[string]string // all GitHub branches
+	prs      map[int]*github.PullRequest
+	stacks   map[int]*github.Stack
+	state    map[int]*state.Change
+	onMain   map[string]bool
+	appendOK map[int]bool
+	nextNum  int
+	log      []string
 }
 
 func newWorld(t *testing.T) *world {
 	return &world{
 		t: t, gerrit: map[int]*GerritChange{}, branch: map[string]string{"main": "m0"},
 		prs: map[int]*github.PullRequest{}, stacks: map[int]*github.Stack{}, state: map[int]*state.Change{},
-		onMain: map[string]bool{"m0": true}, nextNum: 1,
+		onMain: map[string]bool{"m0": true}, appendOK: map[int]bool{}, nextNum: 1,
 	}
 }
 
@@ -61,6 +62,13 @@ func (w *world) snapshot() *Snapshot {
 	for b, sha := range w.branch {
 		if strings.HasPrefix(b, headPrefix) || strings.HasPrefix(b, frozenPrefix) {
 			s.GitHubBranches[b] = sha
+		}
+	}
+	s.AppendOK = map[int]bool{}
+	for n, st := range w.state {
+		if st.State.Origin == "github" {
+			s.GitHubBranches[st.State.HeadBranch] = w.branch[st.State.HeadBranch]
+			s.AppendOK[n] = w.appendOK[n]
 		}
 	}
 	for n, pr := range w.prs {
@@ -99,6 +107,21 @@ func (w *world) apply(p *Plan) {
 		w.log = append(w.log, a.String())
 		switch a.Kind {
 		case PushBranches, DeleteBranches:
+			for name, ap := range a.Appends {
+				if w.branch[name] != ap.Lease {
+					w.fail("append lease on %s: have %q, lease %q", name, w.branch[name], ap.Lease)
+				}
+				sha := ap.Revision
+				if !ap.Force {
+					sha = "append(" + ap.Onto + "," + ap.Revision + ")"
+				}
+				w.branch[name] = sha
+				if w.state[ap.Change] == nil {
+					w.state[ap.Change] = &state.Change{}
+				}
+				st := w.state[ap.Change]
+				st.Revisions = append(st.Revisions, state.Revision{PatchSet: ap.PatchSet, GerritSHA: ap.Revision, GitHubSHA: sha})
+			}
 			for name, sha := range a.Refs {
 				if w.branch[name] != a.Leases[name] {
 					w.fail("lease on %s: have %q, lease %q", name, w.branch[name], a.Leases[name])
@@ -516,5 +539,103 @@ func TestNaming(t *testing.T) {
 	}
 	if _, ok := frozenFor("gerrit-base/rel-1/"+id, "rel-1", "main"); !ok {
 		t.Error("frozenFor rel-1")
+	}
+}
+
+// bornWorld has change 1 imported from PR #1 on the user's branch
+// "feature", GitHub head h1 squashed into Gerrit commit s1.
+func bornWorld(t *testing.T) *world {
+	w := newWorld(t)
+	w.upload(1, "s1", "m0")
+	w.branch["feature"] = "h1"
+	w.prs[1] = &github.PullRequest{Number: 1, State: "open", Title: "User title", Body: "User body.",
+		Head: github.Ref{Ref: "feature"}, Base: github.Ref{Ref: "main"}}
+	w.nextNum = 2
+	w.state[1] = &state.Change{
+		State:     state.ChangeState{PR: 1, Origin: "github", HeadBranch: "feature"},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: "s1", GitHubSHA: "h1"}},
+	}
+	return w
+}
+
+func TestGitHubBornInSync(t *testing.T) {
+	w := bornWorld(t)
+	w.gerrit[1].WIP = true // the user's draft state wins on GitHub
+	w.converge()
+	pr := w.prs[1]
+	if w.branch["feature"] != "h1" {
+		t.Errorf("user's branch rewritten to %s", w.branch["feature"])
+	}
+	if _, ok := w.branch["gerrit/"+cid(1)]; ok {
+		t.Error("a gerrit/ branch was pushed for a GitHub-born change")
+	}
+	if pr.Title != "User title" || !strings.HasPrefix(pr.Body, "User body.\n\n"+linksStart) || pr.Draft {
+		t.Errorf("PR text/draft not the user's: %q %q draft=%v", pr.Title, pr.Body, pr.Draft)
+	}
+}
+
+func TestGitHubBornGerritEditAppends(t *testing.T) {
+	w := bornWorld(t)
+	w.converge()
+	w.upload(1, "s2", "m0") // edited in Gerrit, same parent
+	w.appendOK[1] = true
+	w.converge()
+	if got := w.branch["feature"]; got != "append(h1,s2)" {
+		t.Errorf("feature = %s, want a commit appended on h1", got)
+	}
+	// Rebased in Gerrit: force-push the patch set itself.
+	w.upload(1, "s3", "m1")
+	w.onMain["m1"] = true
+	w.appendOK[1] = false
+	w.converge()
+	if got := w.branch["feature"]; got != "s3" {
+		t.Errorf("feature = %s, want s3", got)
+	}
+}
+
+func TestGitHubBornUnknownHeadIsNeverOverwritten(t *testing.T) {
+	w := bornWorld(t)
+	w.converge()
+	w.branch["feature"] = "h2" // the user pushed; not imported yet
+	w.upload(1, "s2", "m0")    // and Gerrit moved too
+	w.converge()
+	if w.branch["feature"] != "h2" {
+		t.Errorf("user's unimported push was overwritten with %s", w.branch["feature"])
+	}
+}
+
+func TestStackOnGitHubBornParent(t *testing.T) {
+	w := bornWorld(t)
+	w.upload(2, "b1", "s1") // a Gerrit change on top of the imported one
+	w.converge()
+	w.checkBase(t, 2, "feature")
+	// On GitHub it must sit on the user's commit h1, not Gerrit's s1, or
+	// GitHub would diff it against main.
+	if got := w.branch["gerrit/"+cid(2)]; got != "append(h1,b1)" {
+		t.Errorf("gerrit/2 = %s, want b1's tree re-parented onto h1", got)
+	}
+	if got := w.stacksAsChanges(); !reflect.DeepEqual(got, [][]int{{1, 2}}) {
+		t.Errorf("stacks = %v", got)
+	}
+}
+
+func TestGitHubBornFrozenBaseUsesGitHubCommit(t *testing.T) {
+	w := bornWorld(t)
+	// Layer 2 imported on top of layer 1 (GitHub h2 -> Gerrit t1).
+	w.upload(2, "t1", "s1")
+	w.branch["feature2"] = "h2"
+	w.prs[2] = &github.PullRequest{Number: 2, State: "open", Head: github.Ref{Ref: "feature2"}, Base: github.Ref{Ref: "feature"}}
+	w.nextNum = 3
+	w.state[2] = &state.Change{State: state.ChangeState{PR: 2, Origin: "github", HeadBranch: "feature2"},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: "t1", GitHubSHA: "h2"}}}
+	w.converge()
+	// The user force-pushes layer 1 only; it is imported as s2.
+	w.branch["feature"] = "h1b"
+	w.upload(1, "s2", "m0")
+	w.state[1].Revisions = append(w.state[1].Revisions, state.Revision{PatchSet: 2, GerritSHA: "s2", GitHubSHA: "h1b"})
+	w.converge()
+	w.checkBase(t, 2, "gerrit-base/"+cid(2))
+	if got := w.branch["gerrit-base/"+cid(2)]; got != "h1" {
+		t.Errorf("frozen base at %s, want the GitHub commit h1 (not Gerrit's s1)", got)
 	}
 }

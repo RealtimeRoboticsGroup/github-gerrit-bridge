@@ -933,6 +933,43 @@ changes, so it must stay off for the bridged repo.
    change messages, not comments, so they are not mirrored; the web UI's
    reply text is a `/PATCHSET_LEVEL` comment and is.
 5. **GitHub → Gerrit code:** deterministic squash and stack import to `refs/for`.
+   *Done* (`internal/reconcile/importer.go`, `push.go`), verified live with
+   PRs #15/#16 (stack) on `bridge-scratch`:
+   - A two-commit layer became one change and the layer above it a second
+     one parented on it, both owned and uploaded by the mapped user
+     (`identity.github_to_gerrit`, pushed with `suexec`); author kept,
+     committer the uploader.
+   - Pushing layer 1 without restacking imported patch set 2; layer 2 went
+     to a frozen base and the stack split. Restacking on GitHub imported
+     layer 2 again and rejoined the stack.
+   - A Gerrit edit of a GitHub-born change was appended to the user's
+     branch as "Patch set N from Gerrit" (`git pull --ff-only` works); a
+     rebase in Gerrit force-pushes instead.
+   - Both sides moving: the GitHub push became a patch set, then Gerrit's
+     version was re-uploaded on top and appended to GitHub, with a notice on
+     both sides.
+   Learned while building it:
+   - **Same trees, different commits, everywhere.** Any change whose
+     parent is GitHub-born must sit on the parent's *GitHub* commit on
+     GitHub, or GitHub diffs it against the merge base: a Gerrit-born
+     change on a GitHub-born one is re-parented (same tree, message and
+     dates), and frozen bases point at the GitHub commit. Statuses go on
+     the GitHub commit, and only once it exists.
+   - The bridge never overwrites a user's branch at a commit it has not
+     imported (e.g. one that needs a restack).
+   - A PR the bridge moved to a frozen base is placed, for import, under
+     the change its Gerrit parent belongs to.
+   - `github.import_created_after` keeps the bridge from importing PRs
+     that predate it. (Without it, the first live run imported the old
+     experiment PRs #1/#2/#4; their bodies were restored by hand, but the
+     pending `gerrit/*` statuses on their commits cannot be deleted.)
+   - `resync_interval` re-queues everything periodically, for webhooks that
+     cannot reach the bridge.
+   Not yet: the uploader of later patch sets is the PR author, not the
+   GitHub pusher; draft toggles without a push and Gerrit-side commit
+   message edits are not mirrored for GitHub-born PRs; non-linear
+   GitHub-born trees; `gerrit/sync` status for import errors (they are
+   logged).
 6. **Submit from GitHub:** `/submit`, plus a merge-queue investigation.
 
 ## 12. Decisions

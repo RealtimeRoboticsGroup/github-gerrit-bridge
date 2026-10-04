@@ -3,6 +3,8 @@
 # HTTP listener for GitHub webhooks (POST /webhook) and GET /healthz.
 listen: ":8080"
 workers: 4
+# Full resync this often, in case events or webhooks were missed.
+resync_interval: 30m
 
 gerrit:
   url: https://gerrit.example.com
@@ -19,6 +21,11 @@ gerrit:
     key_file: /etc/github-gerrit-bridge/id_ed25519
     # e.g. ssh-keyscan -p 29418 gerrit.example.com > known_hosts
     known_hosts_file: /etc/github-gerrit-bridge/known_hosts
+    # Optional: a key in Gerrit's etc/peer_keys (base64 blob and one-word
+    # comment per line). Lets imports from GitHub be owned by the mapped
+    # Gerrit user via suexec. Keep it separate from key_file: it can act as
+    # anyone.
+    # peer_key_file: /etc/github-gerrit-bridge/peer_key
     keepalive_interval: 15s
     keepalive_count_max: 3
     # Reconnect and resync if no event arrives for this long; 0 disables.
@@ -31,6 +38,15 @@ github:
   # API token: either a file, or a command that prints one.
   token_command: [gh, auth, token]
   # token_file: /etc/github-gerrit-bridge/github-token
+  # Only import GitHub PRs opened after this (RFC 3339); earlier ones are
+  # left alone. Omit to import all.
+  # import_created_after: 2026-10-04T00:00:00Z
+
+identity:
+  # GitHub login -> Gerrit username. Unmapped users' imports are owned by
+  # the bridge account, with the real author kept.
+  github_to_gerrit:
+    octocat: ocat
 
 ci:
   # Uploads by members of this group are built automatically by

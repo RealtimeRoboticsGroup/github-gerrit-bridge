@@ -8,8 +8,10 @@ go_library(
         "code.go",
         "comments.go",
         "dispatch.go",
+        "importer.go",
         "naming.go",
         "plan.go",
+        "push.go",
         "reconcile.go",
     ],
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile",
@@ -29,6 +31,7 @@ go_test(
     srcs = [
         "checks_test.go",
         "comments_test.go",
+        "importer_test.go",
         "plan_test.go",
         "reconcile_test.go",
     ],

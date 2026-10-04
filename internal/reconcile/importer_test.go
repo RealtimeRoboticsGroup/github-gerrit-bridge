@@ -1,0 +1,132 @@
+package reconcile
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
+)
+
+// gitRepo is a scratch work tree whose objects the mirror can read.
+type gitRepo struct {
+	t   *testing.T
+	dir string
+}
+
+func (g *gitRepo) run(args ...string) string {
+	g.t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = g.dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=Austin", "GIT_AUTHOR_EMAIL=austin@example.com", "GIT_AUTHOR_DATE=1700000000 +0000",
+		"GIT_COMMITTER_NAME=Austin", "GIT_COMMITTER_EMAIL=austin@example.com", "GIT_COMMITTER_DATE=1700000000 +0000")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		g.t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func (g *gitRepo) commit(file, content, msg string) string {
+	os.WriteFile(filepath.Join(g.dir, file), []byte(content), 0o644)
+	g.run("add", file)
+	g.run("commit", "-q", "-m", msg)
+	return g.run("rev-parse", "HEAD")
+}
+
+func newImportEnv(t *testing.T) (*Importer, *gitRepo) {
+	dir := t.TempDir()
+	g := &gitRepo{t: t, dir: filepath.Join(dir, "work")}
+	os.MkdirAll(g.dir, 0o755)
+	g.run("init", "-q", "-b", "main")
+	m := &gitmirror.Repo{Dir: filepath.Join(g.dir, ".git")}
+	im := &Importer{Mirror: m, Logger: slog.Default(),
+		GitHub: &github.Client{Owner: "o", Repo: "r"}}
+	return im, g
+}
+
+func TestSquashIsDeterministicAndKeepsTree(t *testing.T) {
+	im, g := newImportEnv(t)
+	base := g.commit("a.txt", "base\n", "base")
+	g.run("checkout", "-q", "-b", "feature")
+	c1 := g.commit("a.txt", "base\none\n", "one")
+	h := g.commit("b.txt", "two\n", "two")
+	pr := &github.PullRequest{Title: "Feature", Body: "Does things.\n\n" + linksStart + "\nold block\n" + linksEnd,
+		HTMLURL: "https://github.com/o/r/pull/3"}
+	who := gerrit.AccountInfo{Name: "Alice", Email: "alice@example.com"}
+	ctx := context.Background()
+	s1, err := im.squash(ctx, pr, []string{h, c1}, h, base, "I"+strings.Repeat("a", 40), who)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, _ := im.squash(ctx, pr, []string{h, c1}, h, base, "I"+strings.Repeat("a", 40), who)
+	if s1 != s2 {
+		t.Errorf("squash not deterministic: %s vs %s", s1, s2)
+	}
+	if g.run("rev-parse", s1+"^{tree}") != g.run("rev-parse", h+"^{tree}") || g.run("rev-parse", s1+"^") != base {
+		t.Error("squash changed the tree or parent")
+	}
+	msg := g.run("log", "-1", "--format=%B", s1)
+	for _, want := range []string{"Feature\n\nDoes things.", "GitHub-PR: https://github.com/o/r/pull/3", "Change-Id: I" + strings.Repeat("a", 40)} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message missing %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "old block") {
+		t.Errorf("bridge links block leaked into the commit message:\n%s", msg)
+	}
+	if got := g.run("log", "-1", "--format=%ae %ce", s1); got != "austin@example.com alice@example.com" {
+		t.Errorf("author/committer = %s", got)
+	}
+}
+
+func TestNoOpSquash(t *testing.T) {
+	im, g := newImportEnv(t)
+	base := g.commit("a.txt", "base\n", "base")
+	cid := "I" + strings.Repeat("b", 40)
+	h := g.commit("a.txt", "x\n", "Do it\n\nChange-Id: "+cid)
+	who := gerrit.AccountInfo{Name: "Austin", Email: "austin@example.com"}
+	s, err := im.squash(context.Background(), &github.PullRequest{Title: "Do it"}, []string{h}, h, base, cid, who)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s != h {
+		t.Errorf("single commit with the Change-Id was rewritten: %s != %s", s, h)
+	}
+	// Someone else pushing it must rewrite (committer must be the uploader).
+	s, _ = im.squash(context.Background(), &github.PullRequest{Title: "Do it"}, []string{h}, h, base, cid,
+		gerrit.AccountInfo{Name: "Alice", Email: "alice@example.com"})
+	if s == h {
+		t.Error("no-op squash used with a different committer")
+	}
+}
+
+func TestRealParentIgnoresStaleMergeBase(t *testing.T) {
+	im, g := newImportEnv(t)
+	g.commit("a.txt", "base\n", "base")
+	g.run("update-ref", "refs/remotes/gerrit/heads/main", "HEAD")
+	g.run("checkout", "-q", "-b", "l1")
+	l1v1 := g.commit("l1.txt", "1\n", "l1")
+	g.run("checkout", "-q", "-b", "l2")
+	l2a := g.commit("l2.txt", "a\n", "l2 a")
+	l2b := g.commit("l2.txt", "b\n", "l2 b")
+	// Layer 1 was imported as Gerrit commit "G1" for GitHub head l1v1.
+	own, gp, err := im.realParent(context.Background(), "main", l2b, map[string]string{l1v1: "G1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gp != "G1" || len(own) != 2 || own[0] != l2b || own[1] != l2a {
+		t.Errorf("realParent = %v, %s", own, gp)
+	}
+	// Unknown parent layer version: refuse rather than fold it in.
+	if _, _, err := im.realParent(context.Background(), "main", l2b, map[string]string{"other": "G9"}); err == nil {
+		t.Error("expected restack-needed error")
+	}
+}

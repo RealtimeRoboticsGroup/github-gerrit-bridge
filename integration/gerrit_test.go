@@ -22,6 +22,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/config"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/events"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/gerritssh"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
@@ -374,4 +375,18 @@ func newKey() (ssh.Signer, []byte, error) {
 		return nil, nil, err
 	}
 	return signer, pem.EncodeToMemory(block), nil
+}
+
+func TestWriteBridgeConfigParses(t *testing.T) {
+	path, err := srv.WriteBridgeConfig(filepath.Join(t.TempDir(), "bridge"), env, "AustinSchuh", "bridge-scratch", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Gerrit.SSH.PeerKeyFile == "" || cfg.Identity.GitHubToGerrit["AustinSchuh"] != "alice" {
+		t.Errorf("config = %+v", cfg)
+	}
 }

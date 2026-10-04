@@ -16,6 +16,7 @@ go_test(
     # Starts a real Gerrit (~30s). Skip with --test_tag_filters=-integration.
     tags = ["integration"],
     deps = [
+        "//internal/config",
         "//internal/gerrit/events",
         "//internal/gerrit/gerritssh",
         "//internal/gitmirror",

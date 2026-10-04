@@ -2,8 +2,10 @@ package testgerrit
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -109,11 +111,18 @@ func (s *Server) WriteBridgeConfig(dir string, e *Env, owner, repo string, liste
 	}
 	secret := make([]byte, 16)
 	rand.Read(secret)
+	// A separate peer key, so imports from GitHub are owned by the mapped
+	// user (suexec, design §5.2).
+	peer, err := s.CreatePeerKey()
+	if err != nil {
+		return "", err
+	}
 	files := map[string]string{
 		"gerrit-http-password": e.Bridge.HTTPPassword + "\n",
 		"id_ed25519":           string(e.Bridge.PrivateKeyPEM),
 		"known_hosts":          kh + "\n",
 		"webhook-secret":       fmt.Sprintf("%x\n", secret),
+		"peer_key":             string(peer),
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
@@ -132,17 +141,22 @@ gerrit:
     address: %s
     user: %s
     key_file: %s
+    peer_key_file: %s
     known_hosts_file: %s
 github:
   owner: %s
   repo: %s
   webhook_secret_file: %s
   token_command: [gh, auth, token]
+resync_interval: 1m
+identity:
+  github_to_gerrit:
+    %s: alice
 ci:
   trusted_group: %s
 `, listen, s.URL, e.Project, e.Bridge.Username, filepath.Join(dir, "gerrit-http-password"), filepath.Join(dir, "mirror.git"),
-		s.SSHAddr, e.Bridge.Username, filepath.Join(dir, "id_ed25519"), filepath.Join(dir, "known_hosts"),
-		owner, repo, filepath.Join(dir, "webhook-secret"), TrustedGroup)
+		s.SSHAddr, e.Bridge.Username, filepath.Join(dir, "id_ed25519"), filepath.Join(dir, "peer_key"), filepath.Join(dir, "known_hosts"),
+		owner, repo, filepath.Join(dir, "webhook-secret"), owner, TrustedGroup)
 	path := filepath.Join(dir, "config.yaml")
 	return path, os.WriteFile(path, []byte(cfg), 0o600)
 }
@@ -162,4 +176,25 @@ func (s *Server) AddPeerKey(key ssh.PublicKey, comment string) error {
 	defer f.Close()
 	_, err = fmt.Fprintf(f, "%s %s\n", base64.StdEncoding.EncodeToString(key.Marshal()), strings.Join(strings.Fields(comment), "_"))
 	return err
+}
+
+// CreatePeerKey generates a key, registers it in etc/peer_keys and returns
+// the private key in OpenSSH PEM form.
+func (s *Server) CreatePeerKey() ([]byte, error) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.AddPeerKey(signer.PublicKey(), "bridge-peer"); err != nil {
+		return nil, err
+	}
+	block, err := ssh.MarshalPrivateKey(priv, "bridge-peer")
+	if err != nil {
+		return nil, err
+	}
+	return pem.EncodeToMemory(block), nil
 }

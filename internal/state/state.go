@@ -56,6 +56,9 @@ type ChangeState struct {
 	// edit (rewrite) from a GitHub edit (keep).
 	Title    string `json:"title,omitempty"`
 	BodyHash string `json:"body_hash,omitempty"`
+	// ImportHash identifies the PR title/body/draft state last imported
+	// for a GitHub-born change; a change re-imports the message.
+	ImportHash string `json:"import_hash,omitempty"`
 	// ClosedNoticePosted records that the "merged/abandoned in Gerrit"
 	// comment was posted on the PR.
 	ClosedNoticePosted bool `json:"closed_notice_posted,omitempty"`

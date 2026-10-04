@@ -43,6 +43,50 @@ type Snapshot struct {
 	Stacks []*github.Stack
 	// State is the bridge's stored state per change.
 	State map[int]*state.Change
+	// AppendOK marks GitHub-born changes whose current patch set has the
+	// same parent tree as the one last synced to GitHub, so a Gerrit edit
+	// can be appended to the user's branch as a fast-forward (design §5.2).
+	AppendOK map[int]bool
+}
+
+// githubBorn reports whether change n came from a GitHub PR.
+func (s *Snapshot) githubBorn(n int) bool {
+	st := s.State[n]
+	return st != nil && st.State.Origin == "github"
+}
+
+// head is the GitHub branch holding change n: the user's own branch for a
+// GitHub-born change, else the bridge's gerrit/<Change-Id>.
+func (s *Snapshot) head(n int, changeID string) string {
+	if st := s.State[n]; st != nil && st.State.Origin == "github" && st.State.HeadBranch != "" {
+		return st.State.HeadBranch
+	}
+	return HeadBranch(s.Branch, s.DefaultBranch, changeID)
+}
+
+// ghCommit is the GitHub commit standing for Gerrit commit sha: the one
+// recorded for it, else sha itself.
+func (s *Snapshot) ghCommit(sha string) string {
+	for _, st := range s.State {
+		for i := len(st.Revisions) - 1; i >= 0; i-- {
+			if r := st.Revisions[i]; r.GerritSHA == sha && r.GitHubSHA != "" {
+				return r.GitHubSHA
+			}
+		}
+	}
+	return sha
+}
+
+// githubFor maps a GitHub commit of change n to the Gerrit commit it was
+// synced with.
+func (s *Snapshot) githubFor(n int) map[string]string {
+	m := map[string]string{}
+	if st := s.State[n]; st != nil {
+		for _, r := range st.Revisions {
+			m[r.GitHubSHA] = r.GerritSHA
+		}
+	}
+	return m
 }
 
 // ActionKind orders actions: a plan is applied in this order.
@@ -73,12 +117,15 @@ type Action struct {
 	// Refs maps branch -> new SHA ("" deletes), and Leases branch ->
 	// SHA it must currently have ("" means it must not exist).
 	Refs, Leases map[string]string
-	New          *github.NewPull
-	Update       *github.PullUpdate
-	Draft        bool
-	Stack        int
-	PRs          []int
-	Comment      string
+	// Appends are pushes that add a commit with the patch set's tree on
+	// top of the user's branch instead of replacing it.
+	Appends map[string]Append
+	New     *github.NewPull
+	Update  *github.PullUpdate
+	Draft   bool
+	Stack   int
+	PRs     []int
+	Comment string
 }
 
 func (a Action) String() string {
@@ -99,6 +146,9 @@ func (a Action) String() string {
 			} else {
 				names = append(names, n+"="+short(sha))
 			}
+		}
+		for n, a := range a.Appends {
+			names = append(names, n+"+=ps"+fmt.Sprint(a.PatchSet))
 		}
 		sort.Strings(names)
 		b.WriteString(" " + strings.Join(names, " "))
@@ -131,6 +181,27 @@ func (a Action) String() string {
 }
 
 func short(sha string) string { return sha[:min(len(sha), 8)] }
+
+// Append exports a patch set as a commit the bridge builds: the patch
+// set's tree on a GitHub-side parent. Used when GitHub's history differs
+// from Gerrit's (design §2, "same trees"):
+//   - a Gerrit edit to a GitHub-born change goes on top of the user's
+//     branch (a fast-forward, so `git pull` works);
+//   - a change whose parent is GitHub-born sits on the parent's GitHub
+//     commit rather than on Gerrit's squash of it.
+type Append struct {
+	Change   int
+	PatchSet int
+	Revision string // Gerrit commit whose tree to use
+	Onto     string // parent of the new commit
+	Lease    string // what the branch must hold now ("" = absent)
+	// KeepMessage reuses the patch set's message (a re-parented change)
+	// instead of "Patch set N from Gerrit" (an edit appended to a branch).
+	KeepMessage bool
+	// Force pushes Revision itself instead (the patch set was rebased in
+	// Gerrit, so appending would mix two bases).
+	Force bool
+}
 
 // Desired is what one mirrored change should look like on GitHub.
 type Desired struct {
@@ -197,22 +268,41 @@ func MakePlan(s *Snapshot) *Plan {
 	for n, c := range s.Changes {
 		if st := s.State[n]; st != nil && st.State.PR != 0 && s.PRs[st.State.PR] != nil {
 			prFor[n] = s.PRs[st.State.PR]
-		} else if pr := byHead[HeadBranch(s.Branch, s.DefaultBranch, c.ChangeID)]; pr != nil {
+		} else if pr := byHead[s.head(n, c.ChangeID)]; pr != nil {
 			prFor[n] = pr
 		}
 	}
 
 	// Desired branches and PR shape.
 	refs := map[string]string{}
+	appends := map[string]Append{}
 	finalBase := map[int]string{} // PR -> base after this plan
 	for _, n := range sortedKeys(mirrored) {
 		c := mirrored[n]
-		d := &Desired{Change: n, Head: HeadBranch(s.Branch, s.DefaultBranch, c.ChangeID), Title: c.Subject, Draft: c.WIP}
-		refs[d.Head] = c.Revision
+		born := s.githubBorn(n)
+		d := &Desired{Change: n, Head: s.head(n, c.ChangeID), Title: c.Subject, Draft: c.WIP}
+		ghParent := s.ghCommit(c.Parent)
+		gh, onGitHub := s.GitHubBranches[d.Head]
+		synced := s.githubFor(n)
+		switch ge, known := synced[gh]; {
+		case onGitHub && known && ge == c.Revision:
+			// Rule 1: GitHub already has this revision.
+		case !born && ghParent == c.Parent:
+			refs[d.Head] = c.Revision
+		case !born:
+			appends[d.Head] = Append{Change: n, PatchSet: c.PatchSet, Revision: c.Revision, Onto: ghParent,
+				Lease: gh, KeepMessage: true}
+		case !onGitHub || !known:
+			// The user pushed something not imported yet (or not
+			// importable): never overwrite their work.
+		default:
+			appends[d.Head] = Append{Change: n, PatchSet: c.PatchSet, Revision: c.Revision, Onto: gh, Lease: gh,
+				Force: !s.AppendOK[n]}
+		}
 		var note string
 		switch {
 		case parentOf[n] != 0:
-			d.Base = HeadBranch(s.Branch, s.DefaultBranch, mirrored[parentOf[n]].ChangeID)
+			d.Base = s.head(parentOf[n], mirrored[parentOf[n]].ChangeID)
 		case s.OnBranch[c.Parent]:
 			d.Base = s.Branch
 		default:
@@ -220,9 +310,9 @@ func MakePlan(s *Snapshot) *Plan {
 			// private parent: pin the exact parent so the diff matches
 			// Gerrit's.
 			d.Frozen = FrozenBranch(s.Branch, s.DefaultBranch, c.ChangeID)
-			d.FrozenAt = c.Parent
+			d.FrozenAt = ghParent
 			d.Base = d.Frozen
-			refs[d.Frozen] = c.Parent
+			refs[d.Frozen] = ghParent
 			note = "⚠️ This change is based on an outdated or unmerged parent, so this PR is diffed against that exact commit and is not in the stack. Rebase it in Gerrit to rejoin the stack."
 		}
 		pr := prFor[n]
@@ -248,6 +338,11 @@ func MakePlan(s *Snapshot) *Plan {
 			curBody = pr.Body
 		}
 		body, hash := composeBody(curBody, c.Message, lastHash, block)
+		if born {
+			// The PR text is the user's: only the links block is ours.
+			user, _ := splitBody(curBody)
+			body = strings.TrimSpace(user + "\n\n" + block)
+		}
 		d.BodyHash = hash
 		p.Desired[n] = d
 
@@ -270,7 +365,7 @@ func MakePlan(s *Snapshot) *Plan {
 		}
 		// Rewrite the title only when the subject changed in Gerrit, so a
 		// title edited on GitHub survives.
-		if pr.Title != c.Subject && lastTitle != c.Subject {
+		if !born && pr.Title != c.Subject && lastTitle != c.Subject {
 			u.Title = ptr(c.Subject)
 			changed = true
 		}
@@ -281,20 +376,24 @@ func MakePlan(s *Snapshot) *Plan {
 		if changed {
 			p.Actions = append(p.Actions, Action{Kind: UpdatePR, Change: n, PR: pr.Number, Update: u})
 		}
-		if pr.Draft != c.WIP && pr.State == "open" {
+		// A GitHub-born PR's draft state belongs to its author.
+		if !born && pr.Draft != c.WIP && pr.State == "open" {
 			p.Actions = append(p.Actions, Action{Kind: SetDraft, Change: n, PR: pr.Number, NodeID: pr.NodeID, Draft: c.WIP})
 		}
 	}
 
 	// Branch pushes, leased on what we observed.
-	push := Action{Kind: PushBranches, Refs: map[string]string{}, Leases: map[string]string{}}
+	push := Action{Kind: PushBranches, Refs: map[string]string{}, Leases: map[string]string{}, Appends: appends}
 	for name, sha := range refs {
 		if s.GitHubBranches[name] != sha {
 			push.Refs[name] = sha
 			push.Leases[name] = s.GitHubBranches[name]
 		}
 	}
-	if len(push.Refs) > 0 {
+	for name, a := range appends {
+		push.Leases[name] = a.Lease
+	}
+	if len(push.Refs) > 0 || len(appends) > 0 {
 		p.Actions = append(p.Actions, push)
 	}
 

@@ -54,6 +54,7 @@ type PullRequest struct {
 	User      User       `json:"user"`
 	Head      Ref        `json:"head"`
 	Base      Ref        `json:"base"`
+	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	// Stack is set when the PR is in a native stack.
 	Stack *PRStack `json:"stack"`
