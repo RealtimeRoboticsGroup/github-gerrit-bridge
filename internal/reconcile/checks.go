@@ -51,6 +51,8 @@ type Checks struct {
 	// CIMessage matches a CI message; group 1 is Started, Succeeded or
 	// Failed and group 2 the build URL.
 	CIMessage *regexp.Regexp
+	// CIAccount is CI's Gerrit username: only its messages are CI runs.
+	CIAccount string
 	DryRun    bool
 	Logger    *slog.Logger
 
@@ -110,7 +112,7 @@ func (c *Checks) Sync(ctx context.Context, n int) error {
 	}
 
 	trusted, known := c.isTrusted(ctx, rev.Uploader.AccountID)
-	want := desiredStatuses(ch, c.ChangeURL(n), c.CILabels, latestCIRun(ch, rev.Number, c.CIMessage), trusted || !known, c.TrustedGroup)
+	want := desiredStatuses(ch, c.ChangeURL(n), c.CILabels, latestCIRun(ch, rev.Number, c.CIMessage, c.CIAccount), trusted || !known, c.TrustedGroup)
 	have, err := c.GitHub.Statuses(ctx, sha)
 	if err != nil {
 		return err
@@ -171,14 +173,14 @@ func (c *Checks) isTrusted(ctx context.Context, account int) (trusted, known boo
 	return c.trusted[account], true
 }
 
-func latestCIRun(ch *gerrit.ChangeInfo, ps int, re *regexp.Regexp) ciRun {
+func latestCIRun(ch *gerrit.ChangeInfo, ps int, re *regexp.Regexp, account string) ciRun {
 	var run ciRun
 	if re == nil {
 		return run
 	}
 	for _, m := range ch.Messages { // oldest first
-		if m.RevisionNumber != ps {
-			continue
+		if m.RevisionNumber != ps || isBridgeTag(m.Tag) || (account != "" && !strings.EqualFold(m.Author.Username, account)) {
+			continue // not from CI: mirrored from GitHub, or someone else
 		}
 		if sm := re.FindStringSubmatch(m.Message); len(sm) >= 3 {
 			run = ciRun{Phase: sm[1], URL: sm[2]}

@@ -110,7 +110,7 @@ func run() error {
 		}
 	}
 	if *replicate != "" {
-		pcfg, err := mirrorProject(ctx, s, bridgeDir, *replicate, *github, *listen, *tokenFile, *identity, *bot)
+		pcfg, err := mirrorProject(ctx, s, bridgeDir, *replicate, *github, *listen, *tokenFile, *identity, *bot, *ciUser)
 		if err != nil {
 			return err
 		}
@@ -168,7 +168,7 @@ func run() error {
 
 // mirrorProject makes sure the replicated project exists, seeded from the
 // GitHub repo's main, and that a bridge config for it exists.
-func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project, repo, listen, tokenFile, identity, bot string) (string, error) {
+func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project, repo, listen, tokenFile, identity, bot, ciUser string) (string, error) {
 	tok, err := config.ReadSecret(tokenFile)
 	if err != nil {
 		return "", err
@@ -205,7 +205,7 @@ func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project
 	owner, name, _ := strings.Cut(repo, "/")
 	return s.WriteProjectConfig(bridgeDir, testgerrit.ProjectConfig{
 		File: project + ".yaml", Project: project, Owner: owner, Repo: name, Listen: listen,
-		Identity: ids, ImportCreatedAfter: time.Now(), ResyncInterval: 5 * time.Minute, TokenUser: bot,
+		Identity: ids, ImportCreatedAfter: time.Now(), ResyncInterval: 5 * time.Minute, TokenUser: bot, CIAccount: ciUser,
 	})
 }
 

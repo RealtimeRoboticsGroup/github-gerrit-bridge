@@ -409,6 +409,20 @@ func (c *Client) Submit(ctx context.Context, change int) (*ChangeInfo, error) {
 	return &ci, err
 }
 
+// ActionInfo is one action the caller may take on a change.
+type ActionInfo struct {
+	Enabled bool   `json:"enabled"`
+	Title   string `json:"title"`
+}
+
+// RevisionActions lists what the caller may do with change's current
+// patch set ("submit" among them when it is submittable by them).
+func (c *Client) RevisionActions(ctx context.Context, change int) (map[string]ActionInfo, error) {
+	out := map[string]ActionInfo{}
+	err := c.Do(ctx, http.MethodGet, fmt.Sprintf("changes/%d/revisions/current/actions", change), nil, &out)
+	return out, err
+}
+
 // QueryAccounts returns the accounts matching query, with details.
 func (c *Client) QueryAccounts(ctx context.Context, query string) ([]AccountInfo, error) {
 	var out []AccountInfo

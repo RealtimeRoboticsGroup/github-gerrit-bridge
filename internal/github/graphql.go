@@ -61,6 +61,7 @@ type IssueComment struct {
 	User      User      `json:"user"`
 	HTMLURL   string    `json:"html_url"`
 	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // CreateIssueComment posts a conversation comment on PR (or issue) n.

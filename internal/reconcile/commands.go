@@ -16,6 +16,8 @@ import (
 
 // Submitter submits a Gerrit change as a user.
 type Submitter interface {
+	// CanSubmitAs reports whether user may submit change now; if not, why.
+	CanSubmitAs(ctx context.Context, user string, change int) (bool, string, error)
 	SubmitAs(ctx context.Context, user string, change int) error
 }
 
@@ -23,6 +25,22 @@ type Submitter interface {
 // permissions and Gerrit's submit rules apply. The bridge account needs
 // the Run As capability.
 type RunAsSubmitter struct{ Gerrit *gerrit.Client }
+
+// CanSubmitAs implements Submitter.
+func (r RunAsSubmitter) CanSubmitAs(ctx context.Context, user string, change int) (bool, string, error) {
+	actions, err := r.Gerrit.As(user).RevisionActions(ctx, change)
+	if err != nil {
+		return false, "", err
+	}
+	a, ok := actions["submit"]
+	if !ok {
+		return false, user + " may not submit this change, or it is not ready (see its submit requirements in Gerrit).", nil
+	}
+	if !a.Enabled {
+		return false, "Gerrit says: " + a.Title, nil
+	}
+	return true, "", nil
+}
 
 // SubmitAs implements Submitter.
 func (r RunAsSubmitter) SubmitAs(ctx context.Context, user string, change int) error {
@@ -52,7 +70,10 @@ type Commands struct {
 	// BeforeSubmit, if set, runs before the bridge submits a change
 	// (Code.PrepareSubmit).
 	BeforeSubmit func(ctx context.Context, n int) error
-	DryRun       bool
+	// BridgeLogin is the bridge's GitHub login: only its replies mark a
+	// command handled.
+	BridgeLogin string
+	DryRun      bool
 	Logger       *slog.Logger
 }
 
@@ -74,6 +95,9 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 	}
 	handled := map[int64]bool{}
 	for _, ic := range ics {
+		if c.BridgeLogin != "" && !strings.EqualFold(ic.User.Login, c.BridgeLogin) {
+			continue
+		}
 		for _, sm := range handledMarker.FindAllStringSubmatch(ic.Body, -1) {
 			id, _ := strconv.ParseInt(sm[1], 10, 64)
 			handled[id] = true
@@ -87,7 +111,14 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 			c.Logger.Info("dry run: would run /submit", "change", n, "pr", pr, "by", ic.User.Login)
 			continue
 		}
-		reply := c.submit(ctx, n, ic)
+		reply := ""
+		if edited(ic.CreatedAt, ic.UpdatedAt) {
+			// Anyone with write access can edit a comment, and GitHub does
+			// not say who did.
+			reply = fmt.Sprintf("@%s: `/submit` was not run because the comment was edited. Post it as a new comment.", ic.User.Login)
+		} else {
+			reply = c.submit(ctx, n, ic)
+		}
 		if _, err := c.GitHub.CreateIssueComment(ctx, pr, fmt.Sprintf("%s\n\n<!-- bridge:cmd/%d -->", reply, ic.ID)); err != nil {
 			return err
 		}
@@ -100,6 +131,13 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) st
 	if !ok {
 		return fmt.Sprintf("@%s: `/submit` needs a linked Gerrit account, and yours is not linked. "+
 			"Ask an admin to add you to the bridge's identity map, or submit in Gerrit.", ic.User.Login)
+	}
+	// Check first, so PRs are only reshaped for a submit that will happen.
+	if ok, why, err := c.Submitter.CanSubmitAs(ctx, user, n); err != nil || !ok {
+		if err != nil {
+			why = err.Error()
+		}
+		return fmt.Sprintf("@%s: Gerrit would not submit change %d:\n\n> %s", ic.User.Login, n, strings.ReplaceAll(why, "\n", "\n> "))
 	}
 	if c.BeforeSubmit != nil {
 		if err := c.BeforeSubmit(ctx, n); err != nil {

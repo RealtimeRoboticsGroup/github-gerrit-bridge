@@ -116,6 +116,8 @@ type ProjectConfig struct {
 	// TokenUser is the gh account whose token the bridge uses (the bot);
 	// empty means gh's active account.
 	TokenUser string
+	// CIAccount is CI's Gerrit username.
+	CIAccount string
 }
 
 // WriteProjectConfig writes a bridge config for one project into dir,
@@ -154,6 +156,9 @@ github:
 		fmt.Fprintf(&b, "    %s: %s\n", gh, user)
 	}
 	fmt.Fprintf(&b, "ci:\n  trusted_group: %s\n", TrustedGroup)
+	if c.CIAccount != "" {
+		fmt.Fprintf(&b, "  account: %s\n", c.CIAccount)
+	}
 	path := filepath.Join(dir, c.File)
 	return path, os.WriteFile(path, []byte(b.String()), 0o600)
 }

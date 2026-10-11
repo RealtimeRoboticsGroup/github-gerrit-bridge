@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/anchor"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
@@ -62,6 +63,9 @@ type Comments struct {
 	Store   *state.Store
 	// BridgeAccount is the bridge's Gerrit account id.
 	BridgeAccount int
+	// BridgeLogin is the bridge's GitHub login: only its comments' markers
+	// are trusted (anyone can write <!-- bridge:... --> in a comment).
+	BridgeLogin string
 	// Users maps GitHub logins to Gerrit accounts. With GerritAs, content
 	// from mapped GitHub users is posted in Gerrit as them (Run-As), so
 	// Gerrit and its CI see the real author; otherwise as the bridge.
@@ -307,10 +311,14 @@ func (c *Comments) recover(n int, s *commentSnapshot, m *commentMap) {
 		}
 	}
 	for _, rc := range s.rcs {
-		mark(rc.Body, kindReviewComment, rc.ID)
+		if c.byBridge(rc.User.Login) {
+			mark(rc.Body, kindReviewComment, rc.ID)
+		}
 	}
 	for _, ic := range s.ics {
-		mark(ic.Body, kindIssueComment, ic.ID)
+		if c.byBridge(ic.User.Login) {
+			mark(ic.Body, kindIssueComment, ic.ID)
+		}
 	}
 	for _, gc := range s.gerrit {
 		if !c.bridgePost(&gc) {
@@ -354,9 +362,13 @@ func (c *Comments) recoverThreads(s *commentSnapshot, m *commentMap, threads map
 // --- Gerrit -> GitHub ---
 
 func (c *Comments) gerritHeader(n int, gc *gerrit.CommentInfo, current int) string {
+	// The username too: anyone can set their full name to someone else's.
 	who := gc.Author.Name
-	if who == "" {
-		who = gc.Author.Username
+	switch u := gc.Author.Username; {
+	case who == "":
+		who = u
+	case u != "" && !strings.EqualFold(u, who):
+		who += " (" + u + ")"
 	}
 	ps := ""
 	if gc.PatchSet != 0 && gc.PatchSet != current {
@@ -690,6 +702,12 @@ func gerritBody(login, url, body string) string {
 
 // isMirror reports whether a GitHub body was written by the bridge: a
 // mirrored Gerrit comment or a bridge notice.
+// byBridge reports whether a GitHub comment by login may carry bridge
+// markers.
+func (c *Comments) byBridge(login string) bool {
+	return c.BridgeLogin == "" || strings.EqualFold(login, c.BridgeLogin)
+}
+
 func isMirror(body string) bool { return strings.Contains(body, "<!-- bridge:") }
 
 // noticeMarker marks bridge notices (not mirrors of anything).
@@ -741,6 +759,12 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		body := gerritBody(rc.User.Login, rc.HTMLURL, rc.Body)
 		ci := gerrit.CommentInput{Message: body, Unresolved: &unresolved}
 		key := "review/" + strconv.FormatInt(rc.ReviewID, 10)
+		login := rc.User.Login
+		if edited(rc.CreatedAt, rc.UpdatedAt) {
+			// Anyone with write access can edit a comment, and GitHub
+			// does not say who did: not as the author.
+			login, key = "", key+"/edited"
+		}
 		if rc.InReplyTo != 0 {
 			parent := m.byGitHub[ghKey(kindReviewComment, rc.InReplyTo)]
 			if parent == nil {
@@ -752,7 +776,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			}
 			ci.InReplyTo = pc.ID
 			ci.Line, ci.Range, ci.Side = pc.Line, pc.Range, pc.Side
-			add(key, rc.User.Login, pc.PatchSet, pc.Path, ci)
+			add(key, login, pc.PatchSet, pc.Path, ci)
 			continue
 		}
 		commit := rc.OriginalCommitID
@@ -782,7 +806,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			// patch set at file level, saying where it was.
 			ps = s.current
 			ci.Message = fmt.Sprintf("%s\n\n<sub>(on GitHub commit %s, line %d)</sub>", body, short(commit), rc.OriginalLine)
-			add(key, rc.User.Login, ps, rc.Path, ci)
+			add(key, login, ps, rc.Path, ci)
 			continue
 		}
 		if rc.SubjectType != "file" {
@@ -798,11 +822,11 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			if ci.Side == "" {
 				plain := ci.Message
 				ci.Message, ci.FixSuggestions = fromSuggestion(ci.Message, rc.Path, first, line, lastLen)
-				add(key, rc.User.Login, ps, rc.Path, ci, plain)
+				add(key, login, ps, rc.Path, ci, plain)
 				continue
 			}
 		}
-		add(key, rc.User.Login, ps, rc.Path, ci)
+		add(key, login, ps, rc.Path, ci)
 	}
 	for _, rv := range s.reviews {
 		// Approvals and change requests count even without a body: they
@@ -815,8 +839,9 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			continue
 		}
 		ps := s.current
-		if p, ok := s.shaToPS[rv.CommitID]; ok {
-			ps = p
+		reviewed, known := s.shaToPS[rv.CommitID]
+		if known {
+			ps = reviewed
 		}
 		body := rv.Body
 		switch rv.State {
@@ -825,11 +850,16 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		case "CHANGES_REQUESTED":
 			body = "Requested changes on GitHub.\n\n" + body
 		}
+		if vote && !known {
+			// GitHub showed code Gerrit does not have (say a push not
+			// imported yet): a vote would land on code nobody reviewed.
+			body = "Not counted as a vote: it was made on a commit that is not a patch set in Gerrit.\n\n" + body
+		}
 		f := false
 		key := "review/" + strconv.FormatInt(rv.ID, 10)
 		add(key, rv.User.Login, ps, gerrit.PatchSetLevel,
 			gerrit.CommentInput{Message: gerritBody(rv.User.Login, rv.HTMLURL, strings.TrimSpace(body)), Unresolved: &f})
-		if vote && ps == s.current {
+		if vote && known && reviewed == s.current {
 			// Design §6.4: approve = Code-Review +2 (or the most the user
 			// may give), request changes = -1. Only as the user (Run-As);
 			// the bridge never votes on someone's behalf as itself.
@@ -845,7 +875,11 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			continue
 		}
 		f := false
-		add("issue/"+strconv.FormatInt(ic.ID, 10), ic.User.Login, s.current, gerrit.PatchSetLevel,
+		login := ic.User.Login
+		if edited(ic.CreatedAt, ic.UpdatedAt) {
+			login = "" // edited, maybe by someone else: not as the author
+		}
+		add("issue/"+strconv.FormatInt(ic.ID, 10), login, s.current, gerrit.PatchSetLevel,
 			gerrit.CommentInput{Message: gerritBody(ic.User.Login, ic.HTMLURL, ic.Body), Unresolved: &f})
 	}
 	for _, k := range order {
@@ -881,6 +915,11 @@ func (c *Comments) lineLen(ctx context.Context, n, ps int, path string, line int
 }
 
 // --- resolution ---
+
+// edited reports whether a GitHub comment was changed after it was posted.
+func edited(created, updated time.Time) bool {
+	return !created.IsZero() && updated.After(created)
+}
 
 // gerritResolved is whether a Gerrit thread is resolved: the unresolved
 // flag of its latest comment.
@@ -1180,14 +1219,17 @@ func (c *Comments) mirrorEdits(ctx context.Context, n, pr int, s *commentSnapsho
 			f := false
 			ci := gerrit.CommentInput{
 				InReplyTo: gc.ID, Line: gc.Line, Range: gc.Range, Side: gc.Side,
-				Message:    fmt.Sprintf("**@%s** edited their comment ([GitHub](%s)):\n\n%s", login, prURL, strings.TrimSpace(body)),
+				Message:    fmt.Sprintf("**@%s**'s comment was edited on GitHub ([GitHub](%s)):\n\n%s", login, prURL, strings.TrimSpace(body)),
 				Unresolved: &f,
 			}
 			if mc.Kind == kindReviewComment {
 				unresolved := !gerritResolved(s, threadRoot(s, gc.ID))
 				ci.Unresolved = &unresolved
 			}
-			err := c.setReviewAs(ctx, login, n, strconv.Itoa(gc.PatchSet), gerrit.ReviewInput{
+			// As the bridge: anyone with write access can edit a comment,
+			// and GitHub does not say who did.
+			err := c.Gerrit.SetReview(ctx, n, strconv.Itoa(gc.PatchSet), gerrit.ReviewInput{
+				Tag:      commentTag,
 				Comments: map[string][]gerrit.CommentInput{gc.Path: {ci}},
 			})
 			if err != nil {

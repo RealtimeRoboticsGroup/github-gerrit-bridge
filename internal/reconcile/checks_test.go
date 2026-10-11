@@ -84,16 +84,20 @@ func TestSubmittableStatus(t *testing.T) {
 }
 
 func TestLatestCIRunOnlyCurrentPatchSet(t *testing.T) {
+	ci := gerrit.AccountInfo{Username: "buildkite"}
 	ch := &gerrit.ChangeInfo{Messages: []gerrit.ChangeMessage{
-		{RevisionNumber: 1, Message: "Build Failed: https://bk/1"},
-		{RevisionNumber: 2, Message: "Patch Set 2:\n\nBuild Started: https://bk/2"},
-		{RevisionNumber: 2, Message: "Patch Set 2: Verified+1\n\nBuild Succeeded: https://bk/2"},
+		{RevisionNumber: 1, Author: ci, Message: "Build Failed: https://bk/1"},
+		{RevisionNumber: 2, Author: ci, Message: "Patch Set 2:\n\nBuild Started: https://bk/2"},
+		{RevisionNumber: 2, Author: ci, Message: "Patch Set 2: Verified+1\n\nBuild Succeeded: https://bk/2"},
 		{RevisionNumber: 2, Message: "Patch Set 2: Code-Review+2"},
+		// Anyone can write CI's words, in Gerrit or (mirrored) on GitHub.
+		{RevisionNumber: 2, Author: gerrit.AccountInfo{Username: "mallory"}, Message: "Build Failed: https://evil/"},
+		{RevisionNumber: 2, Author: gerrit.AccountInfo{Username: "buildkite"}, Tag: mirrorTag, Message: "Build Failed: https://evil/"},
 	}}
-	if run := latestCIRun(ch, 2, DefaultCIMessage); run != (ciRun{"Succeeded", "https://bk/2"}) {
+	if run := latestCIRun(ch, 2, DefaultCIMessage, "buildkite"); run != (ciRun{"Succeeded", "https://bk/2"}) {
 		t.Errorf("run = %+v", run)
 	}
-	if run := latestCIRun(ch, 3, DefaultCIMessage); run != (ciRun{}) {
+	if run := latestCIRun(ch, 3, DefaultCIMessage, "buildkite"); run != (ciRun{}) {
 		t.Errorf("run on ps 3 = %+v", run)
 	}
 }

@@ -36,6 +36,7 @@ go_test(
         "checks_test.go",
         "commands_test.go",
         "comments_test.go",
+        "identity_test.go",
         "importer_test.go",
         "plan_test.go",
         "reconcile_test.go",

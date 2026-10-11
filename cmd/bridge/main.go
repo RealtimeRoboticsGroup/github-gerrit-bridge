@@ -170,7 +170,10 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		rl := gh.RateLimit()
 		fmt.Fprintf(w, "ok\nlast_gerrit_event %s\nqueue_depth %d\ngithub_rate_remaining %d\n", last, q.Len(), rl.Remaining)
 	})
-	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	// Timeouts so slow senders cannot hold connections (and buffers) open.
+	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
+		MaxHeaderBytes: 64 << 10}
 
 	logger.Info("gerrit-github-bridge starting",
 		"dry_run", dryRun, "gerrit", cfg.Gerrit.URL, "project", cfg.Gerrit.Project,
@@ -207,7 +210,10 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		DryRun:        dryRun,
 		Logger:        logger,
 	}
-	users := &reconcile.Users{Overrides: cfg.Identity.GitHubToGerrit, Logger: logger}
+	// Never act as the bridge itself or a service account (CI, say), even
+	// if someone registers that login on GitHub.
+	users := &reconcile.Users{Overrides: cfg.Identity.GitHubToGerrit, Logger: logger,
+		Never: []string{self.Username}, NeverGroups: []string{"Service Users", "Non-Interactive Users"}}
 	if cfg.Identity.MatchesUsernames() {
 		users.Gerrit = rest
 	}
@@ -236,6 +242,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Logger:        logger,
 	}
 	comments := &reconcile.Comments{
+		BridgeLogin:   login,
 		Project:       cfg.Gerrit.Project,
 		Gerrit:        rest,
 		GitHub:        gh,
@@ -257,6 +264,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		CILabels:     cfg.CI.Labels,
 		TrustedGroup: cfg.CI.TrustedGroup,
 		CIMessage:    regexp.MustCompile(cfg.CI.MessagePattern),
+		CIAccount:    cfg.CI.Account,
 		DryRun:       dryRun,
 		Logger:       logger,
 	}
@@ -269,6 +277,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Store:        store,
 		Identity:     users,
 		BeforeSubmit: code.PrepareSubmit,
+		BridgeLogin:  login,
 		DryRun:       dryRun,
 		Logger:       logger,
 	}

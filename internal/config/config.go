@@ -104,6 +104,9 @@ type CI struct {
 	// Labels are voted by CI: shown on GitHub only as statuses, never in
 	// the votes comment.
 	Labels []string `yaml:"labels"`
+	// Account is CI's Gerrit username. When set, only its messages count
+	// as CI runs (anyone can post "Build Succeeded: <url>").
+	Account string `yaml:"account"`
 	// MessagePattern matches CI messages; group 1 must be Started,
 	// Succeeded or Failed and group 2 the build URL.
 	MessagePattern string `yaml:"message_pattern"`

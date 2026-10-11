@@ -894,6 +894,74 @@ token, the bridge falls back to the bot.
 changes from GitHub PRs. That overlaps with §5.2 and would create duplicate
 changes, so it must stay off for the bridged repo.
 
+### 7.1 Trust and abuse (reviewed 2026-10-11)
+
+Gerrit stays the gate: everything the bridge does as a user goes through
+Run-As or suexec with that user's own permissions, so submit requirements,
+label permissions and Verified-from-a-non-uploader still apply. What the
+bridge must not do is let someone on GitHub borrow a trusted person's
+identity, or make a reviewer's vote count for code they did not see. The
+defenses, by threat:
+
+- **Votes on unseen code.** A GitHub review votes only if it was made on
+  the commit of Gerrit's current patch set. A review of a commit Gerrit
+  does not have (a push not imported yet, or one that cannot be imported)
+  is mirrored as text, saying it was not counted.
+- **Edited comments.** Anyone with write access can edit anyone's GitHub
+  comment, and GitHub does not say who did. Edits, and comments already
+  edited when first mirrored, are posted by the bridge account (so a
+  `retest` edited into a maintainer's comment does not start CI), and
+  `/submit` never runs from an edited comment.
+- **Who uploaded.** Later patch sets are uploaded as whoever pushed them,
+  but only as a webhook says (`synchronize` or `push` senders; the first
+  push of a commit wins; reopening is not pushing). If no webhook said, the
+  bridge uploads, which CI does not trust; the commit's committer email is
+  never used, since anyone can write any email.
+- **Accounts the bridge never acts as.** Its own and members of Service
+  Users and Non-Interactive Users, whatever GitHub login matches them.
+- **Branches Gerrit owns.** The importer refuses a PR whose head is the
+  default branch or any branch Gerrit has, and the applier refuses to push
+  to the target or default branch at all. Fork heads are keyed
+  `owner/repo:branch` and cannot collide with the repository's branches.
+- **What gets uploaded.** A GitHub-born PR's squash must sit on a commit
+  already on Gerrit's branch (an unrelated history would bring all its
+  ancestors along as changes), and PRs of more than 1000 commits are
+  refused. A Change-Id that belongs to another change is refused (§5.2).
+- **Bridge markers.** `<!-- bridge:… -->` markers mark state (handled
+  commands, comment mappings) only in comments by the bridge's own GitHub
+  login.
+- **CI status.** Only messages by `ci.account` (and never ones mirrored
+  from GitHub) drive `gerrit/Verified`'s link and text.
+- **Webhooks.** HMAC-checked; at most 8 read at once, with read and write
+  timeouts. Payloads are only hints: actors and content are re-read from
+  the API.
+- **Public text.** Import errors keep their details in the log, not in the
+  public status. Mirrored Gerrit comments show the username beside the
+  (free-form) full name.
+- `/submit` first asks Gerrit whether the user may submit, and only then
+  reshapes PRs (§6.7).
+
+Known gaps:
+
+- **Login reuse.** A GitHub login maps to the Gerrit account of the same
+  username. If someone renames their GitHub account and another person
+  takes the old login, the new owner acts as the old account through the
+  bridge. Gerrit's github plugin has the same exposure at login, since it
+  also matches on the login, so the bridge does not widen it, but pinning
+  each mapping to GitHub's numeric user id would close it for the bridge.
+- **Spam from forks.** Every fork PR becomes a Gerrit change, uploaded by
+  the bridge if its author has no account, and every event on it costs
+  GitHub API calls. Rate limiting per author is not done.
+- **Visibility.** The bridge mirrors whatever its account can see on the
+  target branches except private changes; it must not be able to read
+  restricted branches or changes.
+- **Gerrit-side tags.** A Gerrit user can tag their own message
+  `github-bridge:mirror` and so keep it from being mirrored to GitHub.
+- **Sign-offs.** `Signed-off-by` lines in a PR description are kept as
+  written; AOS's requirement only checks that the words appear.
+- A dismissed GitHub review leaves its Gerrit vote; a draft toggle by
+  anyone with write access flips WIP as the owner.
+
 ## 8. Content conversion (`internal/markup`)
 
 - Gerrit renders a subset of Markdown, and GitHub renders GFM, so most

@@ -331,6 +331,12 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 	case PushBranches, DeleteBranches:
 		// One atomic push to the repository, plus one per fork whose PR
 		// branch gets a Gerrit edit (allowed by maintainer_can_modify).
+		// Gerrit owns these; only replication writes them.
+		for _, name := range append(sortedStringKeys(a.Refs), sortedStringKeys(a.Appends)...) {
+			if name == s.Branch || name == c.DefaultBranch {
+				return fmt.Errorf("refusing to push to %s, which Gerrit owns", name)
+			}
+		}
 		urls := []string{c.GitHubURL}
 		specs := map[string][]string{}
 		for _, name := range sortedStringKeys(a.Refs) {

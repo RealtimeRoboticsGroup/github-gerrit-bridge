@@ -151,3 +151,22 @@ func TestSquashKeepsSignOffs(t *testing.T) {
 		t.Error("lacksSignOff wrong")
 	}
 }
+
+func TestRealParentMustBeInGerrit(t *testing.T) {
+	im, g := newImportEnv(t)
+	g.commit("a.txt", "base\n", "base")
+	g.run("update-ref", "refs/remotes/gerrit/heads/main", "HEAD")
+	// A history unrelated to Gerrit's main: importing it would upload
+	// every ancestor.
+	g.run("checkout", "-q", "--orphan", "other")
+	g.commit("x.txt", "1\n", "unrelated root")
+	h := g.commit("x.txt", "2\n", "unrelated tip")
+	if _, _, err := im.realParent(context.Background(), "main", h, nil); err == nil {
+		t.Error("imported a PR whose history does not start from main")
+	}
+	g.run("checkout", "-q", "-b", "ok", "refs/remotes/gerrit/heads/main")
+	h = g.commit("y.txt", "1\n", "fine")
+	if own, p, err := im.realParent(context.Background(), "main", h, nil); err != nil || len(own) != 1 || p != g.run("rev-parse", "refs/remotes/gerrit/heads/main") {
+		t.Errorf("realParent = %v, %s, %v", own, p, err)
+	}
+}

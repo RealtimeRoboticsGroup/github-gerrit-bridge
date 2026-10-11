@@ -2,7 +2,9 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -27,10 +29,58 @@ type UserQuerier interface {
 type Users struct {
 	Overrides map[string]string
 	Gerrit    UserQuerier // nil: overrides only
-	Logger    *slog.Logger
+	// Never are Gerrit usernames no GitHub login is matched to (the
+	// bridge's own account, say): a GitHub user who registers that login
+	// must not act as it.
+	Never []string
+	// NeverGroups are Gerrit groups whose members are never matched (the
+	// service accounts: "Service Users", "Non-Interactive Users"). Gerrit
+	// must implement GroupMembers; a lookup error matches nobody.
+	NeverGroups []string
+	Logger      *slog.Logger
 
 	mu    sync.Mutex
 	cache map[string]cachedUser
+}
+
+// groupLister lists a Gerrit group's members.
+type groupLister interface {
+	GroupMembers(ctx context.Context, group string) ([]gerrit.AccountInfo, error)
+}
+
+// excluded reports whether username may not be matched to a GitHub login.
+func (u *Users) excluded(ctx context.Context, username string) bool {
+	for _, n := range u.Never {
+		if strings.EqualFold(n, username) {
+			return true
+		}
+	}
+	if len(u.NeverGroups) == 0 {
+		return false
+	}
+	gl, ok := u.Gerrit.(groupLister)
+	if !ok {
+		return true
+	}
+	for _, g := range u.NeverGroups {
+		members, err := gl.GroupMembers(ctx, g)
+		if err != nil {
+			var ge *gerrit.Error
+			if errors.As(err, &ge) && ge.Status == http.StatusNotFound {
+				continue // no such group on this site
+			}
+			if u.Logger != nil {
+				u.Logger.Warn("listing excluded group", "group", g, "err", err)
+			}
+			return true
+		}
+		for _, m := range members {
+			if strings.EqualFold(m.Username, username) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type cachedUser struct {
@@ -77,6 +127,12 @@ func (u *Users) GerritUser(ctx context.Context, login string) (string, bool) {
 		if strings.EqualFold(a.Username, login) {
 			c.user, c.ok = a.Username, true
 		}
+	}
+	if c.ok && u.excluded(ctx, c.user) {
+		if u.Logger != nil {
+			u.Logger.Warn("GitHub login matches an excluded Gerrit account; not acting as it", "github_login", login, "gerrit_user", c.user)
+		}
+		c.user, c.ok = "", false
 	}
 	u.mu.Lock()
 	if u.cache == nil {

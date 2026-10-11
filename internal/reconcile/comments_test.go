@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
@@ -333,7 +334,7 @@ func TestGerritLineCommentsBecomeOneReview(t *testing.T) {
 		t.Fatalf("want one review with 2 comments, got %+v", e.h.rcs)
 	}
 	b := e.h.rcs[0].Body
-	for _, want := range []string{"**Alice Trusted**", "Why two?", "<!-- bridge:gerrit/5/c1 -->", "https://g/c/p/+/5/comment/c1/"} {
+	for _, want := range []string{"**Alice Trusted (alice)**", "Why two?", "<!-- bridge:gerrit/5/c1 -->", "https://g/c/p/+/5/comment/c1/"} {
 		if !strings.Contains(b, want) {
 			t.Errorf("body missing %q:\n%s", want, b)
 		}
@@ -556,6 +557,7 @@ func TestGitHubSuggestionBecomesFix(t *testing.T) {
 
 func TestGitHubEditBecomesReply(t *testing.T) {
 	e := newCommentsEnv(t)
+	e.runAs()
 	root := e.h.human("a.txt", 3, "sha2", "Typo.", 0)
 	e.sync(t)
 	n := len(e.g.comments)
@@ -570,8 +572,12 @@ func TestGitHubEditBecomesReply(t *testing.T) {
 		t.Fatalf("got %d new Gerrit comments, want 1", len(e.g.comments)-n)
 	}
 	gc := e.g.comments[n]
-	if gc.InReplyTo != mirrored || !strings.Contains(gc.Message, "edited their comment") || !strings.Contains(gc.Message, "and the next.") {
+	if gc.InReplyTo != mirrored || !strings.Contains(gc.Message, "comment was edited") || !strings.Contains(gc.Message, "and the next.") {
 		t.Errorf("edit reply = %+v", gc)
+	}
+	// Anyone with write access may have made the edit: never as the author.
+	if gc.Author.Username == "bobg" || !isBridgeTag(gc.Tag) {
+		t.Errorf("edit posted as %q with tag %q, want the bridge", gc.Author.Username, gc.Tag)
 	}
 	if strings.Contains(gc.Message, "#discussion_r") {
 		t.Error("edit reply would be mistaken for a mirror of a new comment")
@@ -732,5 +738,33 @@ func TestGitHubApprovalBecomesVote(t *testing.T) {
 	e.sync(t)
 	if len(e.g.votes) != 3 {
 		t.Errorf("unmapped reviewer voted: %v", e.g.votes)
+	}
+	// An approval of a commit Gerrit does not have (pushed to GitHub, not
+	// imported) must not vote on Gerrit's current patch set.
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 54, State: "APPROVED", CommitID: "unimported", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-54"})
+	e.sync(t)
+	if len(e.g.votes) != 3 {
+		t.Errorf("approval of an unknown commit voted: %v", e.g.votes)
+	}
+}
+
+func TestCommentEditedBeforeMirroringIsNotPostedAsTheAuthor(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	created := time.Unix(1700000000, 0)
+	e.h.ics = append(e.h.ics, github.IssueComment{ID: 9, Body: "retest", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#issuecomment-9", CreatedAt: created, UpdatedAt: created.Add(time.Minute)})
+	id := e.h.human("a.txt", 3, "sha2", "retest", 0)
+	for i := range e.h.rcs {
+		if e.h.rcs[i].ID == id {
+			e.h.rcs[i].CreatedAt, e.h.rcs[i].UpdatedAt = created, created.Add(time.Minute)
+		}
+	}
+	e.sync(t)
+	for _, gc := range e.g.comments {
+		if gc.Author.Username == "bobg" {
+			t.Errorf("edited comment posted as its author: %+v", gc)
+		}
 	}
 }

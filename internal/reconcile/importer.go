@@ -108,6 +108,21 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		if pr.CreatedAt.Before(im.CreatedAfter) && im.Store.ChangeForPR(pr.Number) == 0 {
 			continue // predates the bridge; leave it alone
 		}
+		if key == pr.Head.Ref {
+			// The bridge pushes Gerrit's patch sets to the PR's branch: never
+			// accept a branch Gerrit owns (replicated from Gerrit).
+			owned := key == im.DefaultBranch
+			if !owned {
+				var err error
+				if owned, err = im.Gerrit.BranchExists(ctx, im.Project, key); err != nil {
+					return err
+				}
+			}
+			if owned {
+				im.setSync(ctx, pr, "failure", "Branch "+key+" belongs to Gerrit; open the PR from a branch of your own", "")
+				continue
+			}
+		}
 		byHead[key] = pr
 	}
 	if len(byHead) == 0 {
@@ -207,7 +222,9 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 			if errors.As(err, &se) {
 				changed = im.setSync(ctx, l.pr, se.state, se.msg, "")
 			} else {
-				changed = im.setSync(ctx, l.pr, "error", "Import failed: "+err.Error(), "")
+				// Details (hosts, git output) stay in the log: the
+				// status is public.
+				changed = im.setSync(ctx, l.pr, "error", "Import failed; the bridge's maintainers can see why in its log", "")
 			}
 			if changed {
 				// Logged once per new problem, not on every resync.
@@ -382,12 +399,12 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	}
 
 	// Who uploads. The first upload decides the owner, so it is the PR's
-	// author; later patch sets are uploaded as whoever pushed them.
+	// author; later patch sets are uploaded as whoever pushed them, as a
+	// webhook said. If no webhook said (missed, or the bridge restarted),
+	// the bridge uploads: never guess, since CI trusts the uploader.
 	login := pr.User.Login
-	if st != nil {
-		if p := im.pusher(ctx, h); p != "" {
-			login = p
-		}
+	if st != nil && im.Pushers != nil {
+		login = im.Pushers.Lookup(h)
 	}
 	user, _ := im.Identity.GerritUser(ctx, login)
 	if user != "" && !im.Uploader.CanActAs() {
@@ -458,7 +475,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		return nil, err
 	}
 	res.heads[h] = s
-	res.change, res.patchSet, res.bridgeOwned = ch.Number, ps, user == ""
+	res.change, res.patchSet, res.bridgeOwned = ch.Number, ps, user == "" && st == nil
 	res.noSignOff = im.lacksSignOff(ctx, s)
 	if im.onImported != nil {
 		if err := im.onImported(ctx, ch.Number); err != nil {
@@ -490,20 +507,30 @@ func gerritQuery(s string) string { return gerrit.QueryString(s) }
 // returns the layer's own commits (newest first) and the Gerrit commit to
 // parent the squash on.
 func (im *Importer) realParent(ctx context.Context, branch, h string, parentHeads map[string]string) ([]string, string, error) {
-	out, err := im.Mirror.Git(ctx, nil, "rev-list", "--first-parent", "--max-count=1000", h, "--not", "refs/remotes/gerrit/heads/"+branch)
+	const maxCommits = 1000
+	out, err := im.Mirror.Git(ctx, nil, "rev-list", "--first-parent", fmt.Sprintf("--max-count=%d", maxCommits+1), h, "--not", "refs/remotes/gerrit/heads/"+branch)
 	if err != nil {
 		return nil, "", err
 	}
 	commits := strings.Fields(string(out))
+	if len(commits) > maxCommits {
+		return nil, "", &syncError{"failure", fmt.Sprintf("More than %d commits: too many to import", maxCommits)}
+	}
 	if parentHeads == nil {
 		if len(commits) == 0 {
 			return nil, "", nil
 		}
-		p, err := im.Mirror.Git(ctx, nil, "rev-parse", commits[len(commits)-1]+"^")
-		if err != nil {
-			return nil, "", err
+		// The squash's parent must already be in Gerrit: otherwise the
+		// upload would bring all its unreviewed ancestors along.
+		p, err := im.Mirror.Git(ctx, nil, "rev-parse", "--verify", "--quiet", commits[len(commits)-1]+"^")
+		parent := strings.TrimSpace(string(p))
+		if err != nil || parent == "" {
+			return nil, "", &syncError{"failure", "This PR's history does not start from " + branch}
 		}
-		return commits, strings.TrimSpace(string(p)), nil
+		if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", parent, "refs/remotes/gerrit/heads/"+branch); err != nil {
+			return nil, "", &syncError{"failure", "This PR's history does not start from " + branch + ": rebase it onto " + branch}
+		}
+		return commits, parent, nil
 	}
 	for i, c := range commits {
 		if ge, ok := parentHeads[c]; ok {
@@ -682,15 +709,6 @@ func (im *Importer) logicalBase(ctx context.Context, branch string, pr int) (str
 
 // pusher is who pushed GitHub commit sha: from a webhook if one said, else
 // the commit's GitHub committer.
-func (im *Importer) pusher(ctx context.Context, sha string) string {
-	if im.Pushers != nil {
-		if p := im.Pushers.Lookup(sha); p != "" {
-			return p
-		}
-	}
-	return commitPusher(ctx, im.GitHub, sha)
-}
-
 // prTextHash identifies the PR text a commit message is built from.
 func prTextHash(pr *github.PullRequest) string {
 	return hashString(pr.Title + "\x00" + prBodyForMessage(pr.Body))

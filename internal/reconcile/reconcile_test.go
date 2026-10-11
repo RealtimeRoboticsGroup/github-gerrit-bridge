@@ -191,8 +191,14 @@ func TestPushersFromWebhooks(t *testing.T) {
 		Payload: []byte(`{"sender":{"login":"carol"},"after":"def","ref":"refs/heads/x"}`)})
 	r.Delivery(&github.Delivery{Event: "pull_request", Action: "edited", PR: 3,
 		Payload: []byte(`{"sender":{"login":"mallory"},"pull_request":{"number":3,"head":{"sha":"abc"}}}`)})
-	if r.Pushers.Lookup("abc") != "bob" || r.Pushers.Lookup("def") != "carol" {
-		t.Errorf("abc=%q def=%q", r.Pushers.Lookup("abc"), r.Pushers.Lookup("def"))
+	// Reopening is not pushing, and pushing someone's commit again does not
+	// make it yours.
+	r.Delivery(&github.Delivery{Event: "pull_request", Action: "reopened", PR: 4,
+		Payload: []byte(`{"sender":{"login":"maint"},"pull_request":{"number":4,"head":{"sha":"ghi"}}}`)})
+	r.Delivery(&github.Delivery{Event: "push",
+		Payload: []byte(`{"sender":{"login":"maint"},"after":"abc","ref":"refs/heads/test-it"}`)})
+	if r.Pushers.Lookup("abc") != "bob" || r.Pushers.Lookup("def") != "carol" || r.Pushers.Lookup("ghi") != "" {
+		t.Errorf("abc=%q def=%q ghi=%q", r.Pushers.Lookup("abc"), r.Pushers.Lookup("def"), r.Pushers.Lookup("ghi"))
 	}
 	p := &Pushers{}
 	for i := range maxPushers + 10 {

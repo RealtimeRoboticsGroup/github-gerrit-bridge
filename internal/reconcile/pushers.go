@@ -1,9 +1,7 @@
 package reconcile
 
 import (
-	"context"
 	"encoding/json"
-	"net/http"
 	"sync"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
@@ -30,12 +28,15 @@ func (p *Pushers) Record(sha, login string) {
 	if p.bySHA == nil {
 		p.bySHA = map[string]string{}
 	}
-	if _, ok := p.bySHA[sha]; !ok {
-		p.order = append(p.order, sha)
-		if len(p.order) > maxPushers {
-			delete(p.bySHA, p.order[0])
-			p.order = p.order[1:]
-		}
+	if _, ok := p.bySHA[sha]; ok {
+		// The first push of a commit wins: pushing someone else's commit
+		// again (say, to test it) does not make it yours.
+		return
+	}
+	p.order = append(p.order, sha)
+	if len(p.order) > maxPushers {
+		delete(p.bySHA, p.order[0])
+		p.order = p.order[1:]
 	}
 	p.bySHA[sha] = login
 }
@@ -67,28 +68,9 @@ func (p *Pushers) FromDelivery(d *github.Delivery) {
 	switch {
 	case d.Event == "push":
 		p.Record(payload.After, payload.Sender.Login)
-	case d.Event == "pull_request" && (d.Action == "opened" || d.Action == "reopened" || d.Action == "synchronize"):
+	case d.Event == "pull_request" && (d.Action == "opened" || d.Action == "synchronize"):
+		// Not "reopened": its sender reopened the PR, and need not have
+		// pushed anything.
 		p.Record(payload.PullRequest.Head.SHA, payload.Sender.Login)
 	}
-}
-
-// commitPusher guesses who pushed sha when no webhook said: the GitHub
-// user GitHub attributes the commit's committer email to (web edits are
-// committed by "web-flow", so then the author).
-func commitPusher(ctx context.Context, gh *github.Client, sha string) string {
-	var c struct {
-		Author, Committer *struct {
-			Login string `json:"login"`
-		}
-	}
-	if _, err := gh.Do(ctx, http.MethodGet, gh.RepoPath("commits/"+sha), nil, &c); err != nil {
-		return ""
-	}
-	if c.Committer != nil && c.Committer.Login != "" && c.Committer.Login != "web-flow" {
-		return c.Committer.Login
-	}
-	if c.Author != nil {
-		return c.Author.Login
-	}
-	return ""
 }

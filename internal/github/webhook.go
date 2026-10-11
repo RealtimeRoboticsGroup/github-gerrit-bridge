@@ -17,6 +17,9 @@ import (
 // maxPayload is GitHub's documented webhook payload cap.
 const maxPayload = 25 << 20
 
+// maxConcurrentReads bounds deliveries being read at once.
+const maxConcurrentReads = 8
+
 // Delivery is a verified webhook delivery, reduced to what routing needs.
 // Like Gerrit events, it is a hint: the reconciler re-reads PR state.
 type Delivery struct {
@@ -38,6 +41,11 @@ type WebhookHandler struct {
 	Deliver func(*Delivery)
 	Logger  *slog.Logger
 
+	// busy bounds the payloads read at once (each up to 25 MB), so
+	// unauthenticated senders cannot exhaust memory.
+	busyOnce sync.Once
+	busy     chan struct{}
+
 	mu   sync.Mutex
 	seen map[string]struct{}
 	ring []string
@@ -55,6 +63,19 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.ContentLength > maxPayload {
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	h.busyOnce.Do(func() { h.busy = make(chan struct{}, maxConcurrentReads) })
+	select {
+	case h.busy <- struct{}{}:
+		defer func() { <-h.busy }()
+	default:
+		// The periodic resync catches up on anything dropped here.
+		http.Error(w, "busy", http.StatusServiceUnavailable)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxPayload+1))
