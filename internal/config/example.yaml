@@ -60,3 +60,12 @@ ci:
   labels: [Verified]
   # CI messages: group 1 Started|Succeeded|Failed, group 2 the build URL.
   message_pattern: 'Build (Started|Succeeded|Failed): (\S+)'
+  # Read CI results from Buildkite rather than from CI's Gerrit messages,
+  # and show each job in Gerrit's Checks tab.
+  # buildkite:
+  #   organization: realtimeroboticsgroup
+  #   pipeline: ci
+  #   token_file: /etc/gerrit-github-bridge/buildkite-token   # read_builds
+  # Where browsers reach this bridge (proxy /checks/ to it). Write the
+  # Gerrit plugin with: bridge --config ... --checks_plugin > $site/plugins/bridge-checks.js
+  # checks_url: https://realtimeroboticsgroup.org/gerrit-bridge

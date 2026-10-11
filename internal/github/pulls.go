@@ -43,24 +43,24 @@ type Ref struct {
 
 // PullRequest is the subset of a pull request the bridge reads.
 type PullRequest struct {
-	Number    int        `json:"number"`
-	NodeID    string     `json:"node_id"`
-	State     string     `json:"state"` // open, closed
-	Draft     bool       `json:"draft"`
-	Merged    bool       `json:"merged"`
-	MergedAt  *time.Time `json:"merged_at"`
-	Title     string     `json:"title"`
-	Body      string     `json:"body"`
-	HTMLURL   string     `json:"html_url"`
-	User      User       `json:"user"`
-	Head      Ref        `json:"head"`
-	Base      Ref        `json:"base"`
+	Number   int        `json:"number"`
+	NodeID   string     `json:"node_id"`
+	State    string     `json:"state"` // open, closed
+	Draft    bool       `json:"draft"`
+	Merged   bool       `json:"merged"`
+	MergedAt *time.Time `json:"merged_at"`
+	Title    string     `json:"title"`
+	Body     string     `json:"body"`
+	HTMLURL  string     `json:"html_url"`
+	User     User       `json:"user"`
+	Head     Ref        `json:"head"`
+	Base     Ref        `json:"base"`
 	// MaintainerCanModify is set when a fork PR's author lets people with
 	// write access to the base repository push to the head branch. Only
 	// GetPull returns it; listed PRs always say false.
-	MaintainerCanModify bool `json:"maintainer_can_modify"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	MaintainerCanModify bool      `json:"maintainer_can_modify"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 	// Stack is set when the PR is in a native stack.
 	Stack *PRStack `json:"stack"`
 }

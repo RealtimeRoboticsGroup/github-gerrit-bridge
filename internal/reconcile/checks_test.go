@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/buildkite"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
@@ -99,6 +100,27 @@ func TestLatestCIRunOnlyCurrentPatchSet(t *testing.T) {
 	}
 	if run := latestCIRun(ch, 3, DefaultCIMessage, "buildkite"); run != (ciRun{}) {
 		t.Errorf("run on ps 3 = %+v", run)
+	}
+}
+
+func TestLatestBuild(t *testing.T) {
+	builds := []buildkite.Build{
+		{Number: 4, State: "failed", WebURL: "u4"},
+		{Number: 6, State: "running", WebURL: "u6"},
+		{Number: 5, State: "passed", WebURL: "u5"},
+	}
+	if run := latestBuild(builds); run != (ciRun{"Started", "u6"}) {
+		t.Errorf("latestBuild = %+v", run)
+	}
+	builds[1].State = "canceled"
+	if run := latestBuild(builds); run != (ciRun{"Failed", "u6"}) {
+		t.Errorf("latestBuild = %+v", run)
+	}
+	if run := latestBuild(builds[2:]); run != (ciRun{"Succeeded", "u5"}) {
+		t.Errorf("latestBuild = %+v", run)
+	}
+	if run := latestBuild(nil); run != (ciRun{}) {
+		t.Errorf("latestBuild(nil) = %+v", run)
 	}
 }
 

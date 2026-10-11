@@ -55,6 +55,9 @@ status_is() {  # status_is <pr> <context> <state>
   local sha; sha=$(me api "repos/${R}/pulls/$1" --jq .head.sha)
   [[ "$(me api "repos/${R}/commits/${sha}/status" --jq ".statuses[] | select(.context==\"$2\") | .state")" == "$3" ]]
 }
+# checks <change>: the bridge's Checks-tab runs for its current patch set.
+BRIDGE=http://127.0.0.1:18081
+checks() { curl -sf "${BRIDGE}/checks/$1/$(gerrit "changes/$1?o=CURRENT_REVISION" | jq -r '.revisions[.current_revision]._number')"; }
 commit() {  # commit <clone> <file> <subject>
   (cd "$1" && echo "$3" > "$2" && git add "$2" && git commit -qs -m "$3")
 }
@@ -145,10 +148,12 @@ wait_for "both layers imported, owned by AustinSchuhBRT" owned_by_brt
 D1=$(change "${T1}"); D2=$(change "${T2}")
 wait_for "gerrit/sync reports success" status_is "${Q1}" gerrit/sync success
 wait_for "CI did not start for the untrusted uploader" status_is "${Q1}" gerrit/Verified pending
+checks "${D1}" | jq -e '.runs == []' >/dev/null && pass "the Checks tab shows no runs" || fail "Checks tab: $(checks "${D1}")"
 
 step "6. retest from GitHub by a trusted reviewer"
 me api "repos/${R}/issues/${Q1}/comments" -f body="retest" --silent
 wait_for "AustinSchuh's retest on GitHub starts CI (gerrit/Verified success)" status_is "${Q1}" gerrit/Verified success
+checks "${D1}" | jq -e '[.runs[].checkName] | sort == ["Build","Test"]' >/dev/null && pass "the Checks tab shows the retest's jobs" || fail "Checks tab: $(checks "${D1}")"
 
 step "7. AustinSchuh pushes to BRT's branch"
 (cd "${ME_CLONE}" && git fetch -q github && git checkout -q -B "${B2}" "github/${B2}" && echo "from AustinSchuh" >> "brt-${RUN}-2.txt" &&
@@ -218,6 +223,39 @@ on_fork "fork-${RUN}-locked.txt" && fail "pushed to a fork that does not allow i
 gerrit_as AustinSchuhBRT POST "changes/${FK}/abandon" "{}" >/dev/null
 fork_closed() { [[ "$(me api "repos/${R}/pulls/${FQ}" --jq .state)" == closed ]]; }
 wait_for "abandoning in Gerrit closes the fork PR" fork_closed
+
+# --- 11. CI in Gerrit's Checks tab (plugins/bridge-checks.js) ---
+step "11. CI results in Gerrit's Checks tab, and on GitHub"
+gerrit "plugins/" | jq -e '.["bridge-checks"]' >/dev/null && pass "Gerrit runs the bridge-checks plugin" || fail "bridge-checks plugin not loaded"
+[[ "$(curl -s -o /dev/null -D - -H 'Origin: http://127.0.0.1:18080' "${BRIDGE}/checks/1/1" | tr -d '\r' | sed -n 's/^Access-Control-Allow-Origin: //Ip')" == http://127.0.0.1:18080 ]] &&
+  pass "the bridge lets Gerrit's pages read /checks (CORS)" || fail "no CORS header for Gerrit's origin"
+S11="Checks ${RUN}"
+(cd "${ME_CLONE}" && git fetch -q gerrit && git checkout -q -B "checks-${RUN}" gerrit/main)
+commit "${ME_CLONE}" "checks-${RUN}-FAIL.txt" "${S11}"
+(cd "${ME_CLONE}" && git push -q gerrit HEAD:refs/for/main 2>/dev/null)
+has_pr() { [[ -n "$(pr_for "${S11}")" ]]; }
+wait_for "the change has a PR" has_pr
+E1=$(change "${S11}"); PE=$(pr_for "${S11}")
+running() { checks "${E1}" | jq -e '[.runs[] | select(.checkName == "Build" and .status == "RUNNING")] | length == 1'; }
+wait_for "a running job shows as RUNNING" running
+failed_job() {
+  checks "${E1}" | jq -e '[.runs[] | select(.attempt == 1 and .status == "COMPLETED") | "\(.checkName) \(.results[0].category) \(.results[0].summary)"] | sort ==
+    ["Build SUCCESS Passed", "Test ERROR Failed (exit status 1)"]'
+}
+wait_for "each job's result: Build passed, Test failed (exit status 1)" failed_job
+vfail() {
+  local sha; sha=$(me api "repos/${R}/pulls/${PE}" --jq .head.sha)
+  me api "repos/${R}/commits/${sha}/status" --jq '.statuses[] | select(.context=="gerrit/Verified") | "\(.state) \(.target_url)"' |
+    grep -q '^failure http://127.0.0.1:18090/builds/'
+}
+wait_for "GitHub's gerrit/Verified fails, linking the Buildkite build" vfail
+# What the plugin's Rerun button does: "retest" as the signed-in user.
+gerrit_as AustinSchuh POST "changes/${E1}/revisions/current/review" '{"message":"retest"}' >/dev/null
+attempt2() { checks "${E1}" | jq -e '[.runs[] | select(.attempt == 2)] | length == 2'; }
+wait_for "Rerun (retest) adds a second attempt" attempt2
+gerrit_as AustinSchuh POST "changes/${E1}/abandon" "{}" >/dev/null
+closed() { [[ "$(me api "repos/${R}/pulls/${PE}" --jq .state)" == closed ]]; }
+wait_for "abandoning closes the PR" closed
 
 echo
 echo "Rehearsal ${RUN}: ${PASSED} passed, ${FAILED} failed"

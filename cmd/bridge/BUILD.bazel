@@ -6,10 +6,12 @@ go_library(
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/cmd/bridge",
     visibility = ["//visibility:private"],
     deps = [
+        "//internal/buildkite",
         "//internal/config",
         "//internal/gerrit",
         "//internal/gerrit/events",
         "//internal/gerrit/gerritssh",
+        "//internal/gerritchecks",
         "//internal/github",
         "//internal/gitmirror",
         "//internal/queue",

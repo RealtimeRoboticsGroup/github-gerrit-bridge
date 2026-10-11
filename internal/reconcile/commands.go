@@ -74,7 +74,7 @@ type Commands struct {
 	// command handled.
 	BridgeLogin string
 	DryRun      bool
-	Logger       *slog.Logger
+	Logger      *slog.Logger
 }
 
 var (

@@ -25,6 +25,14 @@ type Client struct {
 	// RunAs makes requests on behalf of this account (X-Gerrit-RunAs);
 	// the authenticated account needs the Run As capability.
 	RunAs string
+	// Anonymous makes unauthenticated requests, to see only what anyone
+	// can see.
+	Anonymous bool
+}
+
+// Anon returns a client that sees only what anonymous users can.
+func (c *Client) Anon() *Client {
+	return &Client{BaseURL: c.BaseURL, HTTP: c.HTTP, Anonymous: true}
 }
 
 // As returns a client acting as user via Run-As.
@@ -170,8 +178,8 @@ func (e *Error) Error() string {
 // xssiPrefix is prepended to every JSON response.
 const xssiPrefix = ")]}'"
 
-// Do makes an authenticated request to path (relative to /a/) and decodes
-// the JSON response into out, if out is non-nil.
+// Do makes a request to path (relative to /a/, or to / if Anonymous) and
+// decodes the JSON response into out, if out is non-nil.
 func (c *Client) Do(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
@@ -181,11 +189,17 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 		}
 		body = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+"/a/"+strings.TrimPrefix(path, "/"), body)
+	prefix := "/a/"
+	if c.Anonymous {
+		prefix = "/"
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+prefix+strings.TrimPrefix(path, "/"), body)
 	if err != nil {
 		return err
 	}
-	req.SetBasicAuth(c.User, c.Password)
+	if !c.Anonymous {
+		req.SetBasicAuth(c.User, c.Password)
+	}
 	req.Header.Set("Accept", "application/json")
 	if c.RunAs != "" {
 		req.Header.Set("X-Gerrit-RunAs", c.RunAs)

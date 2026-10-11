@@ -118,6 +118,10 @@ type ProjectConfig struct {
 	TokenUser string
 	// CIAccount is CI's Gerrit username.
 	CIAccount string
+	// Buildkite is the (fake) Buildkite API URL CI uses, organization
+	// "test", pipeline "ci"; empty means none. The bridge then serves
+	// Gerrit's Checks tab at http://Listen.
+	Buildkite string
 }
 
 // WriteProjectConfig writes a bridge config for one project into dir,
@@ -158,6 +162,14 @@ github:
 	fmt.Fprintf(&b, "ci:\n  trusted_group: %s\n", TrustedGroup)
 	if c.CIAccount != "" {
 		fmt.Fprintf(&b, "  account: %s\n", c.CIAccount)
+	}
+	if c.Buildkite != "" {
+		tok := filepath.Join(dir, "buildkite-token")
+		if err := os.WriteFile(tok, []byte("fake\n"), 0o600); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "  buildkite:\n    api_url: %s\n    organization: test\n    pipeline: ci\n    token_file: %s\n  checks_url: http://%s\n",
+			c.Buildkite, tok, c.Listen)
 	}
 	path := filepath.Join(dir, c.File)
 	return path, os.WriteFile(path, []byte(b.String()), 0o600)

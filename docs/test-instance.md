@@ -9,7 +9,8 @@ by hand before it goes near the real Gerrit:
 | Replication | Gerrit's bundled plugin → `github.com/AustinSchuh/bridge-scratch`, configured like AOS's (default 15s `replicationDelay`, `rescheduleDelay = 15`, heads and tags, `force`) | real |
 | Other plugins | the rest of AOS's `plugins/` (all bundled in the war): codemirror-editor, commit-message-length-validator, delete-project, download-commands, gitiles, hooks, plugin-manager, reviewnotes, singleusergroup, webhooks | real |
 | CI | your `gerrit-buildkite` (`~/tmp/gerrit-buildkite`, plus a local `-api_url` patch) | real |
-| Buildkite | `cmd/fakebuildkite` on `http://127.0.0.1:18090` | stand-in |
+| Buildkite | `cmd/fakebuildkite` on `http://127.0.0.1:18090`: builds with two jobs, Build and Test, and the builds-by-commit API the bridge reads | stand-in |
+| Checks tab | `plugins/bridge-checks.js`, fetching from the bridge's `/checks` | real |
 | The bridge | `cmd/bridge`, config `~/tmp/gerrit-test/bridge/bridge-scratch.yaml` | real |
 | GitHub webhooks | `gh webhook forward` → `127.0.0.1:18081/webhook` | real (needs `admin:repo_hook`) |
 | GitHub | `AustinSchuh/bridge-scratch` | real |
@@ -18,12 +19,13 @@ Everything listens on 127.0.0.1 only. From your desktop, tunnel the web
 UIs:
 
 ```
-ssh -L 18080:127.0.0.1:18080 -L 18090:127.0.0.1:18090 server1868-4
+ssh -L 18080:127.0.0.1:18080 -L 18081:127.0.0.1:18081 -L 18090:127.0.0.1:18090 server1868-4
 ```
 
 then open <http://127.0.0.1:18080/gerrit/login> and sign in with GitHub
 (the "Bridge test Gerrit" OAuth App, owned by realtimeroboticsbot), and
-<http://127.0.0.1:18090> for builds. Use `127.0.0.1`, not `localhost`: the
+<http://127.0.0.1:18090> for builds. The Checks tab of a change reads
+from the bridge on 18081, so tunnel that too. Use `127.0.0.1`, not `localhost`: the
 OAuth callback goes to 127.0.0.1, and a session cookie set on another host
 does not follow it ("Invalid authentication state"). Links the bridge posts
 on GitHub point at these URLs too.
@@ -108,7 +110,9 @@ bridge must retarget the PRs to `main` within replication's 15 seconds for
 GitHub to show them merged; and a PR from AustinSchuhBRT's fork
 (`AustinSchuhBRT/bridge-scratch`, branch `main`), with Gerrit patch sets
 pushed back to the fork while maintainer edits are allowed and reported
-in `gerrit/sync` when they are not. Run it after any bridge change.
+in `gerrit/sync` when they are not; and CI in Gerrit's Checks tab (each
+job running, then passed or failed, Rerun adding an attempt) and on GitHub
+(`gerrit/Verified` linking the build). Run it after any bridge change.
 
 ## Project rules (like AOS)
 
@@ -145,7 +149,9 @@ git remote add github https://github.com/AustinSchuh/bridge-scratch.git
 - Upload a chain: commit two or three times, `git push origin HEAD:refs/for/main`.
   Each change gets a `gerrit/<Change-Id>` branch and a PR, stacked.
   CI runs (alice is trusted) and `gerrit/Verified` follows it on GitHub.
-- Make a build fail: add a file whose path contains `FAIL`.
+- Make a build fail: add a file whose path contains `FAIL`. The Checks
+  tab shows Build passed and Test failed; **Rerun** there asks for
+  another build (it posts `retest` as you).
 - Comment, reply, resolve, vote, attach an "Apply fix" suggestion: all
   show up on the PR.
 - Amend only the middle change of a chain and push: the PR above moves to

@@ -744,14 +744,35 @@ change. This matches the semantics on both sides.
     `retest`."
   - The group name is a config value (`ci.trusted_group`, default
     `Verified Users`).
-- **gerrit-buildkite's messages map onto check runs.**
-  - "Build Started: <url>" along with `Verified=0` → `gerrit/Verified`
-    *in_progress*, `details_url = <url>`, so the PR links straight to the
-    Buildkite build.
-  - "Build Succeeded|Failed: <url>" along with `Verified=±1` →
-    *completed* (success/failure).
-  - The rule matches on the CI account and a message regex in config, so
-    other CI systems can be added the same way.
+- **CI results come from Buildkite, not from CI's messages**
+  (`ci.buildkite`; `internal/buildkite`). gerrit-buildkite builds a patch
+  set with `commit` = the Gerrit revision, so the bridge lists the
+  pipeline's builds of that commit (`GET …/builds?commit=`, a read_builds
+  token). It reads them whenever it syncs a change, which CI's own
+  "Build Started" and vote messages trigger.
+  - `gerrit/Verified` on GitHub: while there is no vote, the newest
+    build's state ("CI running", "CI failed; waiting for the vote"), with
+    `target_url` = the build. The vote still decides success or failure.
+  - **Gerrit's Checks tab** (`internal/gerritchecks`). A small UI plugin,
+    `plugins/bridge-checks.js` (`bridge --checks_plugin` writes it), is a
+    ChecksProvider: for each patch set it fetches
+    `GET <ci.checks_url>/checks/<change>/<patch set>` from the bridge,
+    which answers with Gerrit `CheckRun`s: one per Buildkite job (or per
+    build before it has jobs), each retry of the build a new attempt,
+    running/scheduled/completed, with a result (passed, failed with exit
+    status, canceled, not run) linking the job. Its **Rerun** action posts
+    `retest` as the signed-in user, so gerrit-buildkite's own trust check
+    decides, exactly as if they had typed it. The plugin polls every 30s.
+  - The browser cannot call Buildkite (that needs the token), hence the
+    bridge in the middle. `/checks` is public: it shows only changes in
+    the bridge's project that anonymous users can see (it reads the change
+    without credentials), caches each answer 15s, and computes at most 4
+    at once. It sends CORS headers for Gerrit's origin, for when the
+    bridge is not proxied under Gerrit's host.
+- Without `ci.buildkite`, the older fallback applies: messages from
+  `ci.account` matching `ci.message_pattern` ("Build
+  Started|Succeeded|Failed: <url>") give `gerrit/Verified`'s text and link,
+  and there is no Checks tab.
 
 ### 6.6 Lifecycle
 
@@ -939,8 +960,13 @@ defenses, by threat:
 - **Bridge markers.** `<!-- bridge:… -->` markers mark state (handled
   commands, comment mappings) only in comments by the bridge's own GitHub
   login.
-- **CI status.** Only messages by `ci.account` (and never ones mirrored
-  from GitHub) drive `gerrit/Verified`'s link and text.
+- **CI status.** Comes from Buildkite's API (§6.5), so no comment can fake
+  it. Without Buildkite, only messages by `ci.account` (and never ones
+  mirrored from GitHub) drive `gerrit/Verified`'s link and text.
+- **The public `/checks` endpoint** reads changes anonymously, so it shows
+  nothing anonymous users cannot already see; it is cached and
+  concurrency-limited so it cannot be used to exhaust Buildkite's rate
+  limit. Its plugin's Rerun posts as the user, so it grants nothing.
 - **Webhooks.** HMAC-checked; at most 8 read at once, with read and write
   timeouts. Payloads are only hints: actors and content are re-read from
   the API.

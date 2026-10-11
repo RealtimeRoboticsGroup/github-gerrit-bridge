@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "gerritchecks",
+    srcs = [
+        "gerritchecks.go",
+        "plugin.go",
+    ],
+    embedsrcs = ["bridge-checks.js"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/gerritchecks",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/buildkite",
+        "//internal/gerrit",
+    ],
+)
+
+go_test(
+    name = "gerritchecks_test",
+    srcs = ["gerritchecks_test.go"],
+    embed = [":gerritchecks"],
+    deps = [
+        "//internal/buildkite",
+        "//internal/gerrit",
+    ],
+)

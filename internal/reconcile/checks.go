@@ -11,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/buildkite"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerritchecks"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
@@ -53,8 +55,10 @@ type Checks struct {
 	CIMessage *regexp.Regexp
 	// CIAccount is CI's Gerrit username: only its messages are CI runs.
 	CIAccount string
-	DryRun    bool
-	Logger    *slog.Logger
+	// Builds, if set, is read for CI runs instead of CI's messages.
+	Builds gerritchecks.Builds
+	DryRun bool
+	Logger *slog.Logger
 
 	mu        sync.Mutex
 	trusted   map[int]bool
@@ -112,7 +116,15 @@ func (c *Checks) Sync(ctx context.Context, n int) error {
 	}
 
 	trusted, known := c.isTrusted(ctx, rev.Uploader.AccountID)
-	want := desiredStatuses(ch, c.ChangeURL(n), c.CILabels, latestCIRun(ch, rev.Number, c.CIMessage, c.CIAccount), trusted || !known, c.TrustedGroup)
+	run := latestCIRun(ch, rev.Number, c.CIMessage, c.CIAccount)
+	if c.Builds != nil {
+		builds, err := c.Builds.Builds(ctx, ch.CurrentRevision)
+		if err != nil {
+			return err
+		}
+		run = latestBuild(builds)
+	}
+	want := desiredStatuses(ch, c.ChangeURL(n), c.CILabels, run, trusted || !known, c.TrustedGroup)
 	have, err := c.GitHub.Statuses(ctx, sha)
 	if err != nil {
 		return err
@@ -184,6 +196,26 @@ func latestCIRun(ch *gerrit.ChangeInfo, ps int, re *regexp.Regexp, account strin
 		}
 		if sm := re.FindStringSubmatch(m.Message); len(sm) >= 3 {
 			run = ciRun{Phase: sm[1], URL: sm[2]}
+		}
+	}
+	return run
+}
+
+// latestBuild is the newest build as a CI run.
+func latestBuild(builds []buildkite.Build) ciRun {
+	var run ciRun
+	newest := 0
+	for _, b := range builds {
+		if b.Number < newest {
+			continue
+		}
+		newest = b.Number
+		run = ciRun{Phase: "Started", URL: b.WebURL}
+		switch {
+		case b.State == "passed":
+			run.Phase = "Succeeded"
+		case buildkite.Finished(b.State):
+			run.Phase = "Failed"
 		}
 	}
 	return run

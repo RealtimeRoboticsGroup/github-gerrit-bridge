@@ -5,10 +5,14 @@
 //     build (the only API gerrit-buildkite calls, plus cancel);
 //   - after --duration the build finishes and a build.finished webhook goes
 //     to --webhook_url with the X-Buildkite-Token header;
+//   - GET /v2/organizations/{org}/pipelines/{pipeline}/builds?commit=
+//     lists builds with their jobs, as the bridge reads them;
 //   - GET /builds/{n} shows the build, so "Build Started: <url>" links work.
 //
-// A build of a Gerrit patch set fails if any file it touches has "FAIL" in
-// its path; everything else passes. That makes both outcomes easy to try.
+// Each build has two jobs, "Build" and then "Test", each taking half of
+// --duration. On a Gerrit patch set, Test fails if any file the change
+// touches has "FAIL" in its path; everything else passes. That makes both
+// outcomes easy to try.
 package main
 
 import (
@@ -27,17 +31,40 @@ import (
 )
 
 type build struct {
-	ID      string            `json:"id"`
-	Number  int               `json:"number"`
-	WebURL  string            `json:"web_url"`
-	URL     string            `json:"url"`
-	State   string            `json:"state"`
-	Commit  string            `json:"commit"`
-	Branch  string            `json:"branch"`
-	Message string            `json:"message,omitempty"`
-	Created time.Time         `json:"-"`
-	Env     map[string]string `json:"-"`
-	Log     []string          `json:"-"`
+	ID         string            `json:"id"`
+	Number     int               `json:"number"`
+	WebURL     string            `json:"web_url"`
+	URL        string            `json:"url"`
+	State      string            `json:"state"`
+	Commit     string            `json:"commit"`
+	Branch     string            `json:"branch"`
+	Message    string            `json:"message,omitempty"`
+	Env        map[string]string `json:"env"`
+	Created    time.Time         `json:"created_at"`
+	StartedAt  *time.Time        `json:"started_at"`
+	FinishedAt *time.Time        `json:"finished_at"`
+	Jobs       []*job            `json:"jobs"`
+	Pipeline   pipeline          `json:"pipeline"`
+	Log        []string          `json:"-"`
+}
+
+type job struct {
+	ID          string     `json:"id"`
+	Type        string     `json:"type"`
+	Name        string     `json:"name"`
+	StepKey     string     `json:"step_key"`
+	State       string     `json:"state"`
+	WebURL      string     `json:"web_url"`
+	ExitStatus  *int       `json:"exit_status"`
+	ScheduledAt *time.Time `json:"scheduled_at"`
+	StartedAt   *time.Time `json:"started_at"`
+	FinishedAt  *time.Time `json:"finished_at"`
+}
+
+type pipeline struct {
+	Slug   string `json:"slug"`
+	Name   string `json:"name"`
+	WebURL string `json:"web_url"`
 }
 
 type server struct {
@@ -62,6 +89,7 @@ func main() {
 
 	http.HandleFunc("POST /v2/organizations/{org}/pipelines/{pipeline}/builds", s.create)
 	http.HandleFunc("PUT /v2/organizations/{org}/pipelines/{pipeline}/builds/{n}/cancel", s.cancel)
+	http.HandleFunc("GET /v2/organizations/{org}/pipelines/{pipeline}/builds", s.list)
 	http.HandleFunc("GET /builds/{n}", s.page)
 	http.HandleFunc("GET /{$}", s.index)
 	log.Printf("fake Buildkite on http://%s, webhooks to %s", s.listen, s.webhookURL)
@@ -86,10 +114,17 @@ func (s *server) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	now := time.Now()
 	b := &build{ID: uuid(), Number: len(s.builds) + 1, State: "scheduled", Commit: in.Commit, Branch: in.Branch,
-		Message: in.Message, Created: time.Now(), Env: in.Env}
+		Message: in.Message, Created: now, Env: in.Env,
+		Pipeline: pipeline{Slug: r.PathValue("pipeline"), Name: r.PathValue("pipeline"), WebURL: fmt.Sprintf("http://%s/", s.listen)}}
 	b.WebURL = fmt.Sprintf("http://%s/builds/%d", s.listen, b.Number)
 	b.URL = b.WebURL
+	for _, name := range []string{"Build", "Test"} {
+		j := &job{ID: uuid(), Type: "script", Name: name, StepKey: strings.ToLower(name), State: "scheduled", ScheduledAt: &now}
+		j.WebURL = b.WebURL + "#" + j.ID
+		b.Jobs = append(b.Jobs, j)
+	}
 	s.builds = append(s.builds, b)
 	s.mu.Unlock()
 	log.Printf("build #%d created: commit %s branch %s env %v", b.Number, b.Commit, b.Branch, b.Env)
@@ -103,8 +138,13 @@ func (s *server) cancel(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, b := range s.builds {
-		if fmt.Sprint(b.Number) == r.PathValue("n") && b.State == "running" {
-			b.State = "canceled"
+		if fmt.Sprint(b.Number) == r.PathValue("n") && !finished(b.State) {
+			b.State, b.FinishedAt = "canceled", stamp()
+			for _, j := range b.Jobs {
+				if !finished(j.State) {
+					j.State, j.FinishedAt = "canceled", b.FinishedAt
+				}
+			}
 			b.Log = append(b.Log, "Canceled (a newer patch set was uploaded).")
 		}
 	}
@@ -112,18 +152,58 @@ func (s *server) cancel(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "{}")
 }
 
+// list serves the builds of ?commit=, newest first.
+func (s *server) list(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		http.Error(w, `{"message":"Authentication required"}`, http.StatusUnauthorized)
+		return
+	}
+	commit := r.URL.Query().Get("commit")
+	s.mu.Lock()
+	out := []*build{}
+	for i := len(s.builds) - 1; i >= 0; i-- {
+		if b := s.builds[i]; commit == "" || b.Commit == commit {
+			out = append(out, b)
+		}
+	}
+	body, _ := json.Marshal(out)
+	s.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(body)
+}
+
+func stamp() *time.Time {
+	t := time.Now()
+	return &t
+}
+
 func (s *server) run(b *build) {
 	s.mu.Lock()
-	b.State = "running"
+	b.State, b.StartedAt = "running", stamp()
+	b.Jobs[0].State, b.Jobs[0].StartedAt = "running", b.StartedAt
 	s.mu.Unlock()
-	time.Sleep(s.duration)
+	time.Sleep(s.duration / 2)
 	state, lines := s.verdict(b)
 	s.mu.Lock()
 	if b.State == "canceled" {
 		s.mu.Unlock()
 		return
 	}
-	b.State = state
+	zero, one := 0, 1
+	b.Jobs[0].State, b.Jobs[0].FinishedAt, b.Jobs[0].ExitStatus = "passed", stamp(), &zero
+	b.Jobs[1].State, b.Jobs[1].StartedAt = "running", stamp()
+	s.mu.Unlock()
+	time.Sleep(s.duration / 2)
+	s.mu.Lock()
+	if b.State == "canceled" {
+		s.mu.Unlock()
+		return
+	}
+	b.Jobs[1].State, b.Jobs[1].FinishedAt, b.Jobs[1].ExitStatus = state, stamp(), &zero
+	if state != "passed" {
+		b.Jobs[1].ExitStatus = &one
+	}
+	b.State, b.FinishedAt = state, stamp()
 	b.Log = append(b.Log, lines...)
 	payload, _ := json.Marshal(map[string]any{"event": "build.finished", "build": b})
 	s.mu.Unlock()
@@ -144,6 +224,10 @@ func (s *server) run(b *build) {
 		log.Printf("webhook for build #%d failed: %v; retrying", b.Number, err)
 		time.Sleep(5 * time.Second)
 	}
+}
+
+func finished(state string) bool {
+	return state == "passed" || state == "failed" || state == "canceled"
 }
 
 // verdict "runs" the build: fail if a touched file has FAIL in its path.
@@ -183,9 +267,13 @@ func (s *server) page(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	for _, b := range s.builds {
 		if fmt.Sprint(b.Number) == r.PathValue("n") {
-			fmt.Fprintf(w, "<!doctype html><title>Build #%d</title><h1>Build #%d: %s</h1><p>Commit %s, branch %s, created %s</p><pre>%s</pre>",
+			fmt.Fprintf(w, "<!doctype html><title>Build #%d</title><h1>Build #%d: %s</h1><p>Commit %s, branch %s, created %s</p><ul>",
 				b.Number, b.Number, html.EscapeString(b.State), html.EscapeString(b.Commit), html.EscapeString(b.Branch),
-				b.Created.Format(time.RFC3339), html.EscapeString(strings.Join(b.Log, "\n")))
+				b.Created.Format(time.RFC3339))
+			for _, j := range b.Jobs {
+				fmt.Fprintf(w, `<li id="%s">%s: %s</li>`, j.ID, html.EscapeString(j.Name), html.EscapeString(j.State))
+			}
+			fmt.Fprintf(w, "</ul><pre>%s</pre>", html.EscapeString(strings.Join(b.Log, "\n")))
 			return
 		}
 	}

@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "buildkite",
+    srcs = ["buildkite.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/buildkite",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "buildkite_test",
+    srcs = ["buildkite_test.go"],
+    embed = [":buildkite"],
+)

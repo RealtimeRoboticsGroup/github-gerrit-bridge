@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"regexp"
@@ -15,10 +16,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/buildkite"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/config"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/events"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/gerritssh"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerritchecks"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/queue"
@@ -30,6 +33,8 @@ func main() {
 	configPath := flag.String("config", "", "Path to the YAML config file.")
 	dryRun := flag.Bool("dry_run", true, "Log intended actions instead of performing them.")
 	verbose := flag.Bool("v", false, "Log debug messages.")
+	checksPlugin := flag.Bool("checks_plugin", false, "Print the Gerrit plugin that shows CI in the Checks tab "+
+		"(install it as $site/plugins/bridge-checks.js), and exit.")
 	flag.Parse()
 
 	level := slog.LevelInfo
@@ -39,10 +44,32 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
 
+	if *checksPlugin {
+		if err := printChecksPlugin(*configPath); err != nil {
+			logger.Error("exiting", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(*configPath, *dryRun, logger); err != nil {
 		logger.Error("exiting", "err", err)
 		os.Exit(1)
 	}
+}
+
+func printChecksPlugin(configPath string) error {
+	if configPath == "" {
+		return errors.New("--config is required")
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	if cfg.CI.ChecksURL == "" {
+		return errors.New("ci.checks_url is not set")
+	}
+	_, err = os.Stdout.Write(gerritchecks.Plugin(cfg.CI.ChecksURL, cfg.Gerrit.Project))
+	return err
 }
 
 func run(configPath string, dryRun bool, logger *slog.Logger) error {
@@ -139,6 +166,16 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	logger.Info("github ok", "repo", ghRepo.FullName, "as", login, "default_branch", ghRepo.DefaultBranch,
 		"rate_remaining", gh.RateLimit().Remaining)
 
+	var builds *buildkite.Client
+	if b := cfg.CI.Buildkite; b != nil {
+		tok, err := config.ReadSecret(b.TokenFile)
+		if err != nil {
+			return err
+		}
+		builds = &buildkite.Client{BaseURL: b.APIURL, Org: b.Organization, Pipeline: b.Pipeline, Token: tok,
+			HTTP: &http.Client{Timeout: 30 * time.Second}}
+	}
+
 	store := &state.Store{Repo: mirror}
 	if err := store.Fetch(ctx); err != nil {
 		return fmt.Errorf("fetching refs/bridge/*: %w", err)
@@ -162,6 +199,21 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Deliver: router.Delivery,
 		Logger:  logger,
 	})
+	if builds != nil {
+		// Public, for the bridge-checks plugin in Gerrit users' browsers.
+		origin := ""
+		if u, err := url.Parse(cfg.Gerrit.URL); err == nil {
+			origin = u.Scheme + "://" + u.Host
+		}
+		label := ""
+		if len(cfg.CI.Labels) > 0 {
+			label = cfg.CI.Labels[0]
+		}
+		mux.Handle("GET /checks/{change}/{patchset}", &gerritchecks.Handler{
+			Project: cfg.Gerrit.Project, Gerrit: rest.Anon(), Builds: builds, Label: label,
+			AllowOrigin: origin, Logger: logger,
+		})
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		last := "never"
 		if t := stream.LastEvent(); !t.IsZero() {
@@ -270,6 +322,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		CIAccount:    cfg.CI.Account,
 		DryRun:       dryRun,
 		Logger:       logger,
+	}
+	if builds != nil {
+		checks.Builds = builds
 	}
 	// Statuses need the patch set on GitHub; refresh them as soon as the
 	// code mirror puts it there.

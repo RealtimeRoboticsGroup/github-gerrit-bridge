@@ -21,8 +21,10 @@ go_library(
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/anchor",
+        "//internal/buildkite",
         "//internal/gerrit",
         "//internal/gerrit/events",
+        "//internal/gerritchecks",
         "//internal/github",
         "//internal/gitmirror",
         "//internal/queue",
@@ -43,6 +45,7 @@ go_test(
     ],
     embed = [":reconcile"],
     deps = [
+        "//internal/buildkite",
         "//internal/gerrit",
         "//internal/gerrit/events",
         "//internal/github",

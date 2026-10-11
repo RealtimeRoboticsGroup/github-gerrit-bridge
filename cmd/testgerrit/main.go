@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/config"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerritchecks"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/testgerrit"
 )
 
@@ -49,6 +50,8 @@ func run() error {
 	listen := flag.String("bridge_listen", "127.0.0.1:18081", "Listen address for the generated bridge config.")
 	replicate := flag.String("replicate_project", "", "Replicate this project's branches to the --github repo.")
 	tokenFile := flag.String("github_token_file", "", "GitHub token for replication (stored in etc/secure.config).")
+	buildkiteURL := flag.String("buildkite_url", "", "CI's (fake) Buildkite API: the replicated project's bridge reads builds from it and "+
+		"serves Gerrit's Checks tab, through plugins/bridge-checks.js.")
 	ciUser := flag.String("ci_user", "", "Create this CI account (once), voting Verified on --replicate_project.")
 	aliceEmail := flag.String("alice_email", "", "Also give alice this email (yours), so your commits can be pushed as alice.")
 	identity := flag.String("identity", "", "GitHub login=Gerrit user overrides (comma separated) for the replicated project's bridge config; normally the bridge matches usernames.")
@@ -110,9 +113,16 @@ func run() error {
 		}
 	}
 	if *replicate != "" {
-		pcfg, err := mirrorProject(ctx, s, bridgeDir, *replicate, *github, *listen, *tokenFile, *identity, *bot, *ciUser)
+		pcfg, err := mirrorProject(ctx, s, bridgeDir, *replicate, *github, *listen, *tokenFile, *identity, *bot, *ciUser, *buildkiteURL)
 		if err != nil {
 			return err
+		}
+		if *buildkiteURL != "" {
+			// Gerrit loads new plugins within a minute.
+			js := gerritchecks.Plugin("http://"+*listen, *replicate)
+			if err := os.WriteFile(filepath.Join(*site, "plugins", "bridge-checks.js"), js, 0o644); err != nil {
+				return err
+			}
 		}
 		log.Printf("Bridge config for %s: %s", *replicate, pcfg)
 	}
@@ -168,7 +178,7 @@ func run() error {
 
 // mirrorProject makes sure the replicated project exists, seeded from the
 // GitHub repo's main, and that a bridge config for it exists.
-func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project, repo, listen, tokenFile, identity, bot, ciUser string) (string, error) {
+func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project, repo, listen, tokenFile, identity, bot, ciUser, buildkiteURL string) (string, error) {
 	tok, err := config.ReadSecret(tokenFile)
 	if err != nil {
 		return "", err
@@ -206,6 +216,7 @@ func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project
 	return s.WriteProjectConfig(bridgeDir, testgerrit.ProjectConfig{
 		File: project + ".yaml", Project: project, Owner: owner, Repo: name, Listen: listen,
 		Identity: ids, ImportCreatedAfter: time.Now(), ResyncInterval: 5 * time.Minute, TokenUser: bot, CIAccount: ciUser,
+		Buildkite: buildkiteURL,
 	})
 }
 

@@ -108,8 +108,26 @@ type CI struct {
 	// as CI runs (anyone can post "Build Succeeded: <url>").
 	Account string `yaml:"account"`
 	// MessagePattern matches CI messages; group 1 must be Started,
-	// Succeeded or Failed and group 2 the build URL.
+	// Succeeded or Failed and group 2 the build URL. Used only without
+	// Buildkite.
 	MessagePattern string `yaml:"message_pattern"`
+	// Buildkite, if set, is where CI results are read from: for the
+	// gerrit/Verified status on GitHub and for Gerrit's Checks tab.
+	Buildkite *Buildkite `yaml:"buildkite"`
+	// ChecksURL is the bridge's URL as Gerrit users' browsers reach it.
+	// With Buildkite, the bridge serves /checks for the bridge-checks
+	// Gerrit plugin (bridge --checks_plugin writes the plugin).
+	ChecksURL string `yaml:"checks_url"`
+}
+
+// Buildkite is the pipeline gerrit-buildkite triggers.
+type Buildkite struct {
+	// APIURL defaults to https://api.buildkite.com.
+	APIURL       string `yaml:"api_url"`
+	Organization string `yaml:"organization"`
+	Pipeline     string `yaml:"pipeline"`
+	// TokenFile holds an API token with read_builds.
+	TokenFile string `yaml:"token_file"`
 }
 
 // Load reads and validates the config file at path.
@@ -177,6 +195,14 @@ func (c *Config) validate() error {
 	}
 	if _, err := regexp.Compile(c.CI.MessagePattern); err != nil {
 		errs = append(errs, fmt.Errorf("ci.message_pattern: %w", err))
+	}
+	if b := c.CI.Buildkite; b != nil {
+		req("ci.buildkite.organization", b.Organization)
+		req("ci.buildkite.pipeline", b.Pipeline)
+		req("ci.buildkite.token_file", b.TokenFile)
+	}
+	if c.CI.ChecksURL != "" && c.CI.Buildkite == nil {
+		errs = append(errs, errors.New("ci.checks_url needs ci.buildkite"))
 	}
 	if c.ResyncInterval < 0 {
 		errs = append(errs, errors.New("resync_interval must not be negative"))
