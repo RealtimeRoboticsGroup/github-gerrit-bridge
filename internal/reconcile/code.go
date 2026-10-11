@@ -117,6 +117,17 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Open PRs, listed up front: a closed change whose PR is still open
+	// (a merge waiting for replication, design §6.7) stays in the snapshot,
+	// so its PR is still managed and its head branch kept.
+	openPRs, err := c.GitHub.ListPulls(ctx, "open")
+	if err != nil {
+		return nil, err
+	}
+	prOpen := map[int]bool{}
+	for _, pr := range openPRs {
+		prOpen[pr.Number] = true
+	}
 	// Changes we mirrored that may have closed since.
 	open := map[int]bool{}
 	for _, ci := range infos {
@@ -128,7 +139,7 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 			return nil, err
 		}
 		s.State[n] = st
-		if open[n] || st.State.Lifecycle != "NEW" {
+		if open[n] || (st.State.Lifecycle != "NEW" && !prOpen[st.State.PR]) {
 			continue
 		}
 		ci, err := c.Gerrit.GetChange(ctx, n, "CURRENT_REVISION", "CURRENT_COMMIT")
@@ -222,13 +233,9 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 	for n, ch := range s.Changes {
 		heads[s.head(n, ch.ChangeID)] = true
 	}
-	prs, err := c.GitHub.ListPulls(ctx, "open")
-	if err != nil {
-		return nil, err
-	}
 	repoName := c.GitHub.Owner + "/" + c.GitHub.Repo
-	for i := range prs {
-		pr := &prs[i]
+	for i := range openPRs {
+		pr := &openPRs[i]
 		if heads[pr.Head.Ref] && strings.EqualFold(pr.HeadRepo(), repoName) {
 			s.PRs[pr.Number] = pr
 		}

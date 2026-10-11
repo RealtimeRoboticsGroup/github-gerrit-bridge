@@ -165,6 +165,24 @@ wait_for "draft on GitHub makes the change WIP" wip true
 brt api graphql -f query="mutation{markPullRequestReadyForReview(input:{pullRequestId:\"${NODE}\"}){pullRequest{isDraft}}}" --silent
 wait_for "ready for review clears WIP" wip false
 
+# --- 9. Submit in Gerrit: the bridge must retarget the PRs to main before
+# replication (replicationDelay, 15s as on AOS) pushes the merge ---
+step "9. A chain submitted in Gerrit"
+E1="Gerrit submit ${RUN} part 1"; E2="Gerrit submit ${RUN} part 2"
+(cd "${ME_CLONE}" && git fetch -q gerrit && git checkout -q -B "gsubmit-${RUN}" gerrit/main)
+commit "${ME_CLONE}" "gsubmit-${RUN}-1.txt" "${E1}"
+commit "${ME_CLONE}" "gsubmit-${RUN}-2.txt" "${E2}"
+(cd "${ME_CLONE}" && git push -q gerrit HEAD:refs/for/main 2>/dev/null)
+two_prs() { [[ -n "$(pr_for "${E1}")" && -n "$(pr_for "${E2}")" ]]; }
+wait_for "2 PRs opened" two_prs
+F1=$(change "${E1}"); F2=$(change "${E2}"); O1=$(pr_for "${E1}"); O2=$(pr_for "${E2}")
+for c in "${F1}" "${F2}"; do gerrit_as AustinSchuh POST "changes/${c}/revisions/current/review" '{"labels":{"Code-Review":2}}' >/dev/null; done
+gsubmittable() { for c in "${F1}" "${F2}"; do gerrit "changes/${c}?o=SUBMITTABLE" | jq -e '.submittable' || return 1; done; }
+wait_for "both submittable once CI verifies" gsubmittable
+gerrit_as AustinSchuh POST "changes/${F2}/submit" "{}" >/dev/null
+gmerged() { for p in "${O1}" "${O2}"; do [[ "$(me api "repos/${R}/pulls/${p}" --jq .merged)" == true ]] || return 1; done; }
+wait_for "GitHub shows both PRs merged" gmerged
+
 echo
 echo "Rehearsal ${RUN}: ${PASSED} passed, ${FAILED} failed"
 ((FAILED == 0))

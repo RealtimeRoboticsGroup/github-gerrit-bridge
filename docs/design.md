@@ -783,7 +783,7 @@ change. This matches the semantics on both sides.
   takes the PR out of its stack and retargets it to the target branch;
   replication then lands the commits and GitHub shows it merged. The
   bridge hears the merge event within a second, while replication waits
-  `replicationDelay` (default 15 s). If replication wins anyway, or the
+  `replicationDelay` (default 15 s; AOS uses the default). If replication wins anyway, or the
   submit rewrote the commit (rebase, cherry-pick, any GitHub-born squash
   that is not a no-op), the PR is closed with a "Merged in Gerrit" notice.
   A PR's head branch is never deleted while the PR is open (that would

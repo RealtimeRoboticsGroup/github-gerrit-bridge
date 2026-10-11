@@ -6,7 +6,8 @@ by hand before it goes near the real Gerrit:
 | Piece | Where | Real or stand-in |
 |---|---|---|
 | Gerrit 3.14.4 | `http://127.0.0.1:18080/gerrit/`, ssh `127.0.0.1:29418`, site `~/tmp/gerrit-test` | real, with AOS's github plugin build and settings: you log in with GitHub |
-| Replication | Gerrit's bundled plugin → `github.com/AustinSchuh/bridge-scratch` | real |
+| Replication | Gerrit's bundled plugin → `github.com/AustinSchuh/bridge-scratch`, configured like AOS's (default 15s `replicationDelay`, `rescheduleDelay = 15`, heads and tags, `force`) | real |
+| Other plugins | the rest of AOS's `plugins/` (all bundled in the war): codemirror-editor, commit-message-length-validator, delete-project, download-commands, gitiles, hooks, plugin-manager, reviewnotes, singleusergroup, webhooks | real |
 | CI | your `gerrit-buildkite` (`~/tmp/gerrit-buildkite`, plus a local `-api_url` patch) | real |
 | Buildkite | `cmd/fakebuildkite` on `http://127.0.0.1:18090` | stand-in |
 | The bridge | `cmd/bridge`, config `~/tmp/gerrit-test/bridge/bridge-scratch.yaml` | real |
@@ -102,7 +103,9 @@ rebase rejoining; GitHub approvals becoming Code-Review +2 and `/submit`
 merging the chain, with replication marking the PRs merged; a GitHub stack
 by the untrusted contributor imported as theirs without CI; `retest` from
 GitHub by a trusted reviewer; a push by someone else uploaded as the
-pusher; and draft toggles. Run it after any bridge change.
+pusher; draft toggles; and a chain submitted in Gerrit itself, where the
+bridge must retarget the PRs to `main` within replication's 15 seconds for
+GitHub to show them merged. Run it after any bridge change.
 
 ## Project rules (like AOS)
 

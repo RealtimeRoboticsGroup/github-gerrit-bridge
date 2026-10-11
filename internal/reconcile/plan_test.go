@@ -57,7 +57,13 @@ func (w *world) snapshot() *Snapshot {
 		Changes: map[int]*GerritChange{}, OnBranch: w.onMain,
 		GitHubBranches: map[string]string{}, PRs: map[int]*github.PullRequest{}, State: map[int]*state.Change{},
 	}
+	// Like Code.observe: closed changes drop out once the bridge has
+	// recorded them closed, unless their PR is still open.
 	for n, c := range w.gerrit {
+		if st := w.state[n]; c.Status != "NEW" && st != nil && st.State.Lifecycle != "NEW" &&
+			(w.prs[st.State.PR] == nil || w.prs[st.State.PR].State != "open") {
+			continue
+		}
 		cc := *c
 		s.Changes[n] = &cc
 	}
@@ -74,7 +80,19 @@ func (w *world) snapshot() *Snapshot {
 			s.AppendOK[n] = w.appendOK[n]
 		}
 	}
+	heads := map[string]bool{}
+	for n, c := range s.Changes {
+		heads[s.head(n, c.ChangeID)] = true
+	}
 	for n, pr := range w.prs {
+		// Open PRs on a change's head, plus the recorded PR of each change.
+		linked := false
+		for c, st := range w.state {
+			linked = linked || (st.State.PR == n && s.Changes[c] != nil)
+		}
+		if !linked && !(pr.State == "open" && heads[pr.Head.Ref]) {
+			continue
+		}
 		cp := *pr
 		cp.Head.SHA = w.branch[pr.Head.Ref]
 		s.PRs[n] = &cp
@@ -221,6 +239,11 @@ func (w *world) apply(p *Plan) {
 		}
 	}
 	// Record state the way the applier does.
+	for n, st := range w.state {
+		if c := w.gerrit[n]; c != nil && st.State.PR != 0 {
+			st.State.Lifecycle = c.Status
+		}
+	}
 	for n, d := range p.Desired {
 		st := w.state[n]
 		if st == nil || st.State.PR == 0 {
@@ -240,7 +263,13 @@ func (w *world) link(change, pr int) {
 	if w.state[change] == nil {
 		w.state[change] = &state.Change{}
 	}
-	w.state[change].State.PR = pr
+	st := &w.state[change].State
+	st.PR = pr
+	st.HeadBranch = w.prs[pr].Head.Ref
+	st.Lifecycle = "NEW"
+	if st.Origin == "" {
+		st.Origin = "gerrit"
+	}
 }
 
 // converge plans and applies until the plan is empty.

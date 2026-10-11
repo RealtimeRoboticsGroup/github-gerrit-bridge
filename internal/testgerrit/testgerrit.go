@@ -210,8 +210,9 @@ func Start(ctx context.Context, o Options) (*Server, error) {
 				return nil, fmt.Errorf("admin password: %w", err)
 			}
 		}
-		// The github plugin binds to the replication plugin's API.
-		if err := installWarPlugins(o.War, o.Site, "replication-api.jar"); err != nil {
+		// AOS's plugins/ (all bundled in the war); the github plugin binds
+		// to replication-api.
+		if err := installWarPlugins(o.War, o.Site, aosPlugins...); err != nil {
 			return nil, err
 		}
 		if err := installGitHubLogin(o.Site, o.GitHubLogin); err != nil {
@@ -480,6 +481,14 @@ func randomPassword() string {
 // installReplication copies the replication plugin out of the war and
 // writes its configuration. Branches are force-pushed: the Gerrit site owns
 // them, as in production (design §3).
+// aosPlugins are the war-bundled plugins AOS runs (besides the github
+// plugin and replication, which are installed separately).
+var aosPlugins = []string{
+	"replication-api.jar", "codemirror-editor.jar", "commit-message-length-validator.jar",
+	"delete-project.jar", "download-commands.jar", "gitiles.jar", "hooks.jar",
+	"plugin-manager.jar", "reviewnotes.jar", "singleusergroup.jar", "webhooks.jar",
+}
+
 // installWarPlugins copies plugins bundled in the war into site/plugins.
 func installWarPlugins(war, site string, names ...string) error {
 	zr, err := zip.OpenReader(war)
@@ -542,13 +551,18 @@ func installReplication(war, site string, r *Replication) error {
 		}
 		return nil
 	}
+	// As on AOS: the default replicationDelay (15s), which is how long
+	// the bridge has to retarget PRs after a submit in Gerrit (design §6.7).
 	rem := "remote." + r.Name + "."
 	kv := []string{
 		"gerrit.replicateOnStartup", "true",
+		"gerrit.autoReload", "true",
 		"replication.lockErrorMaxRetries", "5",
 		rem + "url", r.URL,
-		rem + "push", "+refs/heads/*:refs/heads/*",
-		rem + "replicationDelay", "2",
+		rem + "push", "refs/heads/*:refs/heads/*",
+		rem + "push+", "refs/tags/*:refs/tags/*",
+		rem + "force", "true",
+		rem + "rescheduleDelay", "15",
 		rem + "threads", "1",
 		rem + "createMissingRepositories", "false",
 	}
