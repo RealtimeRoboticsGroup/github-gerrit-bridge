@@ -468,3 +468,27 @@ func (s *Server) EnsureGitHubUser(ctx context.Context, u GitHubUser) (*User, err
 	err = s.Admin.Do(ctx, http.MethodPut, "accounts/"+url.PathEscape(u.Login)+"/emails/"+escaped+"/preferred", nil, nil)
 	return created, err
 }
+
+// SetUpLoginUser finishes an account the github plugin created: adds it to
+// groups and, if passwordFile does not exist, generates an HTTP password
+// and writes it there. It reports false if the account does not exist yet.
+func (s *Server) SetUpLoginUser(ctx context.Context, username string, groups []string, passwordFile string) (bool, error) {
+	accts, err := s.Admin.QueryAccounts(ctx, "username:"+gerrit.QueryString(username))
+	if err != nil || len(accts) == 0 {
+		return false, err
+	}
+	id := fmt.Sprint(accts[0].AccountID)
+	for _, g := range groups {
+		if err := s.Admin.Do(ctx, http.MethodPut, "groups/"+url.PathEscape(g)+"/members/"+id, nil, nil); err != nil {
+			return false, fmt.Errorf("adding to %s: %w", g, err)
+		}
+	}
+	if _, err := os.Stat(passwordFile); err == nil {
+		return true, nil
+	}
+	var pw string
+	if err := s.Admin.Do(ctx, http.MethodPut, "accounts/"+id+"/password.http", map[string]any{"generate": true}, &pw); err != nil {
+		return false, fmt.Errorf("HTTP password: %w", err)
+	}
+	return true, os.WriteFile(passwordFile, []byte(pw+"\n"), 0o600)
+}

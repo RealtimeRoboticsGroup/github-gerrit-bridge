@@ -49,6 +49,22 @@ type Options struct {
 	// Replicate, if set, installs the bundled replication plugin and
 	// pushes refs/heads/* of the given projects to a remote.
 	Replicate *Replication
+	// BasePath serves Gerrit under a path, like a site behind a proxy
+	// (e.g. "/gerrit").
+	BasePath string
+	// GitHubLogin, if set, makes people log in with GitHub through the
+	// github plugin, configured like AOS. A new site first boots in dev
+	// mode once, to bootstrap the admin account.
+	GitHubLogin *GitHubLogin
+}
+
+// GitHubLogin configures the github plugin for login.
+type GitHubLogin struct {
+	// JarsDir holds github-plugin.jar and github-oauth.jar.
+	JarsDir                string
+	ClientID, ClientSecret string
+	// WebhookUser is github.webhookUser (set on AOS).
+	WebhookUser string
 }
 
 // Replication configures the replication plugin for one remote.
@@ -104,7 +120,7 @@ func Start(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 	s := &Server{
-		URL:     "http://127.0.0.1:" + strconv.Itoa(o.HTTPPort),
+		URL:     "http://127.0.0.1:" + strconv.Itoa(o.HTTPPort) + strings.TrimRight(o.BasePath, "/"),
 		SSHAddr: "127.0.0.1:" + strconv.Itoa(o.SSHPort),
 		Site:    o.Site,
 	}
@@ -153,22 +169,58 @@ func Start(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 
-	s.cmd = java(context.Background(), "daemon", "-d", o.Site, "--console-log")
-	s.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if o.Log != nil {
-		s.cmd.Stdout, s.cmd.Stderr = o.Log, o.Log
+	start := func() error {
+		s.cmd = java(context.Background(), "daemon", "-d", o.Site, "--console-log")
+		s.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if o.Log != nil {
+			s.cmd.Stdout, s.cmd.Stderr = o.Log, o.Log
+		}
+		if err := s.cmd.Start(); err != nil {
+			return err
+		}
+		s.done = make(chan struct{})
+		go func() {
+			s.exitErr = s.cmd.Wait()
+			close(s.done)
+		}()
+		if err := s.waitReady(ctx); err != nil {
+			s.Stop()
+			return err
+		}
+		return nil
 	}
-	if err := s.cmd.Start(); err != nil {
+	setAuthDev := func() error {
+		return gitConfig(filepath.Join(o.Site, "etc", "gerrit.config"),
+			[]string{"auth.type", "DEVELOPMENT_BECOME_ANY_ACCOUNT"}, []string{"--unset", "httpd.filterClass"})
+	}
+
+	if o.GitHubLogin != nil {
+		if _, err := os.Stat(filepath.Join(o.Site, "etc", "testgerrit-admin-password")); err != nil {
+			// Bootstrap the admin's HTTP password in dev mode, once, the
+			// way an operator sets up a site before turning on SSO.
+			if err := setAuthDev(); err != nil {
+				return nil, err
+			}
+			if err := start(); err != nil {
+				return nil, err
+			}
+			_, err := s.adminPassword(ctx)
+			s.Stop()
+			if err != nil {
+				return nil, fmt.Errorf("admin password: %w", err)
+			}
+		}
+		// The github plugin binds to the replication plugin's API.
+		if err := installWarPlugins(o.War, o.Site, "replication-api.jar"); err != nil {
+			return nil, err
+		}
+		if err := installGitHubLogin(o.Site, o.GitHubLogin); err != nil {
+			return nil, fmt.Errorf("github plugin: %w", err)
+		}
+	} else if err := setAuthDev(); err != nil {
 		return nil, err
 	}
-	s.done = make(chan struct{})
-	go func() {
-		s.exitErr = s.cmd.Wait()
-		close(s.done)
-	}()
-
-	if err := s.waitReady(ctx); err != nil {
-		s.Stop()
+	if err := start(); err != nil {
 		return nil, err
 	}
 	pw, err := s.adminPassword(ctx)
@@ -178,6 +230,73 @@ func Start(ctx context.Context, o Options) (*Server, error) {
 	}
 	s.Admin = &gerrit.Client{BaseURL: s.URL, User: "admin", Password: pw, HTTP: &http.Client{Timeout: time.Minute}}
 	return s, nil
+}
+
+// gitConfig applies `git config -f file` edits; "--unset" of a missing
+// key is fine.
+func gitConfig(file string, edits ...[]string) error {
+	for _, e := range edits {
+		out, err := exec.Command("git", append([]string{"config", "-f", file}, e...)...).CombinedOutput()
+		if err != nil && !(e[0] == "--unset" || e[0] == "--unset-all") {
+			return fmt.Errorf("git config %v: %w: %s", e, err, out)
+		}
+	}
+	return nil
+}
+
+// installGitHubLogin installs the github plugin (github-plugin.jar in
+// plugins/, github-oauth.jar in lib/) and configures GitHub login as on
+// AOS (RealtimeRoboticsGroup's gerrit.config, 2026-10-10), plus what the
+// plugin's init step writes: the client secret and the token cipher key.
+func installGitHubLogin(site string, g *GitHubLogin) error {
+	for jar, dir := range map[string]string{"github-plugin.jar": "plugins", "github-oauth.jar": "lib"} {
+		b, err := os.ReadFile(filepath.Join(g.JarsDir, jar))
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Join(site, dir), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(site, dir, jar), b, 0o644); err != nil {
+			return err
+		}
+	}
+	key := filepath.Join(site, "data", "github-plugin", "default.key")
+	if _, err := os.Stat(key); err != nil {
+		if err := os.MkdirAll(filepath.Dir(key), 0o700); err != nil {
+			return err
+		}
+		k := make([]byte, 16)
+		rand.Read(k)
+		if err := os.WriteFile(key, k, 0o600); err != nil {
+			return err
+		}
+	}
+	err := gitConfig(filepath.Join(site, "etc", "gerrit.config"),
+		[]string{"auth.type", "HTTP"},
+		[]string{"auth.userNameCaseInsensitive", "true"},
+		[]string{"auth.httpHeader", "GITHUB_USER"},
+		[]string{"auth.httpExternalIdHeader", "GITHUB_OAUTH_TOKEN"},
+		[]string{"auth.loginUrl", "/login"},
+		[]string{"auth.loginText", "Sign-in with GitHub"},
+		[]string{"auth.registerPageUrl", "/#/register"},
+		[]string{"httpd.filterClass", "com.gerritforge.gerrit.plugins.github.oauth.OAuthFilter"},
+		[]string{"github.url", "https://github.com"},
+		[]string{"github.apiUrl", "https://api.github.com"},
+		[]string{"github.clientId", g.ClientID},
+		[]string{"github.webhookUser", g.WebhookUser},
+		[]string{"github-key.current.passwordDevice", key},
+		[]string{"github-key.current.passwordLength", "16"},
+		[]string{"github-key.current.current", "true"},
+	)
+	if err != nil {
+		return err
+	}
+	secure := filepath.Join(site, "etc", "secure.config")
+	if err := gitConfig(secure, []string{"github.clientSecret", g.ClientSecret}); err != nil {
+		return err
+	}
+	return os.Chmod(secure, 0o600)
 }
 
 // Stop shuts Gerrit down and waits for it to exit.
@@ -361,38 +480,49 @@ func randomPassword() string {
 // installReplication copies the replication plugin out of the war and
 // writes its configuration. Branches are force-pushed: the Gerrit site owns
 // them, as in production (design §3).
-func installReplication(war, site string, r *Replication) error {
+// installWarPlugins copies plugins bundled in the war into site/plugins.
+func installWarPlugins(war, site string, names ...string) error {
 	zr, err := zip.OpenReader(war)
 	if err != nil {
 		return err
 	}
 	defer zr.Close()
-	var jar *zip.File
-	for _, f := range zr.File {
-		if f.Name == "WEB-INF/plugins/replication.jar" {
-			jar = f
-		}
-	}
-	if jar == nil {
-		return errors.New("no replication plugin in the war")
-	}
-	in, err := jar.Open()
-	if err != nil {
-		return err
-	}
-	defer in.Close()
 	if err := os.MkdirAll(filepath.Join(site, "plugins"), 0o755); err != nil {
 		return err
 	}
-	out, err := os.Create(filepath.Join(site, "plugins", "replication.jar"))
-	if err != nil {
-		return err
+	for _, name := range names {
+		var jar *zip.File
+		for _, f := range zr.File {
+			if f.Name == "WEB-INF/plugins/"+name {
+				jar = f
+			}
+		}
+		if jar == nil {
+			return fmt.Errorf("no %s in the war", name)
+		}
+		in, err := jar.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.Create(filepath.Join(site, "plugins", name))
+		if err == nil {
+			_, err = io.Copy(out, in)
+			if cerr := out.Close(); err == nil {
+				err = cerr
+			}
+		}
+		in.Close()
+		if err != nil {
+			return err
+		}
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	if err := out.Close(); err != nil {
+	return nil
+}
+
+func installReplication(war, site string, r *Replication) error {
+	// replication-api is the API plugin (Gerrit 3.9+) other plugins, such
+	// as the github plugin, bind to.
+	if err := installWarPlugins(war, site, "replication.jar", "replication-api.jar"); err != nil {
 		return err
 	}
 

@@ -54,10 +54,10 @@ UNIT
 }
 
 unit bridge-test-gerrit "Bridge test instance: Gerrit" \
-  "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --ci_user buildkite --github ${REPO} --github_bot ${BOT} --github_users AustinSchuh|$(git -C "${WS}" config user.email)|trusted,${SECOND}|${SECOND_EMAIL}" \
+  "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --ci_user buildkite --github ${REPO} --github_bot ${BOT} --base_path /gerrit --github_login_jars ${HOME}/tmp/github-plugin --github_oauth_file ${TE}/github-oauth --github_webhook_user AustinSchuh --github_login_users AustinSchuh|trusted|admin,${SECOND}" \
   "" "TimeoutStopSec=60"
 unit bridge-test-buildkite "Bridge test instance: fake Buildkite" \
-  "${TE}/bin/fakebuildkite --duration 20s" "" ""
+  "${TE}/bin/fakebuildkite --duration 20s --gerrit_url http://127.0.0.1:18080/gerrit" "" ""
 unit bridge-test-ci "Bridge test instance: gerrit-buildkite" \
   "${GBK} -token fake -api_url http://127.0.0.1:18090/ -webhook_token test-webhook-token -user buildkite -key ${SITE}/ci/id_ed25519 -server localhost -project bridge-scratch -buildkite_project ci -organization test -database ${TE}/buildkite.db" \
   "After=bridge-test-gerrit.service bridge-test-buildkite.service" \
@@ -77,6 +77,6 @@ for s in gerrit buildkite ci bridge webhooks; do
   [[ -f "${UNITS}/bridge-test-${s}.service" ]] || continue
   systemctl --user enable --quiet "bridge-test-${s}.service"
   systemctl --user restart "bridge-test-${s}.service"
-  [[ "${s}" == gerrit ]] && for _ in $(seq 120); do curl -sf -o /dev/null http://127.0.0.1:18080/config/server/version && break; sleep 1; done
+  [[ "${s}" == gerrit ]] && for _ in $(seq 180); do curl -sf -o /dev/null http://127.0.0.1:18080/gerrit/config/server/version && break; sleep 1; done
 done
 systemctl --user --no-pager --type=service list-units 'bridge-test-*'

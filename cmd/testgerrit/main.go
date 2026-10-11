@@ -52,6 +52,11 @@ func run() error {
 	ciUser := flag.String("ci_user", "", "Create this CI account (once), voting Verified on --replicate_project.")
 	aliceEmail := flag.String("alice_email", "", "Also give alice this email (yours), so your commits can be pushed as alice.")
 	identity := flag.String("identity", "", "GitHub login=Gerrit user overrides (comma separated) for the replicated project's bridge config; normally the bridge matches usernames.")
+	basePath := flag.String("base_path", "", "Serve Gerrit under this path, like a site behind a proxy (e.g. /gerrit).")
+	loginJars := flag.String("github_login_jars", "", "Directory with github-plugin.jar and github-oauth.jar: log in with GitHub, configured like AOS.")
+	oauthFile := flag.String("github_oauth_file", "", "client_id=... and client_secret=... of the GitHub OAuth App.")
+	webhookUser := flag.String("github_webhook_user", "", "github.webhookUser for the github plugin.")
+	loginUsers := flag.String("github_login_users", "", "Accounts the github plugin creates at GitHub login, to set up once they exist: comma-separated login[|trusted][|admin].")
 	githubUsers := flag.String("github_users", "", "Accounts named after GitHub logins, like Gerrit's github plugin makes: comma-separated login|email[|trusted].")
 	bot := flag.String("github_bot", "", "gh account the bridge acts as on GitHub (its token comes from `gh auth token --user`).")
 	bobEmail := flag.String("bob_email", "", "Also give bob this email, so a second GitHub account's commits can be pushed as bob.")
@@ -60,7 +65,14 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	opts := testgerrit.Options{Site: *site, HTTPPort: *httpPort, SSHPort: *sshPort, Log: os.Stderr}
+	opts := testgerrit.Options{Site: *site, HTTPPort: *httpPort, SSHPort: *sshPort, Log: os.Stderr, BasePath: *basePath}
+	if *loginJars != "" {
+		id, secret, err := readOAuth(*oauthFile)
+		if err != nil {
+			return err
+		}
+		opts.GitHubLogin = &testgerrit.GitHubLogin{JarsDir: *loginJars, ClientID: id, ClientSecret: secret, WebhookUser: *webhookUser}
+	}
 	if *replicate != "" {
 		if *tokenFile == "" {
 			return errors.New("--replicate_project needs --github_token_file")
@@ -137,7 +149,14 @@ func run() error {
 			return err
 		}
 	}
-	log.Printf("Gerrit %s is ready (ssh %s). Admin: log in at %s/login/?user_name=admin", s.URL, s.SSHAddr, s.URL)
+	if *loginUsers != "" {
+		go watchLoginUsers(ctx, s, bridgeDir, *loginUsers)
+	}
+	if opts.GitHubLogin != nil {
+		log.Printf("Gerrit %s is ready (ssh %s). Log in with GitHub at %s/login", s.URL, s.SSHAddr, s.URL)
+	} else {
+		log.Printf("Gerrit %s is ready (ssh %s). Admin: log in at %s/login/?user_name=admin", s.URL, s.SSHAddr, s.URL)
+	}
 	log.Printf("Bridge config: %s", cfg)
 	select {
 	case <-ctx.Done():
@@ -240,4 +259,64 @@ func waitErr(s *testgerrit.Server) <-chan error {
 	c := make(chan error, 1)
 	go func() { c <- s.Wait() }()
 	return c
+}
+
+func readOAuth(path string) (id, secret string, err error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		k, v, _ := strings.Cut(strings.TrimSpace(line), "=")
+		switch k {
+		case "client_id":
+			id = v
+		case "client_secret":
+			secret = v
+		}
+	}
+	if id == "" || secret == "" {
+		return "", "", fmt.Errorf("%s needs client_id= and client_secret= lines", path)
+	}
+	return id, secret, nil
+}
+
+// watchLoginUsers waits for the github plugin to create each account (at
+// that person's first GitHub login), then puts it in its groups and writes
+// an HTTP password for pushing as it to <bridgeDir>/<login>.http-password.
+func watchLoginUsers(ctx context.Context, s *testgerrit.Server, bridgeDir, spec string) {
+	pending := map[string][]string{}
+	for _, e := range strings.Split(spec, ",") {
+		f := strings.Split(strings.TrimSpace(e), "|")
+		if f[0] == "" {
+			continue
+		}
+		var groups []string
+		for _, r := range f[1:] {
+			switch r {
+			case "trusted":
+				groups = append(groups, testgerrit.TrustedGroup)
+			case "admin":
+				groups = append(groups, "Administrators")
+			}
+		}
+		pending[f[0]] = groups
+	}
+	for len(pending) > 0 {
+		for login, groups := range pending {
+			ok, err := s.SetUpLoginUser(ctx, login, groups, filepath.Join(bridgeDir, login+".http-password"))
+			if err != nil {
+				log.Printf("setting up %s: %v", login, err)
+			}
+			if ok {
+				log.Printf("%s logged in: in %v, HTTP password in %s", login, groups, bridgeDir)
+				delete(pending, login)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(15 * time.Second):
+		}
+	}
 }
