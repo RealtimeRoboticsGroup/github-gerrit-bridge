@@ -205,6 +205,14 @@ func (c *Client) Login(ctx context.Context) (string, error) {
 	return u.Login, err
 }
 
+// UserID returns the numeric id of the account that has login now. Logins
+// can change hands (after a rename); ids never do.
+func (c *Client) UserID(ctx context.Context, login string) (int64, error) {
+	var u User
+	_, err := c.Do(ctx, http.MethodGet, "/users/"+url.PathEscape(login), nil, &u)
+	return u.ID, err
+}
+
 // UpdateReviewComment replaces a review comment's body.
 func (c *Client) UpdateReviewComment(ctx context.Context, id int64, body string) error {
 	_, err := c.Do(ctx, http.MethodPatch, c.RepoPath("pulls/comments/"+strconv.FormatInt(id, 10)), map[string]string{"body": body}, nil)

@@ -919,6 +919,15 @@ defenses, by threat:
   never used, since anyone can write any email.
 - **Accounts the bridge never acts as.** Its own and members of Service
   Users and Non-Interactive Users, whatever GitHub login matches them.
+- **Logins that change hands.** GitHub frees a login when its owner
+  renames, and anyone may take it. Each Gerrit account is pinned to the
+  numeric GitHub id it was first matched to (`refs/bridge/identities`,
+  `identities.json`, a commit per pin); the bridge looks up who holds a
+  login now (`GET /users/{login}`, cached 2 minutes) and acts as the Gerrit
+  account only if the ids match. A renamed owner keeps their account
+  through an `identity.github_to_gerrit` override, since their id is
+  unchanged. (Gerrit's github plugin matches logins at sign-in, so the
+  same takeover may work there; the pin only protects the bridge.)
 - **Branches Gerrit owns.** The importer refuses a PR whose head is the
   default branch or any branch Gerrit has, and the applier refuses to push
   to the target or default branch at all. Fork heads are keyed
@@ -943,12 +952,9 @@ defenses, by threat:
 
 Known gaps:
 
-- **Login reuse.** A GitHub login maps to the Gerrit account of the same
-  username. If someone renames their GitHub account and another person
-  takes the old login, the new owner acts as the old account through the
-  bridge. Gerrit's github plugin has the same exposure at login, since it
-  also matches on the login, so the bridge does not widen it, but pinning
-  each mapping to GitHub's numeric user id would close it for the bridge.
+- **First sight is trusted.** The pin is made the first time an account
+  is seen acting, so it trusts whoever holds the login then. To pin an
+  account up front, write its entry in `refs/bridge/identities` by hand.
 - **Spam from forks.** Every fork PR becomes a Gerrit change, uploaded by
   the bridge if its author has no account, and every event on it costs
   GitHub API calls. Rate limiting per author is not done.

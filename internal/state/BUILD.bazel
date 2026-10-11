@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "state",
-    srcs = ["state.go"],
+    srcs = [
+        "identities.go",
+        "state.go",
+    ],
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/state",
     visibility = ["//:__subpackages__"],
     deps = ["//internal/gitmirror"],

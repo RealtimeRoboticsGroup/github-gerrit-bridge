@@ -138,7 +138,7 @@ type Store struct {
 // PR index. Call it at startup.
 func (s *Store) Fetch(ctx context.Context) error {
 	if _, err := s.Repo.Git(ctx, nil, "fetch", "--quiet", "--prune", "origin",
-		"+"+refPrefix+"*:"+refPrefix+"*"); err != nil {
+		"+"+refPrefix+"*:"+refPrefix+"*", "+"+IdentitiesRef+"*:"+IdentitiesRef+"*"); err != nil {
 		return err
 	}
 	return s.rebuildIndex(ctx)
@@ -283,26 +283,7 @@ func (s *Store) Save(ctx context.Context, n int, c *Change, msg string) error {
 	}
 	commit := strings.TrimSpace(string(out))
 
-	ref := Ref(n)
-	res, err := s.Repo.Push(ctx, "--force-with-lease="+ref+":"+c.Version, commit+":"+ref)
-	if err != nil {
-		return err
-	}
-	if len(res) != 1 || res[0].Ref != ref {
-		return fmt.Errorf("push %s: unexpected result %+v", ref, res)
-	}
-	if res[0].Rejected && !isLeaseFailure(res[0].Reason) {
-		return fmt.Errorf("push %s rejected: %s", ref, res[0].Reason)
-	}
-	if res[0].Rejected {
-		// Someone else wrote it. Refresh our copy so the retry sees theirs.
-		if _, err := s.Repo.Git(ctx, nil, "fetch", "--quiet", "origin", "+"+ref+":"+ref); err != nil {
-			// Fetching a ref that was deleted fails; drop ours to match.
-			s.Repo.Git(ctx, nil, "update-ref", "-d", ref)
-		}
-		return fmt.Errorf("%w: %s: %s", ErrConflict, ref, res[0].Reason)
-	}
-	if _, err := s.Repo.Git(ctx, nil, "update-ref", ref, commit); err != nil {
+	if err := s.pushRef(ctx, Ref(n), c.Version, commit); err != nil {
 		return err
 	}
 	c.Version = commit
@@ -330,6 +311,32 @@ func (s *Store) Save(ctx context.Context, n int, c *Change, msg string) error {
 	s.byBranch[c.State.Branch][n] = true
 	s.mu.Unlock()
 	return nil
+}
+
+// pushRef moves ref from old ("" = absent) to commit in Gerrit and the
+// mirror. If the ref moved meanwhile, the mirror is refreshed and
+// ErrConflict returned.
+func (s *Store) pushRef(ctx context.Context, ref, old, commit string) error {
+	res, err := s.Repo.Push(ctx, "--force-with-lease="+ref+":"+old, commit+":"+ref)
+	if err != nil {
+		return err
+	}
+	if len(res) != 1 || res[0].Ref != ref {
+		return fmt.Errorf("push %s: unexpected result %+v", ref, res)
+	}
+	if res[0].Rejected && !isLeaseFailure(res[0].Reason) {
+		return fmt.Errorf("push %s rejected: %s", ref, res[0].Reason)
+	}
+	if res[0].Rejected {
+		// Someone else wrote it. Refresh our copy so the retry sees theirs.
+		if _, err := s.Repo.Git(ctx, nil, "fetch", "--quiet", "origin", "+"+ref+":"+ref); err != nil {
+			// Fetching a ref that was deleted fails; drop ours to match.
+			s.Repo.Git(ctx, nil, "update-ref", "-d", ref)
+		}
+		return fmt.Errorf("%w: %s: %s", ErrConflict, ref, res[0].Reason)
+	}
+	_, err = s.Repo.Git(ctx, nil, "update-ref", ref, commit)
+	return err
 }
 
 // writeTree stores c's files as blobs and returns the tree id. Output is

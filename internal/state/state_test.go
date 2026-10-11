@@ -197,3 +197,30 @@ func TestSaveRejectsWrongChange(t *testing.T) {
 		t.Error("saved change 1's state under change 2")
 	}
 }
+
+func TestIdentities(t *testing.T) {
+	_, s := newStores(t, 2)
+	ctx := context.Background()
+	ids, err := s[0].LoadIdentities(ctx)
+	if err != nil || ids.Version != "" || len(ids.ByUser) != 0 {
+		t.Fatalf("empty load = %+v, %v", ids, err)
+	}
+	ids.ByUser["alice"] = Identity{GitHubID: 42, GitHubLogin: "Alice"}
+	if err := s[0].SaveIdentities(ctx, ids, "Pin alice"); err != nil {
+		t.Fatal(err)
+	}
+	// The other bridge instance sees it after a fetch, and a stale write
+	// conflicts instead of dropping the pin.
+	stale, _ := s[1].LoadIdentities(ctx)
+	stale.ByUser["bob"] = Identity{GitHubID: 7}
+	if err := s[1].SaveIdentities(ctx, stale, "Pin bob"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale save: %v", err)
+	}
+	if err := s[1].Fetch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s[1].LoadIdentities(ctx)
+	if err != nil || got.ByUser["alice"].GitHubID != 42 {
+		t.Errorf("after fetch: %+v, %v", got, err)
+	}
+}

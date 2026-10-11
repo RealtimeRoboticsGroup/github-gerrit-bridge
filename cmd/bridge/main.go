@@ -213,7 +213,10 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	// Never act as the bridge itself or a service account (CI, say), even
 	// if someone registers that login on GitHub.
 	users := &reconcile.Users{Overrides: cfg.Identity.GitHubToGerrit, Logger: logger,
-		Never: []string{self.Username}, NeverGroups: []string{"Service Users", "Non-Interactive Users"}}
+		Never: []string{self.Username}, NeverGroups: []string{"Service Users", "Non-Interactive Users"},
+		// A Gerrit account follows the GitHub account (numeric id) it was
+		// first matched to, not whoever holds the login later.
+		Pins: store, GitHub: gh, DryRun: dryRun}
 	if cfg.Identity.MatchesUsernames() {
 		users.Gerrit = rest
 	}
