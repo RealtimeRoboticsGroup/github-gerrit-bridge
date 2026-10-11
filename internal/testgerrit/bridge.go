@@ -113,6 +113,9 @@ type ProjectConfig struct {
 	Identity           map[string]string
 	ImportCreatedAfter time.Time
 	ResyncInterval     time.Duration
+	// TokenUser is the gh account whose token the bridge uses (the bot);
+	// empty means gh's active account.
+	TokenUser string
 }
 
 // WriteProjectConfig writes a bridge config for one project into dir,
@@ -139,10 +142,10 @@ github:
   owner: %s
   repo: %s
   webhook_secret_file: %s
-  token_command: [gh, auth, token]
+  token_command: [%s]
 `, c.Listen, c.ResyncInterval, s.URL, c.Project, filepath.Join(dir, "gerrit-http-password"),
 		filepath.Join(dir, c.Project+"-mirror.git"), s.SSHAddr, filepath.Join(dir, "id_ed25519"),
-		filepath.Join(dir, "peer_key"), filepath.Join(dir, "known_hosts"), c.Owner, c.Repo, filepath.Join(dir, "webhook-secret"))
+		filepath.Join(dir, "peer_key"), filepath.Join(dir, "known_hosts"), c.Owner, c.Repo, filepath.Join(dir, "webhook-secret"), tokenCommand(c.TokenUser))
 	if !c.ImportCreatedAfter.IsZero() {
 		fmt.Fprintf(&b, "  import_created_after: %s\n", c.ImportCreatedAfter.UTC().Format(time.RFC3339))
 	}
@@ -385,7 +388,9 @@ func (s *Server) EditProjectConfig(ctx context.Context, project, message string,
 // AddEmail gives username another (confirmed) email address, so commits
 // with it may be pushed as that user. Existing addresses are fine.
 func (s *Server) AddEmail(ctx context.Context, username, email string) error {
-	err := s.Admin.Do(ctx, http.MethodPut, "accounts/"+url.PathEscape(username)+"/emails/"+url.PathEscape(email),
+	// Gerrit decodes "+" in a path as a space, so escape it too.
+	escaped := strings.ReplaceAll(url.PathEscape(email), "+", "%2B")
+	err := s.Admin.Do(ctx, http.MethodPut, "accounts/"+url.PathEscape(username)+"/emails/"+escaped,
 		map[string]any{"no_confirmation": true}, nil)
 	var ge *gerrit.Error
 	if errors.As(err, &ge) && ge.Status == http.StatusConflict {
@@ -407,4 +412,11 @@ func (s *Server) ReindexOpenChanges(ctx context.Context, project string) error {
 		}
 	}
 	return nil
+}
+
+func tokenCommand(user string) string {
+	if user == "" {
+		return "gh, auth, token"
+	}
+	return "gh, auth, token, --user, " + user
 }

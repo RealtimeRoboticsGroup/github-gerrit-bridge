@@ -19,6 +19,9 @@ SITE="${HOME}/tmp/gerrit-test"
 GBK="${GERRIT_BUILDKITE:-${HOME}/tmp/gerrit-buildkite/gerrit-buildkite}"
 GH="${GH:-${HOME}/bin/gh}"
 REPO="${REPO:-AustinSchuh/bridge-scratch}"
+# GitHub accounts: the bridge's bot, and a second human (bob in Gerrit).
+BOT="${BOT:-realtimeroboticsbot}"
+SECOND="${SECOND:-AustinSchuhBRT}"
 UNITS="${HOME}/.config/systemd/user"
 
 mkdir -p "${TE}/bin" "${TE}/logs" "${UNITS}"
@@ -27,7 +30,9 @@ for t in testgerrit fakebuildkite bridge; do
   bazel run --script_path="${TE}/bin/${t}" "//cmd/${t}" 2>/dev/null
 done
 umask 077
-"${GH}" auth token > "${TE}/github-token"
+# Replication pushes as the bot, like a production replication account.
+"${GH}" auth token --user "${BOT}" > "${TE}/github-token"
+SECOND_EMAIL="$("${GH}" api "users/${SECOND}" --jq '"\(.id)+\(.login)@users.noreply.github.com"')"
 
 unit() {  # name description exec [extra [Unit] lines] [extra [Service] lines]
   cat > "${UNITS}/$1.service" <<UNIT
@@ -49,7 +54,7 @@ UNIT
 }
 
 unit bridge-test-gerrit "Bridge test instance: Gerrit" \
-  "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --ci_user buildkite --github ${REPO} --alice_email $(git -C "${WS}" config user.email)" \
+  "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --ci_user buildkite --github ${REPO} --alice_email $(git -C "${WS}" config user.email) --github_bot ${BOT} --identity AustinSchuh=alice,${SECOND}=bob --bob_email ${SECOND_EMAIL}" \
   "" "TimeoutStopSec=60"
 unit bridge-test-buildkite "Bridge test instance: fake Buildkite" \
   "${TE}/bin/fakebuildkite --duration 20s" "" ""

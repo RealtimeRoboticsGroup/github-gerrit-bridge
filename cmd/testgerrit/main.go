@@ -51,7 +51,9 @@ func run() error {
 	tokenFile := flag.String("github_token_file", "", "GitHub token for replication (stored in etc/secure.config).")
 	ciUser := flag.String("ci_user", "", "Create this CI account (once), voting Verified on --replicate_project.")
 	aliceEmail := flag.String("alice_email", "", "Also give alice this email (yours), so your commits can be pushed as alice.")
-	identity := flag.String("identity", "AustinSchuh=alice", "GitHub login=Gerrit user pairs (comma separated) for the replicated project's bridge config.")
+	identity := flag.String("identity", "AustinSchuh=alice,AustinSchuhBRT=bob", "GitHub login=Gerrit user pairs (comma separated) for the replicated project's bridge config.")
+	bot := flag.String("github_bot", "", "gh account the bridge acts as on GitHub (its token comes from `gh auth token --user`).")
+	bobEmail := flag.String("bob_email", "", "Also give bob this email, so a second GitHub account's commits can be pushed as bob.")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -95,15 +97,18 @@ func run() error {
 		}
 	}
 	if *replicate != "" {
-		pcfg, err := mirrorProject(ctx, s, bridgeDir, *replicate, *github, *listen, *tokenFile, *identity)
+		pcfg, err := mirrorProject(ctx, s, bridgeDir, *replicate, *github, *listen, *tokenFile, *identity, *bot)
 		if err != nil {
 			return err
 		}
 		log.Printf("Bridge config for %s: %s", *replicate, pcfg)
 	}
-	if *aliceEmail != "" {
-		if err := s.AddEmail(ctx, "alice", *aliceEmail); err != nil {
-			return fmt.Errorf("alice's email: %w", err)
+	for user, email := range map[string]string{"alice": *aliceEmail, "bob": *bobEmail} {
+		if email == "" {
+			continue
+		}
+		if err := s.AddEmail(ctx, user, email); err != nil {
+			return fmt.Errorf("%s's email: %w", user, err)
 		}
 	}
 	if *ciUser != "" {
@@ -123,7 +128,7 @@ func run() error {
 
 // mirrorProject makes sure the replicated project exists, seeded from the
 // GitHub repo's main, and that a bridge config for it exists.
-func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project, repo, listen, tokenFile, identity string) (string, error) {
+func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project, repo, listen, tokenFile, identity, bot string) (string, error) {
 	tok, err := config.ReadSecret(tokenFile)
 	if err != nil {
 		return "", err
@@ -160,7 +165,7 @@ func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project
 	owner, name, _ := strings.Cut(repo, "/")
 	return s.WriteProjectConfig(bridgeDir, testgerrit.ProjectConfig{
 		File: project + ".yaml", Project: project, Owner: owner, Repo: name, Listen: listen,
-		Identity: ids, ImportCreatedAfter: time.Now(), ResyncInterval: 5 * time.Minute,
+		Identity: ids, ImportCreatedAfter: time.Now(), ResyncInterval: 5 * time.Minute, TokenUser: bot,
 	})
 }
 

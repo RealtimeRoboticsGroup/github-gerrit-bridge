@@ -43,7 +43,30 @@ journalctl is not used: logs are in ~/tmp/bridge-test/logs/<service>.log
 Gerrit's own logs are in `~/tmp/gerrit-test/logs/` (`replication_log`,
 `sshd_log`, `error_log`).
 
-## Accounts
+## GitHub accounts
+
+| GitHub account | Role | Gerrit account |
+|---|---|---|
+| `realtimeroboticsbot` | the bridge (PRs, mirrored comments, statuses) and replication | `github-bridge` |
+| `AustinSchuh` | trusted developer; also forwards webhooks (repo admin) | `alice` |
+| `AustinSchuhBRT` | newer contributor | `bob` |
+
+All three are logged in to `gh` here (`gh auth token --user <login>`);
+keep `AustinSchuh` the active account, since the webhook forwarder uses
+it. Two clones are ready, each pushing as one person on both sides:
+
+| Clone | GitHub as | Gerrit as |
+|---|---|---|
+| `~/local/bridge-play` | AustinSchuh | alice |
+| `~/local/bridge-play-brt` | AustinSchuhBRT | bob (commits use BRT's noreply address, which bob also has) |
+
+To act as AustinSchuhBRT with `gh`, prefix commands with
+`GH_TOKEN=$(gh auth token --user AustinSchuhBRT)`.
+
+The bot creates the Gerrit-born PRs, so GitHub will not let it approve
+them: Gerrit votes stay statuses there.
+
+## Gerrit accounts
 
 | Account | Who | Notes |
 |---|---|---|

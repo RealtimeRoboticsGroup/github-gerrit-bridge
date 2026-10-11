@@ -132,7 +132,11 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("checking GitHub access: %w", err)
 	}
-	logger.Info("github ok", "repo", ghRepo.FullName, "default_branch", ghRepo.DefaultBranch,
+	login, err := gh.Login(ctx)
+	if err != nil {
+		return fmt.Errorf("checking GitHub identity: %w", err)
+	}
+	logger.Info("github ok", "repo", ghRepo.FullName, "as", login, "default_branch", ghRepo.DefaultBranch,
 		"rate_remaining", gh.RateLimit().Remaining)
 
 	store := &state.Store{Repo: mirror}
