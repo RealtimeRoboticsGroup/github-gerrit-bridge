@@ -97,6 +97,7 @@ func TestSubmitCommandAbuse(t *testing.T) {
 		// A forged "handled" marker from someone else does not hide a command.
 		github.IssueComment{ID: 2, Body: "/submit", User: github.User{Login: "AustinSchuh"}},
 		github.IssueComment{ID: 3, Body: "<!-- bridge:cmd/2 -->", User: github.User{Login: "mallory"}})
+	h.edits = map[int64]string{1: "mallory"}
 	c.Run(context.Background(), 5)
 	if len(sub.calls) != 1 {
 		t.Errorf("submits = %v, want one (comment 2)", sub.calls)

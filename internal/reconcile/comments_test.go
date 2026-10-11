@@ -125,10 +125,13 @@ func (f *fakeGerrit) user(id, path string, ps, line int, msg, inReplyTo string, 
 }
 
 type fakeGitHub struct {
-	rcs      []github.ReviewComment
-	ics      []github.IssueComment
-	reviews  []github.Review
-	resolved map[int64]bool // thread root -> resolved
+	edits map[int64]string // edited comment id -> editor
+	// afterReview runs once, when the bridge reads back a review it posted.
+	afterReview func()
+	rcs         []github.ReviewComment
+	ics         []github.IssueComment
+	reviews     []github.Review
+	resolved    map[int64]bool // thread root -> resolved
 	// diff lines per path that accept line comments; diffAt overrides it
 	// per "commit/path".
 	diff     map[string]map[int]bool
@@ -152,15 +155,25 @@ func (f *fakeGitHub) UpdateReviewComment(_ context.Context, id int64, body strin
 	for i := range f.rcs {
 		if f.rcs[i].ID == id {
 			f.rcs[i].Body = body
+			f.edited(id, "bridge")
 		}
 	}
 	return nil
+}
+
+// edited records that by last edited comment id.
+func (f *fakeGitHub) edited(id int64, by string) {
+	if f.edits == nil {
+		f.edits = map[int64]string{}
+	}
+	f.edits[id] = by
 }
 
 func (f *fakeGitHub) UpdateIssueComment(_ context.Context, id int64, body string) error {
 	for i := range f.ics {
 		if f.ics[i].ID == id {
 			f.ics[i].Body = body
+			f.edited(id, "bridge")
 		}
 	}
 	return nil
@@ -186,6 +199,13 @@ func (f *fakeGitHub) ListReviews(context.Context, int) ([]github.Review, error) 
 }
 func (f *fakeGitHub) ListIssueComments(context.Context, int) ([]github.IssueComment, error) {
 	return append([]github.IssueComment(nil), f.ics...), nil
+}
+func (f *fakeGitHub) Edits(context.Context, int) (map[int64]string, error) {
+	out := map[int64]string{}
+	for id, by := range f.edits {
+		out[id] = by
+	}
+	return out, nil
 }
 func (f *fakeGitHub) ReviewThreads(context.Context, int) ([]github.ReviewThread, error) {
 	var out []github.ReviewThread
@@ -214,6 +234,20 @@ func (f *fakeGitHub) CreateReview(_ context.Context, _ int, r github.NewReview) 
 			HTMLURL: fmt.Sprintf("https://github.com/o/r/pull/1#discussion_r%d", id), User: github.User{Login: "bridge"}})
 	}
 	return &github.Review{ID: rid}, nil
+}
+
+func (f *fakeGitHub) ListReviewCommentsOf(_ context.Context, _ int, review int64) ([]github.ReviewComment, error) {
+	var out []github.ReviewComment
+	for _, rc := range f.rcs {
+		if rc.ReviewID == review {
+			out = append(out, rc)
+		}
+	}
+	if f.afterReview != nil {
+		f.afterReview() // someone acts right after the read
+		f.afterReview = nil
+	}
+	return out, nil
 }
 
 func (f *fakeGitHub) CreateReviewComment(_ context.Context, _ int, rc github.NewReviewComment) (*github.ReviewComment, error) {
@@ -661,8 +695,9 @@ func TestRunAsPostsAsTheUserAndNeverEchoes(t *testing.T) {
 	if gc.Author.Username != "bobg" || gc.Tag != mirrorTag {
 		t.Fatalf("posted as %q with tag %q, want bobg / %s", gc.Author.Username, gc.Tag, mirrorTag)
 	}
-	if !strings.Contains(gc.Message, "\nretest") {
-		t.Errorf("retest must stay on a line of its own: %q", gc.Message)
+	// Posted as bob, so no attribution: just bob's words.
+	if gc.Message != "retest" {
+		t.Errorf("message = %q, want just retest", gc.Message)
 	}
 	// It is bob's comment in Gerrit, but the bridge's post: never mirrored back.
 	posts := e.h.posts
@@ -670,9 +705,109 @@ func TestRunAsPostsAsTheUserAndNeverEchoes(t *testing.T) {
 	if e.h.posts != posts {
 		t.Error("Run-As post mirrored back to GitHub")
 	}
-	// Mapping rebuilds from the tag and link when state is lost.
+	// Mapping rebuilds from the tag and text when state is lost.
 	updateStateFn(context.Background(), e.st, 5, "wipe", func(s *state.Change) { s.Comments, s.Threads = nil, nil })
 	e.settled(t)
+}
+
+func TestRunAsIdenticalCommentsEachMirroredOnce(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	root := e.h.human("a.txt", 3, "sha2", "Typo.", 0)
+	e.sync(t)
+	n := len(e.g.comments)
+	// Two separate "Done" replies in the same thread, and one whose text
+	// links another GitHub comment.
+	e.h.human("a.txt", 3, "sha2", "Done", root)
+	e.h.human("a.txt", 3, "sha2", "Done", root)
+	e.h.human("a.txt", 3, "sha2", fmt.Sprintf("**@bob** ([GitHub](https://github.com/o/r/pull/1#discussion_r%d)): see that", root), root)
+	e.sync(t)
+	if got := len(e.g.comments) - n; got != 3 {
+		t.Fatalf("got %d new Gerrit comments, want 3", got)
+	}
+	e.settled(t)
+	// With the map lost, each is recognised again, and nothing reposted.
+	updateStateFn(context.Background(), e.st, 5, "wipe", func(s *state.Change) { s.Comments, s.Threads = nil, nil })
+	e.settled(t)
+	st, _ := e.st.Load(context.Background(), 5)
+	seen := map[string]bool{}
+	for _, c := range st.Comments {
+		if seen[c.GerritID] {
+			t.Errorf("Gerrit comment %s mapped twice", c.GerritID)
+		}
+		seen[c.GerritID] = true
+	}
+	if len(st.Comments) != 4 {
+		t.Errorf("%d comments mapped, want 4", len(st.Comments))
+	}
+}
+
+func TestGerritCommentsCopyEditedOnGitHubIsRestored(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.c.BridgeLogin = "bridge"
+	e.g.user("c1", "a.txt", 2, 2, "Why two?", "", true)
+	e.sync(t)
+	var copyID int64
+	for _, rc := range e.h.rcs {
+		if strings.Contains(rc.Body, "Why two?") {
+			copyID = rc.ID
+		}
+	}
+	if copyID == 0 {
+		t.Fatal("not mirrored")
+	}
+	// Someone with write access rewrites the bot's copy, marker and all.
+	e.g.user("c2", "a.txt", 2, 3, "Unrelated.", "", true)
+	for i := range e.h.rcs {
+		if e.h.rcs[i].ID == copyID {
+			e.h.rcs[i].Body = "**Alice Trusted (alice)**: LGTM, ship it\n\n<!-- bridge:gerrit/5/c2 -->"
+		}
+	}
+	e.h.edited(copyID, "mallory")
+	e.sync(t)
+	e.settled(t)
+	for _, rc := range e.h.rcs {
+		if rc.ID == copyID && (!strings.Contains(rc.Body, "Why two?") || !strings.Contains(rc.Body, "bridge:gerrit/5/c1 ") ||
+			!strings.Contains(rc.Body, "Restored")) {
+			t.Errorf("copy not restored: %q", rc.Body)
+		}
+	}
+	// c2 was mirrored as a comment of its own, not taken for the forged copy.
+	st, _ := e.st.Load(context.Background(), 5)
+	for _, c := range st.Comments {
+		if c.GerritID == "c2" && c.GitHubID == copyID {
+			t.Error("forged marker remapped c2")
+		}
+	}
+}
+
+func TestBotCopyEditedRightAfterPosting(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.c.BridgeLogin = "bridge"
+	e.g.user("c1", "a.txt", 2, 2, "Why two?", "", true)
+	// Edited before the bridge's next pass could read its marker.
+	e.h.afterReview = func() {
+		for i := range e.h.rcs {
+			if strings.Contains(e.h.rcs[i].Body, "Why two?") {
+				e.h.rcs[i].Body = "rewritten"
+				e.h.edited(e.h.rcs[i].ID, "mallory")
+			}
+		}
+	}
+	e.sync(t)
+	e.settled(t)
+	copies := 0
+	for _, rc := range e.h.rcs {
+		if strings.Contains(rc.Body, "Why two?") {
+			copies++
+		}
+	}
+	if copies != 1 {
+		t.Errorf("%d GitHub copies of the Gerrit comment, want 1 (restored)", copies)
+	}
+	if len(e.g.comments) != 1 {
+		t.Errorf("the bot's edited comment was mirrored into Gerrit: %+v", e.g.comments[1:])
+	}
 }
 
 func TestUnmappedUserPostsAsBridge(t *testing.T) {
@@ -754,17 +889,24 @@ func TestCommentEditedBeforeMirroringIsNotPostedAsTheAuthor(t *testing.T) {
 	e.runAs()
 	created := time.Unix(1700000000, 0)
 	e.h.ics = append(e.h.ics, github.IssueComment{ID: 9, Body: "retest", User: github.User{Login: "bob"},
-		HTMLURL: "https://github.com/o/r/pull/1#issuecomment-9", CreatedAt: created, UpdatedAt: created.Add(time.Minute)})
+		HTMLURL: "https://github.com/o/r/pull/1#issuecomment-9"})
 	id := e.h.human("a.txt", 3, "sha2", "retest", 0)
+	e.h.edits = map[int64]string{9: "mallory", id: ""} // "": a deleted account
+	// GitHub also moves updated_at without an edit: that alone is no edit.
+	e.h.human("a.txt", 3, "sha2", "fine as is", 0)
+	own := e.h.human("a.txt", 3, "sha2", "fixed my typo", 0)
 	for i := range e.h.rcs {
-		if e.h.rcs[i].ID == id {
-			e.h.rcs[i].CreatedAt, e.h.rcs[i].UpdatedAt = created, created.Add(time.Minute)
-		}
+		e.h.rcs[i].CreatedAt, e.h.rcs[i].UpdatedAt = created, created.Add(time.Second)
 	}
+	e.h.edits[own] = "bob" // edited by its own author: still theirs
 	e.sync(t)
+	byBob := map[string]bool{}
 	for _, gc := range e.g.comments {
 		if gc.Author.Username == "bobg" {
-			t.Errorf("edited comment posted as its author: %+v", gc)
+			byBob[gc.Message] = true
 		}
+	}
+	if byBob["retest"] || !byBob["fine as is"] || !byBob["fixed my typo"] {
+		t.Errorf("posted as bob: %v; want only the comments nobody else edited", byBob)
 	}
 }

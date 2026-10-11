@@ -51,6 +51,7 @@ func (r RunAsSubmitter) SubmitAs(ctx context.Context, user string, change int) e
 // CommandsGitHub is what commands need from GitHub.
 type CommandsGitHub interface {
 	ListIssueComments(ctx context.Context, n int) ([]github.IssueComment, error)
+	Edits(ctx context.Context, n int) (map[int64]string, error)
 	CreateIssueComment(ctx context.Context, n int, body string) (*github.IssueComment, error)
 }
 
@@ -93,6 +94,10 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 	if err != nil {
 		return err
 	}
+	edits, err := c.GitHub.Edits(ctx, pr)
+	if err != nil {
+		return err
+	}
 	handled := map[int64]bool{}
 	for _, ic := range ics {
 		if c.BridgeLogin != "" && !strings.EqualFold(ic.User.Login, c.BridgeLogin) {
@@ -112,9 +117,8 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 			continue
 		}
 		reply := ""
-		if edited(ic.CreatedAt, ic.UpdatedAt) {
-			// Anyone with write access can edit a comment, and GitHub does
-			// not say who did.
+		if editedByOther(edits, ic.ID, ic.User.Login) {
+			// Anyone with write access can edit anyone's comment.
 			reply = fmt.Sprintf("@%s: `/submit` was not run because the comment was edited. Post it as a new comment.", ic.User.Login)
 		} else {
 			reply = c.submit(ctx, n, ic)

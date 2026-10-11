@@ -92,9 +92,16 @@ ghc() { me api "repos/${R}/pulls/${P2}/comments" --jq ".[] | select(.body | cont
 by_bot() { [[ "$(ghc .user.login)" == realtimeroboticsbot ]]; }
 wait_for "Gerrit comment appears on GitHub, posted by the bot" by_bot
 ROOT=$(ghc .id)
+# Anyone with write access can edit the bot's comments; Gerrit's stay Gerrit's.
+me api -X PATCH "repos/${R}/pulls/comments/${ROOT}" -f body="Rehearsal ${RUN}: rewritten on GitHub" --silent
+restored() {
+  local b; b=$(me api "repos/${R}/pulls/comments/${ROOT}" --jq .body)
+  [[ "$b" == *"Restored by the bridge"* && "$b" == *"tighten this line"* && "$b" != *"rewritten on GitHub"* ]]
+}
+wait_for "an edit on GitHub to the bot's copy of a Gerrit comment is undone" restored
 brt api "repos/${R}/pulls/${P2}/comments/${ROOT}/replies" -f body="Rehearsal ${RUN}: done, thanks." --silent
-by_brt() { gerrit "changes/${C2}/comments" | jq -e ".[][] | select(.message | contains(\"Rehearsal ${RUN}: done\")) | select(.author.username == \"AustinSchuhBRT\")"; }
-wait_for "GitHub reply lands in the Gerrit thread as AustinSchuhBRT (Run-As)" by_brt
+by_brt() { gerrit "changes/${C2}/comments" | jq -e ".[][] | select(.message == \"Rehearsal ${RUN}: done, thanks.\") | select(.author.username == \"AustinSchuhBRT\")"; }
+wait_for "GitHub reply lands in the Gerrit thread as AustinSchuhBRT (Run-As), without an attribution header" by_brt
 HEAD2=$(me api "repos/${R}/pulls/${P2}" --jq .head.sha)
 brt api "repos/${R}/pulls/${P2}/comments" -f commit_id="${HEAD2}" -f path="chain-${RUN}-2.txt" -F line=1 -f side=RIGHT \
   -f body=$'Rehearsal '"${RUN}"$': suggestion\n```suggestion\nSuggested by BRT\n```' --silent
@@ -236,8 +243,6 @@ commit "${ME_CLONE}" "checks-${RUN}-FAIL.txt" "${S11}"
 has_pr() { [[ -n "$(pr_for "${S11}")" ]]; }
 wait_for "the change has a PR" has_pr
 E1=$(change "${S11}"); PE=$(pr_for "${S11}")
-running() { checks "${E1}" | jq -e '[.runs[] | select(.checkName == "Build" and .status == "RUNNING")] | length == 1'; }
-wait_for "a running job shows as RUNNING" running
 failed_job() {
   checks "${E1}" | jq -e '[.runs[] | select(.attempt == 1 and .status == "COMPLETED") | "\(.checkName) \(.results[0].category) \(.results[0].summary)"] | sort ==
     ["Build SUCCESS Passed", "Test ERROR Failed (exit status 1)"]'

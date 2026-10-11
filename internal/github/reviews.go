@@ -260,3 +260,88 @@ func escapePath(p string) string {
 	}
 	return strings.Join(parts, "/")
 }
+
+// Edits returns who last edited each edited comment on PR n, issue and
+// review comments alike, by database id; comments never edited are
+// absent. The login is "" if GitHub does not say (a deleted account).
+//
+// Unlike updated_at, which GitHub also moves without an edit, GraphQL's
+// lastEditedAt is set only by an edit, and editor says whose.
+func (c *Client) Edits(ctx context.Context, n int) (map[int64]string, error) {
+	type comment struct {
+		DatabaseID   int64      `json:"databaseId"`
+		LastEditedAt *time.Time `json:"lastEditedAt"`
+		Editor       *User      `json:"editor"`
+	}
+	type page struct {
+		HasNextPage bool   `json:"hasNextPage"`
+		EndCursor   string `json:"endCursor"`
+	}
+	out := map[int64]string{}
+	note := func(cs []comment) {
+		for _, c := range cs {
+			if c.LastEditedAt != nil {
+				out[c.DatabaseID] = ""
+				if c.Editor != nil {
+					out[c.DatabaseID] = c.Editor.Login
+				}
+			}
+		}
+	}
+	const fields = `databaseId lastEditedAt editor { login }`
+	const issueQ = `query($o: String!, $r: String!, $n: Int!, $after: String) {
+  repository(owner: $o, name: $r) { pullRequest(number: $n) {
+    comments(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { ` + fields + ` } } } } }`
+	const threadQ = `query($o: String!, $r: String!, $n: Int!, $after: String) {
+  repository(owner: $o, name: $r) { pullRequest(number: $n) {
+    reviewThreads(first: 50, after: $after) { pageInfo { hasNextPage endCursor }
+      nodes { comments(first: 100) { nodes { ` + fields + ` } } } } } } }`
+	for after := any(nil); ; {
+		var data struct {
+			Repository struct {
+				PullRequest struct {
+					Comments struct {
+						PageInfo page      `json:"pageInfo"`
+						Nodes    []comment `json:"nodes"`
+					} `json:"comments"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		}
+		if err := c.GraphQL(ctx, issueQ, map[string]any{"o": c.Owner, "r": c.Repo, "n": n, "after": after}, &data); err != nil {
+			return nil, err
+		}
+		cs := data.Repository.PullRequest.Comments
+		note(cs.Nodes)
+		if !cs.PageInfo.HasNextPage {
+			break
+		}
+		after = cs.PageInfo.EndCursor
+	}
+	for after := any(nil); ; {
+		var data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						PageInfo page `json:"pageInfo"`
+						Nodes    []struct {
+							Comments struct {
+								Nodes []comment `json:"nodes"`
+							} `json:"comments"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		}
+		if err := c.GraphQL(ctx, threadQ, map[string]any{"o": c.Owner, "r": c.Repo, "n": n, "after": after}, &data); err != nil {
+			return nil, err
+		}
+		ts := data.Repository.PullRequest.ReviewThreads
+		for _, t := range ts.Nodes {
+			note(t.Comments.Nodes)
+		}
+		if !ts.PageInfo.HasNextPage {
+			return out, nil
+		}
+		after = ts.PageInfo.EndCursor
+	}
+}

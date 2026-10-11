@@ -675,6 +675,20 @@ attached. One notification per side instead of N.
 Exception: a standalone GitHub reply in an existing thread
 (`POST /pulls/{n}/comments/{id}/replies`) becomes a one-comment `SetReview`.
 
+**Attribution and the comment map (GitHub → Gerrit).** A comment posted
+as its author (Run-As) is just their text: Gerrit already shows who wrote
+it. One the bridge posts under its own account (an unlinked user, an
+edited comment, or Run-As refused) starts with `**@login**
+([GitHub](<comment URL>)):`. Either way the bridge then finds its Gerrit
+copy by what it posted: a comment by the bridge (or by the user, tagged
+`github-bridge:mirror`), not mapped yet, at the same patch set, file, line,
+range, side and parent, with the same text; identical comments pair up
+oldest first. That is how a new comment enters `comments.json`, and why a
+crash between posting and saving it does not post it twice, so
+`omit_duplicate_comments` is not used (it would drop a second, separate
+"Done"). The header's link is also read back, but only from the bridge's
+own posts: a user's text may imitate the header.
+
 ### 6.4 Votes
 
 Configurable per label. The default:
@@ -733,9 +747,8 @@ change. This matches the semantics on both sides.
     out of the group means unrecognized pushes never start CI.
   - A recognized user can start or retry CI from GitHub by commenting
     `retest`. The comment is mirrored with Run-As (§7), so Gerrit sees
-    them as the author and gerrit-buildkite triggers. The mirrored body must
-    keep `retest` on a line of its own: the attribution header and links go
-    on separate lines.
+    them as the author and gerrit-buildkite triggers. Posted as its author,
+    the comment is just their text, so `retest` stays a line of its own.
   - The bridge reads the same group (REST
     `GET /groups/{id}/members?recursive`, cached briefly) so GitHub can
     explain what's going on. When the uploader isn't recognized,
@@ -929,10 +942,18 @@ defenses, by threat:
   does not have (a push not imported yet, or one that cannot be imported)
   is mirrored as text, saying it was not counted.
 - **Edited comments.** Anyone with write access can edit anyone's GitHub
-  comment, and GitHub does not say who did. Edits, and comments already
-  edited when first mirrored, are posted by the bridge account (so a
-  `retest` edited into a maintainer's comment does not start CI), and
-  `/submit` never runs from an edited comment.
+  comment. GraphQL's `lastEditedAt` and `editor` say whether and by whom
+  (`updated_at` does not: GitHub moves it without an edit). A comment last
+  edited by someone other than its author is posted by the bridge account
+  when first mirrored (so a `retest` edited into a maintainer's comment
+  does not start CI), and `/submit` does not run from it; later edits are
+  always mirrored by the bridge account.
+- **Edits to the bridge's own GitHub comments.** A Gerrit comment's GitHub
+  copy can be edited by anyone with write access, which would put words in
+  a Gerrit reviewer's mouth or change its `bridge:gerrit/…` marker. Gerrit
+  comments only change in Gerrit, so when a copy was last edited by anyone
+  but the bridge, the bridge rewrites it (saying so), and its marker is not
+  trusted meanwhile.
 - **Who uploaded.** Later patch sets are uploaded as whoever pushed them,
   but only as a webhook says (`synchronize` or `push` senders; the first
   push of a commit wins; reopening is not pushing). If no webhook said, the
