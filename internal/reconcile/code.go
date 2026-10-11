@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -110,6 +111,7 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 		Changes: map[int]*GerritChange{}, OnBranch: map[string]bool{},
 		GitHubBranches: map[string]string{}, PRs: map[int]*github.PullRequest{},
 		State: map[int]*state.Change{},
+		Repo:  c.GitHub.Owner + "/" + c.GitHub.Repo,
 	}
 	infos, err := c.Gerrit.QueryChanges(ctx,
 		"project:"+gerrit.QueryString(c.Project)+" branch:"+gerrit.QueryString(branch)+" status:open",
@@ -236,7 +238,7 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 	repoName := c.GitHub.Owner + "/" + c.GitHub.Repo
 	for i := range openPRs {
 		pr := &openPRs[i]
-		if heads[pr.Head.Ref] && strings.EqualFold(pr.HeadRepo(), repoName) {
+		if heads[pr.HeadKey(repoName)] {
 			s.PRs[pr.Number] = pr
 		}
 	}
@@ -256,6 +258,7 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 	// the PR, and check whether a Gerrit edit can be appended to it.
 	s.AppendOK = map[int]bool{}
 	s.SameTree = map[int]string{}
+	s.NoPush = map[int]bool{}
 	for n, ch := range s.Changes {
 		st := s.State[n]
 		if !s.githubBorn(n) || st.State.PR == 0 || s.PRs[st.State.PR] == nil {
@@ -266,6 +269,13 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 			continue
 		}
 		s.GitHubBranches[st.State.HeadBranch] = pr.Head.SHA
+		if _, _, fork := github.SplitHeadKey(st.State.HeadBranch); fork {
+			full, err := c.GitHub.GetPull(ctx, pr.Number) // listed PRs lack maintainer_can_modify
+			if err != nil {
+				return nil, err
+			}
+			s.NoPush[n] = !full.MaintainerCanModify
+		}
 		for _, r := range st.Revisions {
 			if r.GitHubSHA == pr.Head.SHA && r.GerritSHA != ch.Revision {
 				tree, parentTree := c.trees(ctx, ch.Revision)
@@ -319,10 +329,13 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 	gh := c.GitHub
 	switch a.Kind {
 	case PushBranches, DeleteBranches:
-		args := []string{"push", "--porcelain", "--atomic", c.GitHubURL}
+		// One atomic push to the repository, plus one per fork whose PR
+		// branch gets a Gerrit edit (allowed by maintainer_can_modify).
+		urls := []string{c.GitHubURL}
+		specs := map[string][]string{}
 		for _, name := range sortedStringKeys(a.Refs) {
 			ref := "refs/heads/" + name
-			args = append(args, "--force-with-lease="+ref+":"+a.Leases[name], a.Refs[name]+":"+ref)
+			specs[c.GitHubURL] = append(specs[c.GitHubURL], "--force-with-lease="+ref+":"+a.Leases[name], a.Refs[name]+":"+ref)
 		}
 		appended := map[string]string{}
 		for _, name := range sortedStringKeys(a.Appends) {
@@ -334,16 +347,28 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 				}
 			}
 			appended[name] = commit
-			ref := "refs/heads/" + name
-			args = append(args, "--force-with-lease="+ref+":"+a.Leases[name], commit+":"+ref)
+			url, branch := c.GitHubURL, name
+			if fork, b, ok := github.SplitHeadKey(name); ok {
+				url, branch = "https://github.com/"+fork+".git", b
+				if !slices.Contains(urls, url) {
+					urls = append(urls, url)
+				}
+			}
+			ref := "refs/heads/" + branch
+			specs[url] = append(specs[url], "--force-with-lease="+ref+":"+a.Leases[name], commit+":"+ref)
 		}
 		env, err := c.githubEnv(ctx)
 		if err != nil {
 			return err
 		}
-		out, err := c.Mirror.GitEnv(ctx, env, nil, args...)
-		if err != nil {
-			return fmt.Errorf("%w\n%s", err, out)
+		for _, url := range urls {
+			if len(specs[url]) == 0 {
+				continue
+			}
+			args := append([]string{"push", "--porcelain", "--atomic", url}, specs[url]...)
+			if out, err := c.Mirror.GitEnv(ctx, env, nil, args...); err != nil {
+				return fmt.Errorf("%w\n%s", err, out)
+			}
 		}
 		for name, commit := range appended {
 			ap := a.Appends[name]
@@ -419,7 +444,7 @@ func (c *Code) linkPR(ctx context.Context, n int, origin, branch, changeID strin
 		}
 		st.State.PR = pr.Number
 		st.State.PRNodeID = pr.NodeID
-		st.State.HeadBranch = pr.Head.Ref
+		st.State.HeadBranch = pr.HeadKey(c.GitHub.Owner + "/" + c.GitHub.Repo)
 		st.State.Lifecycle = "NEW"
 	})
 	if err != nil {

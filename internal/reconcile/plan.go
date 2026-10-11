@@ -56,6 +56,11 @@ type Snapshot struct {
 	// are the same revision (e.g. a commit-message edit in Gerrit), so
 	// nothing is pushed.
 	SameTree map[int]string
+	// Repo is the GitHub repository, owner/name.
+	Repo string
+	// NoPush marks GitHub-born changes from forks whose authors do not
+	// allow maintainers to push: Gerrit edits stay in Gerrit.
+	NoPush map[int]bool
 }
 
 // githubBorn reports whether change n came from a GitHub PR.
@@ -71,6 +76,13 @@ func (s *Snapshot) head(n int, changeID string) string {
 		return st.State.HeadBranch
 	}
 	return HeadBranch(s.Branch, s.DefaultBranch, changeID)
+}
+
+// isForkHead reports whether head is a branch in a fork. No PR can be
+// based on one, so a change above it gets a frozen base.
+func isForkHead(head string) bool {
+	_, _, fork := github.SplitHeadKey(head)
+	return fork
 }
 
 // ghCommit is the GitHub commit standing for Gerrit commit sha: the one
@@ -253,7 +265,9 @@ func MakePlan(s *Snapshot) *Plan {
 	// change's *current* patch set (rule 2).
 	parentOf := map[int]int{}
 	for n, c := range mirrored {
-		if pn, ok := byRev[c.Parent]; ok && pn != n {
+		// No PR can be based on a fork's branch, so a change above a
+		// fork PR's change is not stacked on it (it gets a frozen base).
+		if pn, ok := byRev[c.Parent]; ok && pn != n && !isForkHead(s.head(pn, mirrored[pn].ChangeID)) {
 			parentOf[n] = pn
 		}
 	}
@@ -271,7 +285,7 @@ func MakePlan(s *Snapshot) *Plan {
 	byHead := map[string]*github.PullRequest{}
 	for _, pr := range s.PRs {
 		if pr.State == "open" {
-			byHead[pr.Head.Ref] = pr
+			byHead[pr.HeadKey(s.Repo)] = pr
 		}
 	}
 	for n, c := range s.Changes {
@@ -306,6 +320,8 @@ func MakePlan(s *Snapshot) *Plan {
 		case !onGitHub || !known:
 			// The user pushed something not imported yet (or not
 			// importable): never overwrite their work.
+		case s.NoPush[n]:
+			// A fork that does not allow maintainer edits.
 		default:
 			appends[d.Head] = Append{Change: n, PatchSet: c.PatchSet, Revision: c.Revision, Onto: gh, Lease: gh,
 				Force: !s.AppendOK[n]}
@@ -540,7 +556,7 @@ func MakePlan(s *Snapshot) *Plan {
 	openHead := map[string]bool{} // deleting an open PR's head closes it unmerged
 	for _, pr := range s.PRs {
 		if pr.State == "open" && !closing[pr.Number] {
-			openHead[pr.Head.Ref] = true
+			openHead[pr.HeadKey(s.Repo)] = true
 		}
 	}
 	for name, sha := range s.GitHubBranches {

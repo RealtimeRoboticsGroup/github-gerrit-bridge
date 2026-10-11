@@ -71,6 +71,9 @@ type imported struct {
 	bridgeOwned bool
 	// noSignOff is set when the imported commit has no Signed-off-by.
 	noSignOff bool
+	// gerritAhead is Gerrit's newer patch set, for a fork the bridge may
+	// not push it to.
+	gerritAhead int
 }
 
 // syncError is an import problem to show on the PR as gerrit/sync.
@@ -93,13 +96,19 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 	byHead := map[string]*github.PullRequest{}
 	for i := range prs {
 		pr := &prs[i]
-		if !strings.EqualFold(pr.HeadRepo(), repo) || strings.HasPrefix(pr.Head.Ref, headPrefix) || strings.HasPrefix(pr.Head.Ref, frozenPrefix) {
+		// Fork PRs are imported too (their authors may not be able to
+		// push to the repository), keyed by fork and branch.
+		if pr.HeadRepo() == "" {
+			continue // the fork was deleted
+		}
+		key := pr.HeadKey(repo)
+		if key == pr.Head.Ref && (strings.HasPrefix(key, headPrefix) || strings.HasPrefix(key, frozenPrefix)) {
 			continue
 		}
 		if pr.CreatedAt.Before(im.CreatedAfter) && im.Store.ChangeForPR(pr.Number) == 0 {
 			continue // predates the bridge; leave it alone
 		}
-		byHead[pr.Head.Ref] = pr
+		byHead[key] = pr
 	}
 	if len(byHead) == 0 {
 		return nil
@@ -134,7 +143,7 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 	placed := map[string]*layer{}
 	var place func(pr *github.PullRequest, depth int) *layer
 	place = func(pr *github.PullRequest, depth int) *layer {
-		if l, ok := placed[pr.Head.Ref]; ok {
+		if l, ok := placed[pr.HeadKey(repo)]; ok {
 			return l
 		}
 		if depth > 50 {
@@ -153,7 +162,7 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		default:
 			return nil // another target branch, or a branch nobody mirrors
 		}
-		placed[pr.Head.Ref] = l
+		placed[pr.HeadKey(repo)] = l
 		order = append(order, l)
 		return l
 	}
@@ -171,6 +180,11 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 	}
 	specs := []string{}
 	for _, l := range order {
+		if _, _, fork := github.SplitHeadKey(l.pr.HeadKey(repo)); fork {
+			// GitHub keeps every PR's head in the base repository.
+			specs = append(specs, fmt.Sprintf("+refs/pull/%d/head:refs/remotes/github/pull/%d", l.pr.Number, l.pr.Number))
+			continue
+		}
 		specs = append(specs, "+refs/heads/"+l.pr.Head.Ref+":refs/remotes/github/"+l.pr.Head.Ref)
 	}
 	if _, err := im.Mirror.GitEnv(ctx, env, nil, append([]string{"fetch", "--quiet", im.GitHubURL}, specs...)...); err != nil {
@@ -205,6 +219,9 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		desc := fmt.Sprintf("In sync with Gerrit change %d, patch set %d", res.change, res.patchSet)
 		if res.bridgeOwned {
 			desc += "; owned by the bridge (link your GitHub account to own it)"
+		}
+		if res.gerritAhead != 0 {
+			desc += fmt.Sprintf("; newer patch set %d is only in Gerrit: allow maintainer edits to sync it", res.gerritAhead)
 		}
 		if res.noSignOff {
 			desc += "; no Signed-off-by: use git commit -s if the project requires it"
@@ -308,6 +325,22 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		res.bridgeOwned, err = im.syncWIP(ctx, st.State.Change, pr)
 		if ge := res.heads[h]; ge != "" {
 			res.noSignOff = im.lacksSignOff(ctx, ge)
+		}
+		if _, _, fork := github.SplitHeadKey(pr.HeadKey(im.GitHub.Owner + "/" + im.GitHub.Repo)); fork && err == nil {
+			// Listed PRs lack maintainer_can_modify.
+			full, gerr := im.GitHub.GetPull(ctx, pr.Number)
+			if gerr != nil {
+				return nil, gerr
+			}
+			if !full.MaintainerCanModify {
+				ci, gerr := im.Gerrit.GetChange(ctx, res.change, "CURRENT_REVISION")
+				if gerr != nil {
+					return nil, gerr
+				}
+				if cur, ok := ci.Current(); ok && cur.Number > res.patchSet {
+					res.gerritAhead = cur.Number
+				}
+			}
 		}
 		return res, err
 	}
@@ -418,7 +451,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	tree, parentTree := revisionTrees(ctx, im.Mirror, s)
 	err = updateStateFn(ctx, im.Store, ch.Number, fmt.Sprintf("Import PR #%d head %s as patch set %d", pr.Number, short(h), ps), func(st *state.Change) {
 		st.State.ImportHash = importHash
-		st.State.HeadBranch = pr.Head.Ref
+		st.State.HeadBranch = pr.HeadKey(im.GitHub.Owner + "/" + im.GitHub.Repo)
 		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: s, GitHubSHA: h, Tree: tree, ParentTree: parentTree})
 	})
 	if err != nil {

@@ -56,6 +56,7 @@ func (w *world) snapshot() *Snapshot {
 		Branch: "main", DefaultBranch: "main",
 		Changes: map[int]*GerritChange{}, OnBranch: w.onMain,
 		GitHubBranches: map[string]string{}, PRs: map[int]*github.PullRequest{}, State: map[int]*state.Change{},
+		Repo: "o/r", NoPush: map[int]bool{},
 	}
 	// Like Code.observe: closed changes drop out once the bridge has
 	// recorded them closed, unless their PR is still open.
@@ -78,6 +79,9 @@ func (w *world) snapshot() *Snapshot {
 		if st.State.Origin == "github" {
 			s.GitHubBranches[st.State.HeadBranch] = w.branch[st.State.HeadBranch]
 			s.AppendOK[n] = w.appendOK[n]
+			if pr := w.prs[st.State.PR]; isForkHead(st.State.HeadBranch) && pr != nil && !pr.MaintainerCanModify {
+				s.NoPush[n] = true
+			}
 		}
 	}
 	heads := map[string]bool{}
@@ -90,11 +94,20 @@ func (w *world) snapshot() *Snapshot {
 		for c, st := range w.state {
 			linked = linked || (st.State.PR == n && s.Changes[c] != nil)
 		}
-		if !linked && !(pr.State == "open" && heads[pr.Head.Ref]) {
+		key := pr.Head.Ref
+		if pr.Head.Repo != nil {
+			key = pr.HeadKey(s.Repo)
+		}
+		if !linked && !(pr.State == "open" && heads[key]) {
 			continue
 		}
 		cp := *pr
-		cp.Head.SHA = w.branch[pr.Head.Ref]
+		if cp.Head.Repo == nil { // the world's PRs are from o/r unless said otherwise
+			cp.Head.Repo = &struct {
+				FullName string `json:"full_name"`
+			}{"o/r"}
+		}
+		cp.Head.SHA = w.branch[cp.HeadKey(s.Repo)]
 		s.PRs[n] = &cp
 	}
 	s.OnGitHubBranch = w.onGitHubMain
@@ -266,6 +279,9 @@ func (w *world) link(change, pr int) {
 	st := &w.state[change].State
 	st.PR = pr
 	st.HeadBranch = w.prs[pr].Head.Ref
+	if w.prs[pr].Head.Repo != nil {
+		st.HeadBranch = w.prs[pr].HeadKey("o/r")
+	}
 	st.Lifecycle = "NEW"
 	if st.Origin == "" {
 		st.Origin = "gerrit"
@@ -727,6 +743,60 @@ func TestGitHubBornFrozenBaseUsesGitHubCommit(t *testing.T) {
 	w.checkBase(t, 2, "gerrit-base/"+cid(2))
 	if got := w.branch["gerrit-base/"+cid(2)]; got != "h1" {
 		t.Errorf("frozen base at %s, want the GitHub commit h1 (not Gerrit's s1)", got)
+	}
+}
+
+// forkWorld is bornWorld with PR #1 from alice's fork, on a branch named
+// like the repository's own main.
+func forkWorld(t *testing.T, maintainerCanModify bool) *world {
+	w := bornWorld(t)
+	delete(w.branch, "feature")
+	w.branch["alice/r:main"] = "h1"
+	w.prs[1].Head = github.Ref{Ref: "main", Repo: &struct {
+		FullName string `json:"full_name"`
+	}{"alice/r"}}
+	w.prs[1].MaintainerCanModify = maintainerCanModify
+	w.state[1].State.HeadBranch = "alice/r:main"
+	return w
+}
+
+func TestForkPR(t *testing.T) {
+	w := forkWorld(t, true)
+	w.converge()
+	if w.branch["main"] != "m0" || w.branch["alice/r:main"] != "h1" {
+		t.Fatalf("branches changed: main=%s fork=%s", w.branch["main"], w.branch["alice/r:main"])
+	}
+	// Edited in Gerrit: appended to the fork's branch, never to main.
+	w.upload(1, "s2", "m0")
+	w.appendOK[1] = true
+	w.converge()
+	if w.branch["main"] != "m0" {
+		t.Errorf("main = %s: a Gerrit edit of a fork PR went to the repository's main", w.branch["main"])
+	}
+	if got := w.branch["alice/r:main"]; got != "append(h1,s2)" {
+		t.Errorf("fork branch = %s, want a commit appended on h1", got)
+	}
+	// A Gerrit change on top: no PR can be based on a fork's branch, so it
+	// gets a frozen base at the fork's commit and no stack.
+	w.upload(2, "b1", "s2")
+	w.converge()
+	w.checkBase(t, 2, "gerrit-base/"+cid(2))
+	if got := w.branch["gerrit-base/"+cid(2)]; got != "append(h1,s2)" {
+		t.Errorf("frozen base at %s", got)
+	}
+	if got := w.stacksAsChanges(); len(got) != 0 {
+		t.Errorf("stacks = %v", got)
+	}
+}
+
+func TestForkPRWithoutMaintainerEdits(t *testing.T) {
+	w := forkWorld(t, false)
+	w.converge()
+	w.upload(1, "s2", "m0")
+	w.appendOK[1] = true
+	w.converge()
+	if w.branch["alice/r:main"] != "h1" || w.branch["main"] != "m0" {
+		t.Errorf("pushed although the fork does not allow it: fork=%s main=%s", w.branch["alice/r:main"], w.branch["main"])
 	}
 }
 

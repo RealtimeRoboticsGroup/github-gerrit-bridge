@@ -105,7 +105,10 @@ by the untrusted contributor imported as theirs without CI; `retest` from
 GitHub by a trusted reviewer; a push by someone else uploaded as the
 pusher; draft toggles; and a chain submitted in Gerrit itself, where the
 bridge must retarget the PRs to `main` within replication's 15 seconds for
-GitHub to show them merged. Run it after any bridge change.
+GitHub to show them merged; and a PR from AustinSchuhBRT's fork
+(`AustinSchuhBRT/bridge-scratch`, branch `main`), with Gerrit patch sets
+pushed back to the fork while maintainer edits are allowed and reported
+in `gerrit/sync` when they are not. Run it after any bridge change.
 
 ## Project rules (like AOS)
 

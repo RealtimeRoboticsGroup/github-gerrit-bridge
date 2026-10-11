@@ -91,9 +91,14 @@ func (d *Dispatcher) targetBranch(ctx context.Context, pr int) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Only PRs from the repository's own branches can be bases; a fork's
+	// branch of the same name must not redirect the walk.
+	repo := d.Code.GitHub.Owner + "/" + d.Code.GitHub.Repo
 	baseOf := map[string]string{}
 	for _, o := range open {
-		baseOf[o.Head.Ref] = o.Base.Ref
+		if o.HeadKey(repo) == o.Head.Ref {
+			baseOf[o.Head.Ref] = o.Base.Ref
+		}
 	}
 	base := p.Base.Ref
 	for i := 0; i < 50; i++ {

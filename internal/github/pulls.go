@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -54,6 +55,10 @@ type PullRequest struct {
 	User      User       `json:"user"`
 	Head      Ref        `json:"head"`
 	Base      Ref        `json:"base"`
+	// MaintainerCanModify is set when a fork PR's author lets people with
+	// write access to the base repository push to the head branch. Only
+	// GetPull returns it; listed PRs always say false.
+	MaintainerCanModify bool `json:"maintainer_can_modify"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	// Stack is set when the PR is in a native stack.
@@ -119,4 +124,21 @@ func (pr *PullRequest) HeadRepo() string {
 		return ""
 	}
 	return pr.Head.Repo.FullName
+}
+
+// HeadKey names the PR's head branch uniquely among the PRs of repo
+// (owner/name): the branch name for a branch of repo itself, else
+// "<fork owner>/<fork name>:<branch>". A ':' cannot occur in a git branch
+// name, so a fork's head never collides with a branch of repo.
+func (pr *PullRequest) HeadKey(repo string) string {
+	if strings.EqualFold(pr.HeadRepo(), repo) {
+		return pr.Head.Ref
+	}
+	return pr.HeadRepo() + ":" + pr.Head.Ref
+}
+
+// SplitHeadKey splits a HeadKey into the fork's owner/name and branch;
+// ok is false for a branch of the base repository itself.
+func SplitHeadKey(key string) (repo, branch string, ok bool) {
+	return strings.Cut(key, ":")
 }

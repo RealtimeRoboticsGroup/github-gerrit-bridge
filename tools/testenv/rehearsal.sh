@@ -183,6 +183,42 @@ gerrit_as AustinSchuh POST "changes/${F2}/submit" "{}" >/dev/null
 gmerged() { for p in "${O1}" "${O2}"; do [[ "$(me api "repos/${R}/pulls/${p}" --jq .merged)" == true ]] || return 1; done; }
 wait_for "GitHub shows both PRs merged" gmerged
 
+# --- 10. A PR from a fork, on a branch named like the repository's main ---
+step "10. A PR from AustinSchuhBRT's fork"
+FORK=AustinSchuhBRT/bridge-scratch
+K="Fork ${RUN}"
+(cd "${BRT_CLONE}" && { git remote get-url fork >/dev/null 2>&1 || git remote add fork "https://github.com/${FORK}.git"; } &&
+  git fetch -q github && git checkout -q -B "fork-${RUN}" github/main)
+commit "${BRT_CLONE}" "fork-${RUN}.txt" "${K}"
+(cd "${BRT_CLONE}" && git push -qf fork HEAD:refs/heads/main 2>/dev/null)
+brt api "repos/${R}/pulls" -f title="${K}" -f head="AustinSchuhBRT:main" -f base=main -f body="From a fork." -F maintainer_can_modify=true --silent
+FQ=$(pr_for "${K}")
+fork_imported() { [[ "$(gerrit "changes/?q=project:bridge-scratch+message:%22Fork+${RUN}%22&o=DETAILED_ACCOUNTS" | jq -r '.[0].owner.username')" == AustinSchuhBRT ]]; }
+wait_for "imported, owned by AustinSchuhBRT" fork_imported
+FK=$(change "${K}")
+wait_for "gerrit/sync reports success" status_is "${FQ}" gerrit/sync success
+# A new patch set in Gerrit, by AustinSchuh.
+gerrit_ps() {  # gerrit_ps <file>: amend change FK with a new file and push
+  (cd "${ME_CLONE}" && git fetch -q gerrit "$(gerrit "changes/${FK}?o=CURRENT_REVISION" | jq -r '.revisions[.current_revision].ref')" &&
+    git checkout -q FETCH_HEAD && echo "$1" > "$1" && git add "$1" && git commit -q --amend --no-edit && git push -q gerrit HEAD:refs/for/main 2>/dev/null)
+}
+gerrit_ps "fork-${RUN}-gerrit.txt"
+on_fork() { me api "repos/${FORK}/contents/$1?ref=main" --silent 2>/dev/null; }
+wait_for "a Gerrit patch set is pushed to the fork's branch (maintainer edits allowed)" on_fork "fork-${RUN}-gerrit.txt"
+main_untouched() { [[ "$(me api "repos/${R}/contents/fork-${RUN}-gerrit.txt?ref=main" 2>&1)" == *"Not Found"* ]]; }
+main_untouched && pass "the repository's own main is untouched" || fail "a fork edit reached the repository's main"
+# Now without maintainer edits.
+brt api -X PATCH "repos/${R}/pulls/${FQ}" -F maintainer_can_modify=false --silent
+gerrit_ps "fork-${RUN}-locked.txt"
+sync_says() { local sha; sha=$(me api "repos/${R}/pulls/${FQ}" --jq .head.sha)
+  me api "repos/${R}/commits/${sha}/status" --jq '.statuses[] | select(.context=="gerrit/sync") | .description' | grep -q "$1"; }
+wait_for "without maintainer edits, gerrit/sync says the newer patch set is only in Gerrit" sync_says "only in Gerrit"
+on_fork "fork-${RUN}-locked.txt" && fail "pushed to a fork that does not allow it" || pass "nothing pushed to the fork"
+# Abandoning in Gerrit closes the PR (and frees the fork's main for the next run).
+gerrit_as AustinSchuhBRT POST "changes/${FK}/abandon" "{}" >/dev/null
+fork_closed() { [[ "$(me api "repos/${R}/pulls/${FQ}" --jq .state)" == closed ]]; }
+wait_for "abandoning in Gerrit closes the fork PR" fork_closed
+
 echo
 echo "Rehearsal ${RUN}: ${PASSED} passed, ${FAILED} failed"
 ((FAILED == 0))
