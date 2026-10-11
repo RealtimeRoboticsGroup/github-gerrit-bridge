@@ -48,8 +48,17 @@ Gerrit's own logs are in `~/tmp/gerrit-test/logs/` (`replication_log`,
 | GitHub account | Role | Gerrit account |
 |---|---|---|
 | `realtimeroboticsbot` | the bridge (PRs, mirrored comments, statuses) and replication | `github-bridge` |
-| `AustinSchuh` | trusted developer; also forwards webhooks (repo admin) | `alice` |
-| `AustinSchuhBRT` | newer contributor | `bob` |
+| `AustinSchuh` | trusted developer; also forwards webhooks (repo admin) | `AustinSchuh` (Verified Users) |
+| `AustinSchuhBRT` | newer contributor | `AustinSchuhBRT` |
+
+As on AOS (Gerrit's github plugin), Gerrit accounts are named after GitHub
+logins, and the bridge matches them by username (`identity.match_usernames`);
+there is no hand-written map. A GitHub user's comments, replies, edits,
+resolutions, approvals (Code-Review +2, or +1 if that is all they may give;
+request changes = -1), uploads and `/submit` all happen in Gerrit **as their
+account** through Run-As, so `retest` from GitHub starts CI for trusted
+users. GitHub users without a Gerrit account are handled by the bridge
+account, and never vote.
 
 All three are logged in to `gh` here (`gh auth token --user <login>`);
 keep `AustinSchuh` the active account, since the webhook forwarder uses
@@ -57,8 +66,8 @@ it. Two clones are ready, each pushing as one person on both sides:
 
 | Clone | GitHub as | Gerrit as |
 |---|---|---|
-| `~/local/bridge-play` | AustinSchuh | alice |
-| `~/local/bridge-play-brt` | AustinSchuhBRT | bob (commits use BRT's noreply address, which bob also has) |
+| `~/local/bridge-play` | AustinSchuh | AustinSchuh |
+| `~/local/bridge-play-brt` | AustinSchuhBRT | AustinSchuhBRT |
 
 To act as AustinSchuhBRT with `gh`, prefix commands with
 `GH_TOKEN=$(gh auth token --user AustinSchuhBRT)`.
@@ -71,8 +80,9 @@ them: Gerrit votes stay statuses there.
 | Account | Who | Notes |
 |---|---|---|
 | `admin` | administrator | log in at `/login/?user_name=admin` |
-| `alice` | trusted developer | in **Verified Users**, so CI builds her uploads. Your GitHub login `AustinSchuh` maps to her, so your GitHub pushes and `/submit` act as alice |
-| `bob` | newcomer | not in Verified Users: CI does not start for his uploads |
+| `alice` | trusted developer (Gerrit-only) | in **Verified Users**, so CI builds her uploads |
+| `bob` | newcomer (Gerrit-only) | not in Verified Users: CI does not start for his uploads |
+| `AustinSchuh`, `AustinSchuhBRT` | the GitHub users | see above; credentials in `~/tmp/gerrit-test/bridge/<login>.http-password` |
 | `github-bridge` | the bridge | Service Users, Run As, owns `refs/bridge/*` |
 | `buildkite` | CI | Service Users, votes Verified |
 
@@ -135,9 +145,10 @@ git remote add github https://github.com/AustinSchuh/bridge-scratch.git
   replies, resolving, edits.
 - Toggle draft / ready.
 - Comment `/submit` to submit the change and everything below it, as alice.
-- Comment `retest` in **Gerrit** to rerun CI. (A `retest` on GitHub is
-  mirrored by the bridge account, which CI does not trust, until Run-As
-  mirroring exists.)
+- Comment `retest` on the PR (as AustinSchuh) to rerun CI: it is posted in
+  Gerrit as AustinSchuh, whom CI trusts. From AustinSchuhBRT it is not.
+- Approve or request changes on GitHub: it becomes AustinSchuh's
+  Code-Review vote in Gerrit.
 
 ## Resetting
 

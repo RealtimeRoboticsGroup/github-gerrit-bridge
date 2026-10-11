@@ -9,6 +9,7 @@ go_library(
         "commands.go",
         "comments.go",
         "dispatch.go",
+        "identity.go",
         "importer.go",
         "naming.go",
         "plan.go",

@@ -31,7 +31,7 @@ type Importer struct {
 	Store     *state.Store
 	Uploader  Uploader
 	// Identity maps GitHub logins to Gerrit usernames.
-	Identity map[string]string
+	Identity Identity
 	// Bridge is the bridge's own Gerrit account (committer of imports it
 	// owns).
 	Bridge        gerrit.AccountInfo
@@ -356,7 +356,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			login = p
 		}
 	}
-	user := im.Identity[login]
+	user, _ := im.Identity.GerritUser(ctx, login)
 	if user != "" && !im.Uploader.CanActAs() {
 		user = ""
 	}

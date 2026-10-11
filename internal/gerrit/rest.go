@@ -91,6 +91,8 @@ func (l LabelInfo) Range() (lo, hi int) {
 type ApprovalInfo struct {
 	AccountInfo
 	Value int `json:"value"`
+	// Tag is the tag of the review that set the vote.
+	Tag string `json:"tag"`
 }
 
 // SubmitRequirementResult is one submit requirement's status.
@@ -404,4 +406,11 @@ func (c *Client) Submit(ctx context.Context, change int) (*ChangeInfo, error) {
 	var ci ChangeInfo
 	err := c.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/submit", change), map[string]any{}, &ci)
 	return &ci, err
+}
+
+// QueryAccounts returns the accounts matching query, with details.
+func (c *Client) QueryAccounts(ctx context.Context, query string) ([]AccountInfo, error) {
+	var out []AccountInfo
+	err := c.Do(ctx, http.MethodGet, "accounts/?o=DETAILS&q="+url.QueryEscape(query), nil, &out)
+	return out, err
 }

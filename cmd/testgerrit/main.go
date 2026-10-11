@@ -51,7 +51,8 @@ func run() error {
 	tokenFile := flag.String("github_token_file", "", "GitHub token for replication (stored in etc/secure.config).")
 	ciUser := flag.String("ci_user", "", "Create this CI account (once), voting Verified on --replicate_project.")
 	aliceEmail := flag.String("alice_email", "", "Also give alice this email (yours), so your commits can be pushed as alice.")
-	identity := flag.String("identity", "AustinSchuh=alice,AustinSchuhBRT=bob", "GitHub login=Gerrit user pairs (comma separated) for the replicated project's bridge config.")
+	identity := flag.String("identity", "", "GitHub login=Gerrit user overrides (comma separated) for the replicated project's bridge config; normally the bridge matches usernames.")
+	githubUsers := flag.String("github_users", "", "Accounts named after GitHub logins, like Gerrit's github plugin makes: comma-separated login|email[|trusted].")
 	bot := flag.String("github_bot", "", "gh account the bridge acts as on GitHub (its token comes from `gh auth token --user`).")
 	bobEmail := flag.String("bob_email", "", "Also give bob this email, so a second GitHub account's commits can be pushed as bob.")
 	flag.Parse()
@@ -109,6 +110,26 @@ func run() error {
 		}
 		if err := s.AddEmail(ctx, user, email); err != nil {
 			return fmt.Errorf("%s's email: %w", user, err)
+		}
+	}
+	for _, spec := range strings.Split(*githubUsers, ",") {
+		f := strings.Split(strings.TrimSpace(spec), "|")
+		if f[0] == "" {
+			continue
+		}
+		gu := testgerrit.GitHubUser{Login: f[0]}
+		if len(f) > 1 {
+			gu.Email = f[1]
+		}
+		gu.Trusted = len(f) > 2 && f[2] == "trusted"
+		u, err := s.EnsureGitHubUser(ctx, gu)
+		if err != nil {
+			return fmt.Errorf("account %s: %w", gu.Login, err)
+		}
+		if u != nil {
+			os.WriteFile(filepath.Join(bridgeDir, u.Username+".http-password"), []byte(u.HTTPPassword+"\n"), 0o600)
+			os.WriteFile(filepath.Join(bridgeDir, u.Username+"_id_ed25519"), u.PrivateKeyPEM, 0o600)
+			log.Printf("Created Gerrit account %s (credentials in %s)", u.Username, bridgeDir)
 		}
 	}
 	if *ciUser != "" {

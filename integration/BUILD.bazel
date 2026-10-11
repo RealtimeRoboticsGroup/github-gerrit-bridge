@@ -17,9 +17,11 @@ go_test(
     tags = ["integration"],
     deps = [
         "//internal/config",
+        "//internal/gerrit",
         "//internal/gerrit/events",
         "//internal/gerrit/gerritssh",
         "//internal/gitmirror",
+        "//internal/reconcile",
         "//internal/state",
         "//internal/testgerrit",
         "@org_golang_x_crypto//ssh",

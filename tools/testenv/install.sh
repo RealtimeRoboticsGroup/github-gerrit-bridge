@@ -54,7 +54,7 @@ UNIT
 }
 
 unit bridge-test-gerrit "Bridge test instance: Gerrit" \
-  "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --ci_user buildkite --github ${REPO} --alice_email $(git -C "${WS}" config user.email) --github_bot ${BOT} --identity AustinSchuh=alice,${SECOND}=bob --bob_email ${SECOND_EMAIL}" \
+  "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --ci_user buildkite --github ${REPO} --github_bot ${BOT} --github_users AustinSchuh|$(git -C "${WS}" config user.email)|trusted,${SECOND}|${SECOND_EMAIL}" \
   "" "TimeoutStopSec=60"
 unit bridge-test-buildkite "Bridge test instance: fake Buildkite" \
   "${TE}/bin/fakebuildkite --duration 20s" "" ""

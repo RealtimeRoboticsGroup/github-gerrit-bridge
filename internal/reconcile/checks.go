@@ -316,9 +316,13 @@ func votesComment(old, cur []state.Vote, labels map[string]gerrit.LabelInfo, cha
 		was[key{v.Account, v.Label}] = v.Value
 	}
 	names := map[int]string{}
-	for _, l := range labels {
+	fromGitHub := map[key]bool{} // votes the bridge cast for a GitHub review
+	for label, l := range labels {
 		for _, a := range l.All {
 			names[a.AccountID] = who(a.AccountInfo)
+			if isBridgeTag(a.Tag) {
+				fromGitHub[key{a.AccountID, label}] = true
+			}
 		}
 	}
 	name := func(id int) string {
@@ -330,7 +334,7 @@ func votesComment(old, cur []state.Vote, labels map[string]gerrit.LabelInfo, cha
 	var lines []string
 	for _, v := range cur {
 		k := key{v.Account, v.Label}
-		if w, ok := was[k]; !ok || w != v.Value {
+		if w, ok := was[k]; (!ok || w != v.Value) && !fromGitHub[k] {
 			lines = append(lines, fmt.Sprintf("- **%s**: %s %s", name(v.Account), v.Label, voteString(v.Value)))
 		}
 		delete(was, k)

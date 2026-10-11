@@ -19,15 +19,19 @@ const bridgeID = 99
 type fakeGerrit struct {
 	// noFixes makes SetReview fail like a site without the fix
 	// suggestions feature flag.
-	noFixes  bool
-	messages []gerrit.ChangeMessage
-	comments []gerrit.CommentInfo
-	revs     map[string]int // sha -> ps
-	current  string
-	files    map[string]string
-	clock    int
-	nextID   int
-	reviews  int
+	noFixes bool
+	// votes records labels set by SetReview, as "user:Label=value".
+	votes       []string
+	refuseRunAs bool
+	maxVote     int
+	messages    []gerrit.ChangeMessage
+	comments    []gerrit.CommentInfo
+	revs        map[string]int // sha -> ps
+	current     string
+	files       map[string]string
+	clock       int
+	nextID      int
+	reviews     int
 }
 
 func (f *fakeGerrit) tick() string {
@@ -39,11 +43,34 @@ func (f *fakeGerrit) ListComments(context.Context, int) ([]gerrit.CommentInfo, e
 	return append([]gerrit.CommentInfo(nil), f.comments...), nil
 }
 
-func (f *fakeGerrit) SetReview(_ context.Context, _ int, rev string, in gerrit.ReviewInput) error {
+func (f *fakeGerrit) SetReview(ctx context.Context, n int, rev string, in gerrit.ReviewInput) error {
+	return f.setReview(ctx, gerrit.AccountInfo{AccountID: bridgeID, Name: "GitHub Bridge"}, n, rev, in)
+}
+
+// fakeAs is the fake Gerrit acting as another user (Run-As).
+type fakeAs struct {
+	*fakeGerrit
+	user gerrit.AccountInfo
+}
+
+func (a fakeAs) SetReview(ctx context.Context, n int, rev string, in gerrit.ReviewInput) error {
+	if a.refuseRunAs {
+		return &gerrit.Error{Status: 403, Body: "not permitted to run as"}
+	}
+	if in.Labels["Code-Review"] > a.maxVote {
+		return &gerrit.Error{Status: 403, Body: "Applying label \"Code-Review\": 2 is restricted"}
+	}
+	return a.setReview(ctx, a.user, n, rev, in)
+}
+
+func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ int, rev string, in gerrit.ReviewInput) error {
 	if f.noFixes && hasFixes(in.Comments) {
 		return &gerrit.Error{Status: 500, Body: "Internal server error"}
 	}
 	f.reviews++
+	for l, v := range in.Labels {
+		f.votes = append(f.votes, fmt.Sprintf("%s:%s=%d", author.Username, l, v))
+	}
 	ts := f.tick()
 	var ps int
 	fmt.Sscan(rev, &ps)
@@ -57,7 +84,7 @@ func (f *fakeGerrit) SetReview(_ context.Context, _ int, rev string, in gerrit.R
 			f.comments = append(f.comments, gerrit.CommentInfo{
 				ID: fmt.Sprintf("b%d", f.nextID), Path: path, PatchSet: ps, Side: ci.Side, Line: line, Range: ci.Range,
 				InReplyTo: ci.InReplyTo, Message: ci.Message, Updated: ts,
-				Author: gerrit.AccountInfo{AccountID: bridgeID, Name: "GitHub Bridge"}, Unresolved: ci.Unresolved != nil && *ci.Unresolved,
+				Author: author, Tag: in.Tag, Unresolved: ci.Unresolved != nil && *ci.Unresolved,
 				FixSuggestions: ci.FixSuggestions,
 			})
 		}
@@ -609,4 +636,101 @@ func TestGitHubSuggestionWithoutGerritFeatureFlag(t *testing.T) {
 		t.Errorf("fallback comment = %+v", gc)
 	}
 	e.settled(t)
+}
+
+func (e *commentsEnv) runAs() {
+	e.g.maxVote = 2
+	e.c.Users = &Users{Overrides: map[string]string{"bob": "bobg"}}
+	e.c.GerritAs = func(user string) GerritAPI {
+		return fakeAs{e.g, gerrit.AccountInfo{AccountID: 7, Username: user, Name: "Bob G"}}
+	}
+}
+
+func TestRunAsPostsAsTheUserAndNeverEchoes(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.human("a.txt", 3, "sha2", "retest", 0)
+	e.sync(t)
+	gc := e.g.comments[len(e.g.comments)-1]
+	if gc.Author.Username != "bobg" || gc.Tag != mirrorTag {
+		t.Fatalf("posted as %q with tag %q, want bobg / %s", gc.Author.Username, gc.Tag, mirrorTag)
+	}
+	if !strings.Contains(gc.Message, "\nretest") {
+		t.Errorf("retest must stay on a line of its own: %q", gc.Message)
+	}
+	// It is bob's comment in Gerrit, but the bridge's post: never mirrored back.
+	posts := e.h.posts
+	e.settled(t)
+	if e.h.posts != posts {
+		t.Error("Run-As post mirrored back to GitHub")
+	}
+	// Mapping rebuilds from the tag and link when state is lost.
+	updateStateFn(context.Background(), e.st, 5, "wipe", func(s *state.Change) { s.Comments, s.Threads = nil, nil })
+	e.settled(t)
+}
+
+func TestUnmappedUserPostsAsBridge(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.ics = append(e.h.ics, github.IssueComment{ID: 9, Body: "hi", User: github.User{Login: "stranger"},
+		HTMLURL: "https://github.com/o/r/pull/1#issuecomment-9"})
+	e.sync(t)
+	gc := e.g.comments[len(e.g.comments)-1]
+	if gc.Author.AccountID != bridgeID || gc.Tag != commentTag {
+		t.Errorf("unmapped user's comment posted as %+v tag %q", gc.Author, gc.Tag)
+	}
+}
+
+func TestRunAsRefusedFallsBackToBridge(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.g.refuseRunAs = true
+	e.h.human("a.txt", 3, "sha2", "hello", 0)
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 60, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-60"})
+	e.sync(t)
+	gc := e.g.comments[len(e.g.comments)-1]
+	if gc.Author.AccountID != bridgeID {
+		t.Errorf("posted as %+v, want the bridge after Run-As was refused", gc.Author)
+	}
+	if len(e.g.votes) != 0 {
+		t.Errorf("votes cast without Run-As: %v", e.g.votes)
+	}
+}
+
+func TestGitHubApprovalBecomesVote(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 50, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-50"})
+	e.sync(t)
+	if len(e.g.votes) != 1 || e.g.votes[0] != "bobg:Code-Review=2" {
+		t.Errorf("votes = %v", e.g.votes)
+	}
+	e.settled(t)
+	if len(e.g.votes) != 1 {
+		t.Errorf("approval voted again: %v", e.g.votes)
+	}
+
+	// A user who may only give +1 gets +1; request changes gives -1.
+	e.g.maxVote = 1
+	e.h.reviews = append(e.h.reviews,
+		github.Review{ID: 51, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"}, HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-51"},
+		github.Review{ID: 52, State: "CHANGES_REQUESTED", CommitID: "sha2", User: github.User{Login: "bob"}, Body: "Needs work.", HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-52"})
+	e.sync(t)
+	if got := strings.Join(e.g.votes[1:], " "); got != "bobg:Code-Review=1 bobg:Code-Review=-1" {
+		t.Errorf("votes = %v", e.g.votes)
+	}
+	for _, v := range e.g.votes {
+		if strings.HasPrefix(v, ":") {
+			t.Errorf("the bridge voted as itself: %v", e.g.votes)
+		}
+	}
+	// Unmapped reviewers never vote; their review is text only.
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 53, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "stranger"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-53"})
+	e.sync(t)
+	if len(e.g.votes) != 3 {
+		t.Errorf("unmapped reviewer voted: %v", e.g.votes)
+	}
 }

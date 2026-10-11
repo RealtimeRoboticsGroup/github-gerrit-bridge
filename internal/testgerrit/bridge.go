@@ -420,3 +420,51 @@ func tokenCommand(user string) string {
 	}
 	return "gh, auth, token, --user, " + user
 }
+
+// GitHubUser is a Gerrit account the way Gerrit's github plugin creates
+// them: username = GitHub login, email = the person's address.
+type GitHubUser struct {
+	Login, Email string
+	Trusted      bool // in Verified Users, so CI builds their uploads
+}
+
+// EnsureGitHubUser creates u's account if it does not exist, makes Email
+// its preferred address (taking it from any other account first, since an
+// address can belong to only one), and returns the new credentials, or nil
+// if the account already existed.
+func (s *Server) EnsureGitHubUser(ctx context.Context, u GitHubUser) (*User, error) {
+	var created *User
+	err := s.Admin.Do(ctx, http.MethodGet, "accounts/"+url.PathEscape(u.Login), nil, nil)
+	var ge *gerrit.Error
+	if errors.As(err, &ge) && ge.Status == http.StatusNotFound {
+		groups := []string{}
+		if u.Trusted {
+			groups = append(groups, TrustedGroup)
+		}
+		if created, err = s.CreateUser(ctx, u.Login, u.Login, groups...); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	if u.Email == "" {
+		return created, nil
+	}
+	escaped := strings.ReplaceAll(url.PathEscape(u.Email), "+", "%2B")
+	owners, err := s.Admin.QueryAccounts(ctx, "email:"+gerrit.QueryString(u.Email))
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range owners {
+		if !strings.EqualFold(o.Username, u.Login) {
+			if err := s.Admin.Do(ctx, http.MethodDelete, fmt.Sprintf("accounts/%d/emails/%s", o.AccountID, escaped), nil, nil); err != nil {
+				return nil, fmt.Errorf("taking %s from %s: %w", u.Email, o.Username, err)
+			}
+		}
+	}
+	if err := s.AddEmail(ctx, u.Login, u.Email); err != nil {
+		return nil, err
+	}
+	err = s.Admin.Do(ctx, http.MethodPut, "accounts/"+url.PathEscape(u.Login)+"/emails/"+escaped+"/preferred", nil, nil)
+	return created, err
+}

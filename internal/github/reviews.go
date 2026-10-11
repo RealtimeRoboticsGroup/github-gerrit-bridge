@@ -127,6 +127,8 @@ type ReviewThread struct {
 	IsResolved bool
 	// RootID is the database id of the thread's first comment.
 	RootID int64
+	// ResolvedBy is the login of whoever resolved it, if resolved.
+	ResolvedBy string
 }
 
 // ReviewThreads lists PR n's review threads.
@@ -135,7 +137,7 @@ func (c *Client) ReviewThreads(ctx context.Context, n int) ([]ReviewThread, erro
   repository(owner: $o, name: $r) { pullRequest(number: $n) {
     reviewThreads(first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id isResolved comments(first: 1) { nodes { databaseId } } }
+      nodes { id isResolved resolvedBy { login } comments(first: 1) { nodes { databaseId } } }
     } } } }`
 	var out []ReviewThread
 	var after any
@@ -151,7 +153,10 @@ func (c *Client) ReviewThreads(ctx context.Context, n int) ([]ReviewThread, erro
 						Nodes []struct {
 							ID         string `json:"id"`
 							IsResolved bool   `json:"isResolved"`
-							Comments   struct {
+							ResolvedBy *struct {
+								Login string `json:"login"`
+							} `json:"resolvedBy"`
+							Comments struct {
 								Nodes []struct {
 									DatabaseID int64 `json:"databaseId"`
 								} `json:"nodes"`
@@ -168,6 +173,9 @@ func (c *Client) ReviewThreads(ctx context.Context, n int) ([]ReviewThread, erro
 		rt := data.Repository.PullRequest.ReviewThreads
 		for _, t := range rt.Nodes {
 			th := ReviewThread{ID: t.ID, IsResolved: t.IsResolved}
+			if t.ResolvedBy != nil {
+				th.ResolvedBy = t.ResolvedBy.Login
+			}
 			if len(t.Comments.Nodes) > 0 {
 				th.RootID = t.Comments.Nodes[0].DatabaseID
 			}

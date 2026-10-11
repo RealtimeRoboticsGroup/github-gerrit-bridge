@@ -48,7 +48,7 @@ type Commands struct {
 	Submitter Submitter
 	Store     *state.Store
 	// Identity maps GitHub logins to Gerrit usernames.
-	Identity map[string]string
+	Identity Identity
 	DryRun   bool
 	Logger   *slog.Logger
 }
@@ -93,8 +93,8 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 }
 
 func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) string {
-	user := c.Identity[ic.User.Login]
-	if user == "" {
+	user, ok := c.Identity.GerritUser(ctx, ic.User.Login)
+	if !ok {
 		return fmt.Sprintf("@%s: `/submit` needs a linked Gerrit account, and yours is not linked. "+
 			"Ask an admin to add you to the bridge's identity map, or submit in Gerrit.", ic.User.Login)
 	}

@@ -23,7 +23,7 @@ func (f *fakeSubmitter) SubmitAs(_ context.Context, user string, change int) err
 func newCommands(t *testing.T) (*Commands, *fakeGitHub, *fakeSubmitter) {
 	e := newCommentsEnv(t) // change 5 linked to PR 1, lifecycle NEW
 	sub := &fakeSubmitter{}
-	return &Commands{GitHub: e.h, Submitter: sub, Store: e.st, Identity: map[string]string{"AustinSchuh": "alice"},
+	return &Commands{GitHub: e.h, Submitter: sub, Store: e.st, Identity: &Users{Overrides: map[string]string{"AustinSchuh": "alice"}},
 		Logger: slog.Default()}, e.h, sub
 }
 

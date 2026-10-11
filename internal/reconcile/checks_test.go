@@ -118,3 +118,11 @@ func TestVotesComment(t *testing.T) {
 		t.Error("unchanged votes produced a comment")
 	}
 }
+
+func TestVotesFromGitHubAreNotAnnouncedBack(t *testing.T) {
+	ch := change([]gerrit.ApprovalInfo{{AccountInfo: alice, Value: 2, Tag: mirrorTag}, {AccountInfo: bob, Value: 1}}, nil)
+	msg := votesComment(nil, humanVotes(ch, []string{"Verified"}), ch.Labels, "u")
+	if strings.Contains(msg, "Alice") || !strings.Contains(msg, "**Bob**: Code-Review +1") {
+		t.Errorf("votes comment = %q", msg)
+	}
+}

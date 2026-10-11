@@ -43,8 +43,12 @@ github:
   # import_created_after: 2026-10-04T00:00:00Z
 
 identity:
-  # GitHub login -> Gerrit username. Unmapped users' imports are owned by
-  # the bridge account, with the real author kept.
+  # GitHub users are matched to the Gerrit account with the same username
+  # (how Gerrit's github plugin names accounts). Comments, votes, uploads
+  # and /submit then act as that account (Run-As). Users with no account
+  # are handled by the bridge account, with their name in the text.
+  match_usernames: true
+  # Exceptions: GitHub login -> Gerrit username.
   github_to_gerrit:
     octocat: ocat
 

@@ -84,9 +84,17 @@ type GitHub struct {
 
 // Identity maps GitHub users to Gerrit accounts (design §7).
 type Identity struct {
-	// GitHubToGerrit maps a GitHub login to a Gerrit username.
+	// GitHubToGerrit maps a GitHub login to a Gerrit username, overriding
+	// MatchUsernames.
 	GitHubToGerrit map[string]string `yaml:"github_to_gerrit"`
+	// MatchUsernames maps a GitHub login to the active Gerrit account with
+	// the same username, which is how Gerrit's github plugin names the
+	// accounts it creates. Default true; nil means unset.
+	MatchUsernames *bool `yaml:"match_usernames"`
 }
+
+// MatchesUsernames reports whether MatchUsernames is on (the default).
+func (i Identity) MatchesUsernames() bool { return i.MatchUsernames == nil || *i.MatchUsernames }
 
 // CI configures how Gerrit CI is mirrored to GitHub (design §6.5).
 type CI struct {

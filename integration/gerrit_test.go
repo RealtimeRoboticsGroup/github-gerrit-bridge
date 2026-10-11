@@ -23,9 +23,11 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/config"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/events"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/gerritssh"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/testgerrit"
 )
@@ -423,5 +425,50 @@ func TestAOSSubmitRequirements(t *testing.T) {
 	}
 	if got := status("signed.txt"); got["Signed-off-by"] != "SATISFIED" {
 		t.Errorf("signed change requirements = %v", got)
+	}
+}
+
+// TestRunAsAndUsernameMatching checks design §7 on real Gerrit: a GitHub
+// login resolves to the Gerrit account of the same username (the github
+// plugin's convention), and the bridge account can post as that user.
+func TestRunAsAndUsernameMatching(t *testing.T) {
+	ctx := context.Background()
+	bridge := &gerrit.Client{BaseURL: srv.URL, User: env.Bridge.Username, Password: env.Bridge.HTTPPassword}
+	users := &reconcile.Users{Gerrit: bridge}
+	if u, ok := users.GerritUser(ctx, "ALICE"); !ok || u != "alice" {
+		t.Errorf("GerritUser(ALICE) = %q, %v", u, ok)
+	}
+	if _, ok := users.GerritUser(ctx, "nobody-here"); ok {
+		t.Error("matched a login with no account")
+	}
+	pushChange(t, env.Bob, "runas.txt")
+	id := fmt.Sprintf("I%x", sha1.Sum([]byte("runas.txt")))
+	var cs []gerrit.ChangeInfo
+	if err := srv.Admin.Do(ctx, "GET", "changes/?q=change:"+id, nil, &cs); err != nil || len(cs) != 1 {
+		t.Fatalf("find change: %v %d", err, len(cs))
+	}
+	n := cs[0].Number
+	in := gerrit.ReviewInput{Tag: "github-bridge:mirror", Labels: map[string]int{"Code-Review": 1},
+		Comments: map[string][]gerrit.CommentInput{gerrit.PatchSetLevel: {{Message: "**@alice** (GitHub):\n\nretest"}}}}
+	if err := bridge.As("alice").SetReview(ctx, n, "current", in); err != nil {
+		t.Fatalf("Run-As review: %v", err)
+	}
+	comments, err := srv.Admin.ListComments(ctx, n)
+	if err != nil || len(comments) != 1 {
+		t.Fatalf("comments: %v %d", err, len(comments))
+	}
+	if c := comments[0]; c.Author.Username != "alice" || c.Tag != "github-bridge:mirror" {
+		t.Errorf("comment by %q tag %q, want alice / github-bridge:mirror", c.Author.Username, c.Tag)
+	}
+	ch, err := srv.Admin.GetChange(ctx, n, "DETAILED_LABELS", "DETAILED_ACCOUNTS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var voted bool
+	for _, a := range ch.Labels["Code-Review"].All {
+		voted = voted || (a.Username == "alice" && a.Value == 1 && a.Tag == "github-bridge:mirror")
+	}
+	if !voted {
+		t.Errorf("Code-Review votes = %+v, want alice +1 tagged as a mirror", ch.Labels["Code-Review"].All)
 	}
 }

@@ -207,6 +207,10 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		DryRun:        dryRun,
 		Logger:        logger,
 	}
+	users := &reconcile.Users{Overrides: cfg.Identity.GitHubToGerrit, Logger: logger}
+	if cfg.Identity.MatchesUsernames() {
+		users.Gerrit = rest
+	}
 	var uploader reconcile.Uploader = reconcile.HTTPUploader{Mirror: mirror}
 	if cfg.Gerrit.SSH.PeerKeyFile != "" {
 		uploader = reconcile.SuexecUploader{
@@ -223,7 +227,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Mirror:        mirror,
 		Store:         store,
 		Uploader:      uploader,
-		Identity:      cfg.Identity.GitHubToGerrit,
+		Identity:      users,
 		Bridge:        self,
 		DefaultBranch: ghRepo.DefaultBranch,
 		CreatedAfter:  cfg.GitHub.ImportCreatedAfter,
@@ -237,9 +241,13 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		GitHub:        gh,
 		Store:         store,
 		BridgeAccount: self.AccountID,
-		CIMessage:     regexp.MustCompile(cfg.CI.MessagePattern),
-		DryRun:        dryRun,
-		Logger:        logger,
+		// GitHub users' comments and votes are posted as their Gerrit
+		// accounts (needs the Run As capability).
+		Users:     users,
+		GerritAs:  func(user string) reconcile.GerritAPI { return rest.As(user) },
+		CIMessage: regexp.MustCompile(cfg.CI.MessagePattern),
+		DryRun:    dryRun,
+		Logger:    logger,
 	}
 	checks := &reconcile.Checks{
 		Project:      cfg.Gerrit.Project,
@@ -259,7 +267,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		GitHub:    gh,
 		Submitter: reconcile.RunAsSubmitter{Gerrit: rest},
 		Store:     store,
-		Identity:  cfg.Identity.GitHubToGerrit,
+		Identity:  users,
 		DryRun:    dryRun,
 		Logger:    logger,
 	}
