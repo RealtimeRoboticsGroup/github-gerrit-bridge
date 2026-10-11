@@ -44,6 +44,9 @@ type Snapshot struct {
 	Stacks []*github.Stack
 	// State is the bridge's stored state per change.
 	State map[int]*state.Change
+	// OnGitHubBranch is true for merged revisions already on GitHub's copy
+	// of the target branch (replication has pushed them).
+	OnGitHubBranch map[string]bool
 	// AppendOK marks GitHub-born changes whose current patch set has the
 	// same parent tree as the one last synced to GitHub, so a Gerrit edit
 	// can be appended to the user's branch as a fast-forward (design §5.2).
@@ -418,6 +421,50 @@ func MakePlan(s *Snapshot) *Plan {
 		p.Actions = append(p.Actions, push)
 	}
 
+	// Close PRs of changes that are no longer mirrored.
+	for _, n := range sortedKeys(s.Changes) {
+		c := s.Changes[n]
+		if mirrored[n] != nil {
+			continue
+		}
+		pr := prFor[n]
+		if pr == nil {
+			continue
+		}
+		finalBase[pr.Number] = pr.Base.Ref
+		if pr.State != "open" || pr.Merged {
+			continue
+		}
+		if c.Status == "MERGED" && pr.Head.SHA == c.Revision && !s.OnGitHubBranch[c.Revision] {
+			// The PR's head is exactly the merged commit, and replication
+			// has not brought it to GitHub yet. GitHub marks a PR merged
+			// when its commits land on its *base* branch, so point the PR
+			// at the target branch now (leaving its stack); when they
+			// land, GitHub shows it merged. (Measured 2026-10-11: a PR
+			// still based on the layer below stays open, and once the
+			// commits are in, it can no longer be retargeted.)
+			if pr.Base.Ref != s.Branch {
+				p.Actions = append(p.Actions, Action{Kind: UpdatePR, Change: n, PR: pr.Number,
+					Update: &github.PullUpdate{Base: ptr(s.Branch)}})
+				finalBase[pr.Number] = s.Branch
+			}
+			continue
+		}
+		var msg string
+		switch {
+		case c.Status == "MERGED":
+			msg = fmt.Sprintf("Merged in Gerrit: [change %d](%s). Closing this PR.", n, c.URL)
+		case c.Status == "ABANDONED":
+			msg = fmt.Sprintf("Abandoned in Gerrit: [change %d](%s). Restoring it there reopens this PR.", n, c.URL)
+		default:
+			msg = fmt.Sprintf("[Change %d](%s) is no longer mirrored (made private). Closing this PR.", n, c.URL)
+		}
+		if st := s.State[n]; st != nil && st.State.ClosedNoticePosted {
+			msg = ""
+		}
+		p.Actions = append(p.Actions, Action{Kind: ClosePR, Change: n, PR: pr.Number, Comment: msg})
+	}
+
 	// Stacks. Each path of 2+ changes is a desired stack; a PR that does
 	// not exist yet is 0 and holds back stack edits that need it.
 	var paths [][]int
@@ -469,35 +516,6 @@ func MakePlan(s *Snapshot) *Plan {
 		p.Actions = append(p.Actions, Action{Kind: CreateStack, PRs: prs})
 	}
 
-	// Close PRs of changes that are no longer mirrored.
-	for _, n := range sortedKeys(s.Changes) {
-		c := s.Changes[n]
-		if mirrored[n] != nil {
-			continue
-		}
-		pr := prFor[n]
-		if pr == nil {
-			continue
-		}
-		finalBase[pr.Number] = pr.Base.Ref
-		if pr.State != "open" || pr.Merged {
-			continue
-		}
-		var msg string
-		switch {
-		case c.Status == "MERGED":
-			msg = fmt.Sprintf("Merged in Gerrit: [change %d](%s). Closing this PR.", n, c.URL)
-		case c.Status == "ABANDONED":
-			msg = fmt.Sprintf("Abandoned in Gerrit: [change %d](%s). Restoring it there reopens this PR.", n, c.URL)
-		default:
-			msg = fmt.Sprintf("[Change %d](%s) is no longer mirrored (made private). Closing this PR.", n, c.URL)
-		}
-		if st := s.State[n]; st != nil && st.State.ClosedNoticePosted {
-			msg = ""
-		}
-		p.Actions = append(p.Actions, Action{Kind: ClosePR, Change: n, PR: pr.Number, Comment: msg})
-	}
-
 	// Frozen bases nothing needs any more, and the bridge's branches of
 	// merged changes (design §6.7). Abandoned changes keep theirs, so a
 	// restore can reopen the PR.
@@ -519,7 +537,16 @@ func MakePlan(s *Snapshot) *Plan {
 		}
 	}
 	del := Action{Kind: DeleteBranches, Refs: map[string]string{}, Leases: map[string]string{}}
+	openHead := map[string]bool{} // deleting an open PR's head closes it unmerged
+	for _, pr := range s.PRs {
+		if pr.State == "open" && !closing[pr.Number] {
+			openHead[pr.Head.Ref] = true
+		}
+	}
 	for name, sha := range s.GitHubBranches {
+		if openHead[name] {
+			continue
+		}
 		if _, ok := frozenFor(name, s.Branch, s.DefaultBranch); (!ok && !merged[name]) || refs[name] != "" {
 			continue
 		}

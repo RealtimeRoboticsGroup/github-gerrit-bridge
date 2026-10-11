@@ -251,7 +251,7 @@ func desiredStatuses(ch *gerrit.ChangeInfo, changeURL string, ciLabels []string,
 		case isCI && run.Phase != "":
 			s.Description = "CI " + strings.ToLower(run.Phase) + "; waiting for the vote"
 		case isCI && !uploaderTrusted:
-			s.Description = fmt.Sprintf("CI not started: uploader is not in %s. A trusted reviewer can comment retest in Gerrit.", group)
+			s.Description = fmt.Sprintf("CI not started: uploader is not in %s. A trusted reviewer can comment retest (here or in Gerrit).", group)
 		case isCI:
 			s.Description = "Waiting for CI"
 		default:

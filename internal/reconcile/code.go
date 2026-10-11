@@ -190,6 +190,19 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Which merged revisions has replication brought to GitHub yet?
+	s.OnGitHubBranch = map[string]bool{}
+	if _, err := c.Mirror.GitEnv(ctx, env, nil, "fetch", "--quiet", c.GitHubURL,
+		"+refs/heads/"+branch+":refs/remotes/github/heads/"+branch); err == nil {
+		for _, ch := range s.Changes {
+			if ch.Status != "MERGED" {
+				continue
+			}
+			if _, err := c.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", ch.Revision, "refs/remotes/github/heads/"+branch); err == nil {
+				s.OnGitHubBranch[ch.Revision] = true
+			}
+		}
+	}
 	out, err := c.Mirror.GitEnv(ctx, env, nil, "ls-remote", c.GitHubURL, "refs/heads/"+headPrefix+"*", "refs/heads/"+frozenPrefix+"*")
 	if err != nil {
 		return nil, err
@@ -614,4 +627,67 @@ func sortedStringKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(ks)
 	return ks
+}
+
+// PrepareSubmit readies the PRs of the changes a submit of change n will
+// merge, before the bridge submits it (/submit): each PR whose head is
+// exactly its change's commit leaves its stack and is retargeted to the
+// target branch. When replication then lands the commits, GitHub shows
+// every PR merged, which it only does for PRs based on that branch
+// (design §6.7). Doing it before the submit means the bridge never races
+// replication. If the submit fails, the next reconcile restores the
+// stack. The caller holds the branch lock.
+func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
+	together, err := c.Gerrit.SubmittedTogether(ctx, n)
+	if err != nil {
+		return err
+	}
+	if len(together) == 0 {
+		ch, err := c.Gerrit.GetChange(ctx, n, "CURRENT_REVISION")
+		if err != nil {
+			return err
+		}
+		together = []gerrit.ChangeInfo{*ch}
+	}
+	var prs []*github.PullRequest
+	unstack := map[int]bool{}
+	for _, ch := range together {
+		st, err := c.Store.Load(ctx, ch.Number)
+		if err != nil {
+			return err
+		}
+		if st.State.PR == 0 {
+			continue
+		}
+		pr, err := c.GitHub.GetPull(ctx, st.State.PR)
+		if err != nil {
+			return err
+		}
+		if pr.State != "open" || pr.Head.SHA != ch.CurrentRevision || pr.Base.Ref == ch.Branch {
+			continue
+		}
+		pr.Base.Ref = ch.Branch // the target, for below
+		prs = append(prs, pr)
+		if pr.Stack != nil {
+			unstack[pr.Stack.Number] = true
+		}
+	}
+	if c.DryRun {
+		if len(prs) > 0 {
+			c.Logger.Info("dry run: would retarget PRs before submit", "change", n, "prs", len(prs))
+		}
+		return nil
+	}
+	for _, sn := range sortedKeys(unstack) {
+		if err := c.GitHub.Unstack(ctx, sn); err != nil && !github.IsNotFound(err) {
+			return err
+		}
+	}
+	for _, pr := range prs {
+		if _, err := c.GitHub.UpdatePull(ctx, pr.Number, github.PullUpdate{Base: ptr(pr.Base.Ref)}); err != nil {
+			return fmt.Errorf("retargeting #%d: %w", pr.Number, err)
+		}
+		c.Logger.Info("retargeted PR before submit", "change", n, "pr", pr.Number, "base", pr.Base.Ref)
+	}
+	return nil
 }

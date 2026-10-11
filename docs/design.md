@@ -773,6 +773,21 @@ change. This matches the semantics on both sides.
   so the bridge closes each PR with "Merged as \<sha\> in Gerrit change N"
   and deletes the `gerrit/<Change-Id>` branches. GitHub retargets the remaining stack
   layers.
+- **Showing the PRs as merged (measured 2026-10-11).** GitHub marks a PR
+  merged only when its head commit arrives on the PR's **base** branch. A
+  stacked PR is based on the layer below, so a pushed-in chain leaves every
+  layer but the bottom open (native stacks do not retarget on push merges,
+  even after a minute), and once the commits are in, the PR can no longer
+  be retargeted ("no new commits"). So when Gerrit reports a change merged
+  and the PR's head is exactly the merged commit, the bridge immediately
+  takes the PR out of its stack and retargets it to the target branch;
+  replication then lands the commits and GitHub shows it merged. The
+  bridge hears the merge event within a second, while replication waits
+  `replicationDelay` (default 15 s). If replication wins anyway, or the
+  submit rewrote the commit (rebase, cherry-pick, any GitHub-born squash
+  that is not a no-op), the PR is closed with a "Merged in Gerrit" notice.
+  A PR's head branch is never deleted while the PR is open (that would
+  close it unmerged). Verified with `tools/testenv/rehearsal.sh`.
 - **GitHub merge button**: branch protection lets only the bridge App push
   to `main`, so a GitHub merge cannot happen directly. Instead:
   - A required check `gerrit/submittable` reports Gerrit's submit

@@ -33,6 +33,8 @@ umask 077
 # Replication pushes as the bot, like a production replication account.
 "${GH}" auth token --user "${BOT}" > "${TE}/github-token"
 SECOND_EMAIL="$("${GH}" api "users/${SECOND}" --jq '"\(.id)+\(.login)@users.noreply.github.com"')"
+# The second account's own address, if any (becomes its preferred email).
+[[ -n "${SECOND_EMAIL_PREFERRED:-}" ]] && SECOND_EMAIL="${SECOND_EMAIL}|${SECOND_EMAIL_PREFERRED}"
 
 unit() {  # name description exec [extra [Unit] lines] [extra [Service] lines]
   cat > "${UNITS}/$1.service" <<UNIT
@@ -54,7 +56,7 @@ UNIT
 }
 
 unit bridge-test-gerrit "Bridge test instance: Gerrit" \
-  "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --ci_user buildkite --github ${REPO} --github_bot ${BOT} --base_path /gerrit --github_login_jars ${HOME}/tmp/github-plugin --github_oauth_file ${TE}/github-oauth --github_webhook_user AustinSchuh --github_login_users AustinSchuh|trusted|admin,${SECOND}" \
+  "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --ci_user buildkite --github ${REPO} --github_bot ${BOT} --base_path /gerrit --github_login_jars ${HOME}/tmp/github-plugin --github_oauth_file ${TE}/github-oauth --github_webhook_user AustinSchuh --github_login_users AustinSchuh|trusted|admin|$(git -C "${WS}" config user.email),${SECOND}|${SECOND_EMAIL}" \
   "" "TimeoutStopSec=60"
 unit bridge-test-buildkite "Bridge test instance: fake Buildkite" \
   "${TE}/bin/fakebuildkite --duration 20s --gerrit_url http://127.0.0.1:18080/gerrit" "" ""

@@ -5,7 +5,7 @@ by hand before it goes near the real Gerrit:
 
 | Piece | Where | Real or stand-in |
 |---|---|---|
-| Gerrit 3.14.4 | `http://127.0.0.1:18080`, ssh `127.0.0.1:29418`, site `~/tmp/gerrit-test` | real (dev-mode login) |
+| Gerrit 3.14.4 | `http://127.0.0.1:18080/gerrit/`, ssh `127.0.0.1:29418`, site `~/tmp/gerrit-test` | real, with AOS's github plugin build and settings: you log in with GitHub |
 | Replication | Gerrit's bundled plugin → `github.com/AustinSchuh/bridge-scratch` | real |
 | CI | your `gerrit-buildkite` (`~/tmp/gerrit-buildkite`, plus a local `-api_url` patch) | real |
 | Buildkite | `cmd/fakebuildkite` on `http://127.0.0.1:18090` | stand-in |
@@ -13,15 +13,19 @@ by hand before it goes near the real Gerrit:
 | GitHub webhooks | `gh webhook forward` → `127.0.0.1:18081/webhook` | real (needs `admin:repo_hook`) |
 | GitHub | `AustinSchuh/bridge-scratch` | real |
 
-Everything listens on 127.0.0.1 only: dev-mode Gerrit lets anyone become
-anyone. From your desktop, tunnel the web UIs:
+Everything listens on 127.0.0.1 only. From your desktop, tunnel the web
+UIs:
 
 ```
 ssh -L 18080:127.0.0.1:18080 -L 18090:127.0.0.1:18090 server1868-4
 ```
 
-then open <http://127.0.0.1:18080> (Gerrit) and <http://127.0.0.1:18090>
-(builds). Links the bridge posts on GitHub point at these URLs too.
+then open <http://127.0.0.1:18080/gerrit/login> and sign in with GitHub
+(the "Bridge test Gerrit" OAuth App, owned by realtimeroboticsbot), and
+<http://127.0.0.1:18090> for builds. Use `127.0.0.1`, not `localhost`: the
+OAuth callback goes to 127.0.0.1, and a session cookie set on another host
+does not follow it ("Invalid authentication state"). Links the bridge posts
+on GitHub point at these URLs too.
 
 ## Services
 
@@ -79,16 +83,26 @@ them: Gerrit votes stay statuses there.
 
 | Account | Who | Notes |
 |---|---|---|
-| `admin` | administrator | log in at `/login/?user_name=admin` |
-| `alice` | trusted developer (Gerrit-only) | in **Verified Users**, so CI builds her uploads |
-| `bob` | newcomer (Gerrit-only) | not in Verified Users: CI does not start for his uploads |
-| `AustinSchuh`, `AustinSchuhBRT` | the GitHub users | see above; credentials in `~/tmp/gerrit-test/bridge/<login>.http-password` |
+| `AustinSchuh`, `AustinSchuhBRT` | the people | created by the github plugin at their first GitHub login (username = GitHub login, an `external:github_oauth` token stored). testgerrit then adds AustinSchuh to Verified Users and Administrators, sets each one's email as a user would under Settings, and writes HTTP passwords to `~/tmp/gerrit-test/bridge/<login>.http-password` for the clones |
+| `admin` | bootstrap administrator | HTTP password only (no GitHub login) |
 | `github-bridge` | the bridge | Service Users, Run As, owns `refs/bridge/*` |
-| `buildkite` | CI | Service Users, votes Verified |
+| `buildkite` | CI | Service Users (votes Verified) |
+| `alice`, `bob` | Gerrit-only test users | from the first boot; not used by the GitHub flows |
 
-Log in as anyone with `http://127.0.0.1:18080/login/?user_name=<name>`.
-HTTP passwords and SSH keys are in `~/tmp/gerrit-test/bridge/`
-(`alice.http-password`, `alice_id_ed25519`, and the same for bob).
+The installer adds AustinSchuhBRT's own address if you give it:
+`SECOND_EMAIL_PREFERRED=<their-address> tools/testenv/install.sh`.
+
+## Rehearsal
+
+`tools/testenv/rehearsal.sh` drives the whole thing as the real people on
+both sides and checks every step: a Gerrit chain becoming a stacked set of
+PRs built by CI; comments, replies, suggestions and resolution both ways
+(as their authors, via Run-As); a partial push freezing a base and a
+rebase rejoining; GitHub approvals becoming Code-Review +2 and `/submit`
+merging the chain, with replication marking the PRs merged; a GitHub stack
+by the untrusted contributor imported as theirs without CI; `retest` from
+GitHub by a trusted reviewer; a push by someone else uploaded as the
+pusher; and draft toggles. Run it after any bridge change.
 
 ## Project rules (like AOS)
 

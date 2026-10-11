@@ -62,3 +62,20 @@ func TestSubmitCommandUnmappedAndRefused(t *testing.T) {
 		t.Errorf("refusal reply = %q", got)
 	}
 }
+
+func TestSubmitPreparesPRsFirst(t *testing.T) {
+	c, h, sub := newCommands(t)
+	var order []string
+	c.BeforeSubmit = func(_ context.Context, n int) error {
+		order = append(order, "prepare")
+		if len(sub.calls) != 0 {
+			t.Error("submitted before preparing the PRs")
+		}
+		return nil
+	}
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}})
+	c.Run(context.Background(), 5)
+	if len(order) != 1 || len(sub.calls) != 1 {
+		t.Errorf("prepare=%v submits=%v", order, sub.calls)
+	}
+}

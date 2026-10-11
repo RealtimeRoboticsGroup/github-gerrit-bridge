@@ -49,8 +49,11 @@ type Commands struct {
 	Store     *state.Store
 	// Identity maps GitHub logins to Gerrit usernames.
 	Identity Identity
-	DryRun   bool
-	Logger   *slog.Logger
+	// BeforeSubmit, if set, runs before the bridge submits a change
+	// (Code.PrepareSubmit).
+	BeforeSubmit func(ctx context.Context, n int) error
+	DryRun       bool
+	Logger       *slog.Logger
 }
 
 var (
@@ -97,6 +100,13 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) st
 	if !ok {
 		return fmt.Sprintf("@%s: `/submit` needs a linked Gerrit account, and yours is not linked. "+
 			"Ask an admin to add you to the bridge's identity map, or submit in Gerrit.", ic.User.Login)
+	}
+	if c.BeforeSubmit != nil {
+		if err := c.BeforeSubmit(ctx, n); err != nil {
+			// Not fatal: the PRs then close with a notice instead of
+			// showing merged.
+			c.Logger.Warn("preparing PRs for submit", "change", n, "err", err)
+		}
 	}
 	err := c.Submitter.SubmitAs(ctx, user, n)
 	if err == nil {

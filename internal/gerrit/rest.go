@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -413,4 +414,22 @@ func (c *Client) QueryAccounts(ctx context.Context, query string) ([]AccountInfo
 	var out []AccountInfo
 	err := c.Do(ctx, http.MethodGet, "accounts/?o=DETAILS&q="+url.QueryEscape(query), nil, &out)
 	return out, err
+}
+
+// SubmittedTogether lists the changes a submit of change would merge,
+// including change itself.
+func (c *Client) SubmittedTogether(ctx context.Context, change int) ([]ChangeInfo, error) {
+	var out []ChangeInfo
+	err := c.Do(ctx, http.MethodGet, fmt.Sprintf("changes/%d/submitted_together?o=CURRENT_REVISION", change), nil, &out)
+	return out, err
+}
+
+// BranchExists reports whether project has branch.
+func (c *Client) BranchExists(ctx context.Context, project, branch string) (bool, error) {
+	err := c.Do(ctx, http.MethodGet, "projects/"+url.PathEscape(project)+"/branches/"+url.PathEscape("refs/heads/"+branch), nil, nil)
+	var ge *Error
+	if errors.As(err, &ge) && ge.Status == http.StatusNotFound {
+		return false, nil
+	}
+	return err == nil, err
 }

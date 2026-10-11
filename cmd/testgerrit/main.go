@@ -56,7 +56,7 @@ func run() error {
 	loginJars := flag.String("github_login_jars", "", "Directory with github-plugin.jar and github-oauth.jar: log in with GitHub, configured like AOS.")
 	oauthFile := flag.String("github_oauth_file", "", "client_id=... and client_secret=... of the GitHub OAuth App.")
 	webhookUser := flag.String("github_webhook_user", "", "github.webhookUser for the github plugin.")
-	loginUsers := flag.String("github_login_users", "", "Accounts the github plugin creates at GitHub login, to set up once they exist: comma-separated login[|trusted][|admin].")
+	loginUsers := flag.String("github_login_users", "", "Accounts the github plugin creates at GitHub login, to set up once they exist: comma-separated login[|trusted][|admin][|email@...].")
 	githubUsers := flag.String("github_users", "", "Accounts named after GitHub logins, like Gerrit's github plugin makes: comma-separated login|email[|trusted].")
 	bot := flag.String("github_bot", "", "gh account the bridge acts as on GitHub (its token comes from `gh auth token --user`).")
 	bobEmail := flag.String("bob_email", "", "Also give bob this email, so a second GitHub account's commits can be pushed as bob.")
@@ -285,26 +285,37 @@ func readOAuth(path string) (id, secret string, err error) {
 // that person's first GitHub login), then puts it in its groups and writes
 // an HTTP password for pushing as it to <bridgeDir>/<login>.http-password.
 func watchLoginUsers(ctx context.Context, s *testgerrit.Server, bridgeDir, spec string) {
-	pending := map[string][]string{}
+	type want struct{ groups, emails []string }
+	pending := map[string]want{}
 	for _, e := range strings.Split(spec, ",") {
 		f := strings.Split(strings.TrimSpace(e), "|")
 		if f[0] == "" {
 			continue
 		}
-		var groups []string
+		var w want
 		for _, r := range f[1:] {
-			switch r {
-			case "trusted":
-				groups = append(groups, testgerrit.TrustedGroup)
-			case "admin":
-				groups = append(groups, "Administrators")
+			switch {
+			case r == "trusted":
+				w.groups = append(w.groups, testgerrit.TrustedGroup)
+			case r == "admin":
+				w.groups = append(w.groups, "Administrators")
+			case strings.Contains(r, "@"):
+				// Like a user adding their address under Settings ->
+				// Email Addresses (the plugin does not import it).
+				w.emails = append(w.emails, r)
 			}
 		}
-		pending[f[0]] = groups
+		pending[f[0]] = w
 	}
 	for len(pending) > 0 {
-		for login, groups := range pending {
+		for login, w := range pending {
+			groups := w.groups
 			ok, err := s.SetUpLoginUser(ctx, login, groups, filepath.Join(bridgeDir, login+".http-password"))
+			for _, email := range w.emails {
+				if ok && err == nil {
+					err = s.SetPreferredEmail(ctx, login, email)
+				}
+			}
 			if err != nil {
 				log.Printf("setting up %s: %v", login, err)
 			}

@@ -44,7 +44,7 @@ func TestStatuses(t *testing.T) {
 		{"nothing yet, trusted uploader", change(nil, nil), ciRun{}, true,
 			"pending: No votes yet", "pending: Waiting for CI", "https://g/c/5"},
 		{"untrusted uploader", change(nil, nil), ciRun{}, false,
-			"pending: No votes yet", "pending: CI not started: uploader is not in Verified Users. A trusted reviewer can comment retest in Gerrit.", "https://g/c/5"},
+			"pending: No votes yet", "pending: CI not started: uploader is not in Verified Users. A trusted reviewer can comment retest (here or in Gerrit).", "https://g/c/5"},
 		{"build running", change(nil, []gerrit.ApprovalInfo{{AccountInfo: ci, Value: 0}}), ciRun{"Started", "https://bk/1"}, true,
 			"pending: No votes yet", "pending: CI running", "https://bk/1"},
 		{"approved and verified", change([]gerrit.ApprovalInfo{{AccountInfo: alice, Value: 2}, {AccountInfo: bob, Value: 1}},

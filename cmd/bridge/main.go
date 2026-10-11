@@ -264,12 +264,13 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	// code mirror puts it there.
 	code.OnExported = checks.Sync
 	commands := &reconcile.Commands{
-		GitHub:    gh,
-		Submitter: reconcile.RunAsSubmitter{Gerrit: rest},
-		Store:     store,
-		Identity:  users,
-		DryRun:    dryRun,
-		Logger:    logger,
+		GitHub:       gh,
+		Submitter:    reconcile.RunAsSubmitter{Gerrit: rest},
+		Store:        store,
+		Identity:     users,
+		BeforeSubmit: code.PrepareSubmit,
+		DryRun:       dryRun,
+		Logger:       logger,
 	}
 	dispatch := &reconcile.Dispatcher{Code: code, Comments: comments, Commands: commands, Checks: checks, Store: store, Logger: logger}
 	wg.Go(func() { reconcile.Work(ctx, q, dispatch, cfg.Workers, logger) })

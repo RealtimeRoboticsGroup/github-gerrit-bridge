@@ -22,15 +22,17 @@ type world struct {
 	state    map[int]*state.Change
 	onMain   map[string]bool
 	appendOK map[int]bool
-	nextNum  int
-	log      []string
+	// onGitHubMain is what replication has pushed to GitHub's main.
+	onGitHubMain map[string]bool
+	nextNum      int
+	log          []string
 }
 
 func newWorld(t *testing.T) *world {
 	return &world{
 		t: t, gerrit: map[int]*GerritChange{}, branch: map[string]string{"main": "m0"},
 		prs: map[int]*github.PullRequest{}, stacks: map[int]*github.Stack{}, state: map[int]*state.Change{},
-		onMain: map[string]bool{"m0": true}, appendOK: map[int]bool{}, nextNum: 1,
+		onMain: map[string]bool{"m0": true}, appendOK: map[int]bool{}, onGitHubMain: map[string]bool{}, nextNum: 1,
 	}
 }
 
@@ -74,8 +76,10 @@ func (w *world) snapshot() *Snapshot {
 	}
 	for n, pr := range w.prs {
 		cp := *pr
+		cp.Head.SHA = w.branch[pr.Head.Ref]
 		s.PRs[n] = &cp
 	}
+	s.OnGitHubBranch = w.onGitHubMain
 	for _, st := range w.stacks {
 		cp := *st
 		s.Stacks = append(s.Stacks, &cp)
@@ -441,6 +445,8 @@ func TestMergedChainDeletesBridgeBranches(t *testing.T) {
 	}
 	w.onMain["a1"], w.onMain["b1"] = true, true
 	w.converge()
+	w.replicate()
+	w.converge()
 	w.checkBase(t, 3, "main")
 	for _, n := range []int{1, 2} {
 		if _, ok := w.branch["gerrit/"+cid(n)]; ok {
@@ -486,6 +492,8 @@ func TestMergedBottom(t *testing.T) {
 	// Submitted with fast-forward: a1 is now on main.
 	w.gerrit[1].Status = "MERGED"
 	w.onMain["a1"] = true
+	w.converge()
+	w.replicate()
 	w.converge()
 	w.checkBase(t, 2, "main")
 	if w.pr(1).State != "closed" {
@@ -731,5 +739,82 @@ func TestGitHubBornMessageOnlyEditPushesNothing(t *testing.T) {
 		if a.Kind == PushBranches {
 			t.Errorf("pushed for a message-only edit: %v", a)
 		}
+	}
+}
+
+// replicate pushes Gerrit's main to GitHub, applying GitHub's merge
+// detection: an open PR based on main whose head commit arrives is merged.
+func (w *world) replicate() {
+	for sha := range w.onMain {
+		w.onGitHubMain[sha] = true
+	}
+	for _, pr := range w.prs {
+		if pr.State == "open" && pr.Base.Ref == "main" && w.onGitHubMain[w.branch[pr.Head.Ref]] {
+			pr.State, pr.Merged = "closed", true
+		}
+	}
+}
+
+func TestSubmittedStackShowsMergedOnGitHub(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.upload(2, "b1", "a1")
+	w.upload(3, "c1", "b1")
+	w.converge()
+	// Gerrit submits the whole chain (fast-forward); the bridge hears
+	// before replication pushes.
+	for n := 1; n <= 3; n++ {
+		w.gerrit[n].Status = "MERGED"
+	}
+	w.onMain["a1"], w.onMain["b1"], w.onMain["c1"] = true, true, true
+	w.converge()
+	for n := 1; n <= 3; n++ {
+		if pr := w.pr(n); pr.State != "open" || pr.Base.Ref != "main" {
+			t.Errorf("change %d: PR %s based on %s; want open, retargeted to main", n, pr.State, pr.Base.Ref)
+		}
+		if _, ok := w.branch["gerrit/"+cid(n)]; !ok {
+			t.Errorf("change %d: head branch deleted while its PR is open", n)
+		}
+	}
+	w.replicate()
+	w.converge()
+	for n := 1; n <= 3; n++ {
+		if pr := w.pr(n); !pr.Merged {
+			t.Errorf("change %d: PR not merged on GitHub", n)
+		}
+		if _, ok := w.branch["gerrit/"+cid(n)]; ok {
+			t.Errorf("change %d: head branch left behind", n)
+		}
+	}
+}
+
+func TestReplicationFirstFallsBackToClose(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.upload(2, "b1", "a1")
+	w.converge()
+	w.gerrit[1].Status, w.gerrit[2].Status = "MERGED", "MERGED"
+	w.onMain["a1"], w.onMain["b1"] = true, true
+	w.replicate() // replication beat the bridge: PR 2 can't be retargeted now
+	w.converge()
+	if pr := w.pr(1); !pr.Merged {
+		t.Error("bottom PR not merged")
+	}
+	if pr := w.pr(2); pr.State != "closed" {
+		t.Errorf("PR 2 = %s; want closed with a notice", pr.State)
+	}
+}
+
+func TestRebasedSubmitCloses(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.converge()
+	// Submitted with rebase: Gerrit merged a different commit.
+	w.gerrit[1].Status = "MERGED"
+	w.gerrit[1].Revision = "a1-rebased"
+	w.onMain["a1-rebased"] = true
+	w.converge()
+	if pr := w.pr(1); pr.State != "closed" || pr.Merged {
+		t.Errorf("PR = %s merged=%v; want closed with a notice", pr.State, pr.Merged)
 	}
 }

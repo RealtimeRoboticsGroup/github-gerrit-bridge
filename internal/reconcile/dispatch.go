@@ -36,6 +36,14 @@ func (d *Dispatcher) Reconcile(ctx context.Context, k Key) error {
 			if err != nil || branch == "" {
 				return err
 			}
+			// Only branches Gerrit has: a PR stacked on some other
+			// GitHub branch is not the bridge's business.
+			if ok, err := d.Code.Gerrit.BranchExists(ctx, d.Code.Project, branch); err != nil || !ok {
+				if err == nil {
+					d.Logger.Debug("PR targets a branch Gerrit does not have; ignoring", "pr", pr, "branch", branch)
+				}
+				return err
+			}
 			return d.Code.Reconcile(ctx, Key{Branch: branch})
 		}
 		if k.PRComments != 0 {

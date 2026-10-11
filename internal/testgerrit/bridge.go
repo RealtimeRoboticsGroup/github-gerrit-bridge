@@ -469,6 +469,16 @@ func (s *Server) EnsureGitHubUser(ctx context.Context, u GitHubUser) (*User, err
 	return created, err
 }
 
+// SetPreferredEmail adds email to username (confirmed) and makes it the
+// preferred address.
+func (s *Server) SetPreferredEmail(ctx context.Context, username, email string) error {
+	if err := s.AddEmail(ctx, username, email); err != nil {
+		return err
+	}
+	escaped := strings.ReplaceAll(url.PathEscape(email), "+", "%2B")
+	return s.Admin.Do(ctx, http.MethodPut, "accounts/"+url.PathEscape(username)+"/emails/"+escaped+"/preferred", nil, nil)
+}
+
 // SetUpLoginUser finishes an account the github plugin created: adds it to
 // groups and, if passwordFile does not exist, generates an HTTP password
 // and writes it there. It reports false if the account does not exist yet.
