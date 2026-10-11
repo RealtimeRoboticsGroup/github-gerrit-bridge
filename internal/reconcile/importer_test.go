@@ -130,3 +130,24 @@ func TestRealParentIgnoresStaleMergeBase(t *testing.T) {
 		t.Error("expected restack-needed error")
 	}
 }
+
+func TestSquashKeepsSignOffs(t *testing.T) {
+	im, g := newImportEnv(t)
+	base := g.commit("a.txt", "base\n", "base")
+	c1 := g.commit("a.txt", "1\n", "one\n\nSigned-off-by: Austin <austin@example.com>")
+	c2 := g.commit("a.txt", "2\n", "two\n\nSigned-off-by: Bob <bob@example.com>\nSigned-off-by: Austin <austin@example.com>")
+	pr := &github.PullRequest{Title: "T", Body: "Body.\n\nSigned-off-by: Carol <carol@example.com>", HTMLURL: "u"}
+	s, err := im.squash(context.Background(), pr, []string{c2, c1}, c2, base, "I"+strings.Repeat("c", 40),
+		gerrit.AccountInfo{Name: "A", Email: "a@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := g.run("log", "-1", "--format=%B", s)
+	want := "T\n\nBody.\n\nSigned-off-by: Austin <austin@example.com>\nSigned-off-by: Bob <bob@example.com>\nSigned-off-by: Carol <carol@example.com>\nGitHub-PR: u\nChange-Id: I" + strings.Repeat("c", 40)
+	if msg != want {
+		t.Errorf("message:\n%s\nwant:\n%s", msg, want)
+	}
+	if im.lacksSignOff(context.Background(), s) || !im.lacksSignOff(context.Background(), base) {
+		t.Error("lacksSignOff wrong")
+	}
+}

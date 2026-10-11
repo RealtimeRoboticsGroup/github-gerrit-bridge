@@ -122,7 +122,11 @@ func pushChange(t *testing.T, u *testgerrit.User, file string) {
 	os.WriteFile(filepath.Join(dir, file), []byte(file+"\n"), 0o644)
 	run("add", file)
 	// A fixed Change-Id per file keeps the test independent of the hook.
-	run("commit", "-q", "-m", fmt.Sprintf("Add %s\n\nChange-Id: I%x", file, sha1.Sum([]byte(file))))
+	msg := fmt.Sprintf("Add %s\n\nChange-Id: I%x", file, sha1.Sum([]byte(file)))
+	if strings.HasPrefix(file, "signed") {
+		msg += "\nSigned-off-by: " + u.Username + " <" + u.Username + "@example.com>"
+	}
+	run("commit", "-q", "-m", msg)
 	run("push", "-q", srv.URL+"/a/"+project, "HEAD:refs/for/main")
 }
 
@@ -388,5 +392,36 @@ func TestWriteBridgeConfigParses(t *testing.T) {
 	}
 	if cfg.Gerrit.SSH.PeerKeyFile == "" || cfg.Identity.GitHubToGerrit["AustinSchuh"] != "alice" {
 		t.Errorf("config = %+v", cfg)
+	}
+}
+
+// TestAOSSubmitRequirements checks the project is set up like AOS: a commit
+// without Signed-off-by is held back by the Signed-off-by requirement.
+func TestAOSSubmitRequirements(t *testing.T) {
+	ctx := context.Background()
+	pushChange(t, env.Alice, "unsigned.txt")
+	pushChange(t, env.Alice, "signed.txt")
+	status := func(file string) map[string]string {
+		var cs []struct {
+			SRs []struct {
+				Name   string `json:"name"`
+				Status string `json:"status"`
+			} `json:"submit_requirements"`
+		}
+		q := fmt.Sprintf("changes/?q=change:I%x&o=SUBMIT_REQUIREMENTS", sha1.Sum([]byte(file)))
+		if err := srv.Admin.Do(ctx, "GET", q, nil, &cs); err != nil || len(cs) != 1 {
+			t.Fatalf("query %s: %v (%d)", file, err, len(cs))
+		}
+		m := map[string]string{}
+		for _, r := range cs[0].SRs {
+			m[r.Name] = r.Status
+		}
+		return m
+	}
+	if got := status("unsigned.txt"); got["Signed-off-by"] != "UNSATISFIED" || got["Verified"] != "UNSATISFIED" {
+		t.Errorf("unsigned change requirements = %v", got)
+	}
+	if got := status("signed.txt"); got["Signed-off-by"] != "SATISFIED" {
+		t.Errorf("signed change requirements = %v", got)
 	}
 }

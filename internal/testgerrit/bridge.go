@@ -227,6 +227,8 @@ func (s *Server) ConfigureProject(ctx context.Context, project string) error {
 		}},
 		// Imports from GitHub keep the real author (design §5.2).
 		"refs/*": map[string]any{"permissions": map[string]any{"forgeAuthor": allow(bridge)}},
+		// Administrators edit project.config by pushing it.
+		"refs/meta/config": map[string]any{"permissions": map[string]any{"push": allow(admins)}},
 		"refs/heads/*": map[string]any{"permissions": map[string]any{
 			"submit": allow("global:Registered-Users"),
 			"push":   map[string]any{"rules": map[string]any{admins: map[string]any{"action": "ALLOW", "force": true}}},
@@ -236,22 +238,42 @@ func (s *Server) ConfigureProject(ctx context.Context, project string) error {
 	if err := s.Admin.Do(ctx, http.MethodPost, "projects/"+url.PathEscape(project)+"/access", access, nil); err != nil {
 		return fmt.Errorf("access: %w", err)
 	}
-	// Label functions are gone in 3.14; submittability is a submit
-	// requirement.
-	verified := map[string]any{
-		"function": "NoBlock",
-		"values":   map[string]string{"-1": "Fails", " 0": "No score", "+1": "Verified"},
+	// The Verified label and submit requirements are AOS's
+	// (RealtimeRoboticsGroup/aos project.config, 2026-10-10), except the
+	// label function: AOS still has MaxWithBlock from before an upgrade,
+	// but 3.14 refuses to store it now. It changes nothing, because the
+	// explicit "Verified" submit requirement replaces the label function's
+	// check.
+	err = s.EditProjectConfig(ctx, project, "Configure like AOS", [][]string{
+		{"label.Verified.defaultValue", "0"},
+		{"--unset-all", "label.Verified.value"},
+		{"--add", "label.Verified.value", "-1 Fails"},
+		{"--add", "label.Verified.value", "0 No score"},
+		{"--add", "label.Verified.value", "+1 Verified"},
+		{"label.Verified.copyCondition", "changekind:NO_CHANGE"},
+		{"label.Verified.function", "NoBlock"},
+		{"receive.enableSignedPush", "true"},
+		{"submit-requirement.Verified.description", "At least one maximum vote for label 'Verified' is required"},
+		{"submit-requirement.Verified.submittableIf", "label:Verified=MAX,user=non_uploader AND -label:Verified=MIN"},
+		{"submit-requirement.Verified.canOverrideInChildProjects", "true"},
+		{"submit-requirement.Signed-off-by.description", "Commit message must include a Signed-off-by footer"},
+		{"submit-requirement.Signed-off-by.submittableIf", `message:"Signed-off-by"`},
+		{"submit-requirement.Signed-off-by.canOverrideInChildProjects", "false"},
+	})
+	if err != nil {
+		return fmt.Errorf("project.config: %w", err)
 	}
-	if err := s.Admin.Do(ctx, http.MethodPut, "projects/"+url.PathEscape(project)+"/labels/Verified", verified, nil); err != nil {
-		return fmt.Errorf("Verified label: %w", err)
+	// AOS lets Service Users (its CI accounts) vote Verified.
+	svc, err := s.groupID(ctx, "Service Users")
+	if err != nil {
+		return err
 	}
-	sr := map[string]any{
-		"name":                             "Verified",
-		"submittability_expression":        "label:Verified=MAX AND -label:Verified=MIN",
-		"allow_override_in_child_projects": false,
-	}
-	if err := s.Admin.Do(ctx, http.MethodPut, "projects/"+url.PathEscape(project)+"/submit_requirements/Verified", sr, nil); err != nil {
-		return fmt.Errorf("Verified submit requirement: %w", err)
+	vote := map[string]any{"add": map[string]any{"refs/heads/*": map[string]any{"permissions": map[string]any{
+		"label-Verified": map[string]any{"label": "Verified", "rules": map[string]any{
+			svc: map[string]any{"action": "ALLOW", "min": -1, "max": 1}}},
+	}}}}
+	if err := s.Admin.Do(ctx, http.MethodPost, "projects/"+url.PathEscape(project)+"/access", vote, nil); err != nil {
+		return fmt.Errorf("Verified access: %w", err)
 	}
 	return nil
 }
@@ -312,4 +334,77 @@ func (s *Server) MirrorProject(ctx context.Context, project, repoURL, token, bra
 		return err
 	}
 	return git(envG, "-c", cfgG[0], "push", "-q", s.URL+"/a/"+project, "refs/heads/"+branch+":refs/heads/"+branch)
+}
+
+// EditProjectConfig changes project.config on refs/meta/config the way an
+// administrator would: each edit is the arguments to
+// `git config -f project.config`. Unchanged configs are not pushed.
+func (s *Server) EditProjectConfig(ctx context.Context, project, message string, edits [][]string) error {
+	tmp, err := os.MkdirTemp(filepath.Dir(s.Site), "meta-config-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	helper, env := gitmirror.HTTPCredentials(s.URL, "admin", s.Admin.Password)
+	git := func(args ...string) error {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-c", helper[0]}, args...)...)
+		cmd.Dir = tmp
+		cmd.Env = append(append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0",
+			"GIT_AUTHOR_NAME=Administrator", "GIT_AUTHOR_EMAIL=admin@example.com",
+			"GIT_COMMITTER_NAME=Administrator", "GIT_COMMITTER_EMAIL=admin@example.com"), env...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %w: %s", args[0], err, out)
+		}
+		return nil
+	}
+	remote := s.URL + "/a/" + project
+	if err := git("init", "-q"); err != nil {
+		return err
+	}
+	if err := git("fetch", "-q", remote, "refs/meta/config"); err != nil {
+		return err
+	}
+	if err := git("checkout", "-q", "FETCH_HEAD"); err != nil {
+		return err
+	}
+	for _, e := range edits {
+		err := git(append([]string{"config", "-f", "project.config"}, e...)...)
+		if err != nil && !(len(e) > 0 && e[0] == "--unset-all") { // unsetting nothing is fine
+			return err
+		}
+	}
+	if err := git("diff", "--quiet"); err == nil {
+		return nil
+	}
+	if err := git("commit", "-q", "-am", message); err != nil {
+		return err
+	}
+	return git("push", "-q", remote, "HEAD:refs/meta/config")
+}
+
+// AddEmail gives username another (confirmed) email address, so commits
+// with it may be pushed as that user. Existing addresses are fine.
+func (s *Server) AddEmail(ctx context.Context, username, email string) error {
+	err := s.Admin.Do(ctx, http.MethodPut, "accounts/"+url.PathEscape(username)+"/emails/"+url.PathEscape(email),
+		map[string]any{"no_confirmation": true}, nil)
+	var ge *gerrit.Error
+	if errors.As(err, &ge) && ge.Status == http.StatusConflict {
+		return nil
+	}
+	return err
+}
+
+// ReindexOpenChanges recomputes the stored submit requirement results of
+// project's open changes, after its config changed.
+func (s *Server) ReindexOpenChanges(ctx context.Context, project string) error {
+	cs, err := s.Admin.QueryChanges(ctx, "project:"+gerrit.QueryString(project)+" status:open")
+	if err != nil {
+		return err
+	}
+	for _, c := range cs {
+		if err := s.Admin.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/index", c.Number), nil, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }

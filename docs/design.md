@@ -1047,6 +1047,13 @@ changes, so it must stay off for the bridged repo.
    - **Rule 1 for GitHub-born changes**: a patch set with the same tree
      and parent tree as the GitHub head (a message-only edit) is recorded
      as that head; nothing is pushed.
+   - **Signed-off-by.** Projects such as AOS require a `Signed-off-by`
+     footer (a `message:"Signed-off-by"` submit requirement). The squash
+     keeps every distinct sign-off from the layer's commits, oldest first,
+     plus any in the PR description, before the bridge's own trailers;
+     `gerrit/sync` notes when there is none. Sign-offs are trailers, so
+     they are not copied into the PR text when a Gerrit message edit is
+     mirrored back.
    Not yet: non-linear GitHub-born trees.
 6. **Submit from GitHub:** `/submit`, plus a merge-queue investigation.
    *Done* (§6.7). Fixed on the way: GitHub refuses to retarget a stacked

@@ -625,7 +625,9 @@ func sortedKeys[V any](m map[int]V) []int {
 }
 
 // bridgeTrailers are the trailers the bridge adds to imported commits.
-var bridgeTrailers = regexp.MustCompile(`(?m)^(Change-Id|GitHub-PR): .*$`)
+// Signed-off-by is a trailer too: the importer carries sign-offs from the
+// commits, so they are not part of the PR text.
+var bridgeTrailers = regexp.MustCompile(`(?m)^(Change-Id|GitHub-PR|Signed-off-by): .*$`)
 
 // prTextFromMessage is the PR title and body a commit message stands for:
 // the subject, and the rest without the bridge's trailers.

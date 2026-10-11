@@ -57,6 +57,25 @@ Log in as anyone with `http://127.0.0.1:18080/login/?user_name=<name>`.
 HTTP passwords and SSH keys are in `~/tmp/gerrit-test/bridge/`
 (`alice.http-password`, `alice_id_ed25519`, and the same for bob).
 
+## Project rules (like AOS)
+
+`bridge-scratch` uses AOS's `project.config` rules (copied 2026-10-10):
+
+- **Signed-off-by** submit requirement: the commit message must contain
+  `Signed-off-by`. Use `git commit -s`. For PRs opened on GitHub the bridge
+  keeps the sign-offs of the layer's commits (and any in the PR
+  description) when it squashes; `gerrit/sync` warns when there are none.
+- **Verified** submit requirement: a +1 from someone other than the
+  uploader, and no -1. Only Service Users (the CI account) may vote it,
+  and any new patch set resets it (`copyCondition = changekind:NO_CHANGE`).
+- Code-Review +2 (inherited from All-Projects).
+
+AOS's label function `MaxWithBlock` can no longer be stored by Gerrit
+3.14, so the test uses `NoBlock`; the explicit Verified submit requirement
+makes them behave the same.
+
+Your email is added to alice, so commits you make can be pushed as alice.
+
 ## Things to try
 
 Work in a clone that can talk to both sides:

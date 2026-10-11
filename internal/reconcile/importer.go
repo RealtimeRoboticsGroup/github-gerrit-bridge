@@ -69,6 +69,8 @@ type imported struct {
 	change, patchSet int
 	// bridgeOwned is set when the uploader could not be the user.
 	bridgeOwned bool
+	// noSignOff is set when the imported commit has no Signed-off-by.
+	noSignOff bool
 }
 
 // syncError is an import problem to show on the PR as gerrit/sync.
@@ -204,6 +206,9 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		if res.bridgeOwned {
 			desc += "; owned by the bridge (link your GitHub account to own it)"
 		}
+		if res.noSignOff {
+			desc += "; no Signed-off-by: use git commit -s if the project requires it"
+		}
 		im.setSync(ctx, l.pr, "success", desc, im.Gerrit.ChangeURL(im.Project, res.change))
 	}
 	return nil
@@ -301,6 +306,9 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		}
 		var err error
 		res.bridgeOwned, err = im.syncWIP(ctx, st.State.Change, pr)
+		if ge := res.heads[h]; ge != "" {
+			res.noSignOff = im.lacksSignOff(ctx, ge)
+		}
 		return res, err
 	}
 	if len(own) == 0 {
@@ -418,6 +426,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	}
 	res.heads[h] = s
 	res.change, res.patchSet, res.bridgeOwned = ch.Number, ps, user == ""
+	res.noSignOff = im.lacksSignOff(ctx, s)
 	if im.onImported != nil {
 		if err := im.onImported(ctx, ch.Number); err != nil {
 			im.Logger.Warn("post-import sync failed", "change", ch.Number, "err", err)
@@ -476,7 +485,28 @@ func (im *Importer) realParent(ctx context.Context, branch, h string, parentHead
 func prBodyForMessage(body string) string {
 	user, _ := splitBody(body)
 	user = changeIDTrailer.ReplaceAllString(user, "")
+	user = signedOffBy.ReplaceAllString(user, "")
 	return strings.TrimSpace(user)
+}
+
+// signedOffBy matches DCO sign-off trailers. Projects like AOS require one
+// (a Signed-off-by submit requirement), so a squash must keep them.
+var signedOffBy = regexp.MustCompile(`(?m)^Signed-off-by: .+$`)
+
+// signOffs collects the distinct Signed-off-by lines of texts, in order.
+func signOffs(texts ...string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, t := range texts {
+		for _, l := range signedOffBy.FindAllString(strings.ReplaceAll(t, "\r\n", "\n"), -1) {
+			l = strings.TrimSpace(l)
+			if !seen[l] {
+				seen[l] = true
+				out = append(out, l)
+			}
+		}
+	}
+	return out
 }
 
 // squash builds the deterministic commit for a layer (design §5.2), or
@@ -496,12 +526,28 @@ func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []st
 			return h, nil // no-op squash: identical SHAs on both sides
 		}
 	}
+	// Sign-offs from every commit in the layer (oldest first) and from the
+	// PR description are kept; the squashed commit represents them all.
+	texts := []string{}
+	for i := len(own) - 1; i >= 0; i-- {
+		m, err := im.Mirror.Git(ctx, nil, "log", "-1", "--format=%B", own[i])
+		if err != nil {
+			return "", err
+		}
+		texts = append(texts, string(m))
+	}
+	user, _ := splitBody(pr.Body)
+	texts = append(texts, user)
 	var msg strings.Builder
 	msg.WriteString(strings.TrimSpace(pr.Title))
 	if body := prBodyForMessage(pr.Body); body != "" {
 		msg.WriteString("\n\n" + body)
 	}
-	fmt.Fprintf(&msg, "\n\nGitHub-PR: %s\nChange-Id: %s\n", pr.HTMLURL, changeID)
+	msg.WriteString("\n\n")
+	for _, so := range signOffs(texts...) {
+		msg.WriteString(so + "\n")
+	}
+	fmt.Fprintf(&msg, "GitHub-PR: %s\nChange-Id: %s\n", pr.HTMLURL, changeID)
 	tree, err := im.Mirror.Git(ctx, nil, "rev-parse", h+"^{tree}")
 	if err != nil {
 		return "", err
@@ -648,4 +694,10 @@ func (im *Importer) syncWIP(ctx context.Context, n int, pr *github.PullRequest) 
 	}
 	im.Logger.Info("mirrored draft state to Gerrit", "change", n, "pr", pr.Number, "wip", pr.Draft)
 	return bridgeOwned, nil
+}
+
+// lacksSignOff reports whether commit's message has no Signed-off-by.
+func (im *Importer) lacksSignOff(ctx context.Context, commit string) bool {
+	m, err := im.Mirror.Git(ctx, nil, "log", "-1", "--format=%B", commit)
+	return err == nil && !signedOffBy.Match(m)
 }

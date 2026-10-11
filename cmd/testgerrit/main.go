@@ -50,6 +50,7 @@ func run() error {
 	replicate := flag.String("replicate_project", "", "Replicate this project's branches to the --github repo.")
 	tokenFile := flag.String("github_token_file", "", "GitHub token for replication (stored in etc/secure.config).")
 	ciUser := flag.String("ci_user", "", "Create this CI account (once), voting Verified on --replicate_project.")
+	aliceEmail := flag.String("alice_email", "", "Also give alice this email (yours), so your commits can be pushed as alice.")
 	identity := flag.String("identity", "AustinSchuh=alice", "GitHub login=Gerrit user pairs (comma separated) for the replicated project's bridge config.")
 	flag.Parse()
 
@@ -100,6 +101,11 @@ func run() error {
 		}
 		log.Printf("Bridge config for %s: %s", *replicate, pcfg)
 	}
+	if *aliceEmail != "" {
+		if err := s.AddEmail(ctx, "alice", *aliceEmail); err != nil {
+			return fmt.Errorf("alice's email: %w", err)
+		}
+	}
 	if *ciUser != "" {
 		if err := setupCI(ctx, s, filepath.Join(*site, "ci"), *replicate, *ciUser); err != nil {
 			return err
@@ -131,6 +137,12 @@ func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project
 		if err := s.MirrorProject(ctx, project, "https://github.com/"+repo+".git", tok, "main"); err != nil {
 			return "", err
 		}
+	} else if err := s.ConfigureProject(ctx, project); err != nil {
+		// Keep an existing site's config current (labels, requirements).
+		return "", err
+	} else if err := s.ReindexOpenChanges(ctx, project); err != nil {
+		// Submit requirement results are stored in the index.
+		return "", err
 	}
 	if err := s.GrantRunAs(ctx); err != nil {
 		return "", err

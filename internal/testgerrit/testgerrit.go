@@ -445,18 +445,7 @@ func (s *Server) SetupCI(ctx context.Context, project, username string) (*User, 
 	if err != nil {
 		return nil, err
 	}
-	var ci struct {
-		ID string `json:"id"`
-	}
-	if err := s.Admin.Do(ctx, http.MethodGet, "groups/CI", nil, &ci); err != nil {
-		return nil, err
-	}
-	access := map[string]any{"add": map[string]any{"refs/heads/*": map[string]any{"permissions": map[string]any{
-		"label-Verified": map[string]any{"label": "Verified", "rules": map[string]any{
-			ci.ID: map[string]any{"action": "ALLOW", "min": -1, "max": 1}}},
-	}}}}
-	if err := s.Admin.Do(ctx, http.MethodPost, "projects/"+url.PathEscape(project)+"/access", access, nil); err != nil {
-		return nil, err
-	}
+	// Voting Verified comes from Service Users (ConfigureProject), as on
+	// AOS; the CI group just names the account's role.
 	return u, nil
 }
