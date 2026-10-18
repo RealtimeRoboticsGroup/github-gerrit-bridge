@@ -122,7 +122,7 @@ func planSnapshot(s *Snapshot) *Snapshot {
 	s.GitHubBranches = map[string]string{}
 	s.OnBranch = map[string]bool{}
 	s.OnGitHubBranch = map[string]bool{}
-	s.SameTree, s.HasParent, s.AppendOK, s.NoPush = map[int]string{}, map[int]bool{}, map[int]bool{}, map[int]bool{}
+	s.SameTree, s.HasParent, s.NoPush = map[int]string{}, map[int]bool{}, map[int]bool{}
 	for n, c := range s.Changes {
 		c.Revision, c.Parent, c.PatchSet = "r"+c.ChangeID, "m0", 1
 		s.GitHubBranches[s.head(n, c.ChangeID)] = c.Revision
@@ -489,5 +489,38 @@ func TestPrepareSubmitSwapsGitHubBornBranch(t *testing.T) {
 	s.save(ctx, store, 1, st)
 	if err := c.PrepareSubmit(ctx, 1); err != nil {
 		t.Errorf("PrepareSubmit with a locked fork: %v", err)
+	}
+}
+
+// The same history check for a GitHub-born PR from a fork: its head is
+// fetched from the base repository's refs/pull.
+func TestObserveHistoryForkPR(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	m1 := s.commit(m0, "a.txt", "a\nmore\n", "main moves")
+	h1 := s.commit(m0, "one.txt", "1\n", "the author's commit")
+	s.push("gerrit.git", m1, "refs/heads/main")
+	s.push("github.git", h1, "refs/pull/10/head")
+	env, _ := c.githubEnv(ctx)
+	for _, tc := range []struct {
+		name, parent string
+		hasParent    bool
+	}{{"edit in Gerrit", m0, true}, {"rebase in Gerrit", m1, false}} {
+		rev := s.commit(tc.parent, "one.txt", "1b\n", "One")
+		s.push("gerrit.git", rev, "refs/changes/01/1/9")
+		s.git("m.git", "fetch", "-q", "origin", "+refs/changes/01/1/9:refs/changes/01/1/9")
+		snap := &Snapshot{Branch: "main", DefaultBranch: "main",
+			Changes:        map[int]*GerritChange{1: {Number: 1, ChangeID: cid(1), Status: "NEW", Revision: rev, Parent: tc.parent}},
+			GitHubBranches: map[string]string{"alice/r:main": h1}, SameTree: map[int]string{},
+			State: map[int]*state.Change{1: {State: state.ChangeState{Origin: "github", PR: 10, HeadBranch: "alice/r:main"},
+				Revisions: []state.Revision{{PatchSet: 1, GerritSHA: "s1", GitHubSHA: h1}}}}}
+		if err := c.observeHistory(ctx, snap, env); err != nil {
+			t.Fatal(err)
+		}
+		if snap.HasParent[1] != tc.hasParent {
+			t.Errorf("%s: HasParent = %v", tc.name, snap.HasParent[1])
+		}
 	}
 }

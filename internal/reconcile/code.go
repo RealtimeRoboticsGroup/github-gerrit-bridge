@@ -271,11 +271,10 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 		}
 	}
 	// GitHub-born changes live on the user's branch: take its head from
-	// the PR, and check whether a Gerrit edit can be appended to it.
-	s.AppendOK = map[int]bool{}
+	// the PR.
 	s.SameTree = map[int]string{}
 	s.NoPush = map[int]bool{}
-	for n, ch := range s.Changes {
+	for n := range s.Changes {
 		st := s.State[n]
 		if !s.githubBorn(n) || st.State.PR == 0 || s.PRs[st.State.PR] == nil {
 			continue
@@ -291,15 +290,6 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 				return nil, err
 			}
 			s.NoPush[n] = !full.MaintainerCanModify
-		}
-		for _, r := range st.Revisions {
-			if r.GitHubSHA == pr.Head.SHA && r.GerritSHA != ch.Revision {
-				tree, parentTree := c.trees(ctx, ch.Revision)
-				s.AppendOK[n] = parentTree != "" && parentTree == r.ParentTree
-				if s.AppendOK[n] && tree == r.Tree {
-					s.SameTree[n] = pr.Head.SHA
-				}
-			}
 		}
 	}
 
@@ -326,16 +316,16 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 	return s, nil
 }
 
-// observeHistory fills in HasParent and SameTree for Gerrit-born changes
-// whose GitHub head stands for an older patch set: a new patch set goes on
-// top of that history (design §5.2.1).
+// observeHistory fills in HasParent and SameTree for changes whose GitHub
+// head stands for an older patch set: a new patch set goes on top of that
+// history (design §5.2.1).
 func (c *Code) observeHistory(ctx context.Context, s *Snapshot, env []string) error {
 	s.HasParent = map[int]bool{}
 	var todo []int
 	for _, n := range sortedKeys(s.Changes) {
 		ch := s.Changes[n]
 		gh, ok := s.GitHubBranches[s.head(n, ch.ChangeID)]
-		if s.githubBorn(n) || ch.Status != "NEW" || ch.Private || !ok || gh == ch.Revision {
+		if ch.Status != "NEW" || ch.Private || !ok || gh == ch.Revision {
 			continue
 		}
 		if _, known := s.githubFor(n)[gh]; known {
@@ -350,6 +340,12 @@ func (c *Code) observeHistory(ctx context.Context, s *Snapshot, env []string) er
 	var specs []string
 	for _, n := range todo {
 		head := s.head(n, s.Changes[n].ChangeID)
+		if _, _, fork := github.SplitHeadKey(head); fork {
+			// GitHub keeps every PR's head in the base repository.
+			pr := s.State[n].State.PR
+			specs = append(specs, fmt.Sprintf("+refs/pull/%d/head:refs/remotes/github/pull/%d", pr, pr))
+			continue
+		}
 		specs = append(specs, "+refs/heads/"+head+":refs/remotes/github/heads/"+head)
 	}
 	if _, err := c.Mirror.GitEnv(ctx, env, nil, append([]string{"fetch", "--quiet", c.GitHubURL}, specs...)...); err != nil {
@@ -764,17 +760,7 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan) error {
 			}
 			// Commits the bridge built (imports, appends, re-parented
 			// exports) are recorded where they are made, with both SHAs.
-			known := false
-			for _, r := range st.Revisions {
-				known = known || r.GerritSHA == ch.Revision
-			}
-			if gh := s.SameTree[n]; st.State.Origin == "github" && !known && gh != "" {
-				// Same revision as the GitHub head (rule 1).
-				st.Revisions = append(st.Revisions, state.Revision{PatchSet: ch.PatchSet, GerritSHA: ch.Revision,
-					GitHubSHA: gh, Tree: tree, ParentTree: parentTree})
-				newRevision[n] = true
-			}
-			if gh := s.bridgeHead(n, d.Head); st.State.Origin != "github" && gh != "" &&
+			if gh := s.bridgeHead(n, d.Head); gh != "" &&
 				!slices.ContainsFunc(st.Revisions, func(r state.Revision) bool { return r.GerritSHA == ch.Revision && r.GitHubSHA == gh }) {
 				newRevision[n] = true
 				st.Revisions = append(st.Revisions, state.Revision{

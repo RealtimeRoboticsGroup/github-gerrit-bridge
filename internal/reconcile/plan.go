@@ -47,19 +47,15 @@ type Snapshot struct {
 	// OnGitHubBranch is true for merged revisions already on GitHub's copy
 	// of the target branch (replication has pushed them).
 	OnGitHubBranch map[string]bool
-	// AppendOK marks GitHub-born changes whose current patch set has the
-	// same parent tree as the one last synced to GitHub, so a Gerrit edit
-	// can be appended to the user's branch as a fast-forward (design §5.2).
-	AppendOK map[int]bool
 	// SameTree maps a change to its GitHub head when that head has the
 	// current patch set's tree and stands on the same parent: rule 1 says
 	// they are the same revision (e.g. a commit-message edit in Gerrit), so
 	// nothing is pushed.
 	SameTree map[int]string
-	// HasParent marks Gerrit-born changes whose GitHub head already
-	// contains the GitHub commit of the current patch set's parent, so a
-	// new patch set goes on top as a plain commit; otherwise (rebased in
-	// Gerrit) it is a merge of the new parent.
+	// HasParent marks changes whose GitHub head already contains the
+	// GitHub commit of the current patch set's parent, so a new patch set
+	// goes on top as a plain commit; otherwise (rebased in Gerrit) it is a
+	// merge of the new parent.
 	HasParent map[int]bool
 	// Repo is the GitHub repository, owner/name.
 	Repo string
@@ -109,7 +105,7 @@ func (s *Snapshot) githubFor(n int) map[string]string {
 	m := map[string]string{}
 	if st := s.State[n]; st != nil {
 		for _, r := range st.Revisions {
-			if _, ok := m[r.GerritSHA]; !ok && !s.githubBorn(n) {
+			if _, ok := m[r.GerritSHA]; !ok {
 				m[r.GerritSHA] = r.GerritSHA
 			}
 		}
@@ -120,8 +116,8 @@ func (s *Snapshot) githubFor(n int) map[string]string {
 	return m
 }
 
-// bridgeHead is the GitHub head of Gerrit-born change n, on branch head,
-// if it stands for the current patch set: Gerrit's commit itself (a first
+// bridgeHead is the GitHub head of change n, on branch head, if it stands
+// for the current patch set: Gerrit's commit itself (a first
 // export) or one with its tree and parent (rule 1). Any other head the
 // bridge did not record is someone's push, which only the importer may
 // map to a patch set (design §5.2.2).
@@ -335,43 +331,37 @@ func MakePlan(s *Snapshot) *Plan {
 		ghParent := s.ghCommit(c.Parent)
 		gh, onGitHub := s.GitHubBranches[d.Head]
 		synced := s.githubFor(n)
+		// One rule wherever the change started (design §5.2.1, §5.2.2);
+		// only whose branch it is differs: the bridge's gerrit/<Change-Id>,
+		// which it creates, or the author's, which it may only add to.
 		switch ge, known := synced[gh]; {
 		case onGitHub && known && ge == c.Revision:
 			// Rule 1: GitHub already has this revision.
 		case onGitHub && known && s.SameTree[n] == gh:
-			// Rule 1: same tree and parent tree; record, don't push.
-		case !born && known:
-			// A new patch set goes on top of the PR's history (design
-			// §5.2.1), so GitHub keeps every patch set: reviewers see what
-			// changed since they last looked, and comments stay on the
-			// commits they were written against. A rebase becomes a merge
-			// of the new parent.
-			ap := Append{Change: n, PatchSet: c.PatchSet, Revision: c.Revision, Onto: gh, Lease: gh}
-			if !s.HasParent[n] {
-				ap.Merge = ghParent
-			}
-			appends[d.Head] = ap
-		case !born && onGitHub:
+			// Rule 1: same tree and parent; record, don't push.
+		case onGitHub && !known:
 			// Someone pushed to the PR's branch: the importer turns that
-			// into a patch set (design §5.2.2), or says on gerrit/sync why
-			// it cannot. Never overwrite their work.
-		case !born && ghParent == c.Parent:
+			// into a patch set, or says on gerrit/sync why it cannot.
+			// Never overwrite their work.
+		case !onGitHub && born:
+			// The author's branch is gone (or not listed): nothing to add to.
+		case !onGitHub && ghParent == c.Parent:
 			// First export: Gerrit's commit itself.
 			refs[d.Head] = c.Revision
-		case !born:
+		case !onGitHub:
+			// First export onto a GitHub-born parent's GitHub commit.
 			appends[d.Head] = Append{Change: n, PatchSet: c.PatchSet, Revision: c.Revision, Onto: ghParent,
 				Lease: gh, KeepMessage: true}
-		case !onGitHub || !known:
-			// The user pushed something not imported yet (or not
-			// importable): never overwrite their work.
 		case s.NoPush[n]:
 			// A fork that does not allow maintainer edits.
 		default:
-			// A Gerrit edit goes on top of the user's branch, so their
-			// history and `git pull` keep working; a rebase in Gerrit is a
-			// merge of the new parent, as for Gerrit-born changes.
+			// A new patch set goes on top of the PR's history, so GitHub
+			// keeps every patch set: reviewers see what changed since they
+			// last looked, comments stay on the commits they were written
+			// against, and the author's `git pull` fast-forwards. A rebase
+			// is a merge of the new parent.
 			ap := Append{Change: n, PatchSet: c.PatchSet, Revision: c.Revision, Onto: gh, Lease: gh}
-			if !s.AppendOK[n] {
+			if !s.HasParent[n] {
 				ap.Merge = ghParent
 			}
 			appends[d.Head] = ap

@@ -14,14 +14,13 @@ import (
 // world is an in-memory GitHub plus Gerrit, enough to run plans to a fixed
 // point. It enforces the GitHub rules the planner must respect.
 type world struct {
-	t        *testing.T
-	gerrit   map[int]*GerritChange
-	branch   map[string]string // all GitHub branches
-	prs      map[int]*github.PullRequest
-	stacks   map[int]*github.Stack
-	state    map[int]*state.Change
-	onMain   map[string]bool
-	appendOK map[int]bool
+	t      *testing.T
+	gerrit map[int]*GerritChange
+	branch map[string]string // all GitHub branches
+	prs    map[int]*github.PullRequest
+	stacks map[int]*github.Stack
+	state  map[int]*state.Change
+	onMain map[string]bool
 	// onGitHubMain is what replication has pushed to GitHub's main.
 	onGitHubMain map[string]bool
 	// parents is the commit graph, for HasParent.
@@ -34,7 +33,7 @@ func newWorld(t *testing.T) *world {
 	return &world{
 		t: t, gerrit: map[int]*GerritChange{}, branch: map[string]string{"main": "m0"},
 		prs: map[int]*github.PullRequest{}, stacks: map[int]*github.Stack{}, state: map[int]*state.Change{},
-		onMain: map[string]bool{"m0": true}, appendOK: map[int]bool{}, onGitHubMain: map[string]bool{}, nextNum: 1,
+		onMain: map[string]bool{"m0": true}, onGitHubMain: map[string]bool{}, nextNum: 1,
 		parents: map[string][]string{},
 	}
 }
@@ -77,13 +76,11 @@ func (w *world) snapshot() *Snapshot {
 			s.GitHubBranches[b] = sha
 		}
 	}
-	s.AppendOK = map[int]bool{}
 	s.SameTree = map[int]string{}
 	s.HasParent = map[int]bool{}
 	for n, st := range w.state {
 		if st.State.Origin == "github" {
 			s.GitHubBranches[st.State.HeadBranch] = w.branch[st.State.HeadBranch]
-			s.AppendOK[n] = w.appendOK[n]
 			if pr := w.prs[st.State.PR]; isForkHead(st.State.HeadBranch) && pr != nil && !pr.MaintainerCanModify {
 				s.NoPush[n] = true
 			}
@@ -126,7 +123,7 @@ func (w *world) snapshot() *Snapshot {
 		s.State[n] = &cp
 	}
 	for n, c := range s.Changes {
-		if gh, ok := s.GitHubBranches[s.head(n, c.ChangeID)]; ok && !s.githubBorn(n) {
+		if gh, ok := s.GitHubBranches[s.head(n, c.ChangeID)]; ok {
 			s.HasParent[n] = w.isAncestor(s.ghCommit(c.Parent), gh)
 		}
 	}
@@ -696,6 +693,7 @@ func bornWorld(t *testing.T) *world {
 	w := newWorld(t)
 	w.upload(1, "s1", "m0")
 	w.branch["feature"] = "h1"
+	w.parents["h1"] = []string{"m0"} // the author's commit, which Gerrit squashed as s1
 	w.prs[1] = &github.PullRequest{Number: 1, State: "open", Title: "User title", Body: "User body.",
 		Head: github.Ref{Ref: "feature"}, Base: github.Ref{Ref: "main"}}
 	w.nextNum = 2
@@ -726,7 +724,6 @@ func TestGitHubBornGerritEditAppends(t *testing.T) {
 	w := bornWorld(t)
 	w.converge()
 	w.upload(1, "s2", "m0") // edited in Gerrit, same parent
-	w.appendOK[1] = true
 	w.converge()
 	if got := w.branch["feature"]; got != "append(h1,s2)" {
 		t.Errorf("feature = %s, want a commit appended on h1", got)
@@ -735,7 +732,6 @@ func TestGitHubBornGerritEditAppends(t *testing.T) {
 	// of the user's branch (it used to be force-pushed).
 	w.upload(1, "s3", "m1")
 	w.onMain["m1"] = true
-	w.appendOK[1] = false
 	w.converge()
 	if got := w.branch["feature"]; got != "merge(append(h1,s2),m1,s3)" {
 		t.Errorf("feature = %s, want a merge of m1 on top of the user's branch", got)
@@ -811,7 +807,6 @@ func TestForkPR(t *testing.T) {
 	}
 	// Edited in Gerrit: appended to the fork's branch, never to main.
 	w.upload(1, "s2", "m0")
-	w.appendOK[1] = true
 	w.converge()
 	if w.branch["main"] != "m0" {
 		t.Errorf("main = %s: a Gerrit edit of a fork PR went to the repository's main", w.branch["main"])
@@ -836,7 +831,6 @@ func TestForkPRWithoutMaintainerEdits(t *testing.T) {
 	w := forkWorld(t, false)
 	w.converge()
 	w.upload(1, "s2", "m0")
-	w.appendOK[1] = true
 	w.converge()
 	if w.branch["alice/r:main"] != "h1" || w.branch["main"] != "m0" {
 		t.Errorf("pushed although the fork does not allow it: fork=%s main=%s", w.branch["alice/r:main"], w.branch["main"])
@@ -979,7 +973,9 @@ func TestRebasedSubmitAfterReplicationCloses(t *testing.T) {
 	if pr := w.pr(1); pr.State != "closed" || pr.Merged {
 		t.Errorf("PR = %s merged=%v; want closed with a notice", pr.State, pr.Merged)
 	}
-	if !slices.ContainsFunc(w.log, func(l string) bool { return strings.HasSuffix(l, ": Merged in Gerrit as [change 1](https://g/c/p/+/1).") }) {
+	if !slices.ContainsFunc(w.log, func(l string) bool {
+		return strings.HasSuffix(l, ": Merged in Gerrit as [change 1](https://g/c/p/+/1).")
+	}) {
 		t.Errorf("no merged notice:\n%s", strings.Join(w.log, "\n"))
 	}
 }
