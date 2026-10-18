@@ -72,7 +72,7 @@ func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note
 		line := fmt.Sprintf("[change %d, patch set %d](%s/%d)", e.Change, e.PatchSet, e.URL, e.PatchSet)
 		switch {
 		case e.PR != 0:
-			line += fmt.Sprintf(" #%d", e.PR)
+			line += fmt.Sprintf(" (#%d)", e.PR)
 		case !e.This:
 			line += " (no PR yet)"
 		}
