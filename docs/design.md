@@ -867,7 +867,14 @@ mirrored are checked, and only for reviewers with a Gerrit account.
   A PR's head branch is never deleted while the PR is open (that would
   close it unmerged). Verified with `tools/testenv/rehearsal.sh`.
 - **GitHub merge button**: branch protection lets only the bridge App push
-  to `main`, so a GitHub merge cannot happen directly. Instead:
+  to `main`, so a GitHub merge cannot happen directly. Without it, anyone
+  with write access could merge on GitHub; Gerrit would never see it, and
+  replication (`force`) would then erase it from `main` while the PR stays
+  "merged". The test instance does it with a ruleset on `main` (no updates,
+  force pushes or deletion; `gerrit/submittable` required) that only
+  replication's deploy key bypasses (`docs/test-instance.md`). For AOS
+  (an organization's public repo) the same ruleset can name the
+  replication account or App as its only bypass. Instead:
   - A required check `gerrit/submittable` reports Gerrit's submit
     requirements, so GitHub's merge box reflects whether Gerrit would allow
     the submit.

@@ -50,6 +50,9 @@ func run() error {
 	listen := flag.String("bridge_listen", "127.0.0.1:18081", "Listen address for the generated bridge config.")
 	replicate := flag.String("replicate_project", "", "Replicate this project's branches to the --github repo.")
 	tokenFile := flag.String("github_token_file", "", "GitHub token for replication (stored in etc/secure.config).")
+	deployKey := flag.String("github_deploy_key_file", "", "Replicate over SSH with this private key (a GitHub deploy key with write access) instead of the token, "+
+		"so a ruleset can let only it update main.")
+	knownHosts := flag.String("github_known_hosts_file", "", "github.com host keys for --github_deploy_key_file (known_hosts format).")
 	buildkiteURL := flag.String("buildkite_url", "", "CI's (fake) Buildkite API: the replicated project's bridge reads builds from it and "+
 		"serves Gerrit's Checks tab, through plugins/bridge-checks.js.")
 	ciUser := flag.String("ci_user", "", "Create this CI account (once), voting Verified on --replicate_project.")
@@ -87,6 +90,14 @@ func run() error {
 		opts.Replicate = &testgerrit.Replication{
 			Name: "github", URL: "https://github.com/" + *github + ".git",
 			Projects: []string{*replicate}, User: "x-access-token", Password: tok,
+		}
+		if *deployKey != "" {
+			hosts, err := os.ReadFile(*knownHosts)
+			if err != nil {
+				return fmt.Errorf("--github_known_hosts_file: %w", err)
+			}
+			opts.Replicate.URL = "git@github.com:" + *github + ".git"
+			opts.Replicate.SSHKey, opts.Replicate.KnownHosts = *deployKey, string(hosts)
 		}
 	}
 	s, err := testgerrit.Start(ctx, opts)

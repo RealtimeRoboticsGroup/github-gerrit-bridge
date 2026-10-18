@@ -32,6 +32,27 @@ done
 umask 077
 # Replication pushes as the bot, like a production replication account.
 "${GH}" auth token --user "${BOT}" > "${TE}/github-token"
+# Replication pushes main with a deploy key: the repository's ruleset lets
+# only deploy keys update main (as production lets only the bridge), so
+# nobody can merge on GitHub behind Gerrit's back.
+KEY="${TE}/replication-deploy-key"
+[[ -f "${KEY}" ]] || ssh-keygen -q -t ed25519 -N '' -C "bridge-test replication" -f "${KEY}"
+if ! "${GH}" api "repos/${REPO}/keys" --jq '.[].key' | grep -qF "$(cut -d' ' -f1-2 "${KEY}.pub")"; then
+  "${GH}" api "repos/${REPO}/keys" -f title="Gerrit replication (bridge test)" -f key="$(cat "${KEY}.pub")" -F read_only=false --silent
+fi
+"${GH}" api meta --jq '.ssh_keys[] | "github.com " + .' > "${TE}/github-known-hosts"
+RULESET='{"name":"main belongs to Gerrit","target":"branch","enforcement":"active",
+  "conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},
+  "bypass_actors":[{"actor_type":"DeployKey","bypass_mode":"always"}],
+  "rules":[{"type":"update"},{"type":"deletion"},{"type":"non_fast_forward"},
+    {"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,
+      "required_status_checks":[{"context":"gerrit/submittable"}]}}]}'
+RID="$("${GH}" api "repos/${REPO}/rulesets" --jq '.[] | select(.name == "main belongs to Gerrit") | .id')"
+if [[ -n "${RID}" ]]; then
+  "${GH}" api -X PUT "repos/${REPO}/rulesets/${RID}" --input - --silent <<<"${RULESET}"
+else
+  "${GH}" api "repos/${REPO}/rulesets" --input - --silent <<<"${RULESET}"
+fi
 SECOND_EMAIL="$("${GH}" api "users/${SECOND}" --jq '"\(.id)+\(.login)@users.noreply.github.com"')"
 # The second account's own address, if any (becomes its preferred email).
 [[ -n "${SECOND_EMAIL_PREFERRED:-}" ]] && SECOND_EMAIL="${SECOND_EMAIL}|${SECOND_EMAIL_PREFERRED}"
@@ -56,7 +77,7 @@ UNIT
 }
 
 unit bridge-test-gerrit "Bridge test instance: Gerrit" \
-  "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --ci_user buildkite --buildkite_url http://127.0.0.1:18090 --github ${REPO} --github_bot ${BOT} --base_path /gerrit --github_login_jars ${HOME}/tmp/github-plugin --github_oauth_file ${TE}/github-oauth --github_webhook_user AustinSchuh --github_login_users AustinSchuh|trusted|admin|$(git -C "${WS}" config user.email),${SECOND}|${SECOND_EMAIL}" \
+  "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --github_deploy_key_file ${KEY} --github_known_hosts_file ${TE}/github-known-hosts --ci_user buildkite --buildkite_url http://127.0.0.1:18090 --github ${REPO} --github_bot ${BOT} --base_path /gerrit --github_login_jars ${HOME}/tmp/github-plugin --github_oauth_file ${TE}/github-oauth --github_webhook_user AustinSchuh --github_login_users AustinSchuh|trusted|admin|$(git -C "${WS}" config user.email),${SECOND}|${SECOND_EMAIL}" \
   "" "TimeoutStopSec=60"
 unit bridge-test-buildkite "Bridge test instance: fake Buildkite" \
   "${TE}/bin/fakebuildkite --duration 20s --gerrit_url http://127.0.0.1:18080/gerrit" "" ""

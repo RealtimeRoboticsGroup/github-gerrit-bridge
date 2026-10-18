@@ -74,6 +74,11 @@ type Replication struct {
 	Projects []string // projects to replicate
 	User     string   // HTTP user, e.g. x-access-token
 	Password string   // HTTP password or token; stored in etc/secure.config
+	// SSHKey, if set, is a private key file to push over SSH with instead
+	// (a GitHub deploy key, which a ruleset can let update protected
+	// branches), and KnownHosts the remote's host keys. URL must then be
+	// an SSH URL.
+	SSHKey, KnownHosts string
 }
 
 // Server is a running Gerrit.
@@ -164,7 +169,7 @@ func Start(ctx context.Context, o Options) (*Server, error) {
 	}
 
 	if o.Replicate != nil {
-		if err := installReplication(o.War, o.Site, o.Replicate); err != nil {
+		if err := installReplication(o.War, o.Site, home, o.Replicate); err != nil {
 			return nil, fmt.Errorf("replication: %w", err)
 		}
 	}
@@ -528,7 +533,7 @@ func installWarPlugins(war, site string, names ...string) error {
 	return nil
 }
 
-func installReplication(war, site string, r *Replication) error {
+func installReplication(war, site, home string, r *Replication) error {
 	// replication-api is the API plugin (Gerrit 3.9+) other plugins, such
 	// as the github plugin, bind to.
 	if err := installWarPlugins(war, site, "replication.jar", "replication-api.jar"); err != nil {
@@ -573,6 +578,23 @@ func installReplication(war, site string, r *Replication) error {
 		return err
 	}
 	secure := filepath.Join(site, "etc", "secure.config")
+	if r.SSHKey != "" {
+		// Gerrit's SSH client (JGit) reads the key and host keys from
+		// $HOME/.ssh, and the remote needs no password.
+		exec.Command("git", "config", "-f", secure, "--remove-section", "remote."+r.Name).Run()
+		key, err := os.ReadFile(r.SSHKey)
+		if err != nil {
+			return err
+		}
+		dir := filepath.Join(home, ".ssh")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "id_ed25519"), key, 0o600); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "known_hosts"), []byte(r.KnownHosts), 0o644)
+	}
 	if err := set(secure, rem+"username", r.User, rem+"password", r.Password); err != nil {
 		return err
 	}

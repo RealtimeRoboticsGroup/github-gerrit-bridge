@@ -6,14 +6,14 @@ by hand before it goes near the real Gerrit:
 | Piece | Where | Real or stand-in |
 |---|---|---|
 | Gerrit 3.14.4 | `http://127.0.0.1:18080/gerrit/`, ssh `127.0.0.1:29418`, site `~/tmp/gerrit-test` | real, with AOS's github plugin build and settings: you log in with GitHub |
-| Replication | Gerrit's bundled plugin → `github.com/AustinSchuh/bridge-scratch`, configured like AOS's (default 15s `replicationDelay`, `rescheduleDelay = 15`, heads and tags, `force`) | real |
+| Replication | Gerrit's bundled plugin → `github.com/AustinSchuh/bridge-scratch`, configured like AOS's (default 15s `replicationDelay`, `rescheduleDelay = 15`, heads and tags, `force`), pushing over SSH with a deploy key | real |
 | Other plugins | the rest of AOS's `plugins/` (all bundled in the war): codemirror-editor, commit-message-length-validator, delete-project, download-commands, gitiles, hooks, plugin-manager, reviewnotes, singleusergroup, webhooks | real |
 | CI | your `gerrit-buildkite` (`~/tmp/gerrit-buildkite`, plus a local `-api_url` patch) | real |
 | Buildkite | `cmd/fakebuildkite` on `http://127.0.0.1:18090`: builds with two jobs, Build and Test, and the builds-by-commit API the bridge reads | stand-in |
 | Checks tab | `plugins/bridge-checks.js`, fetching from the bridge's `/checks` | real |
 | The bridge | `cmd/bridge`, config `~/tmp/gerrit-test/bridge/bridge-scratch.yaml` | real |
 | GitHub webhooks | `gh webhook forward` → `127.0.0.1:18081/webhook` | real (needs `admin:repo_hook`) |
-| GitHub | `AustinSchuh/bridge-scratch` | real |
+| GitHub | `AustinSchuh/bridge-scratch` (public, so rulesets work on a free account) | real |
 
 Everything listens on 127.0.0.1 only. From your desktop, tunnel the web
 UIs:
@@ -49,6 +49,17 @@ journalctl is not used: logs are in ~/tmp/bridge-test/logs/<service>.log
 
 Gerrit's own logs are in `~/tmp/gerrit-test/logs/` (`replication_log`,
 `sshd_log`, `error_log`).
+
+## GitHub's `main` belongs to Gerrit
+
+The repository's ruleset "main belongs to Gerrit" blocks updates, force
+pushes and deletion of `main`, and requires `gerrit/submittable`, for
+everyone, admins included. Only deploy keys bypass it, and the only one is
+replication's (`~/tmp/bridge-test/replication-deploy-key`, copied to
+`~/tmp/gerrit-test.home/.ssh/`). So the merge button is blocked, and code
+lands only through Gerrit (`/submit`, or a submit in Gerrit), as in
+production. `install.sh` creates the key, registers it and (re)applies the
+ruleset.
 
 ## GitHub accounts
 
