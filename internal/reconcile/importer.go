@@ -314,9 +314,10 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			return nil, err
 		}
 	}
-	// A push to a Gerrit-born change's PR: the change, its commit message
-	// and its draft state stay Gerrit's; the push is a new patch set.
-	gerritBorn := st != nil && st.State.Origin == "gerrit"
+	// A push to an existing change's PR, wherever the change started, is a
+	// new patch set: the change keeps its commit message, owner and WIP
+	// state, which PR edits reach separately (Code.mirrorPREdits).
+	later := st != nil
 
 	// The layer's real parent (design §5.2 step 1).
 	var parentHeads map[string]string
@@ -345,47 +346,31 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			res.heads[gh] = ge
 		}
 	}
-	importHash := prTextHash(pr)
-	if gerritBorn && res.heads[h] != "" {
+	if later && res.heads[h] != "" {
+		// Already imported.
 		res.change = st.State.Change
 		for _, r := range st.Revisions {
 			if r.GitHubSHA == h {
 				res.patchSet = r.PatchSet
+			}
+		}
+		res.noSignOff = im.lacksSignOff(ctx, res.heads[h])
+		ci, err := im.Gerrit.GetChange(ctx, res.change, "CURRENT_REVISION", "DETAILED_ACCOUNTS")
+		if err != nil {
+			return nil, err
+		}
+		res.bridgeOwned = ci.Owner.AccountID == im.Bridge.AccountID
+		if _, _, fork := github.SplitHeadKey(pr.HeadKey(im.GitHub.Owner + "/" + im.GitHub.Repo)); fork {
+			// Listed PRs lack maintainer_can_modify.
+			full, err := im.GitHub.GetPull(ctx, pr.Number)
+			if err != nil {
+				return nil, err
+			}
+			if cur, ok := ci.Current(); ok && !full.MaintainerCanModify && cur.Number > res.patchSet {
+				res.gerritAhead = cur.Number
 			}
 		}
 		return res, nil
-	}
-	if st != nil && res.heads[h] != "" && st.State.ImportHash == importHash {
-		// Already imported and the PR text is unchanged. A draft toggle
-		// is not a new patch set: mirror it to Gerrit's WIP flag.
-		res.change = st.State.Change
-		for _, r := range st.Revisions {
-			if r.GitHubSHA == h {
-				res.patchSet = r.PatchSet
-			}
-		}
-		var err error
-		res.bridgeOwned, err = im.syncWIP(ctx, st.State.Change, pr)
-		if ge := res.heads[h]; ge != "" {
-			res.noSignOff = im.lacksSignOff(ctx, ge)
-		}
-		if _, _, fork := github.SplitHeadKey(pr.HeadKey(im.GitHub.Owner + "/" + im.GitHub.Repo)); fork && err == nil {
-			// Listed PRs lack maintainer_can_modify.
-			full, gerr := im.GitHub.GetPull(ctx, pr.Number)
-			if gerr != nil {
-				return nil, gerr
-			}
-			if !full.MaintainerCanModify {
-				ci, gerr := im.Gerrit.GetChange(ctx, res.change, "CURRENT_REVISION")
-				if gerr != nil {
-					return nil, gerr
-				}
-				if cur, ok := ci.Current(); ok && cur.Number > res.patchSet {
-					res.gerritAhead = cur.Number
-				}
-			}
-		}
-		return res, err
 	}
 	if len(own) == 0 {
 		return nil, &syncError{"pending", "No commits of its own yet"}
@@ -424,9 +409,9 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		}
 	}
 	message := "" // the commit message, if not built from the PR
-	if gerritBorn {
+	if later {
 		if cur == nil {
-			return nil, fmt.Errorf("Gerrit-born change %d (%s) not found", st.State.Change, changeID)
+			return nil, fmt.Errorf("change %d (%s) not found", st.State.Change, changeID)
 		}
 		rev, _ := cur.Current()
 		if rev.Commit.Message == "" {
@@ -483,12 +468,11 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		res.heads[h] = s
 		return res, nil
 	}
-	opts := []string{"ready"}
-	if pr.Draft {
-		opts = []string{"wip"}
-	}
-	if gerritBorn {
-		opts = nil // Gerrit's WIP state is the PR's draft state, not the other way
+	// A new change starts as the PR is; a later patch set keeps the
+	// change's WIP state.
+	var opts []string
+	if !later {
+		opts = []string{wipState(pr.Draft)}
 	}
 	if err := im.Uploader.Upload(ctx, user, s, branch, opts); err != nil {
 		return nil, fmt.Errorf("uploading PR #%d: %w", pr.Number, err)
@@ -514,9 +498,6 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	}
 	tree, parentTree := revisionTrees(ctx, im.Mirror, s)
 	err = updateStateFn(ctx, im.Store, ch.Number, fmt.Sprintf("Import PR #%d head %s as patch set %d", pr.Number, short(h), ps), func(st *state.Change) {
-		if !gerritBorn {
-			st.State.ImportHash = importHash
-		}
 		st.State.HeadBranch = pr.HeadKey(im.GitHub.Owner + "/" + im.GitHub.Repo)
 		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: s, GitHubSHA: h, Tree: tree, ParentTree: parentTree})
 	})
@@ -668,7 +649,14 @@ func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []st
 	texts = append(texts, user)
 	var msg strings.Builder
 	if message != "" {
+		// A later patch set: the change's message, plus the sign-offs of
+		// whoever wrote the new commits (projects like AOS require them).
 		msg.WriteString(strings.TrimSpace(message) + "\n")
+		for _, so := range signOffs(texts[:len(texts)-1]...) {
+			if !strings.Contains(message, so) {
+				msg.WriteString(so + "\n")
+			}
+		}
 	} else {
 		msg.WriteString(strings.TrimSpace(pr.Title))
 		if body := prBodyForMessage(pr.Body); body != "" {
@@ -777,46 +765,6 @@ func (im *Importer) logicalBase(ctx context.Context, branch string, pr int) (str
 		}
 	}
 	return branch, nil
-}
-
-// pusher is who pushed GitHub commit sha: from a webhook if one said, else
-// the commit's GitHub committer.
-// prTextHash identifies the PR text a commit message is built from.
-func prTextHash(pr *github.PullRequest) string {
-	return hashString(pr.Title + "\x00" + prBodyForMessage(pr.Body))
-}
-
-// syncWIP makes Gerrit's work-in-progress flag follow the PR's draft
-// state, acting as the change owner (Run-As) since only the owner may
-// toggle it.
-// It reports whether the bridge owns the change.
-func (im *Importer) syncWIP(ctx context.Context, n int, pr *github.PullRequest) (bool, error) {
-	ch, err := im.Gerrit.GetChange(ctx, n, "DETAILED_ACCOUNTS")
-	if err != nil {
-		return false, err
-	}
-	bridgeOwned := ch.Owner.AccountID == im.Bridge.AccountID
-	if ch.Status != "NEW" || ch.WorkInProgress == pr.Draft {
-		return bridgeOwned, nil
-	}
-	action := "ready"
-	if pr.Draft {
-		action = "wip"
-	}
-	if im.DryRun {
-		im.Logger.Info("dry run: would mark change "+action, "change", n, "pr", pr.Number)
-		return bridgeOwned, nil
-	}
-	gc := im.Gerrit
-	if !bridgeOwned && ch.Owner.Username != "" {
-		gc = gc.As(ch.Owner.Username)
-	}
-	msg := fmt.Sprintf("PR #%d marked %s on GitHub.", pr.Number, map[bool]string{true: "draft", false: "ready for review"}[pr.Draft])
-	if err := gc.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/%s", n, action), map[string]string{"message": msg}, nil); err != nil {
-		return bridgeOwned, fmt.Errorf("marking change %d %s: %w", n, action, err)
-	}
-	im.Logger.Info("mirrored draft state to Gerrit", "change", n, "pr", pr.Number, "wip", pr.Draft)
-	return bridgeOwned, nil
 }
 
 // lacksSignOff reports whether commit's message has no Signed-off-by.

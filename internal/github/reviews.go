@@ -375,3 +375,63 @@ func (c *Client) LastStateEvent(ctx context.Context, n int) (*IssueEvent, error)
 	}
 	return nil, nil
 }
+
+// PRActivity says who last changed a PR's text and its draft state, for
+// mirroring those changes as the person who made them.
+type PRActivity struct {
+	// TextEditor last edited the title or description ("" if nobody
+	// has since the PR was opened).
+	TextEditor string
+	// DraftActor last converted the PR to a draft or marked it ready.
+	DraftActor string
+}
+
+// Activity returns PR n's PRActivity.
+func (c *Client) Activity(ctx context.Context, n int) (*PRActivity, error) {
+	const q = `query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { pullRequest(number: $n) {
+  lastEditedAt editor { login }
+  timelineItems(last: 50, itemTypes: [RENAMED_TITLE_EVENT, CONVERT_TO_DRAFT_EVENT, READY_FOR_REVIEW_EVENT]) {
+    nodes { __typename
+      ... on RenamedTitleEvent { createdAt actor { login } }
+      ... on ConvertToDraftEvent { createdAt actor { login } }
+      ... on ReadyForReviewEvent { createdAt actor { login } } } } } } }`
+	type event struct {
+		Type      string    `json:"__typename"`
+		CreatedAt time.Time `json:"createdAt"`
+		Actor     *User     `json:"actor"`
+	}
+	var data struct {
+		Repository struct {
+			PullRequest struct {
+				LastEditedAt  *time.Time `json:"lastEditedAt"`
+				Editor        *User      `json:"editor"`
+				TimelineItems struct {
+					Nodes []event `json:"nodes"`
+				} `json:"timelineItems"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	if err := c.GraphQL(ctx, q, map[string]any{"o": c.Owner, "r": c.Repo, "n": n}, &data); err != nil {
+		return nil, err
+	}
+	pr := data.Repository.PullRequest
+	a := &PRActivity{}
+	var textAt time.Time
+	if pr.LastEditedAt != nil && pr.Editor != nil {
+		a.TextEditor, textAt = pr.Editor.Login, *pr.LastEditedAt
+	}
+	for _, e := range pr.TimelineItems.Nodes { // oldest first
+		if e.Actor == nil {
+			continue
+		}
+		switch e.Type {
+		case "RenamedTitleEvent":
+			if !e.CreatedAt.Before(textAt) {
+				a.TextEditor, textAt = e.Actor.Login, e.CreatedAt
+			}
+		case "ConvertToDraftEvent", "ReadyForReviewEvent":
+			a.DraftActor = e.Actor.Login
+		}
+	}
+	return a, nil
+}

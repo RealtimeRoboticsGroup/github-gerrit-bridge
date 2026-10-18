@@ -397,28 +397,10 @@ func MakePlan(s *Snapshot) *Plan {
 			}
 		}
 		block := linksBlock(c.URL, n, c.PatchSet, chain, note)
-		var lastHash, lastTitle, curBody string
-		if st := s.State[n]; st != nil {
-			lastHash, lastTitle = st.State.BodyHash, st.State.Title
-		}
-		if pr != nil {
-			curBody = pr.Body
-		}
-		body, hash := composeBody(curBody, c.Message, lastHash, block)
-		bornTitle := ""
-		if born {
-			// The PR text is the user's: only the links block is ours,
-			// unless the commit message was edited in Gerrit, which then
-			// becomes the PR's title and body.
-			user, _ := splitBody(curBody)
-			title, msgBody := prTextFromMessage(c.Message)
-			mh := hashString(title + "\x00" + msgBody)
-			if st := s.State[n]; st != nil && st.State.GerritMessageHash != "" && st.State.GerritMessageHash != mh &&
-				(pr == nil || title != pr.Title || msgBody != prBodyForMessage(curBody)) {
-				user, bornTitle = msgBody, title
-			}
-			body = strings.TrimSpace(user + "\n\n" + block)
-		}
+		// The PR shows the commit message, wherever the change started:
+		// edits made on GitHub reach Gerrit first (Code.mirrorPREdits), so
+		// what is here is the newer of the two.
+		body, hash := composeBody(c.Message, block)
 		d.BodyHash = hash
 		p.Desired[n] = d
 
@@ -439,14 +421,8 @@ func MakePlan(s *Snapshot) *Plan {
 			u.Base = ptr(d.Base)
 			changed = true
 		}
-		// Rewrite the title only when the subject changed in Gerrit, so a
-		// title edited on GitHub survives.
-		if !born && pr.Title != c.Subject && lastTitle != c.Subject {
+		if strings.TrimSpace(pr.Title) != c.Subject {
 			u.Title = ptr(c.Subject)
-			changed = true
-		}
-		if bornTitle != "" && pr.Title != bornTitle {
-			u.Title = ptr(bornTitle)
 			changed = true
 		}
 		if pr.Body != body {
@@ -456,8 +432,7 @@ func MakePlan(s *Snapshot) *Plan {
 		if changed {
 			p.Actions = append(p.Actions, Action{Kind: UpdatePR, Change: n, PR: pr.Number, Update: u})
 		}
-		// A GitHub-born PR's draft state belongs to its author.
-		if !born && pr.Draft != c.WIP && pr.State == "open" {
+		if pr.Draft != c.WIP && pr.State == "open" {
 			p.Actions = append(p.Actions, Action{Kind: SetDraft, Change: n, PR: pr.Number, NodeID: pr.NodeID, Draft: c.WIP})
 		}
 	}

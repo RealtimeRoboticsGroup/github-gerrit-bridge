@@ -99,23 +99,16 @@ func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note
 	return b.String()
 }
 
-// composeBody returns the body to write, given the current PR body (empty
-// for a new PR), the commit message, the hash of the message part the
-// bridge last wrote, and the links block.
-func composeBody(current, message, lastHash, block string) (body, hash string) {
+// composeBody returns the PR body for a commit message: its description
+// (without its subject and the bridge's trailers) and the links block, and
+// the description's hash.
+func composeBody(message, block string) (body, hash string) {
 	want := messageBody(message)
 	hash = hashString(want)
-	user, hasBlock := splitBody(current)
-	part := want
-	if hasBlock && hash == lastHash {
-		// The commit message has not changed since the bridge last wrote
-		// the body: keep whatever is there now, including GitHub edits.
-		part = user
-	}
-	if part == "" {
+	if want == "" {
 		return block, hash
 	}
-	return part + "\n\n" + block, hash
+	return want + "\n\n" + block, hash
 }
 
 // escapeLinkText keeps a commit subject from breaking out of a Markdown

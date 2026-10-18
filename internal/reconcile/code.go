@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -92,8 +93,12 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 			if err != nil {
 				return fmt.Errorf("mirroring PR closes on %s: %w", branch, err)
 			}
-			if changed {
-				continue // observe the abandoned or restored changes
+			edited, err := c.mirrorPREdits(ctx, snap)
+			if err != nil {
+				return fmt.Errorf("mirroring PR edits on %s: %w", branch, err)
+			}
+			if changed || edited {
+				continue // observe what changed in Gerrit
 			}
 		}
 		plan := MakePlan(snap)
@@ -460,6 +465,152 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot) (bool, error) {
 	return changed, nil
 }
 
+// gerritText is the PR text a commit message stands for, and githubText
+// a PR's own, each as one comparable string.
+func gerritText(message string) string {
+	title, body := prTextFromMessage(message)
+	return title + "\x00" + body
+}
+
+func githubText(pr *github.PullRequest) string {
+	return strings.TrimSpace(pr.Title) + "\x00" + prBodyForMessage(pr.Body)
+}
+
+func wipState(wip bool) string { return map[bool]string{true: "wip", false: "ready"}[wip] }
+
+// mirrorPREdits carries PR edits made on GitHub over to Gerrit (design
+// §6.0): a new title or description becomes the change's commit message,
+// and a draft toggle its work-in-progress state, whichever side changed
+// last. They are made as whoever made them on GitHub (Run-As), or as the
+// bridge for someone without a Gerrit account, as pushes are; if Gerrit
+// refuses, a notice says why and the plan puts Gerrit's version back. If
+// both sides changed, Gerrit's wins. It reports whether Gerrit changed.
+func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot) (bool, error) {
+	changed := false
+	for _, n := range sortedKeys(s.Changes) {
+		ch, st := s.Changes[n], s.State[n]
+		if ch.Status != "NEW" || ch.Private || st == nil || st.State.PR == 0 || s.PRs[st.State.PR] == nil {
+			continue
+		}
+		pr := s.PRs[st.State.PR]
+		if pr.State != "open" {
+			continue
+		}
+		gt, ht := hashString(gerritText(ch.Message)), hashString(githubText(pr))
+		gw, hw := wipState(ch.WIP), wipState(pr.Draft)
+		textEdited := gt != ht && st.State.SyncedText != "" && ht != st.State.SyncedText
+		draftToggled := gw != hw && st.State.SyncedWIP != "" && hw != st.State.SyncedWIP
+		if !textEdited && !draftToggled {
+			continue
+		}
+		act, err := c.GitHub.Activity(ctx, pr.Number)
+		if err != nil {
+			return changed, err
+		}
+		var notes []string
+		if textEdited {
+			if gt != st.State.SyncedText {
+				notes = append(notes, fmt.Sprintf("This PR's title or description was edited on GitHub while [change %d](%s)'s commit message changed in Gerrit; Gerrit's is kept.", n, ch.URL))
+			} else {
+				title, body := strings.TrimSpace(pr.Title), prBodyForMessage(pr.Body)
+				msg := commitMessage(title, body, ch.Message)
+				if note, err := c.asEditor(ctx, n, act.TextEditor, http.MethodPut, "message", map[string]string{"message": msg},
+					"edited this PR's title or description", "change the commit message of"); err != nil {
+					return changed, err
+				} else if note != "" {
+					notes = append(notes, note)
+				} else {
+					changed = true
+				}
+			}
+		}
+		if draftToggled {
+			if gw != st.State.SyncedWIP {
+				notes = append(notes, fmt.Sprintf("This PR's draft state changed on GitHub while [change %d](%s)'s work-in-progress state changed in Gerrit; Gerrit's is kept.", n, ch.URL))
+			} else {
+				past := map[bool]string{true: "marked this PR as a draft", false: "marked this PR ready for review"}[pr.Draft]
+				if note, err := c.asEditor(ctx, n, act.DraftActor, http.MethodPost, hw, map[string]string{"message": fmt.Sprintf("PR #%d %s on GitHub.", pr.Number, map[bool]string{true: "marked draft", false: "marked ready for review"}[pr.Draft])},
+					past, "change the work-in-progress state of"); err != nil {
+					return changed, err
+				} else if note != "" {
+					notes = append(notes, note)
+				} else {
+					changed = true
+				}
+			}
+		}
+		for _, note := range notes {
+			if _, err := c.GitHub.CreateIssueComment(ctx, pr.Number, note+"\n\n"+noticeMarker); err != nil {
+				return changed, err
+			}
+			c.Logger.Info("GitHub PR edit not mirrored", "change", n, "pr", pr.Number, "why", note)
+		}
+	}
+	return changed, nil
+}
+
+// asEditor calls changes/n/<endpoint> as GitHub user login's Gerrit
+// account, or as the bridge if they have none (or the bridge's own
+// account made the edit). If Gerrit refuses, it returns a notice saying
+// so ("@login <did>, which would <would> change N in Gerrit, but ...").
+func (c *Code) asEditor(ctx context.Context, n int, login, method, endpoint string, in any, did, would string) (string, error) {
+	g, as := c.Gerrit, "the bridge"
+	if c.Identity != nil && login != "" {
+		if user, ok := c.Identity.GerritUser(ctx, login); ok {
+			g, as = c.Gerrit.As(user), user
+		}
+	}
+	err := g.Do(ctx, method, fmt.Sprintf("changes/%d/%s", n, endpoint), in, nil)
+	var ge *gerrit.Error
+	switch {
+	case err == nil:
+		c.Logger.Info("mirrored GitHub PR edit to Gerrit", "change", n, "endpoint", endpoint, "as", as)
+		return "", nil
+	case errors.As(err, &ge) && ge.Status < 500:
+		who := "@" + login
+		if login == "" {
+			who = "Someone"
+		}
+		return fmt.Sprintf("%s %s, which would %s [change %d](%s) in Gerrit, but Gerrit would not let %s (%s). Putting Gerrit's back.",
+			who, did, would, n, c.changeURL(n), as, strings.TrimSpace(ge.Body)), nil
+	default:
+		return "", fmt.Errorf("%s %s change %d as %s: %w", method, endpoint, n, as, err)
+	}
+}
+
+// commitMessage is the commit message for a PR's title and description:
+// those, plus the bridge's trailers (Change-Id, sign-offs, GitHub-PR)
+// from the current message, kept in the last paragraph if the description
+// already ends in trailers.
+func commitMessage(title, body, current string) string {
+	msg := title
+	if body != "" {
+		msg += "\n\n" + body
+	}
+	trailers := bridgeTrailers.FindAllString(strings.ReplaceAll(current, "\r\n", "\n"), -1)
+	if len(trailers) == 0 {
+		return msg + "\n"
+	}
+	sep := "\n\n"
+	if paras := strings.Split(body, "\n\n"); body != "" && isTrailers(paras[len(paras)-1]) {
+		sep = "\n"
+	}
+	return msg + sep + strings.Join(trailers, "\n") + "\n"
+}
+
+var trailerLine = regexp.MustCompile(`^[A-Za-z0-9-]+: \S`)
+
+// isTrailers reports whether every line of paragraph p is a "Key: value"
+// trailer.
+func isTrailers(p string) bool {
+	for _, l := range strings.Split(strings.TrimSpace(p), "\n") {
+		if !trailerLine.MatchString(l) {
+			return false
+		}
+	}
+	return strings.TrimSpace(p) != ""
+}
+
 // lastStatusChange is when change n was last abandoned or restored in
 // Gerrit (zero if never).
 func (c *Code) lastStatusChange(ctx context.Context, n int) (time.Time, error) {
@@ -749,14 +900,13 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan) error {
 			st.State.Title = ch.Subject
 			st.State.BodyHash = d.BodyHash
 			st.State.ClosedNoticePosted = false
-			if st.State.Origin == "github" {
-				// The PR now says what the commit message says: neither
-				// side has news for the other.
-				title, body := prTextFromMessage(ch.Message)
-				st.State.GerritMessageHash = hashString(title + "\x00" + body)
-				if pr != nil && title == strings.TrimSpace(pr.Title) && body == prBodyForMessage(pr.Body) {
-					st.State.ImportHash = prTextHash(pr)
-				}
+			// Where the PR and the change agree, neither side has news for
+			// the other (mirrorPREdits).
+			if pr != nil && githubText(pr) == gerritText(ch.Message) {
+				st.State.SyncedText = hashString(gerritText(ch.Message))
+			}
+			if pr != nil && pr.Draft == ch.WIP {
+				st.State.SyncedWIP = wipState(ch.WIP)
 			}
 			// Commits the bridge built (imports, appends, re-parented
 			// exports) are recorded where they are made, with both SHAs.

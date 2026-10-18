@@ -623,8 +623,19 @@ Each side always links to the other, so users can find it.
   `<!-- bridge:links -->` markers. It holds the Gerrit relation chain, top
   first as in Gerrit and shown even for a single change. Each entry links
   to its Gerrit change and its PR, and this PR's own entry links to the
-  current patch set. The bridge rewrites only this block, so users'
-  edits elsewhere in the body are kept.
+  current patch set.
+- **PR title and description = the commit message, both ways, wherever
+  the change started.** The title is the subject, and the description
+  (above the block) is the rest, without the `Change-Id`, `Signed-off-by`
+  and `GitHub-PR` trailers. Whichever side changed since they last agreed
+  (`synced_text`) wins: a GitHub edit becomes a new patch set with that
+  commit message (`PUT /changes/N/message`, same files), made as the
+  editor through Run-As, or as the bridge for someone without a Gerrit
+  account, as pushes are; the trailers are kept. If Gerrit refuses, or
+  both sides changed, a notice says so and Gerrit's version goes back on
+  the PR. Draft and WIP work the same way (`synced_wip`): toggling either
+  sets the other, as the person who did it. Later imported patch sets keep
+  the change's commit message, adding the new commits' sign-offs.
 - **GitHub checks:** every `gerrit/*` check run's `details_url` points at
   the Gerrit change, so it is one click from the merge box.
 - **Gerrit change:**
@@ -831,12 +842,12 @@ mirrored are checked, and only for reviewers with a Gerrit account.
 
 | Event                     | Mirror                                          |
 |---------------------------|-------------------------------------------------|
-| WIP on/off                | Draft / ready for review                        |
+| WIP on/off                | Draft / ready for review, both ways (§6.0)      |
 | Abandon / Restore         | Close / Reopen (stack: `/unstack` that layer); and back: closing or reopening the PR abandons or restores the change as whoever did it, if Gerrit lets them (else the PR is put back, with a notice). Administrate Server does not carry through Run-As, so administrators need an explicit Abandon grant (`refs/*`, All-Projects) to abandon others' changes this way |
 | Private change            | **Never mirrored**                              |
 | Reviewer added / attention| Request review (mapped users only)              |
 | Hashtags                  | Labels (optional)                               |
-| Commit message edit (new PS) | PR title/body updated                        |
+| Commit message edit (new PS) | PR title/body updated, and back: a PR edit is a commit message edit (§6.0) |
 
 ### 6.7 Submit and merge
 

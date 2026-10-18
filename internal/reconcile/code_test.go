@@ -22,7 +22,7 @@ func prStatesWorld(t *testing.T, status, prState string) (*sites, *Code, *Snapsh
 	c, store := s.code(ctx)
 	m0 := s.commit("", "a.txt", "a\n", "base")
 	s.change(7, "I7", m0, "Seven\n\nChange-Id: I7\n", status)
-	s.mayAbandon[7] = []string{"austin"}
+	s.may[7] = []string{"austin"}
 	pr := s.pr(70, "gerrit/I7", m0, "main", "bot")
 	pr.State = prState
 	s.save(ctx, store, 7, &state.Change{State: state.ChangeState{Change: 7, PR: 70, Branch: "main", Origin: "gerrit", Lifecycle: status}})
@@ -522,5 +522,157 @@ func TestObserveHistoryForkPR(t *testing.T) {
 		if snap.HasParent[1] != tc.hasParent {
 			t.Errorf("%s: HasParent = %v", tc.name, snap.HasParent[1])
 		}
+	}
+}
+
+// editsWorld is change 7 and its PR in sync (title "Seven", description
+// "Does seven things."), as record() leaves them.
+func editsWorld(t *testing.T, origin string) (*sites, *Code, *Snapshot) {
+	s, c, snap := prStatesWorld(t, "NEW", "open")
+	msg := "Seven\n\nDoes seven things.\n\nChange-Id: " + cid(7) + "\nSigned-off-by: Austin <austin@example.com>\n"
+	snap.Changes[7].Message, snap.Changes[7].Subject = msg, "Seven"
+	s.changes[7].Revisions[s.changes[7].CurrentRevision] = gerrit.RevisionInfo{Number: 1, Commit: gerrit.CommitInfo{Message: msg}}
+	pr := s.pulls[70]
+	pr.Title, pr.Body = "Seven", "Does seven things.\n\n"+linksStart+"\nblock\n"+linksEnd
+	st := snap.State[7]
+	st.State.Origin = origin
+	st.State.SyncedText, st.State.SyncedWIP = hashString(gerritText(msg)), "ready"
+	return s, c, snap
+}
+
+func TestPREditBecomesCommitMessageAsTheEditor(t *testing.T) {
+	for _, origin := range []string{"gerrit", "github"} { // the same either way
+		s, c, snap := editsWorld(t, origin)
+		s.pulls[70].Title = "Seven, better"
+		s.pulls[70].Body = "Does seven things well.\n\nBug: 7\n\n" + linksStart + "\nblock\n" + linksEnd
+		s.activity[70] = github.PRActivity{TextEditor: "austin"}
+		changed, err := c.mirrorPREdits(context.Background(), snap)
+		if err != nil || !changed {
+			t.Fatalf("%s: changed=%v err=%v", origin, changed, err)
+		}
+		ci := s.changes[7]
+		want := "Seven, better\n\nDoes seven things well.\n\nBug: 7\nChange-Id: " + cid(7) + "\nSigned-off-by: Austin <austin@example.com>\n"
+		if got := ci.Revisions[ci.CurrentRevision].Commit.Message; got != want {
+			t.Errorf("%s: message\n%q\nwant\n%q", origin, got, want)
+		}
+		if len(s.calls) != 1 || s.calls[0] != "message 7 as austin" {
+			t.Errorf("%s: calls = %v", origin, s.calls)
+		}
+	}
+}
+
+func TestPREditGerritRefusesIsExplained(t *testing.T) {
+	s, c, snap := editsWorld(t, "gerrit")
+	s.pulls[70].Title = "Hijacked"
+	s.activity[70] = github.PRActivity{TextEditor: "brt"} // may not edit change 7
+	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@brt edited this PR's title or description, which would change the commit message of [change 7]") ||
+		!strings.Contains(s.comments[70][0], "Gerrit would not let brt (edit not permitted). Putting Gerrit's back.") {
+		t.Errorf("notice = %v", s.comments[70])
+	}
+	// The plan then puts Gerrit's title back.
+	p := MakePlan(planSnapshot(snap))
+	if !hasAction(p, UpdatePR, func(a Action) bool { return a.Update.Title != nil && *a.Update.Title == "Seven" }) {
+		t.Errorf("plan does not restore the title: %v", p.Actions)
+	}
+}
+
+func TestPREditByUserWithoutGerritAccountIsTheBridges(t *testing.T) {
+	s, c, snap := editsWorld(t, "github")
+	s.may[7] = append(s.may[7], "bridge")
+	s.pulls[70].Title = "Seven, by a stranger"
+	s.activity[70] = github.PRActivity{TextEditor: "stranger"}
+	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if len(s.calls) != 1 || s.calls[0] != "message 7 as bridge" {
+		t.Errorf("calls = %v, want the bridge (as for pushes by people without a Gerrit account)", s.calls)
+	}
+}
+
+func TestPREditAndGerritEditBothGerritWins(t *testing.T) {
+	s, c, snap := editsWorld(t, "gerrit")
+	s.pulls[70].Title = "GitHub's"
+	snap.Changes[7].Message, snap.Changes[7].Subject = "Gerrit's\n\nChange-Id: "+cid(7)+"\n", "Gerrit's"
+	s.activity[70] = github.PRActivity{TextEditor: "austin"}
+	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || changed || len(s.calls) != 0 {
+		t.Fatalf("changed=%v err=%v calls=%v", changed, err, s.calls)
+	}
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "Gerrit's is kept") {
+		t.Errorf("notice = %v", s.comments[70])
+	}
+}
+
+func TestDraftToggleBecomesWIPAsTheToggler(t *testing.T) {
+	for _, origin := range []string{"gerrit", "github"} {
+		s, c, snap := editsWorld(t, origin)
+		s.pulls[70].Draft = true
+		s.activity[70] = github.PRActivity{DraftActor: "austin"}
+		if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || !changed {
+			t.Fatalf("%s: changed=%v err=%v", origin, changed, err)
+		}
+		if !s.changes[7].WorkInProgress || len(s.calls) != 1 || s.calls[0] != "wip 7 as austin" {
+			t.Errorf("%s: wip=%v calls=%v", origin, s.changes[7].WorkInProgress, s.calls)
+		}
+	}
+}
+
+// Before anything was synced (state from an older bridge), Gerrit's
+// version stands: nothing is sent to Gerrit.
+func TestPREditWithoutSyncedStateLeavesGerrit(t *testing.T) {
+	s, c, snap := editsWorld(t, "gerrit")
+	snap.State[7].State.SyncedText, snap.State[7].State.SyncedWIP = "", ""
+	s.pulls[70].Title, s.pulls[70].Draft = "Edited", true
+	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || changed || len(s.calls) != 0 {
+		t.Errorf("changed=%v err=%v calls=%v", changed, err, s.calls)
+	}
+}
+
+func TestCommitMessage(t *testing.T) {
+	cur := "Old\n\nOld body.\n\nBug: 1\nChange-Id: I1\nSigned-off-by: A <a@x>\nGitHub-PR: u\n"
+	for _, tc := range []struct{ title, body, want string }{
+		{"New", "New body.", "New\n\nNew body.\n\nChange-Id: I1\nSigned-off-by: A <a@x>\nGitHub-PR: u\n"},
+		{"New", "New body.\n\nBug: 2", "New\n\nNew body.\n\nBug: 2\nChange-Id: I1\nSigned-off-by: A <a@x>\nGitHub-PR: u\n"},
+		{"New", "", "New\n\nChange-Id: I1\nSigned-off-by: A <a@x>\nGitHub-PR: u\n"},
+	} {
+		got := commitMessage(tc.title, tc.body, cur)
+		if got != tc.want {
+			t.Errorf("commitMessage(%q, %q) =\n%q\nwant\n%q", tc.title, tc.body, got, tc.want)
+		}
+		// It round-trips: the PR text it stands for is what was asked.
+		if gerritText(got) != tc.title+"\x00"+tc.body {
+			t.Errorf("round trip of %q: %q", got, gerritText(got))
+		}
+	}
+}
+
+// A later push to a GitHub-born PR keeps the change's commit message (PR
+// text reaches it separately), adding the new commits' sign-offs.
+func TestLaterImportKeepsMessageAddsSignOffs(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	st, _ := im.Store.Load(ctx, 1)
+	st.State.Origin, st.State.HeadBranch = "github", "feature"
+	if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+		t.Fatal(err)
+	}
+	s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "brt"
+	s.pulls[10].Title, s.pulls[10].Body = "Some other PR title", "Not the commit message."
+	r1 := s.rebase(g[0], m1)
+	h := s.commit(r1, "one.txt", "1 fixed\n", "Fix\n\nSigned-off-by: BRT <brt@example.com>")
+	s.push("github.git", h, "refs/heads/feature")
+	s.pulls[10].Head.SHA = h
+	im.Pushers.Record(h, "brt")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasSuffix(up.uploads[0], " []") {
+		t.Fatalf("uploads = %v, want one keeping the WIP state", up.uploads)
+	}
+	msg := s.git("m.git", "log", "-1", "--format=%B", s.changes[1].CurrentRevision)
+	if want := "One\n\nChange-Id: " + ids[0] + "\nSigned-off-by: BRT <brt@example.com>"; msg != want {
+		t.Errorf("message %q, want %q", msg, want)
 	}
 }

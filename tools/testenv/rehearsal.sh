@@ -346,6 +346,41 @@ restored() { gstatus NEW && prstate open; }
 wait_for "reopening it restores the change" restored
 gerrit_as AustinSchuh POST "changes/${K1}/abandon" "{}" >/dev/null
 
+# --- 14. PR edits on GitHub reach Gerrit, wherever the change started
+# (design §6.0): the title and description become the commit message, and
+# draft becomes WIP, as the person who did it ---
+step "14. Edit a Gerrit change's PR on GitHub"
+Y1="Edit ${RUN}"
+(cd "${ME_CLONE}" && git fetch -q gerrit && git checkout -q -B "edit-${RUN}" gerrit/main)
+commit "${ME_CLONE}" "edit-${RUN}.txt" "${Y1}"
+(cd "${ME_CLONE}" && git push -q gerrit HEAD:refs/for/main 2>/dev/null)
+has_edit_pr() { [[ -n "$(pr_for "${Y1}")" ]]; }
+wait_for "the change has a PR" has_edit_pr
+L1=$(change "${Y1}"); Z1=$(pr_for "${Y1}")
+sleep 10 # let the bridge record the PR and change as in sync
+BODY="$(me api "repos/${R}/pulls/${Z1}" --jq .body)"
+me api -X PATCH "repos/${R}/pulls/${Z1}" -f title="${Y1}, retitled on GitHub" -f body="Described on GitHub.
+
+${BODY}" --silent
+retitled() {
+  local c; c=$(gerrit "changes/${L1}?o=CURRENT_REVISION&o=CURRENT_COMMIT&o=DETAILED_ACCOUNTS")
+  [[ "$(jq -r '.revisions[.current_revision].commit.message' <<<"$c")" == "${Y1}, retitled on GitHub"$'\n\n'"Described on GitHub."* ]] &&
+    jq -e '.revisions[.current_revision] | select(._number == 2 and .uploader.username == "AustinSchuh")' <<<"$c"
+}
+wait_for "the new title and description become patch set 2's commit message, by AustinSchuh" retitled
+gerrit "changes/${L1}?o=CURRENT_REVISION&o=CURRENT_COMMIT" | jq -e '.revisions[.current_revision].commit.message | contains("Change-Id: ") and contains("Signed-off-by: ")' >/dev/null &&
+  pass "the Change-Id and sign-off are kept" || fail "trailers lost"
+sleep 8
+[[ "$(me api "repos/${R}/pulls/${Z1}" --jq .title)" == "${Y1}, retitled on GitHub" ]] && pass "the PR keeps the new title" || fail "the title was put back"
+NODE=$(me api "repos/${R}/pulls/${Z1}" --jq .node_id)
+me api graphql -f query="mutation{convertPullRequestToDraft(input:{pullRequestId:\"${NODE}\"}){pullRequest{isDraft}}}" --silent
+wipped() { [[ "$(gerrit "changes/${L1}" | jq -r '.work_in_progress // false')" == true ]]; }
+wait_for "draft on GitHub makes the Gerrit-born change WIP" wipped
+gerrit_as AustinSchuh POST "changes/${L1}/ready" "{}" >/dev/null
+not_draft() { [[ "$(me api "repos/${R}/pulls/${Z1}" --jq .draft)" == false ]]; }
+wait_for "ready in Gerrit makes the PR ready" not_draft
+gerrit_as AustinSchuh POST "changes/${L1}/abandon" "{}" >/dev/null
+
 echo
 echo "Rehearsal ${RUN}: ${PASSED} passed, ${FAILED} failed"
 ((FAILED == 0))

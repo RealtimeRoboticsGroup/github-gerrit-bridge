@@ -317,8 +317,10 @@ func (s *Server) GrantRunAs(ctx context.Context) error {
 		// Server, which Gerrit does not apply to a user the bridge acts as
 		// (Run-As): closing a PR on GitHub, which abandons its change as
 		// the closer, needs the explicit grant. AOS needs it too.
+		// The same for toggling work in progress (a PR's draft state).
 		"refs/*": map[string]any{"permissions": map[string]any{
-			"abandon": map[string]any{"rules": map[string]any{admins: map[string]any{"action": "ALLOW"}}},
+			"abandon":        map[string]any{"rules": map[string]any{admins: map[string]any{"action": "ALLOW"}}},
+			"toggleWipState": map[string]any{"rules": map[string]any{admins: map[string]any{"action": "ALLOW"}}},
 		}},
 	}}
 	return s.Admin.Do(ctx, http.MethodPost, "projects/All-Projects/access", access, nil)

@@ -62,6 +62,12 @@ type ChangeState struct {
 	// GerritMessageHash is the hash of the Gerrit commit message last
 	// synced to a GitHub-born PR's title and body.
 	GerritMessageHash string `json:"gerrit_message_hash,omitempty"`
+	// SyncedText is the hash of the PR title and description (minus the
+	// bridge's block) when they last matched the commit message, and
+	// SyncedWIP the draft/WIP state ("wip" or "ready") when it last
+	// matched: whichever side has changed since is newer (design §6.0).
+	SyncedText string `json:"synced_text,omitempty"`
+	SyncedWIP  string `json:"synced_wip,omitempty"`
 	// ClosedNoticePosted records that the "merged/abandoned in Gerrit"
 	// comment was posted on the PR.
 	ClosedNoticePosted bool `json:"closed_notice_posted,omitempty"`

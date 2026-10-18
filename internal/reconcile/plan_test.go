@@ -630,7 +630,10 @@ func TestPrivateNeverMirrored(t *testing.T) {
 	}
 }
 
-func TestGitHubBodyEditsSurviveUntilMessageChanges(t *testing.T) {
+// The planner shows the commit message, wherever the change started:
+// GitHub edits reach Gerrit before planning (Code.mirrorPREdits), so an
+// edit still on the PR here is one Gerrit did not take, and is undone.
+func TestPlanShowsTheCommitMessage(t *testing.T) {
 	w := newWorld(t)
 	w.upload(1, "a1", "m0")
 	w.converge()
@@ -639,10 +642,10 @@ func TestGitHubBodyEditsSurviveUntilMessageChanges(t *testing.T) {
 	pr.Body = "Edited on GitHub.\n\n" + linksStart + block
 	pr.Title = "Better title"
 	w.converge()
-	if !strings.HasPrefix(w.pr(1).Body, "Edited on GitHub.") || w.pr(1).Title != "Better title" {
-		t.Errorf("GitHub edit lost: %q / %q", w.pr(1).Title, w.pr(1).Body)
+	if !strings.HasPrefix(w.pr(1).Body, "Body of 1, ps 1.") || w.pr(1).Title != "Change 1" {
+		t.Errorf("PR not back to the commit message: %q / %q", w.pr(1).Title, w.pr(1).Body)
 	}
-	// A new patch set with a new commit message wins.
+	// A new commit message shows.
 	w.upload(1, "a2", "m0")
 	w.gerrit[1].Subject = "Renamed"
 	w.converge()
@@ -692,6 +695,9 @@ func TestNaming(t *testing.T) {
 func bornWorld(t *testing.T) *world {
 	w := newWorld(t)
 	w.upload(1, "s1", "m0")
+	// Imported from the PR: the commit message is the PR's text.
+	w.gerrit[1].Subject = "User title"
+	w.gerrit[1].Message = "User title\n\nUser body.\n\nGitHub-PR: https://github.com/o/r/pull/1\nChange-Id: " + cid(1)
 	w.branch["feature"] = "h1"
 	w.parents["h1"] = []string{"m0"} // the author's commit, which Gerrit squashed as s1
 	w.prs[1] = &github.PullRequest{Number: 1, State: "open", Title: "User title", Body: "User body.",
@@ -706,7 +712,6 @@ func bornWorld(t *testing.T) *world {
 
 func TestGitHubBornInSync(t *testing.T) {
 	w := bornWorld(t)
-	w.gerrit[1].WIP = true // the user's draft state wins on GitHub
 	w.converge()
 	pr := w.prs[1]
 	if w.branch["feature"] != "h1" {
@@ -716,7 +721,16 @@ func TestGitHubBornInSync(t *testing.T) {
 		t.Error("a gerrit/ branch was pushed for a GitHub-born change")
 	}
 	if pr.Title != "User title" || !strings.HasPrefix(pr.Body, "User body.\n\n"+linksStart) || pr.Draft {
-		t.Errorf("PR text/draft not the user's: %q %q draft=%v", pr.Title, pr.Body, pr.Draft)
+		t.Errorf("PR text/draft changed: %q %q draft=%v", pr.Title, pr.Body, pr.Draft)
+	}
+	if strings.Contains(pr.Body, "GitHub-PR:") || strings.Contains(pr.Body, "Change-Id") {
+		t.Errorf("bridge trailers in the PR body: %q", pr.Body)
+	}
+	// WIP set in Gerrit shows as a draft, as for any change.
+	w.gerrit[1].WIP = true
+	w.converge()
+	if !w.prs[1].Draft {
+		t.Error("WIP in Gerrit did not make the PR a draft")
 	}
 }
 
@@ -839,13 +853,12 @@ func TestForkPRWithoutMaintainerEdits(t *testing.T) {
 
 func TestGerritMessageEditUpdatesGitHubBornPR(t *testing.T) {
 	w := bornWorld(t)
-	w.gerrit[1].Message = "User title\n\nUser body.\n\nGitHub-PR: https://github.com/o/r/pull/1\nChange-Id: " + cid(1)
-	w.state[1].State.GerritMessageHash = hashString("User title\x00User body.")
 	w.converge()
 	if w.prs[1].Title != "User title" {
 		t.Fatalf("title changed without an edit: %q", w.prs[1].Title)
 	}
 	// Edited in Gerrit (a new patch set with the same tree, say).
+	w.gerrit[1].Subject = "Better title"
 	w.gerrit[1].Message = "Better title\n\nClearer body.\n\nGitHub-PR: https://github.com/o/r/pull/1\nChange-Id: " + cid(1)
 	w.converge()
 	pr := w.prs[1]

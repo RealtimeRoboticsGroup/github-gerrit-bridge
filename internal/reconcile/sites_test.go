@@ -37,25 +37,28 @@ type sites struct {
 	mu sync.Mutex
 	// Gerrit
 	changes map[int]*gerrit.ChangeInfo
-	// mayAbandon lists the Gerrit users who may abandon and restore each
-	// change, as Gerrit's permissions would say.
-	mayAbandon map[int][]string
-	accounts   map[string]gerrit.AccountInfo
-	together   map[int][]int // change -> submitted together
+	// may lists the Gerrit users who may abandon, restore, edit the commit
+	// message of and toggle WIP on each change, as Gerrit's permissions
+	// would say.
+	may      map[int][]string
+	accounts map[string]gerrit.AccountInfo
+	together map[int][]int // change -> submitted together
 	// GitHub
 	pulls    map[int]*github.PullRequest
 	events   map[int][]github.IssueEvent
 	comments map[int][]string
 	statuses map[string][]github.Status // sha -> statuses
 	unstacks []int
+	activity map[int]github.PRActivity // what Activity returns per PR
 	nextID   int64
 	clock    time.Time
+	calls    []string // Gerrit edits made, as "<what> <change> as <user>"
 }
 
 func newSites(t *testing.T) *sites {
 	t.Helper()
 	s := &sites{t: t, dir: t.TempDir(),
-		changes: map[int]*gerrit.ChangeInfo{}, mayAbandon: map[int][]string{}, accounts: map[string]gerrit.AccountInfo{},
+		changes: map[int]*gerrit.ChangeInfo{}, may: map[int][]string{}, activity: map[int]github.PRActivity{}, accounts: map[string]gerrit.AccountInfo{},
 		together: map[int][]int{}, pulls: map[int]*github.PullRequest{}, events: map[int][]github.IssueEvent{},
 		comments: map[int][]string{}, statuses: map[string][]github.Status{},
 		clock: time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)}
@@ -67,6 +70,9 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("GET /a/changes/{n}", s.getChange)
 	mux.HandleFunc("GET /a/changes/", s.queryChanges)
 	mux.HandleFunc("POST /a/changes/{n}/{action}", s.changeAction)
+	mux.HandleFunc("PUT /a/changes/{n}/message", s.setMessage)
+	mux.HandleFunc("GET /a/projects/{p}/branches/{b}", http.NotFound)
+	mux.HandleFunc("POST /graphql", s.graphql)
 	mux.HandleFunc("GET /a/changes/{n}/submitted_together", s.submittedTogether)
 	mux.HandleFunc("GET /a/accounts/{user}", s.account)
 	mux.HandleFunc("GET /repos/o/r/pulls", s.listPulls)
@@ -233,14 +239,65 @@ func (s *sites) changeAction(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case ci == nil:
 		http.NotFound(w, r)
-	case action != "abandon" && action != "restore":
-		http.Error(w, "not faked: "+action, http.StatusNotImplemented)
-	case !strings.Contains(" "+strings.Join(s.mayAbandon[n], " ")+" ", " "+user+" "):
+	case !strings.Contains(" "+strings.Join(s.may[n], " ")+" ", " "+user+" "):
 		http.Error(w, action+" not permitted", http.StatusForbidden)
-	default:
+	case action == "abandon" || action == "restore":
 		s.gerritStatus(n, map[string]string{"abandon": "ABANDONED", "restore": "NEW"}[action], user)
 		s.json(w, ci, true)
+	case action == "wip" || action == "ready":
+		ci.WorkInProgress = action == "wip"
+		s.calls = append(s.calls, fmt.Sprintf("%s %d as %s", action, n, user))
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "not faked: "+action, http.StatusNotImplemented)
 	}
+}
+
+// setMessage edits change n's commit message (a new patch set, same tree)
+// as the Run-As user, if may lets them.
+func (s *sites) setMessage(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := num(r)
+	user := r.Header.Get("X-Gerrit-RunAs")
+	if user == "" {
+		user, _, _ = r.BasicAuth()
+	}
+	if !strings.Contains(" "+strings.Join(s.may[n], " ")+" ", " "+user+" ") {
+		http.Error(w, "edit not permitted", http.StatusForbidden)
+		return
+	}
+	var in struct{ Message string }
+	json.NewDecoder(r.Body).Decode(&in)
+	ci := s.changes[n]
+	sha := fmt.Sprintf("msg%d", len(ci.Revisions)+1)
+	ci.Revisions[sha] = gerrit.RevisionInfo{Number: len(ci.Revisions) + 1, Commit: gerrit.CommitInfo{Message: in.Message}}
+	ci.CurrentRevision = sha
+	s.calls = append(s.calls, fmt.Sprintf("message %d as %s", n, user))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// graphql answers Activity's query.
+func (s *sites) graphql(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var in struct {
+		Variables struct{ N int }
+	}
+	json.NewDecoder(r.Body).Decode(&in)
+	a := s.activity[in.Variables.N]
+	type actor struct {
+		Login string `json:"login"`
+	}
+	var nodes []map[string]any
+	pr := map[string]any{"timelineItems": map[string]any{"nodes": &nodes}}
+	if a.TextEditor != "" {
+		pr["lastEditedAt"], pr["editor"] = s.clock, actor{a.TextEditor}
+	}
+	if a.DraftActor != "" {
+		nodes = append(nodes, map[string]any{"__typename": "ConvertToDraftEvent", "createdAt": s.clock, "actor": actor{a.DraftActor}})
+	}
+	s.json(w, map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": pr}}}, false)
 }
 
 func (s *sites) submittedTogether(w http.ResponseWriter, r *http.Request) {
