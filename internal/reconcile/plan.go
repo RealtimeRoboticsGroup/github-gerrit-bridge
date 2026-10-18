@@ -511,7 +511,7 @@ func MakePlan(s *Snapshot) *Plan {
 		var msg string
 		switch {
 		case c.Status == "MERGED":
-			msg = fmt.Sprintf("Merged in Gerrit: [change %d](%s). Closing this PR.", n, c.URL)
+			msg = fmt.Sprintf("Merged in Gerrit as [change %d](%s).", n, c.URL)
 		case c.Status == "ABANDONED":
 			msg = fmt.Sprintf("Abandoned in Gerrit: [change %d](%s). Restoring it there reopens this PR.", n, c.URL)
 		default:

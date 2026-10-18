@@ -978,6 +978,9 @@ func TestRebasedSubmitAfterReplicationCloses(t *testing.T) {
 	if pr := w.pr(1); pr.State != "closed" || pr.Merged {
 		t.Errorf("PR = %s merged=%v; want closed with a notice", pr.State, pr.Merged)
 	}
+	if !slices.ContainsFunc(w.log, func(l string) bool { return strings.HasSuffix(l, ": Merged in Gerrit as [change 1](https://g/c/p/+/1).") }) {
+		t.Errorf("no merged notice:\n%s", strings.Join(w.log, "\n"))
+	}
 }
 
 // Design §5.2.1: a Gerrit-born PR keeps every patch set in its history.

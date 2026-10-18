@@ -844,7 +844,7 @@ mirrored are checked, and only for reviewers with a Gerrit account.
   auto-detects the merge. Otherwise the PR heads are not the merged commits
   (rebase/cherry-pick submits, and PRs with patch-set history). For
   Gerrit-born PRs the bridge swaps the heads in (next point). Other PRs are
-  closed with "Merged in Gerrit: change N". The `gerrit/<Change-Id>`
+  closed with "Merged in Gerrit as change N.". The `gerrit/<Change-Id>`
   branches are then deleted, and GitHub retargets the remaining stack
   layers.
 - **Showing the PRs as merged (measured 2026-10-11).** GitHub marks a PR
