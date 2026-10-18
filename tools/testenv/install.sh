@@ -70,7 +70,7 @@ unit bridge-test-bridge "Bridge test instance: the bridge" \
   "Environment=PATH=$(dirname "${GH}"):/usr/bin:/bin"
 if "${GH}" auth status 2>&1 | grep -q 'admin:repo_hook'; then
   unit bridge-test-webhooks "Bridge test instance: GitHub webhook forwarding" \
-    "${GH} webhook forward --repo=${REPO} --events=pull_request,pull_request_review,pull_request_review_comment,pull_request_review_thread,issue_comment,push --url=http://127.0.0.1:18081/webhook --secret=$(cat "${SITE}/bridge/webhook-secret")" \
+    "${WS}/tools/testenv/webhook-forward.sh ${GH} ${REPO} pull_request,pull_request_review,pull_request_review_comment,pull_request_review_thread,issue_comment,push http://127.0.0.1:18081/webhook ${SITE}/bridge/webhook-secret" \
     "After=bridge-test-bridge.service" "Environment=PATH=$(dirname "${GH}"):/usr/bin:/bin"
 fi
 
