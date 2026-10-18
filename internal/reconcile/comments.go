@@ -496,8 +496,12 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			c.Logger.Info("dry run: would mirror Gerrit message to GitHub", "change", n, "pr", pr, "id", msg.ID)
 			continue
 		}
-		body := fmt.Sprintf("**%s** ([Gerrit](%s)) on patch set %d:\n\n%s\n\n%s",
-			who(msg.Author), c.messageURL(n, msg), msg.RevisionNumber, text, gerritFooter(n, msg.ID))
+		votes := ""
+		if v := messageVotes(msg.Message); v != "" {
+			votes = ", **" + v + "**"
+		}
+		body := fmt.Sprintf("**%s** ([Gerrit](%s)) on patch set %d%s:\n\n%s\n\n%s",
+			who(msg.Author), c.messageURL(n, msg), msg.RevisionNumber, votes, text, gerritFooter(n, msg.ID))
 		out, err := c.GitHub.CreateIssueComment(ctx, pr, body)
 		if err != nil {
 			return posted, err
@@ -1168,6 +1172,42 @@ func (c *Comments) messageText(msg gerrit.ChangeMessage) string {
 	text := messageHeader.ReplaceAllString(msg.Message, "")
 	text = commentCount.ReplaceAllString(text, "")
 	return strings.TrimSpace(text)
+}
+
+var inlineCount = regexp.MustCompile(`\(\d+ (inline )?comments?\)`)
+
+// voteToken is one vote in a change message header: "Code-Review+2", or
+// "-Code-Review" for a removed vote.
+var voteToken = regexp.MustCompile(`^(-?)([A-Za-z][A-Za-z0-9-]*?)([+-]\d+)?$`)
+
+// messageVotes renders the votes in a change message's "Patch Set N: ..."
+// header ("Code-Review +2, Verified removed"), or "" if it has none.
+func messageVotes(message string) string {
+	header := messageHeader.FindString(message)
+	if header == "" {
+		return ""
+	}
+	_, rest, _ := strings.Cut(strings.TrimSpace(header), ":")
+	rest = inlineCount.ReplaceAllString(rest, "")
+	var votes []string
+	for _, tok := range strings.Fields(rest) {
+		m := voteToken.FindStringSubmatch(tok)
+		switch {
+		case m == nil:
+			return "" // not a votes-only header
+		case m[1] == "-" && m[3] == "":
+			votes = append(votes, m[2]+" removed")
+		case m[1] == "" && m[3] != "":
+			if m[3] == "+0" || m[3] == "-0" {
+				votes = append(votes, m[2]+" removed")
+			} else {
+				votes = append(votes, m[2]+" "+m[3])
+			}
+		default:
+			return ""
+		}
+	}
+	return strings.Join(votes, ", ")
 }
 
 func (c *Comments) messageURL(n int, msg gerrit.ChangeMessage) string {

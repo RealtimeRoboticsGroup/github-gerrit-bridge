@@ -528,8 +528,8 @@ func TestChangeMessages(t *testing.T) {
 			t.Errorf("body missing %q:\n%s", want, b)
 		}
 	}
-	if strings.Contains(b, "Code-Review") {
-		t.Errorf("vote header leaked:\n%s", b)
+	if !strings.Contains(b, "on patch set 2, **Code-Review +1**:") || strings.Contains(b, "Patch Set 2:") {
+		t.Errorf("want the vote in the header line, not Gerrit's raw header:\n%s", b)
 	}
 	e.settled(t)
 }
@@ -908,5 +908,20 @@ func TestCommentEditedBeforeMirroringIsNotPostedAsTheAuthor(t *testing.T) {
 	}
 	if byBob["retest"] || !byBob["fine as is"] || !byBob["fixed my typo"] {
 		t.Errorf("posted as bob: %v; want only the comments nobody else edited", byBob)
+	}
+}
+
+func TestMessageVotes(t *testing.T) {
+	for msg, want := range map[string]string{
+		"Patch Set 3: Code-Review+2\n\nLGTM":            "Code-Review +2",
+		"Patch Set 3: Code-Review-1 Verified+1\n\nHmm":  "Code-Review -1, Verified +1",
+		"Patch Set 2: -Code-Review\n\nOops":             "Code-Review removed",
+		"Patch Set 2:\n\n(1 comment)":                   "",
+		"Patch Set 4: Code-Review+2 (2 comments)\n\nok": "Code-Review +2",
+		"Uploaded patch set 2.":                         "",
+	} {
+		if got := messageVotes(msg); got != want {
+			t.Errorf("messageVotes(%q) = %q, want %q", msg, got, want)
+		}
 	}
 }

@@ -1170,9 +1170,11 @@ Known gaps:
      Verified Users…", and `gerrit/submittable` lists the unsatisfied
      submit requirements. Branch protection can require these contexts.
    - GitHub won't let the token's user approve PRs it authored, so
-     Gerrit votes on non-CI labels are mirrored as one PR comment per
-     change in votes ("**Alice**: Code-Review +2"), tracked in
-     `votes.json`, not as GitHub reviews.
+     Gerrit votes are not GitHub reviews. They show in the
+     `gerrit/<label>` statuses ("+2 Alice"), and on the mirrored Gerrit
+     message they came with ("**Alice** on patch set 3, **Code-Review
+     +2**: LGTM"). A vote with no message only updates the status. (Until
+     2026-10-17 a separate "Votes in Gerrit" PR comment listed changes.)
    - GitHub approvals stay text in Gerrit ("Approved on GitHub." in the
      mirrored review body). The bridge does not vote on anyone's behalf
      until identity mapping (§7) exists.

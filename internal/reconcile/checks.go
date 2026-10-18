@@ -71,7 +71,6 @@ var DefaultCIMessage = regexp.MustCompile(`Build (Started|Succeeded|Failed): (\S
 const (
 	statusPrefix      = "gerrit/"
 	submittableStatus = "gerrit/submittable"
-	votesMarker       = "<!-- bridge:votes -->"
 )
 
 // ciRun is the latest CI message on the current patch set.
@@ -146,17 +145,9 @@ func (c *Checks) Sync(ctx context.Context, n int) error {
 		}
 		c.Logger.Info("set status", "change", n, "pr", st.State.PR, "context", s.Context, "state", s.State, "description", s.Description)
 	}
-
-	// Human votes as a PR comment, when they change.
-	votes := humanVotes(ch, c.CILabels)
-	msg := votesComment(st.Votes, votes, ch.Labels, c.ChangeURL(n))
-	if msg == "" || c.DryRun {
-		return nil
-	}
-	if _, err := c.GitHub.CreateIssueComment(ctx, st.State.PR, msg); err != nil {
-		return err
-	}
-	return updateStateFn(ctx, c.Store, n, "Mirror votes", func(s *state.Change) { s.Votes = votes })
+	// Votes show in gerrit/<label> statuses, and on the mirrored Gerrit
+	// message they came with (Comments): no separate votes comment.
+	return nil
 }
 
 // ChangeURL is the Gerrit web URL of change n.
@@ -314,77 +305,4 @@ func desiredStatuses(ch *gerrit.ChangeInfo, changeURL string, ciLabels []string,
 	}
 	sub.Description = truncateDesc(sub.Description)
 	return append(out, sub)
-}
-
-// humanVotes lists non-zero votes on labels other than CI labels.
-func humanVotes(ch *gerrit.ChangeInfo, ciLabels []string) []state.Vote {
-	var out []state.Vote
-	for name, l := range ch.Labels {
-		if slices.Contains(ciLabels, name) {
-			continue
-		}
-		for _, a := range l.All {
-			if a.Value != 0 {
-				out = append(out, state.Vote{Account: a.AccountID, Label: name, Value: a.Value})
-			}
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Label != out[j].Label {
-			return out[i].Label < out[j].Label
-		}
-		return out[i].Account < out[j].Account
-	})
-	return out
-}
-
-// votesComment describes what changed between the mirrored and current
-// votes, or returns "" if nothing did.
-func votesComment(old, cur []state.Vote, labels map[string]gerrit.LabelInfo, changeURL string) string {
-	type key struct {
-		account int
-		label   string
-	}
-	was := map[key]int{}
-	for _, v := range old {
-		was[key{v.Account, v.Label}] = v.Value
-	}
-	names := map[int]string{}
-	fromGitHub := map[key]bool{} // votes the bridge cast for a GitHub review
-	for label, l := range labels {
-		for _, a := range l.All {
-			names[a.AccountID] = who(a.AccountInfo)
-			if isBridgeTag(a.Tag) {
-				fromGitHub[key{a.AccountID, label}] = true
-			}
-		}
-	}
-	name := func(id int) string {
-		if n := names[id]; n != "" {
-			return n
-		}
-		return fmt.Sprintf("account %d", id)
-	}
-	var lines []string
-	for _, v := range cur {
-		k := key{v.Account, v.Label}
-		if w, ok := was[k]; (!ok || w != v.Value) && !fromGitHub[k] {
-			lines = append(lines, fmt.Sprintf("- **%s**: %s %s", name(v.Account), v.Label, voteString(v.Value)))
-		}
-		delete(was, k)
-	}
-	gone := make([]key, 0, len(was))
-	for k := range was {
-		gone = append(gone, k)
-	}
-	sort.Slice(gone, func(i, j int) bool {
-		return gone[i].label+fmt.Sprint(gone[i].account) < gone[j].label+fmt.Sprint(gone[j].account)
-	})
-	for _, k := range gone {
-		lines = append(lines, fmt.Sprintf("- **%s**: %s vote removed", name(k.account), k.label))
-	}
-	if len(lines) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("Votes in [Gerrit](%s):\n%s\n\n%s", changeURL, strings.Join(lines, "\n"), votesMarker)
 }

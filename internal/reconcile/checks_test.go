@@ -1,13 +1,11 @@
 package reconcile
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/buildkite"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
-	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
 var (
@@ -121,34 +119,5 @@ func TestLatestBuild(t *testing.T) {
 	}
 	if run := latestBuild(nil); run != (ciRun{}) {
 		t.Errorf("latestBuild(nil) = %+v", run)
-	}
-}
-
-func TestVotesComment(t *testing.T) {
-	ch := change([]gerrit.ApprovalInfo{{AccountInfo: alice, Value: 2}, {AccountInfo: bob, Value: 0}},
-		[]gerrit.ApprovalInfo{{AccountInfo: ci, Value: 1}})
-	cur := humanVotes(ch, []string{"Verified"})
-	if len(cur) != 1 || cur[0] != (state.Vote{Account: 1, Label: "Code-Review", Value: 2}) {
-		t.Fatalf("humanVotes = %+v (CI and zero votes must be left out)", cur)
-	}
-	msg := votesComment([]state.Vote{{Account: 2, Label: "Code-Review", Value: -1}}, cur, ch.Labels, "https://g/c/5")
-	for _, want := range []string{"**Alice**: Code-Review +2", "**Bob**: Code-Review vote removed", votesMarker} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("comment missing %q:\n%s", want, msg)
-		}
-	}
-	if !isMirror(msg) {
-		t.Error("votes comment would be mirrored back to Gerrit")
-	}
-	if votesComment(cur, cur, ch.Labels, "u") != "" {
-		t.Error("unchanged votes produced a comment")
-	}
-}
-
-func TestVotesFromGitHubAreNotAnnouncedBack(t *testing.T) {
-	ch := change([]gerrit.ApprovalInfo{{AccountInfo: alice, Value: 2, Tag: mirrorTag}, {AccountInfo: bob, Value: 1}}, nil)
-	msg := votesComment(nil, humanVotes(ch, []string{"Verified"}), ch.Labels, "u")
-	if strings.Contains(msg, "Alice") || !strings.Contains(msg, "**Bob**: Code-Review +1") {
-		t.Errorf("votes comment = %q", msg)
 	}
 }
