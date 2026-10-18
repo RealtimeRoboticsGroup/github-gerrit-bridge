@@ -1077,3 +1077,27 @@ func TestGerritMessageOnlyEditPushesNothing(t *testing.T) {
 		}
 	}
 }
+
+// Design §5.2.2: a push to a Gerrit-born PR's branch is the importer's to
+// turn into a patch set; the planner must not overwrite it.
+func TestPushToGerritBornBranchIsNotOverwritten(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.converge()
+	w.branch["gerrit/"+cid(1)] = "rebased-on-github"
+	w.converge()
+	if got := w.branch["gerrit/"+cid(1)]; got != "rebased-on-github" {
+		t.Errorf("head = %s: the push was overwritten", got)
+	}
+	// Imported as patch set 2: in sync, nothing pushed.
+	w.upload(1, "a2", "m1")
+	w.onMain["m1"] = true
+	w.state[1].Revisions = append(w.state[1].Revisions, state.Revision{PatchSet: 2, GerritSHA: "a2", GitHubSHA: "rebased-on-github"})
+	w.log = nil
+	w.converge()
+	for _, l := range w.log {
+		if strings.HasPrefix(l, "push") {
+			t.Errorf("pushed after the import: %s", l)
+		}
+	}
+}

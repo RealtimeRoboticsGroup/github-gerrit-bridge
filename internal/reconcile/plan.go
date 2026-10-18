@@ -104,10 +104,15 @@ func (s *Snapshot) ghCommit(sha string) string {
 }
 
 // githubFor maps a GitHub commit of change n to the Gerrit commit it was
-// synced with.
+// synced with. Gerrit's own commits of the change stand for themselves.
 func (s *Snapshot) githubFor(n int) map[string]string {
 	m := map[string]string{}
 	if st := s.State[n]; st != nil {
+		for _, r := range st.Revisions {
+			if _, ok := m[r.GerritSHA]; !ok && !s.githubBorn(n) {
+				m[r.GerritSHA] = r.GerritSHA
+			}
+		}
 		for _, r := range st.Revisions {
 			m[r.GitHubSHA] = r.GerritSHA
 		}
@@ -333,9 +338,12 @@ func MakePlan(s *Snapshot) *Plan {
 				ap.Merge = ghParent
 			}
 			appends[d.Head] = ap
+		case !born && onGitHub:
+			// Someone pushed to the PR's branch: the importer turns that
+			// into a patch set (design §5.2.2), or says on gerrit/sync why
+			// it cannot. Never overwrite their work.
 		case !born && ghParent == c.Parent:
-			// First export, or a head the bridge did not write (Gerrit
-			// owns these branches): Gerrit's commit itself.
+			// First export: Gerrit's commit itself.
 			refs[d.Head] = c.Revision
 		case !born:
 			appends[d.Head] = Append{Change: n, PatchSet: c.PatchSet, Revision: c.Revision, Onto: ghParent,

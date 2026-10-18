@@ -62,11 +62,11 @@ func TestSquashIsDeterministicAndKeepsTree(t *testing.T) {
 		HTMLURL: "https://github.com/o/r/pull/3"}
 	who := gerrit.AccountInfo{Name: "Alice", Email: "alice@example.com"}
 	ctx := context.Background()
-	s1, err := im.squash(ctx, pr, []string{h, c1}, h, base, "I"+strings.Repeat("a", 40), who)
+	s1, err := im.squash(ctx, pr, []string{h, c1}, h, base, "I"+strings.Repeat("a", 40), "", who)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s2, _ := im.squash(ctx, pr, []string{h, c1}, h, base, "I"+strings.Repeat("a", 40), who)
+	s2, _ := im.squash(ctx, pr, []string{h, c1}, h, base, "I"+strings.Repeat("a", 40), "", who)
 	if s1 != s2 {
 		t.Errorf("squash not deterministic: %s vs %s", s1, s2)
 	}
@@ -93,7 +93,7 @@ func TestNoOpSquash(t *testing.T) {
 	cid := "I" + strings.Repeat("b", 40)
 	h := g.commit("a.txt", "x\n", "Do it\n\nChange-Id: "+cid)
 	who := gerrit.AccountInfo{Name: "Austin", Email: "austin@example.com"}
-	s, err := im.squash(context.Background(), &github.PullRequest{Title: "Do it"}, []string{h}, h, base, cid, who)
+	s, err := im.squash(context.Background(), &github.PullRequest{Title: "Do it"}, []string{h}, h, base, cid, "", who)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestNoOpSquash(t *testing.T) {
 		t.Errorf("single commit with the Change-Id was rewritten: %s != %s", s, h)
 	}
 	// Someone else pushing it must rewrite (committer must be the uploader).
-	s, _ = im.squash(context.Background(), &github.PullRequest{Title: "Do it"}, []string{h}, h, base, cid,
+	s, _ = im.squash(context.Background(), &github.PullRequest{Title: "Do it"}, []string{h}, h, base, cid, "",
 		gerrit.AccountInfo{Name: "Alice", Email: "alice@example.com"})
 	if s == h {
 		t.Error("no-op squash used with a different committer")
@@ -118,7 +118,7 @@ func TestRealParentIgnoresStaleMergeBase(t *testing.T) {
 	l2a := g.commit("l2.txt", "a\n", "l2 a")
 	l2b := g.commit("l2.txt", "b\n", "l2 b")
 	// Layer 1 was imported as Gerrit commit "G1" for GitHub head l1v1.
-	own, gp, err := im.realParent(context.Background(), "main", l2b, map[string]string{l1v1: "G1"})
+	own, gp, err := im.realParent(context.Background(), "main", l2b, map[string]string{l1v1: "G1"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestRealParentIgnoresStaleMergeBase(t *testing.T) {
 		t.Errorf("realParent = %v, %s", own, gp)
 	}
 	// Unknown parent layer version: refuse rather than fold it in.
-	if _, _, err := im.realParent(context.Background(), "main", l2b, map[string]string{"other": "G9"}); err == nil {
+	if _, _, err := im.realParent(context.Background(), "main", l2b, map[string]string{"other": "G9"}, ""); err == nil {
 		t.Error("expected restack-needed error")
 	}
 }
@@ -137,7 +137,7 @@ func TestSquashKeepsSignOffs(t *testing.T) {
 	c1 := g.commit("a.txt", "1\n", "one\n\nSigned-off-by: Austin <austin@example.com>")
 	c2 := g.commit("a.txt", "2\n", "two\n\nSigned-off-by: Bob <bob@example.com>\nSigned-off-by: Austin <austin@example.com>")
 	pr := &github.PullRequest{Title: "T", Body: "Body.\n\nSigned-off-by: Carol <carol@example.com>", HTMLURL: "u"}
-	s, err := im.squash(context.Background(), pr, []string{c2, c1}, c2, base, "I"+strings.Repeat("c", 40),
+	s, err := im.squash(context.Background(), pr, []string{c2, c1}, c2, base, "I"+strings.Repeat("c", 40), "",
 		gerrit.AccountInfo{Name: "A", Email: "a@example.com"})
 	if err != nil {
 		t.Fatal(err)
@@ -161,12 +161,72 @@ func TestRealParentMustBeInGerrit(t *testing.T) {
 	g.run("checkout", "-q", "--orphan", "other")
 	g.commit("x.txt", "1\n", "unrelated root")
 	h := g.commit("x.txt", "2\n", "unrelated tip")
-	if _, _, err := im.realParent(context.Background(), "main", h, nil); err == nil {
+	if _, _, err := im.realParent(context.Background(), "main", h, nil, ""); err == nil {
 		t.Error("imported a PR whose history does not start from main")
 	}
 	g.run("checkout", "-q", "-b", "ok", "refs/remotes/gerrit/heads/main")
 	h = g.commit("y.txt", "1\n", "fine")
-	if own, p, err := im.realParent(context.Background(), "main", h, nil); err != nil || len(own) != 1 || p != g.run("rev-parse", "refs/remotes/gerrit/heads/main") {
+	if own, p, err := im.realParent(context.Background(), "main", h, nil, ""); err != nil || len(own) != 1 || p != g.run("rev-parse", "refs/remotes/gerrit/heads/main") {
 		t.Errorf("realParent = %v, %s, %v", own, p, err)
+	}
+}
+
+// GitHub's "Update branch" merges the base into the PR: the layer sits on
+// what it merged, so its squash diffs against that.
+func TestRealParentAfterUpdateBranch(t *testing.T) {
+	im, g := newImportEnv(t)
+	m0 := g.commit("a.txt", "base\n", "base")
+	g.run("checkout", "-q", "-b", "feature")
+	g.commit("f.txt", "1\n", "feature")
+	g.run("checkout", "-q", "main")
+	m1 := g.commit("m.txt", "1\n", "main moves")
+	g.run("update-ref", "refs/remotes/gerrit/heads/main", m1)
+	g.run("checkout", "-q", "feature")
+	g.run("merge", "-q", "--no-edit", "main")
+	h := g.run("rev-parse", "HEAD")
+	own, p, err := im.realParent(context.Background(), "main", h, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p != m1 || len(own) != 2 {
+		t.Errorf("bottom layer: parent %s (m0 %s, m1 %s), own %v; want m1 and the merge plus the feature commit", p, m0, m1, own)
+	}
+
+	// Stacked: layer 2 merges layer 1's new head.
+	g.run("checkout", "-q", "-b", "l1", m1)
+	l1a := g.commit("l1.txt", "a\n", "l1 a")
+	g.run("checkout", "-q", "-b", "l2")
+	g.commit("l2.txt", "1\n", "l2")
+	g.run("checkout", "-q", "l1")
+	l1b := g.commit("l1.txt", "b\n", "l1 b")
+	g.run("checkout", "-q", "l2")
+	g.run("merge", "-q", "--no-edit", "l1")
+	h2 := g.run("rev-parse", "HEAD")
+	heads := map[string]string{l1a: "G1a", l1b: "G1b"}
+	own, p, err = im.realParent(context.Background(), "main", h2, heads, l1b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p != "G1b" || len(own) != 2 || own[0] != h2 {
+		t.Errorf("stacked: parent %s, own %v; want G1b (layer 1's current head) and the merge plus l2", p, own)
+	}
+	// Without the merge, the parent is the version it was built on.
+	if _, p, _ = im.realParent(context.Background(), "main", h2+"^", heads, l1b); p != "G1a" {
+		t.Errorf("unmerged: parent %s, want G1a", p)
+	}
+}
+
+func TestSquashUsesGerritMessage(t *testing.T) {
+	im, g := newImportEnv(t)
+	base := g.commit("a.txt", "base\n", "base")
+	h := g.commit("a.txt", "x\n", "Rebased on GitHub")
+	msg := "Subject\n\nBody.\n\nChange-Id: I" + strings.Repeat("d", 40) + "\nSigned-off-by: Austin <austin@example.com>\n"
+	s, err := im.squash(context.Background(), &github.PullRequest{Title: "PR title"}, []string{h}, h, base, "I"+strings.Repeat("d", 40), msg,
+		gerrit.AccountInfo{Name: "A", Email: "a@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := g.run("log", "-1", "--format=%B", s); got != strings.TrimSpace(msg) {
+		t.Errorf("message:\n%s\nwant Gerrit's:\n%s", got, msg)
 	}
 }

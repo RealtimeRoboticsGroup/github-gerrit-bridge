@@ -413,6 +413,20 @@ The GitHub commits then differ from Gerrit's, as for GitHub-born changes,
 and `revisions.json` maps them. At submit the bridge swaps each PR's head
 for Gerrit's commit (§6.7), so GitHub can still show it merged.
 
+### 5.2.2 Pushes to a Gerrit-born PR
+
+It should not matter where a change started. Anyone may push to a
+Gerrit-born PR's `gerrit/<Change-Id>` branch, by hand or with GitHub's
+buttons ("Rebase stack", "Update branch", committed suggestions). The bridge
+imports the push like one to a GitHub-born PR (§5.2): one squashed patch set
+of the existing change, uploaded as whoever pushed it (the bridge if no
+webhook said, or the pusher has no Gerrit account). The change keeps its
+owner, Change-Id, commit message and WIP state, which belong to Gerrit. A
+layer that merged its base ("Update branch") is squashed onto what it
+merged, so its diff stays its own. A stack rebase imports each layer in
+order. Until the push is imported, the bridge never pushes over it; if it
+cannot be imported, `gerrit/sync` says why.
+
 ### 5.3 Conflicts in code
 
 For each change, the stored state includes the last synced `(patchset, gh

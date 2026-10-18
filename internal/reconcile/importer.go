@@ -93,6 +93,18 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		return err
 	}
 	repo := im.GitHub.Owner + "/" + im.GitHub.Repo
+	// Gerrit-born PR heads on this branch, which GitHub PRs may stack on,
+	// and which people may push to like any PR branch.
+	gerritHeads := map[string]int{}
+	for _, n := range im.Store.ChangesOnBranch(branch) {
+		st, err := im.Store.Load(ctx, n)
+		if err != nil {
+			return err
+		}
+		if st.State.Origin == "gerrit" && st.State.Lifecycle == "NEW" {
+			gerritHeads[st.State.HeadBranch] = n
+		}
+	}
 	byHead := map[string]*github.PullRequest{}
 	for i := range prs {
 		pr := &prs[i]
@@ -103,6 +115,17 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		}
 		key := pr.HeadKey(repo)
 		if key == pr.Head.Ref && (strings.HasPrefix(key, headPrefix) || strings.HasPrefix(key, frozenPrefix)) {
+			// The bridge's branch for a Gerrit-born change: imported only
+			// when someone else pushed to it (design §5.2.2).
+			if n := gerritHeads[key]; n != 0 && im.Store.ChangeForPR(pr.Number) == n {
+				st, err := im.Store.Load(ctx, n)
+				if err != nil {
+					return err
+				}
+				if knownHeads(st)[pr.Head.SHA] == "" {
+					byHead[key] = pr
+				}
+			}
 			continue
 		}
 		if pr.CreatedAt.Before(im.CreatedAfter) && im.Store.ChangeForPR(pr.Number) == 0 {
@@ -127,17 +150,6 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 	}
 	if len(byHead) == 0 {
 		return nil
-	}
-	// Gerrit-born PR heads on this branch, which GitHub PRs may stack on.
-	gerritHeads := map[string]int{}
-	for _, n := range im.Store.ChangesOnBranch(branch) {
-		st, err := im.Store.Load(ctx, n)
-		if err != nil {
-			return err
-		}
-		if st.State.Origin == "gerrit" && st.State.Lifecycle == "NEW" {
-			gerritHeads[st.State.HeadBranch] = n
-		}
 	}
 	// A PR the bridge moved to a frozen base (rule 2) still logically
 	// sits on the layer its Gerrit parent belongs to.
@@ -168,12 +180,12 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		base := baseOf[pr.Number]
 		switch {
 		case base == branch:
-		case gerritHeads[base] != 0:
-			l.gerritParentChange = gerritHeads[base]
-		case byHead[base] != nil:
+		case byHead[base] != nil: // being imported too (say, a restack)
 			if l.parent = place(byHead[base], depth+1); l.parent == nil {
 				return nil
 			}
+		case gerritHeads[base] != 0:
+			l.gerritParentChange = gerritHeads[base]
 		default:
 			return nil // another target branch, or a branch nobody mirrors
 		}
@@ -301,24 +313,29 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		if st, err = im.Store.Load(ctx, n); err != nil {
 			return nil, err
 		}
-		if st.State.Origin != "github" {
-			return nil, fmt.Errorf("PR #%d is linked to Gerrit-born change %d", pr.Number, n)
-		}
 	}
+	// A push to a Gerrit-born change's PR: the change, its commit message
+	// and its draft state stay Gerrit's; the push is a new patch set.
+	gerritBorn := st != nil && st.State.Origin == "gerrit"
 
 	// The layer's real parent (design §5.2 step 1).
 	var parentHeads map[string]string
+	parentTip := "" // the parent layer's GitHub head
 	switch {
 	case l.parent != nil:
 		parentHeads = done[l.parent].heads
+		parentTip = l.parent.pr.Head.SHA
 	case l.gerritParentChange != 0:
 		pst, err := im.Store.Load(ctx, l.gerritParentChange)
 		if err != nil {
 			return nil, err
 		}
 		parentHeads = knownHeads(pst)
+		if len(pst.Revisions) > 0 {
+			parentTip = pst.Revisions[len(pst.Revisions)-1].GitHubSHA
+		}
 	}
-	own, gerritParent, err := im.realParent(ctx, branch, h, parentHeads)
+	own, gerritParent, err := im.realParent(ctx, branch, h, parentHeads, parentTip)
 	if err != nil {
 		return nil, err
 	}
@@ -329,6 +346,15 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		}
 	}
 	importHash := prTextHash(pr)
+	if gerritBorn && res.heads[h] != "" {
+		res.change = st.State.Change
+		for _, r := range st.Revisions {
+			if r.GitHubSHA == h {
+				res.patchSet = r.PatchSet
+			}
+		}
+		return res, nil
+	}
 	if st != nil && res.heads[h] != "" && st.State.ImportHash == importHash {
 		// Already imported and the PR text is unchanged. A draft toggle
 		// is not a new patch set: mirror it to Gerrit's WIP flag.
@@ -397,6 +423,24 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			return nil, &syncError{"failure", fmt.Sprintf("Change-Id %s already belongs to Gerrit change %d; give this PR's commits a new Change-Id", changeID, cur.Number)}
 		}
 	}
+	message := "" // the commit message, if not built from the PR
+	if gerritBorn {
+		if cur == nil {
+			return nil, fmt.Errorf("Gerrit-born change %d (%s) not found", st.State.Change, changeID)
+		}
+		rev, _ := cur.Current()
+		if rev.Commit.Message == "" {
+			return nil, fmt.Errorf("change %d: no current commit", cur.Number)
+		}
+		message = rev.Commit.Message
+		if h == cur.CurrentRevision {
+			// Gerrit's own commit (an export the bridge did not get to
+			// record): nothing to import.
+			res.heads[h] = h
+			res.change, res.patchSet = cur.Number, rev.Number
+			return res, nil
+		}
+	}
 
 	// Who uploads. The first upload decides the owner, so it is the PR's
 	// author; later patch sets are uploaded as whoever pushed them, as a
@@ -425,7 +469,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		gerritMoved = true
 	}
 
-	s, err := im.squash(ctx, pr, own, h, gerritParent, changeID, committer)
+	s, err := im.squash(ctx, pr, own, h, gerritParent, changeID, message, committer)
 	if err != nil {
 		return nil, err
 	}
@@ -442,6 +486,9 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	opts := []string{"ready"}
 	if pr.Draft {
 		opts = []string{"wip"}
+	}
+	if gerritBorn {
+		opts = nil // Gerrit's WIP state is the PR's draft state, not the other way
 	}
 	if err := im.Uploader.Upload(ctx, user, s, branch, opts); err != nil {
 		return nil, fmt.Errorf("uploading PR #%d: %w", pr.Number, err)
@@ -467,7 +514,9 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	}
 	tree, parentTree := revisionTrees(ctx, im.Mirror, s)
 	err = updateStateFn(ctx, im.Store, ch.Number, fmt.Sprintf("Import PR #%d head %s as patch set %d", pr.Number, short(h), ps), func(st *state.Change) {
-		st.State.ImportHash = importHash
+		if !gerritBorn {
+			st.State.ImportHash = importHash
+		}
 		st.State.HeadBranch = pr.HeadKey(im.GitHub.Owner + "/" + im.GitHub.Repo)
 		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: s, GitHubSHA: h, Tree: tree, ParentTree: parentTree})
 	})
@@ -506,9 +555,27 @@ func gerritQuery(s string) string { return gerrit.QueryString(s) }
 // head of the parent layer, or for a bottom layer the target branch. It
 // returns the layer's own commits (newest first) and the Gerrit commit to
 // parent the squash on.
-func (im *Importer) realParent(ctx context.Context, branch, h string, parentHeads map[string]string) ([]string, string, error) {
+//
+// A layer that merged its parent's current head (GitHub's "Update branch")
+// sits on that head, and a bottom layer on its merge base with the target
+// branch, so the squash's diff is the layer's own either way.
+func (im *Importer) realParent(ctx context.Context, branch, h string, parentHeads map[string]string, parentTip string) ([]string, string, error) {
 	const maxCommits = 1000
-	out, err := im.Mirror.Git(ctx, nil, "rev-list", "--first-parent", fmt.Sprintf("--max-count=%d", maxCommits+1), h, "--not", "refs/remotes/gerrit/heads/"+branch)
+	target := "refs/remotes/gerrit/heads/" + branch
+	if ge := parentHeads[parentTip]; ge != "" {
+		if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", parentTip, h); err == nil {
+			out, err := im.Mirror.Git(ctx, nil, "rev-list", "--first-parent", fmt.Sprintf("--max-count=%d", maxCommits+1), h, "--not", parentTip, target)
+			if err != nil {
+				return nil, "", err
+			}
+			commits := strings.Fields(string(out))
+			if len(commits) > maxCommits {
+				return nil, "", &syncError{"failure", fmt.Sprintf("More than %d commits: too many to import", maxCommits)}
+			}
+			return commits, ge, nil
+		}
+	}
+	out, err := im.Mirror.Git(ctx, nil, "rev-list", "--first-parent", fmt.Sprintf("--max-count=%d", maxCommits+1), h, "--not", target)
 	if err != nil {
 		return nil, "", err
 	}
@@ -520,14 +587,12 @@ func (im *Importer) realParent(ctx context.Context, branch, h string, parentHead
 		if len(commits) == 0 {
 			return nil, "", nil
 		}
-		// The squash's parent must already be in Gerrit: otherwise the
-		// upload would bring all its unreviewed ancestors along.
-		p, err := im.Mirror.Git(ctx, nil, "rev-parse", "--verify", "--quiet", commits[len(commits)-1]+"^")
+		// The squash's parent must already be in Gerrit, or the upload
+		// would bring all its unreviewed ancestors along: the newest
+		// commit of the target branch the layer contains.
+		p, err := im.Mirror.Git(ctx, nil, "merge-base", h, target)
 		parent := strings.TrimSpace(string(p))
 		if err != nil || parent == "" {
-			return nil, "", &syncError{"failure", "This PR's history does not start from " + branch}
-		}
-		if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", parent, "refs/remotes/gerrit/heads/"+branch); err != nil {
 			return nil, "", &syncError{"failure", "This PR's history does not start from " + branch + ": rebase it onto " + branch}
 		}
 		return commits, parent, nil
@@ -571,7 +636,10 @@ func signOffs(texts ...string) []string {
 
 // squash builds the deterministic commit for a layer (design §5.2), or
 // reuses h itself when nothing needs rewriting.
-func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []string, h, parent, changeID string, committer gerrit.AccountInfo) (string, error) {
+//
+// message, if set, is the commit message to use (a Gerrit-born change's);
+// otherwise it is built from the PR.
+func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []string, h, parent, changeID, message string, committer gerrit.AccountInfo) (string, error) {
 	info, err := im.Mirror.Git(ctx, nil, "log", "-1", "--format=%P%x00%an%x00%ae%x00%ad%x00%ce%x00%cd%x00%B", "--date=raw", h)
 	if err != nil {
 		return "", err
@@ -599,15 +667,19 @@ func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []st
 	user, _ := splitBody(pr.Body)
 	texts = append(texts, user)
 	var msg strings.Builder
-	msg.WriteString(strings.TrimSpace(pr.Title))
-	if body := prBodyForMessage(pr.Body); body != "" {
-		msg.WriteString("\n\n" + body)
+	if message != "" {
+		msg.WriteString(strings.TrimSpace(message) + "\n")
+	} else {
+		msg.WriteString(strings.TrimSpace(pr.Title))
+		if body := prBodyForMessage(pr.Body); body != "" {
+			msg.WriteString("\n\n" + body)
+		}
+		msg.WriteString("\n\n")
+		for _, so := range signOffs(texts...) {
+			msg.WriteString(so + "\n")
+		}
+		fmt.Fprintf(&msg, "GitHub-PR: %s\nChange-Id: %s\n", pr.HTMLURL, changeID)
 	}
-	msg.WriteString("\n\n")
-	for _, so := range signOffs(texts...) {
-		msg.WriteString(so + "\n")
-	}
-	fmt.Fprintf(&msg, "GitHub-PR: %s\nChange-Id: %s\n", pr.HTMLURL, changeID)
 	tree, err := im.Mirror.Git(ctx, nil, "rev-parse", h+"^{tree}")
 	if err != nil {
 		return "", err
