@@ -334,6 +334,13 @@ abandoned() { gstatus ABANDONED && [[ "$(gerrit "changes/${K1}/detail?o=DETAILED
 wait_for "AustinSchuh closing it abandons the change, as AustinSchuh" abandoned
 sleep 8
 prstate closed && pass "the PR stays closed" || fail "the PR was reopened"
+# Restored in Gerrit: the old GitHub close must not abandon it again.
+gerrit_as AustinSchuh POST "changes/${K1}/restore" "{}" >/dev/null
+wait_for "restoring in Gerrit reopens the PR" prstate open
+sleep 8
+gstatus NEW && pass "and the change stays restored" || fail "the old GitHub close abandoned it again"
+me api -X PATCH "repos/${R}/pulls/${X1}" -f state=closed --silent
+wait_for "closing it again abandons it again" gstatus ABANDONED
 me api -X PATCH "repos/${R}/pulls/${X1}" -f state=open --silent
 restored() { gstatus NEW && prstate open; }
 wait_for "reopening it restores the change" restored
