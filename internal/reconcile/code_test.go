@@ -1,0 +1,457 @@
+package reconcile
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
+)
+
+// prStates is a change whose PR someone closed or reopened on GitHub,
+// with its snapshot as Code.observe would make it.
+func prStatesWorld(t *testing.T, status, prState string) (*sites, *Code, *Snapshot) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.change(7, "I7", m0, "Seven\n\nChange-Id: I7\n", status)
+	s.mayAbandon[7] = []string{"austin"}
+	pr := s.pr(70, "gerrit/I7", m0, "main", "bot")
+	pr.State = prState
+	s.save(ctx, store, 7, &state.Change{State: state.ChangeState{Change: 7, PR: 70, Branch: "main", Origin: "gerrit", Lifecycle: status}})
+	snap := &Snapshot{Branch: "main", DefaultBranch: "main",
+		Changes: map[int]*GerritChange{7: {Number: 7, ChangeID: "I7", Status: status, URL: "https://g/c/p/+/7"}},
+		PRs:     map[int]*github.PullRequest{70: pr}, State: map[int]*state.Change{}}
+	st, err := store.Load(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.State[7] = st
+	return s, c, snap
+}
+
+func TestClosingOnGitHubAbandonsAsTheCloser(t *testing.T) {
+	s, c, snap := prStatesWorld(t, "NEW", "closed")
+	s.ghEvent(70, "closed", "austin")
+	changed, err := c.mirrorPRStates(context.Background(), snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci := s.changes[7]
+	if !changed || ci.Status != "ABANDONED" || ci.Messages[len(ci.Messages)-1].Author.Username != "austin" {
+		t.Errorf("changed=%v status=%s messages=%+v; want abandoned as austin", changed, ci.Status, ci.Messages)
+	}
+	if len(s.comments[70]) != 0 {
+		t.Errorf("notice posted for a close that worked: %v", s.comments[70])
+	}
+}
+
+func TestReopeningOnGitHubRestores(t *testing.T) {
+	s, c, snap := prStatesWorld(t, "ABANDONED", "open")
+	s.gerritStatus(7, "ABANDONED", "austin")
+	s.ghEvent(70, "reopened", "austin")
+	if changed, err := c.mirrorPRStates(context.Background(), snap); err != nil || !changed || s.changes[7].Status != "NEW" {
+		t.Errorf("changed=%v err=%v status=%s; want restored", changed, err, s.changes[7].Status)
+	}
+}
+
+func TestCloseGerritRefusesIsExplainedAndUndone(t *testing.T) {
+	s, c, snap := prStatesWorld(t, "NEW", "closed")
+	s.ghEvent(70, "closed", "brt") // brt may not abandon change 7
+	changed, err := c.mirrorPRStates(context.Background(), snap)
+	if err != nil || changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if s.changes[7].Status != "NEW" {
+		t.Errorf("status = %s", s.changes[7].Status)
+	}
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "Gerrit would not let brt abandon it (abandon not permitted). Reopening it.") {
+		t.Errorf("notice = %v", s.comments[70])
+	}
+	// The plan then reopens it.
+	if p := MakePlan(planSnapshot(snap)); !hasAction(p, UpdatePR, func(a Action) bool { return a.Update.State != nil && *a.Update.State == "open" }) {
+		t.Errorf("plan does not reopen the PR: %v", p.Actions)
+	}
+}
+
+func TestCloseByUserWithoutGerritAccountIsUndone(t *testing.T) {
+	s, c, snap := prStatesWorld(t, "NEW", "closed")
+	s.ghEvent(70, "closed", "stranger")
+	if changed, err := c.mirrorPRStates(context.Background(), snap); err != nil || changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@stranger has no Gerrit account to abandon it with") {
+		t.Errorf("notice = %v", s.comments[70])
+	}
+}
+
+func TestBridgesOwnCloseIsLeftToThePlan(t *testing.T) {
+	s, c, snap := prStatesWorld(t, "NEW", "closed")
+	s.ghEvent(70, "closed", "bot")
+	if changed, err := c.mirrorPRStates(context.Background(), snap); err != nil || changed || s.changes[7].Status != "NEW" || len(s.comments[70]) != 0 {
+		t.Errorf("changed=%v err=%v status=%s comments=%v; want nothing done", changed, err, s.changes[7].Status, s.comments[70])
+	}
+}
+
+// A change restored in Gerrit after its PR was closed on GitHub: the old
+// close must not abandon it again (Gerrit is newer).
+func TestRestoreInGerritBeatsAnOlderGitHubClose(t *testing.T) {
+	s, c, snap := prStatesWorld(t, "NEW", "closed")
+	s.ghEvent(70, "closed", "austin")
+	s.gerritStatus(7, "ABANDONED", "austin") // the close, mirrored
+	s.gerritStatus(7, "NEW", "austin")       // then restored in Gerrit
+	if changed, err := c.mirrorPRStates(context.Background(), snap); err != nil || changed || s.changes[7].Status != "NEW" {
+		t.Errorf("changed=%v err=%v status=%s; want the restore kept", changed, err, s.changes[7].Status)
+	}
+	// ...and a close after the restore counts again.
+	s.ghEvent(70, "closed", "austin")
+	if changed, _ := c.mirrorPRStates(context.Background(), snap); !changed || s.changes[7].Status != "ABANDONED" {
+		t.Errorf("a new close was ignored: status %s", s.changes[7].Status)
+	}
+}
+
+// planSnapshot fills in what MakePlan needs beyond mirrorPRStates.
+func planSnapshot(s *Snapshot) *Snapshot {
+	s.GitHubBranches = map[string]string{}
+	s.OnBranch = map[string]bool{}
+	s.OnGitHubBranch = map[string]bool{}
+	s.SameTree, s.HasParent, s.AppendOK, s.NoPush = map[int]string{}, map[int]bool{}, map[int]bool{}, map[int]bool{}
+	for n, c := range s.Changes {
+		c.Revision, c.Parent, c.PatchSet = "r"+c.ChangeID, "m0", 1
+		s.GitHubBranches[s.head(n, c.ChangeID)] = c.Revision
+		s.State[n].Revisions = []state.Revision{{PatchSet: 1, GerritSHA: c.Revision, GitHubSHA: c.Revision}}
+	}
+	s.OnBranch["m0"] = true
+	return s
+}
+
+func hasAction(p *Plan, kind ActionKind, ok func(Action) bool) bool {
+	for _, a := range p.Actions {
+		if a.Kind == kind && ok(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// Design §6.7: before /submit, a Gerrit-born PR whose head is its
+// patch-set history gets Gerrit's commit swapped in, leaves its stack and
+// is retargeted, so GitHub shows it merged when replication lands it.
+func TestPrepareSubmitSwapsInGerritsCommit(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	g1 := s.commit(m0, "one.txt", "1\n", "One\n\nChange-Id: I1\n")
+	g2 := s.commit(g1, "two.txt", "2\n", "Two\n\nChange-Id: I2\n")
+	h2 := s.commit(g2, "two.txt", "2b\n", "Patch set 2 from Gerrit") // GitHub history of change 2
+	g2b := s.commit(g1, "two.txt", "2b\n", "Two\n\nChange-Id: I2\n") // Gerrit's patch set 2
+	s.change(1, "I1", g1, "One\n\nChange-Id: I1\n", "NEW")
+	ci2 := s.change(2, "I2", g2b, "Two\n\nChange-Id: I2\n", "NEW")
+	ci2.Revisions[g2b] = gerritRev(ci2.Revisions[g2b], 2)
+	s.push("gerrit.git", g2b, ci2.Revisions[g2b].Ref)
+	s.together[2] = []int{2, 1}
+	s.push("github.git", g1, "refs/heads/gerrit/I1")
+	s.push("github.git", h2, "refs/heads/gerrit/I2")
+	pr1 := s.pr(10, "gerrit/I1", g1, "main", "bot")
+	pr2 := s.pr(20, "gerrit/I2", h2, "gerrit/I1", "bot")
+	pr1.Stack = &github.PRStack{Number: 30}
+	pr2.Stack = &github.PRStack{Number: 30}
+	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, PR: 10, Branch: "main", Origin: "gerrit", HeadBranch: "gerrit/I1", Lifecycle: "NEW"}})
+	s.save(ctx, store, 2, &state.Change{State: state.ChangeState{Change: 2, PR: 20, Branch: "main", Origin: "gerrit", HeadBranch: "gerrit/I2", Lifecycle: "NEW"}})
+
+	if err := c.PrepareSubmit(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ref("github.git", "refs/heads/gerrit/I2"); got != g2b {
+		t.Errorf("gerrit/I2 = %s, want Gerrit's commit %s (history head was %s)", got, g2b, h2)
+	}
+	if got := s.ref("github.git", "refs/heads/gerrit/I1"); got != g1 {
+		t.Errorf("gerrit/I1 = %s, changed though it was Gerrit's commit already", got)
+	}
+	if len(s.unstacks) != 1 || s.unstacks[0] != 30 {
+		t.Errorf("unstacked %v, want [30]", s.unstacks)
+	}
+	if s.pulls[20].Base.Ref != "main" || s.pulls[10].Base.Ref != "main" {
+		t.Errorf("bases: #10 %s, #20 %s; want main", s.pulls[10].Base.Ref, s.pulls[20].Base.Ref)
+	}
+}
+
+func gerritRev(r gerrit.RevisionInfo, ps int) gerrit.RevisionInfo {
+	r.Number = ps
+	r.Ref = strings.TrimSuffix(r.Ref, "/1") + "/" + strconv.Itoa(ps)
+	return r
+}
+
+// A merged change's PR that GitHub marked merged while the plan was being
+// made is not closed with a notice.
+func TestClosePRSkipsAPRGitHubJustMerged(t *testing.T) {
+	s, c, snap := prStatesWorld(t, "MERGED", "open")
+	snap.Changes[7].Status = "MERGED"
+	s.pulls[70].Merged, s.pulls[70].State = true, "closed" // GitHub caught up
+	err := c.applyOne(context.Background(), snap, Action{Kind: ClosePR, Change: 7, PR: 70, Comment: "Merged in Gerrit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.comments[70]) != 0 {
+		t.Errorf("notice posted on a merged PR: %v", s.comments[70])
+	}
+	// Still open on GitHub: closed, with the notice.
+	s.pulls[70].Merged, s.pulls[70].State = false, "open"
+	if err := c.applyOne(context.Background(), snap, Action{Kind: ClosePR, Change: 7, PR: 70, Comment: "Merged in Gerrit"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.comments[70]) != 1 || s.pulls[70].State != "closed" {
+		t.Errorf("comments=%v state=%s; want closed with the notice", s.comments[70], s.pulls[70].State)
+	}
+}
+
+// fakeUploader uploads to the sites' Gerrit: the commit becomes the next
+// patch set of the change whose Change-Id it carries.
+type fakeUploader struct {
+	s       *sites
+	m       *gitmirror.Repo
+	uploads []string // "user commit opts"
+}
+
+func (u *fakeUploader) CanActAs() bool { return true }
+
+func (u *fakeUploader) Upload(ctx context.Context, user, commit, target string, opts []string) error {
+	u.uploads = append(u.uploads, fmt.Sprintf("%s %s %v", user, commit, opts))
+	msg, err := u.m.Git(ctx, nil, "log", "-1", "--format=%B", commit)
+	if err != nil {
+		return err
+	}
+	sm := changeIDTrailer.FindStringSubmatch(string(msg))
+	if sm == nil {
+		return fmt.Errorf("uploaded %s has no Change-Id:\n%s", commit, msg)
+	}
+	cid := sm[1]
+	u.s.mu.Lock()
+	defer u.s.mu.Unlock()
+	for _, ci := range u.s.changes {
+		if ci.ChangeID == cid {
+			ci.Revisions[commit] = gerrit.RevisionInfo{Number: len(ci.Revisions) + 1, Commit: gerrit.CommitInfo{Message: string(msg)}}
+			ci.CurrentRevision = commit
+		}
+	}
+	return nil
+}
+
+// gerritBornWorld is change 1 (and, stacked on it, change 2) uploaded in
+// Gerrit on m0 and exported to GitHub; Gerrit's main has since moved to m1.
+// ids are their Change-Ids: the top layer's sorts first, so nothing works
+// by visiting branches in name order.
+func gerritBornWorld(t *testing.T, stacked bool) (s *sites, im *Importer, up *fakeUploader, m1 string, g, ids []string) {
+	ids = []string{cid(9), cid(1)}
+	s = newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	m1 = s.commit(m0, "a.txt", "a\nmore\n", "main moves")
+	s.push("gerrit.git", m1, "refs/heads/main")
+	s.push("github.git", m1, "refs/heads/main")
+	g = append(g, s.commit(m0, "one.txt", "1\n", "One\n\nChange-Id: "+ids[0]+"\n"))
+	if stacked {
+		g = append(g, s.commit(g[0], "two.txt", "2\n", "Two\n\nChange-Id: "+ids[1]+"\n"))
+	}
+	for i, rev := range g {
+		n, id := i+1, ids[i]
+		s.change(n, id, rev, map[int]string{1: "One\n\nChange-Id: " + ids[0] + "\n", 2: "Two\n\nChange-Id: " + ids[1] + "\n"}[n], "NEW")
+		s.push("github.git", rev, "refs/heads/gerrit/"+id)
+		base := "main"
+		if i > 0 {
+			base = "gerrit/" + ids[0]
+		}
+		s.pr(n*10, "gerrit/"+id, rev, base, "bot")
+		s.save(ctx, store, n, &state.Change{State: state.ChangeState{Change: n, ChangeID: id, PR: n * 10, Branch: "main", Origin: "gerrit",
+			HeadBranch: "gerrit/" + id, Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: rev, GitHubSHA: rev}}})
+	}
+	s.accounts["brt"] = gerrit.AccountInfo{AccountID: 6, Username: "brt", Name: "BRT", Email: "brt@example.com"}
+	up = &fakeUploader{s: s, m: c.Mirror}
+	im = &Importer{Project: "p", Gerrit: c.Gerrit, GitHub: c.GitHub, GitHubURL: c.GitHubURL, Mirror: c.Mirror, Store: store,
+		Uploader: up, Identity: c.Identity, Bridge: gerrit.AccountInfo{AccountID: 1, Name: "Bridge", Email: "bridge@example.com"},
+		DefaultBranch: "main", Pushers: &Pushers{}, Logger: slog.Default()}
+	return s, im, up, m1, g, ids
+}
+
+// rebase rebases a Gerrit commit onto onto, as GitHub's "Rebase" would:
+// same change, new parent, committed by GitHub.
+func (s *sites) rebase(commit, onto string) string {
+	s.t.Helper()
+	s.git("work", "checkout", "-q", "--detach", onto)
+	s.git("work", "cherry-pick", "--allow-empty", commit)
+	return s.git("work", "rev-parse", "HEAD")
+}
+
+// Design §5.2.2: a push to a Gerrit-born PR's branch is a new patch set of
+// its change, uploaded as the pusher, with Gerrit's commit message.
+func TestPushToGerritBornPRBecomesPatchSetByPusher(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	r1 := s.rebase(g[0], m1)
+	s.push("github.git", r1, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = r1
+	im.Pushers.Record(r1, "brt")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], "brt ") || !strings.HasSuffix(up.uploads[0], " []") {
+		t.Fatalf("uploads = %v, want one by brt without options (Gerrit's WIP state stays)", up.uploads)
+	}
+	ps2 := s.changes[1].CurrentRevision
+	if got := s.git("m.git", "log", "-1", "--format=%P%n%B", ps2); got != m1+"\nOne\n\nChange-Id: "+ids[0] {
+		t.Errorf("patch set 2 = parent and message %q; want m1 and Gerrit's message", got)
+	}
+	if s.git("m.git", "rev-parse", ps2+"^{tree}") != s.git("work", "rev-parse", r1+"^{tree}") {
+		t.Error("patch set 2 does not have the pushed tree")
+	}
+	if ce := s.git("m.git", "log", "-1", "--format=%ce", ps2); ce != "brt@example.com" {
+		t.Errorf("committer %s, want the pusher's Gerrit account", ce)
+	}
+	st, _ := im.Store.Load(ctx, 1)
+	if last := st.Revisions[len(st.Revisions)-1]; last.GerritSHA != ps2 || last.GitHubSHA != r1 || last.PatchSet != 2 {
+		t.Errorf("recorded %+v, want patch set 2 = GitHub %s", last, short(r1))
+	}
+	if sts := s.statuses[r1]; len(sts) != 1 || sts[0].Context != SyncStatus || sts[0].State != "success" {
+		t.Errorf("gerrit/sync = %+v", sts)
+	}
+	// Imported: nothing more to do.
+	if err := im.Import(ctx, "main"); err != nil || len(up.uploads) != 1 {
+		t.Errorf("err=%v uploads=%v; the push was imported again", err, up.uploads)
+	}
+}
+
+// GitHub's "Rebase stack": both layers pushed at once become patch sets
+// chained in Gerrit, bottom first.
+func TestRestackedGerritStackImportsInOrder(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, true)
+	ctx := context.Background()
+	r1 := s.rebase(g[0], m1)
+	r2 := s.rebase(g[1], r1)
+	s.push("github.git", r1, "refs/heads/gerrit/"+ids[0])
+	s.push("github.git", r2, "refs/heads/gerrit/"+ids[1])
+	s.pulls[10].Head.SHA, s.pulls[20].Head.SHA = r1, r2
+	im.Pushers.Record(r1, "brt")
+	im.Pushers.Record(r2, "brt")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 2 {
+		t.Fatalf("uploads = %v", up.uploads)
+	}
+	p1, p2 := s.changes[1].CurrentRevision, s.changes[2].CurrentRevision
+	if got := s.git("m.git", "rev-parse", p2+"^"); got != p1 {
+		t.Errorf("layer 2's patch set sits on %s, want layer 1's new patch set %s", short(got), short(p1))
+	}
+	if got := s.git("m.git", "rev-parse", p1+"^"); got != m1 {
+		t.Errorf("layer 1's patch set sits on %s, want main %s", short(got), short(m1))
+	}
+	if msg := s.git("m.git", "log", "-1", "--format=%B", p2); msg != "Two\n\nChange-Id: "+ids[1] {
+		t.Errorf("layer 2 message %q", msg)
+	}
+}
+
+// The bridge's own exports are not pushes to import, recorded or not.
+func TestBridgesOwnHeadIsNotImported(t *testing.T) {
+	s, im, up, _, g, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	if err := im.Import(ctx, "main"); err != nil || len(up.uploads) != 0 {
+		t.Errorf("err=%v uploads=%v; the recorded export was imported", err, up.uploads)
+	}
+	// Gerrit's current commit, pushed but not recorded yet (a crash
+	// between the push and the record).
+	st, _ := im.Store.Load(ctx, 1)
+	st.Revisions = nil
+	if err := im.Store.Save(ctx, 1, st, "forget"); err != nil {
+		t.Fatal(err)
+	}
+	s.pulls[10].Head.SHA = g[0]
+	if err := im.Import(ctx, "main"); err != nil || len(up.uploads) != 0 {
+		t.Errorf("err=%v uploads=%v; Gerrit's own commit was imported", err, up.uploads)
+	}
+}
+
+// Design §5.2.1: a new patch set goes on top of the PR's history; a
+// rebased one is a merge of its new parent. Both have the patch set's tree.
+func TestAppendCommitBuildsHistory(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	m1 := s.commit(m0, "a.txt", "a\nmore\n", "main moves")
+	ps1 := s.commit(m0, "one.txt", "1\n", "One")
+	ps2 := s.commit(m0, "one.txt", "1b\n", "One")    // amended
+	ps3 := s.commit(m1, "one.txt", "1b\n", "One")    // rebased
+	s.push("gerrit.git", ps3, "refs/changes/01/1/3") // the mirror has them all
+	s.push("gerrit.git", ps2, "refs/changes/01/1/2")
+	s.push("gerrit.git", ps1, "refs/changes/01/1/1")
+	s.git("m.git", "fetch", "-q", "origin", "refs/changes/*:refs/changes/*")
+	h2, err := c.appendCommit(ctx, Append{Change: 1, PatchSet: 2, Revision: ps2, Onto: ps1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.git("m.git", "log", "-1", "--format=%P %s", h2); got != ps1+" Patch set 2 from Gerrit" {
+		t.Errorf("amend: %q", got)
+	}
+	h3, err := c.appendCommit(ctx, Append{Change: 1, PatchSet: 3, Revision: ps3, Onto: h2, Merge: m1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.git("m.git", "log", "-1", "--format=%P %s", h3); got != h2+" "+m1+" Patch set 3 from Gerrit, rebased" {
+		t.Errorf("rebase: %q", got)
+	}
+	for h, ps := range map[string]string{h2: ps2, h3: ps3} {
+		if s.git("m.git", "rev-parse", h+"^{tree}") != s.git("m.git", "rev-parse", ps+"^{tree}") {
+			t.Errorf("%s does not have %s's tree", short(h), short(ps))
+		}
+	}
+}
+
+// observeHistory says whether a Gerrit-born head already contains the new
+// patch set's parent (append) or not (merge), and spots same-tree heads.
+func TestObserveHistory(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	m1 := s.commit(m0, "a.txt", "a\nmore\n", "main moves")
+	ps1 := s.commit(m0, "one.txt", "1\n", "One")
+	s.push("gerrit.git", m1, "refs/heads/main")
+	s.push("github.git", ps1, "refs/heads/gerrit/"+cid(1))
+	snapFor := func(rev, parent string) *Snapshot {
+		s.push("gerrit.git", rev, "refs/changes/01/1/9")
+		s.git("m.git", "fetch", "-q", "origin", "+refs/changes/01/1/9:refs/changes/01/1/9", "+refs/heads/main:refs/remotes/gerrit/heads/main")
+		return &Snapshot{Branch: "main", DefaultBranch: "main",
+			Changes:        map[int]*GerritChange{1: {Number: 1, ChangeID: cid(1), Status: "NEW", Revision: rev, Parent: parent}},
+			GitHubBranches: map[string]string{"gerrit/" + cid(1): ps1}, SameTree: map[int]string{},
+			State: map[int]*state.Change{1: {State: state.ChangeState{Origin: "gerrit"},
+				Revisions: []state.Revision{{PatchSet: 1, GerritSHA: ps1, GitHubSHA: ps1}}}}}
+	}
+	env, _ := c.githubEnv(ctx)
+	for _, tc := range []struct {
+		name            string
+		rev, parent     string
+		hasParent, same bool
+	}{
+		{"amend", s.commit(m0, "one.txt", "1b\n", "One"), m0, true, false},
+		{"message-only edit", s.commit(m0, "one.txt", "1\n", "One, better"), m0, true, true},
+		{"rebase", s.commit(m1, "one.txt", "1\n", "One"), m1, false, false},
+	} {
+		snap := snapFor(tc.rev, tc.parent)
+		if err := c.observeHistory(ctx, snap, env); err != nil {
+			t.Fatal(err)
+		}
+		if snap.HasParent[1] != tc.hasParent || (snap.SameTree[1] == ps1) != tc.same {
+			t.Errorf("%s: HasParent=%v SameTree=%q; want %v, same=%v", tc.name, snap.HasParent[1], snap.SameTree[1], tc.hasParent, tc.same)
+		}
+	}
+}

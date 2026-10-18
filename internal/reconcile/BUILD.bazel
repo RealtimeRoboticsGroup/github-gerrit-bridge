@@ -36,12 +36,14 @@ go_test(
     name = "reconcile_test",
     srcs = [
         "checks_test.go",
+        "code_test.go",
         "commands_test.go",
         "comments_test.go",
         "identity_test.go",
         "importer_test.go",
         "plan_test.go",
         "reconcile_test.go",
+        "sites_test.go",
     ],
     embed = [":reconcile"],
     deps = [
