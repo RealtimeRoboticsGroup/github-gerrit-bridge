@@ -1086,7 +1086,7 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 		if voted {
 			now = "is now Code-Review " + voteString(v)
 		}
-		msg := fmt.Sprintf("In [Gerrit](%s), @%s %s on patch set %d, and Gerrit's vote is what counts.",
+		msg := fmt.Sprintf("In [Gerrit](%s), @%s %s on patch set %d.",
 			c.Gerrit.ChangeURL(c.Project, n), rv.User.Login, now, s.current)
 		if c.DryRun {
 			c.Logger.Info("dry run: would dismiss GitHub review", "change", n, "pr", pr, "review", rv.ID, "reason", now)
