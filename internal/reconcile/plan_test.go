@@ -1174,3 +1174,26 @@ func TestForkWithoutMaintainerEditsClosesOnSubmit(t *testing.T) {
 		t.Errorf("PR %s merged=%v; want closed with a notice", pr.State, pr.Merged)
 	}
 }
+
+// A merged change's record maps its merged commit to its old GitHub
+// history head. Once that commit is on main it is the same on both sides:
+// a change uploaded on top of it is exported as Gerrit's own commit, not
+// rebuilt onto the stale history head.
+func TestParentOnBranchIsItselfOnGitHub(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.converge()
+	w.upload(1, "a2", "m0") // amended: GitHub has append(a1,a2) for a2
+	w.converge()
+	w.gerrit[1].Status = "MERGED"
+	w.onMain["a2"] = true
+	w.converge()
+	w.replicate()
+	w.converge()
+	w.upload(2, "b1", "a2") // on the new main
+	w.converge()
+	if got := w.branch["gerrit/"+cid(2)]; got != "b1" {
+		t.Errorf("gerrit/2 = %s, want Gerrit's own commit b1", got)
+	}
+	w.checkBase(t, 2, "main")
+}

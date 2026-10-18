@@ -87,8 +87,13 @@ func isForkHead(head string) bool {
 }
 
 // ghCommit is the GitHub commit standing for Gerrit commit sha: the one
-// recorded for it, else sha itself.
+// recorded for it, else sha itself. A commit on the target branch is
+// itself on both sides (replication puts it there), whatever a merged
+// change's record says it stood for while it was open.
 func (s *Snapshot) ghCommit(sha string) string {
+	if s.OnBranch[sha] {
+		return sha
+	}
 	for _, st := range s.State {
 		for i := len(st.Revisions) - 1; i >= 0; i-- {
 			if r := st.Revisions[i]; r.GerritSHA == sha && r.GitHubSHA != "" {
