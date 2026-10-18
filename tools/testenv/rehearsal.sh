@@ -314,6 +314,31 @@ kept && pass "the bridge leaves the rebased branches as pushed" || fail "the reb
 wait_for "gerrit/sync says the top layer is in sync" status_is "${V2}" gerrit/sync success
 for c in "${H2}" "${H1}"; do gerrit_as AustinSchuh POST "changes/${c}/abandon" "{}" >/dev/null; done
 
+# --- 13. Closing and reopening on GitHub abandons and restores in Gerrit,
+# as the person who did it; Gerrit's permissions decide (design §6.6) ---
+step "13. Close and reopen on GitHub"
+W1="Close ${RUN}"
+(cd "${ME_CLONE}" && git fetch -q gerrit && git checkout -q -B "close-${RUN}" gerrit/main)
+commit "${ME_CLONE}" "close-${RUN}.txt" "${W1}"
+(cd "${ME_CLONE}" && git push -q gerrit HEAD:refs/for/main 2>/dev/null)
+has_close_pr() { [[ -n "$(pr_for "${W1}")" ]]; }
+wait_for "the change has a PR" has_close_pr
+K1=$(change "${W1}"); X1=$(pr_for "${W1}")
+gstatus() { [[ "$(gerrit "changes/${K1}" | jq -r .status)" == "$1" ]]; }
+prstate() { [[ "$(me api "repos/${R}/pulls/${X1}" --jq .state)" == "$1" ]]; }
+brt api -X PATCH "repos/${R}/pulls/${X1}" -f state=closed --silent
+refused() { prstate open && gstatus NEW && me api "repos/${R}/issues/${X1}/comments" --jq '.[].body' | grep -q "would not let AustinSchuhBRT abandon it"; }
+wait_for "AustinSchuhBRT may not abandon AustinSchuh's change: the PR is reopened, saying why" refused
+me api -X PATCH "repos/${R}/pulls/${X1}" -f state=closed --silent
+abandoned() { gstatus ABANDONED && [[ "$(gerrit "changes/${K1}/detail?o=DETAILED_ACCOUNTS" | jq -r '.messages[-1].author.username')" == AustinSchuh ]]; }
+wait_for "AustinSchuh closing it abandons the change, as AustinSchuh" abandoned
+sleep 8
+prstate closed && pass "the PR stays closed" || fail "the PR was reopened"
+me api -X PATCH "repos/${R}/pulls/${X1}" -f state=open --silent
+restored() { gstatus NEW && prstate open; }
+wait_for "reopening it restores the change" restored
+gerrit_as AustinSchuh POST "changes/${K1}/abandon" "{}" >/dev/null
+
 echo
 echo "Rehearsal ${RUN}: ${PASSED} passed, ${FAILED} failed"
 ((FAILED == 0))

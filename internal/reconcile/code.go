@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"sort"
 	"strings"
@@ -38,6 +39,11 @@ type Code struct {
 	// OnExported, if set, is called (under the branch lock) for each
 	// change whose current patch set reached GitHub in this reconcile.
 	OnExported func(ctx context.Context, n int) error
+	// Identity maps GitHub logins to Gerrit usernames, and BridgeLogin is
+	// the bridge's own GitHub login: closing or reopening a PR on GitHub
+	// abandons or restores its change as whoever did it.
+	Identity    Identity
+	BridgeLogin string
 
 	// locks serializes reconciles of one target branch. The queue already
 	// does for Branch keys; Change and PR keys resolve to a branch here.
@@ -79,6 +85,15 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 		snap, err := c.observe(ctx, branch)
 		if err != nil {
 			return fmt.Errorf("observing %s: %w", branch, err)
+		}
+		if !c.DryRun {
+			changed, err := c.mirrorPRStates(ctx, snap)
+			if err != nil {
+				return fmt.Errorf("mirroring PR closes on %s: %w", branch, err)
+			}
+			if changed {
+				continue // observe the abandoned or restored changes
+			}
 		}
 		plan := MakePlan(snap)
 		if len(plan.Actions) == 0 {
@@ -360,6 +375,84 @@ func (c *Code) observeHistory(ctx context.Context, s *Snapshot, env []string) er
 		}
 	}
 	return nil
+}
+
+// mirrorPRStates carries a PR closed or reopened on GitHub over to Gerrit
+// (design §6.6): closing abandons the change, reopening restores it, each
+// as the person who did it (Run-As), so Gerrit's permissions decide. If
+// Gerrit refuses, or they have no Gerrit account, nothing changes there:
+// the plan then puts the PR back the way Gerrit says, and a notice says
+// why. It reports whether a change was abandoned or restored.
+func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot) (bool, error) {
+	changed := false
+	for _, n := range sortedKeys(s.Changes) {
+		ch, st := s.Changes[n], s.State[n]
+		if st == nil || st.State.PR == 0 || s.PRs[st.State.PR] == nil {
+			continue
+		}
+		pr := s.PRs[st.State.PR]
+		var action, past string
+		switch {
+		case ch.Status == "NEW" && pr.State == "closed" && !pr.Merged:
+			action, past = "abandon", "closed"
+		case ch.Status == "ABANDONED" && pr.State == "open":
+			action, past = "restore", "reopened"
+		default:
+			continue
+		}
+		ev, err := c.GitHub.LastStateEvent(ctx, pr.Number)
+		if err != nil {
+			return changed, err
+		}
+		if ev == nil || ev.Event != past || (c.BridgeLogin != "" && strings.EqualFold(ev.Actor.Login, c.BridgeLogin)) {
+			continue // the bridge's own doing, or nobody's: the plan decides
+		}
+		login := ev.Actor.Login
+		user, ok := "", false
+		if c.Identity != nil {
+			user, ok = c.Identity.GerritUser(ctx, login)
+		}
+		var why string
+		if !ok {
+			why = fmt.Sprintf("@%s has no Gerrit account to %s it with", login, action)
+		} else {
+			msg := fmt.Sprintf("PR #%d %s on GitHub.", pr.Number, past)
+			err := c.Gerrit.As(user).Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/%s", n, action), map[string]string{"message": msg}, nil)
+			if err == nil {
+				c.Logger.Info("mirrored GitHub "+past+" to Gerrit", "change", n, "pr", pr.Number, "action", action, "as", user)
+				changed = true
+				continue
+			}
+			var ge *gerrit.Error
+			if !errors.As(err, &ge) || ge.Status >= 500 {
+				return changed, fmt.Errorf("%s change %d as %s: %w", action, n, user, err)
+			}
+			why = fmt.Sprintf("Gerrit would not let %s %s it (%s)", user, action, strings.TrimSpace(ge.Body))
+		}
+		undo := "Reopening it"
+		if action == "restore" {
+			undo = "Closing it again"
+		}
+		note := fmt.Sprintf("@%s %s this PR, which would %s [change %d](%s) in Gerrit, but %s. %s.\n\n%s",
+			login, past, action, n, ch.URL, why, undo, noticeMarker)
+		if _, err := c.GitHub.CreateIssueComment(ctx, pr.Number, note); err != nil {
+			return changed, err
+		}
+		c.Logger.Info("GitHub "+past+" not mirrored", "change", n, "pr", pr.Number, "by", login, "why", why)
+		if action == "abandon" {
+			// The plan reopens it; state it so it does even if the
+			// close notice was posted before.
+			if err := c.updateState(ctx, n, "PR close refused", func(st *state.Change) { st.State.ClosedNoticePosted = false }); err != nil {
+				return changed, err
+			}
+		} else {
+			// The plan closes it again, without repeating the notice.
+			if err := c.updateState(ctx, n, "PR reopen refused", func(st *state.Change) { st.State.ClosedNoticePosted = true }); err != nil {
+				return changed, err
+			}
+		}
+	}
+	return changed, nil
 }
 
 func (c *Code) githubEnv(ctx context.Context) ([]string, error) {

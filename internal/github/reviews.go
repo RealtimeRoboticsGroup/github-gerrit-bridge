@@ -353,3 +353,25 @@ func (c *Client) DismissReview(ctx context.Context, n int, id int64, message str
 	_, err := c.Do(ctx, http.MethodPut, path, map[string]string{"message": message, "event": "DISMISS"}, nil)
 	return err
 }
+
+// IssueEvent is one event in an issue's (or PR's) history.
+type IssueEvent struct {
+	Event     string    `json:"event"` // closed, reopened, merged, ...
+	Actor     User      `json:"actor"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// LastStateEvent returns the most recent "closed" or "reopened" event of
+// issue or PR n, or nil if there is none.
+func (c *Client) LastStateEvent(ctx context.Context, n int) (*IssueEvent, error) {
+	evs, err := list[IssueEvent](ctx, c, c.RepoPath(fmt.Sprintf("issues/%d/events", n)))
+	if err != nil {
+		return nil, err
+	}
+	for i := len(evs) - 1; i >= 0; i-- {
+		if evs[i].Event == "closed" || evs[i].Event == "reopened" {
+			return &evs[i], nil
+		}
+	}
+	return nil, nil
+}

@@ -830,7 +830,7 @@ mirrored are checked, and only for reviewers with a Gerrit account.
 | Event                     | Mirror                                          |
 |---------------------------|-------------------------------------------------|
 | WIP on/off                | Draft / ready for review                        |
-| Abandon / Restore         | Close / Reopen (stack: `/unstack` that layer)   |
+| Abandon / Restore         | Close / Reopen (stack: `/unstack` that layer); and back: closing or reopening the PR abandons or restores the change as whoever did it, if Gerrit lets them (else the PR is put back, with a notice) |
 | Private change            | **Never mirrored**                              |
 | Reviewer added / attention| Request review (mapped users only)              |
 | Hashtags                  | Labels (optional)                               |
