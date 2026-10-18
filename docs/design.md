@@ -241,8 +241,8 @@ For each open, non-private change in a chain, bottom to top:
 3. Make sure a PR exists with `head=gerrit/<Change-Id>` and
    `base=gerrit/<parent Change-Id>` (or the target branch for the bottom
    change).
-   Title and body come from the commit message. The PR body links back to
-   Gerrit.
+   Title and body come from the commit message, without its `Change-Id`
+   and `Signed-off-by` trailers. The PR body links back to Gerrit.
 4. Make sure a GitHub stack exists (only for 2+ layers; see §5.4 for the
    API's quirks):
    `POST /repos/{o}/{r}/stacks {pull_requests:[bottom..top]}`. If the chain

@@ -382,6 +382,9 @@ func TestChainBecomesStack(t *testing.T) {
 			t.Errorf("PR body missing %q:\n%s", want, body)
 		}
 	}
+	if strings.Contains(body, "Change-Id") {
+		t.Errorf("PR body has the Change-Id trailer:\n%s", body)
+	}
 	// Top first, as in Gerrit.
 	if i3, i1 := strings.Index(body, "Change 3"), strings.Index(body, "Change 1"); i3 < 0 || i1 < i3 {
 		t.Errorf("relation chain not top first:\n%s", body)

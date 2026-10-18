@@ -17,11 +17,13 @@ const (
 	linksEnd   = "<!-- /bridge:links -->"
 )
 
-// messageBody is the commit message without its subject paragraph.
+// messageBody is the commit message without its subject paragraph and
+// the trailers the PR has no use for.
 func messageBody(message string) string {
 	message = strings.ReplaceAll(message, "\r\n", "\n")
 	if i := strings.Index(message, "\n\n"); i >= 0 {
-		return strings.TrimSpace(message[i+2:])
+		// Change-Id and sign-offs are Gerrit's business, not the PR's.
+		return strings.TrimSpace(bridgeTrailers.ReplaceAllString(message[i+2:], ""))
 	}
 	return ""
 }
