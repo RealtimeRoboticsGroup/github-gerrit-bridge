@@ -1126,3 +1126,38 @@ func TestPushToGerritBornBranchIsNotOverwritten(t *testing.T) {
 		}
 	}
 }
+
+// It should not matter where a change started: a GitHub-born PR, which
+// Gerrit squashed, gets the merged commit swapped onto the author's branch
+// and shows merged too.
+func TestGitHubBornSubmitShowsMerged(t *testing.T) {
+	w := bornWorld(t)
+	w.converge()
+	w.gerrit[1].Status = "MERGED" // Gerrit merged s1, its squash of h1
+	w.onMain["s1"] = true
+	w.converge()
+	if got := w.branch["feature"]; got != "s1" {
+		t.Errorf("feature = %s, want the merged commit s1", got)
+	}
+	w.replicate()
+	w.converge()
+	if pr := w.prs[1]; !pr.Merged {
+		t.Errorf("PR %s merged=%v; want merged", pr.State, pr.Merged)
+	}
+}
+
+func TestForkWithoutMaintainerEditsClosesOnSubmit(t *testing.T) {
+	w := forkWorld(t, false)
+	w.converge()
+	w.gerrit[1].Status = "MERGED"
+	w.onMain["s1"] = true
+	w.converge()
+	if got := w.branch["alice/r:main"]; got != "h1" {
+		t.Errorf("pushed %s to a fork that does not allow it", got)
+	}
+	w.replicate()
+	w.converge()
+	if pr := w.prs[1]; pr.State != "closed" || pr.Merged {
+		t.Errorf("PR %s merged=%v; want closed with a notice", pr.State, pr.Merged)
+	}
+}

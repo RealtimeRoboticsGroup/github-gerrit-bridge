@@ -890,8 +890,8 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 	}
 	var prs []*github.PullRequest
 	unstack := map[int]bool{}
-	var specs []string // Gerrit-born heads to swap for Gerrit's commits
-	var fetch []string // and where to fetch those commits from
+	specs := map[string][]string{} // push URL -> heads to swap for Gerrit's commits
+	var fetch []string             // where to fetch those commits from
 	for _, ch := range together {
 		st, err := c.Store.Load(ctx, ch.Number)
 		if err != nil {
@@ -908,12 +908,22 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 			continue
 		}
 		if pr.Head.SHA != ch.CurrentRevision {
+			// GitHub's head is the patch sets' history (Gerrit-born) or the
+			// commits Gerrit squashed (GitHub-born): swap in Gerrit's
+			// commit, which has the same files.
 			rev, ok := ch.Current()
-			if st.State.Origin == "github" || !ok {
-				continue // squashed in Gerrit: closed with a notice instead
+			if !ok {
+				continue
 			}
-			ref := "refs/heads/" + st.State.HeadBranch
-			specs = append(specs, "--force-with-lease="+ref+":"+pr.Head.SHA, ch.CurrentRevision+":"+ref)
+			url, branch := c.GitHubURL, st.State.HeadBranch
+			if fork, b, isFork := github.SplitHeadKey(st.State.HeadBranch); isFork {
+				if !pr.MaintainerCanModify {
+					continue // the author's fork: closed with a notice instead
+				}
+				url, branch = "https://github.com/"+fork+".git", b
+			}
+			ref := "refs/heads/" + branch
+			specs[url] = append(specs[url], "--force-with-lease="+ref+":"+pr.Head.SHA, ch.CurrentRevision+":"+ref)
 			fetch = append(fetch, rev.Ref)
 		}
 		if pr.Base.Ref == ch.Branch {
@@ -927,7 +937,7 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 	}
 	if c.DryRun {
 		if len(prs) > 0 {
-			c.Logger.Info("dry run: would retarget PRs before submit", "change", n, "prs", len(prs), "swapped_heads", len(specs)/2)
+			c.Logger.Info("dry run: would retarget PRs before submit", "change", n, "prs", len(prs), "swapped_heads", len(fetch))
 		}
 		return nil
 	}
@@ -939,11 +949,13 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 		if err != nil {
 			return err
 		}
-		args := append([]string{"push", "--porcelain", "--atomic", c.GitHubURL}, specs...)
-		if out, err := c.Mirror.GitEnv(ctx, env, nil, args...); err != nil {
-			return fmt.Errorf("swapping in Gerrit's commits before submit: %w\n%s", err, out)
+		for _, url := range sortedStringKeys(specs) {
+			args := append([]string{"push", "--porcelain", "--atomic", url}, specs[url]...)
+			if out, err := c.Mirror.GitEnv(ctx, env, nil, args...); err != nil {
+				return fmt.Errorf("swapping in Gerrit's commits before submit: %w\n%s", err, out)
+			}
 		}
-		c.Logger.Info("swapped PR heads for Gerrit's commits before submit", "change", n, "heads", len(specs)/2)
+		c.Logger.Info("swapped PR heads for Gerrit's commits before submit", "change", n, "heads", len(fetch))
 	}
 	for _, sn := range sortedKeys(unstack) {
 		if err := c.GitHub.Unstack(ctx, sn); err != nil && !github.IsNotFound(err) {

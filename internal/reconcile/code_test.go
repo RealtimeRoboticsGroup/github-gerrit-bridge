@@ -455,3 +455,39 @@ func TestObserveHistory(t *testing.T) {
 		}
 	}
 }
+
+// /submit of a GitHub-born PR: the author's branch gets Gerrit's squash,
+// so GitHub shows it merged; a fork that does not allow maintainer edits
+// is left alone (and closed with a notice later).
+func TestPrepareSubmitSwapsGitHubBornBranch(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	h1 := s.commit(m0, "f.txt", "1\n", "wip")
+	h2 := s.commit(h1, "f.txt", "2\n", "done") // the author's two commits
+	sq := s.commit(m0, "f.txt", "2\n", "Feature\n\nChange-Id: "+cid(1)+"\n")
+	s.change(1, cid(1), sq, "Feature\n\nChange-Id: "+cid(1)+"\n", "NEW")
+	s.push("github.git", h2, "refs/heads/feature")
+	s.pr(10, "feature", h2, "main", "brt")
+	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, PR: 10, Branch: "main", Origin: "github", HeadBranch: "feature", Lifecycle: "NEW"},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: sq, GitHubSHA: h2}}})
+	if err := c.PrepareSubmit(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ref("github.git", "refs/heads/feature"); got != sq {
+		t.Errorf("feature = %s, want Gerrit's squash %s", short(got), short(sq))
+	}
+
+	// A fork without maintainer edits: untouched.
+	s.pulls[10].Head = github.Ref{Ref: "main", SHA: h2, Repo: &struct {
+		FullName string `json:"full_name"`
+	}{"alice/r"}}
+	st, _ := store.Load(ctx, 1)
+	st.State.HeadBranch = "alice/r:main"
+	s.save(ctx, store, 1, st)
+	if err := c.PrepareSubmit(ctx, 1); err != nil {
+		t.Errorf("PrepareSubmit with a locked fork: %v", err)
+	}
+}

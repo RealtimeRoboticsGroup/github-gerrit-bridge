@@ -480,10 +480,12 @@ func MakePlan(s *Snapshot) *Plan {
 		if pr.State != "open" || pr.Merged {
 			continue
 		}
-		// A Gerrit-born PR's head is the history of its patch sets, not
-		// the merged commit: swap in the merged commit, which the bridge's
-		// own branch may hold.
-		swap := c.Status == "MERGED" && !s.githubBorn(n) && pr.Head.SHA != c.Revision
+		// A PR's head is not the merged commit when Gerrit's history
+		// differs from GitHub's: a Gerrit-born PR's head is the history of
+		// its patch sets, a GitHub-born one's the commits Gerrit squashed,
+		// and a submit may rebase. Swap the merged commit in (same files),
+		// unless it is a fork that does not allow maintainer edits.
+		swap := c.Status == "MERGED" && pr.Head.SHA != c.Revision && !s.NoPush[n]
 		if c.Status == "MERGED" && (pr.Head.SHA == c.Revision || swap) && !s.OnGitHubBranch[c.Revision] {
 			// The PR's head is (now) exactly the merged commit, and
 			// replication has not brought it to GitHub yet. GitHub marks a
@@ -492,7 +494,11 @@ func MakePlan(s *Snapshot) *Plan {
 			// when they land, GitHub shows it merged. (Measured
 			// 2026-10-11: a PR still based on the layer below stays open,
 			// and once the commits are in, it can no longer be retargeted.)
-			if swap {
+			if swap && s.githubBorn(n) {
+				// The author's branch, which may be in a fork.
+				appends[s.head(n, c.ChangeID)] = Append{Change: n, PatchSet: c.PatchSet, Revision: c.Revision,
+					Lease: pr.Head.SHA, Force: true}
+			} else if swap {
 				refs[s.head(n, c.ChangeID)] = c.Revision
 			}
 			if pr.Base.Ref != s.Branch {

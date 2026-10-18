@@ -855,15 +855,18 @@ mirrored are checked, and only for reviewers with a Gerrit account.
   be retargeted ("no new commits"). So when Gerrit reports a change merged
   and the PR's head is exactly the merged commit, the bridge immediately
   takes the PR out of its stack and retargets it to the target branch.
-  A Gerrit-born PR whose head is its patch-set history (§5.2.1) first has
-  its head swapped for the merged commit, a force-push. This also covers
-  submits that rebased the commit. `/submit` does both before submitting.
+  A PR whose head is not the merged commit first has its head swapped for
+  it, a force-push of the same files: a Gerrit-born PR's patch-set history
+  (§5.2.1), a GitHub-born PR's commits that Gerrit squashed (the author's
+  branch; a fork only if it allows maintainer edits), and submits that
+  rebased the commit. `/submit` does both before submitting.
   Replication then lands the commits and GitHub shows it merged. The
   bridge hears the merge event within a second, while replication waits
   `replicationDelay` (default 15 s; AOS uses the default). If replication wins anyway, or the
   submit rewrote the commit (rebase, cherry-pick, any GitHub-born squash
   that is not a no-op), the PR is closed with a "Merged in Gerrit" notice.
-  For a Gerrit-born PR with history, that happens when replication wins.
+  That happens when replication wins, or for a fork without maintainer
+  edits.
   A PR's head branch is never deleted while the PR is open (that would
   close it unmerged). Verified with `tools/testenv/rehearsal.sh`.
 - **GitHub merge button**: branch protection lets only the bridge App push
