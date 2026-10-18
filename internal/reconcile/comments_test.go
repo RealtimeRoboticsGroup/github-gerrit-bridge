@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,8 +23,10 @@ type fakeGerrit struct {
 	// noFixes makes SetReview fail like a site without the fix
 	// suggestions feature flag.
 	noFixes bool
-	// votes records labels set by SetReview, as "user:Label=value".
+	// votes records labels set by SetReview, as "user:Label=value";
+	// labels holds the resulting votes, label -> user -> value.
 	votes       []string
+	labels      map[string]map[string]int
 	refuseRunAs bool
 	maxVote     int
 	messages    []gerrit.ChangeMessage
@@ -33,6 +37,17 @@ type fakeGerrit struct {
 	clock       int
 	nextID      int
 	reviews     int
+}
+
+// vote sets user's vote on the current patch set, as Gerrit would.
+func (f *fakeGerrit) vote(user, label string, v int) {
+	if f.labels == nil {
+		f.labels = map[string]map[string]int{}
+	}
+	if f.labels[label] == nil {
+		f.labels[label] = map[string]int{}
+	}
+	f.labels[label][user] = v
 }
 
 func (f *fakeGerrit) tick() string {
@@ -71,6 +86,7 @@ func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ i
 	f.reviews++
 	for l, v := range in.Labels {
 		f.votes = append(f.votes, fmt.Sprintf("%s:%s=%d", author.Username, l, v))
+		f.vote(author.Username, l, v)
 	}
 	ts := f.tick()
 	var ps int
@@ -94,7 +110,15 @@ func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ i
 }
 
 func (f *fakeGerrit) GetChange(context.Context, int, ...string) (*gerrit.ChangeInfo, error) {
-	ci := &gerrit.ChangeInfo{CurrentRevision: f.current, Revisions: map[string]gerrit.RevisionInfo{}, Messages: f.messages}
+	ci := &gerrit.ChangeInfo{CurrentRevision: f.current, Revisions: map[string]gerrit.RevisionInfo{}, Messages: f.messages,
+		Labels: map[string]gerrit.LabelInfo{}}
+	for label, byUser := range f.labels {
+		var l gerrit.LabelInfo
+		for _, u := range slices.Sorted(maps.Keys(byUser)) {
+			l.All = append(l.All, gerrit.ApprovalInfo{AccountInfo: gerrit.AccountInfo{Username: u}, Value: byUser[u]})
+		}
+		ci.Labels[label] = l
+	}
 	for sha, ps := range f.revs {
 		ci.Revisions[sha] = gerrit.RevisionInfo{Number: ps}
 	}
@@ -126,6 +150,8 @@ func (f *fakeGerrit) user(id, path string, ps, line int, msg, inReplyTo string, 
 
 type fakeGitHub struct {
 	edits map[int64]string // edited comment id -> editor
+	// dismissed records DismissReview calls, as "id: message".
+	dismissed []string
 	// afterReview runs once, when the bridge reads back a review it posted.
 	afterReview func()
 	rcs         []github.ReviewComment
@@ -923,5 +949,62 @@ func TestMessageVotes(t *testing.T) {
 		if got := messageVotes(msg); got != want {
 			t.Errorf("messageVotes(%q) = %q, want %q", msg, got, want)
 		}
+	}
+}
+
+func (h *fakeGitHub) DismissReview(_ context.Context, _ int, id int64, message string) error {
+	for i := range h.reviews {
+		if h.reviews[i].ID == id {
+			h.reviews[i].State = "DISMISSED"
+		}
+	}
+	h.dismissed = append(h.dismissed, fmt.Sprintf("%d: %s", id, message))
+	return nil
+}
+
+// Design §6.4: GitHub shows what Gerrit counts. An approval whose vote
+// was changed in Gerrit, or reset by a new patch set, is dismissed.
+func TestStaleApprovalIsDismissed(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+	e.sync(t)
+	e.settled(t)
+	if len(e.h.dismissed) != 0 {
+		t.Fatalf("dismissed an approval Gerrit counts: %v", e.h.dismissed)
+	}
+	// bob changes his mind in Gerrit.
+	e.g.vote("bobg", "Code-Review", -2)
+	e.sync(t)
+	if len(e.h.dismissed) != 1 || !strings.HasPrefix(e.h.dismissed[0], "70: ") ||
+		!strings.Contains(e.h.dismissed[0], "@bob is now Code-Review -2 on patch set 2") {
+		t.Fatalf("dismissed = %v", e.h.dismissed)
+	}
+	e.settled(t)
+	if len(e.h.dismissed) != 1 {
+		t.Errorf("dismissed again: %v", e.h.dismissed)
+	}
+	// A change request agrees with -2: kept. Then a reset (no vote): dismissed.
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 71, State: "CHANGES_REQUESTED", CommitID: "sha2", User: github.User{Login: "bob"},
+		Body: "No.", HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-71"})
+	e.sync(t)
+	e.g.vote("bobg", "Code-Review", -1) // what the change request cast
+	e.settled(t)
+	if len(e.h.dismissed) != 1 {
+		t.Fatalf("dismissed a change request Gerrit agrees with: %v", e.h.dismissed)
+	}
+	e.g.vote("bobg", "Code-Review", 0)
+	e.sync(t)
+	if len(e.h.dismissed) != 2 || !strings.Contains(e.h.dismissed[1], "@bob has no Code-Review vote") {
+		t.Errorf("dismissed = %v", e.h.dismissed)
+	}
+	// Reviews by people without a Gerrit account never voted: left alone.
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 72, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "stranger"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-72"})
+	e.sync(t)
+	e.settled(t)
+	if len(e.h.dismissed) != 2 {
+		t.Errorf("dismissed an unmapped reviewer's approval: %v", e.h.dismissed)
 	}
 }

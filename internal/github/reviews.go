@@ -345,3 +345,11 @@ func (c *Client) Edits(ctx context.Context, n int) (map[int64]string, error) {
 		after = ts.PageInfo.EndCursor
 	}
 }
+
+// DismissReview dismisses approval or change request id on PR n, saying
+// why.
+func (c *Client) DismissReview(ctx context.Context, n int, id int64, message string) error {
+	path := c.RepoPath(fmt.Sprintf("pulls/%d/reviews/%d/dismissals", n, id))
+	_, err := c.Do(ctx, http.MethodPut, path, map[string]string{"message": message, "event": "DISMISS"}, nil)
+	return err
+}

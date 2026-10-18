@@ -740,6 +740,12 @@ removed.
 A GitHub approval on a stack layer applies only to that layer's Gerrit
 change. This matches the semantics on both sides.
 
+GitHub shows what Gerrit counts: when a reviewer's Code-Review vote no
+longer agrees with their GitHub approval or change request (they changed
+it in Gerrit, a new patch set reset it, or it was never cast), the bridge
+dismisses the review, saying what the vote is now. Only reviews already
+mirrored are checked, and only for reviewers with a Gerrit account.
+
 ### 6.5 CI
 
 **GitHub follows Gerrit.** Gerrit's CI is the only CI.

@@ -43,6 +43,7 @@ type GitHubAPI interface {
 	SetThreadResolved(ctx context.Context, threadID string, resolved bool) error
 	UpdateReviewComment(ctx context.Context, id int64, body string) error
 	UpdateIssueComment(ctx context.Context, id int64, body string) error
+	DismissReview(ctx context.Context, n int, id int64, message string) error
 	FileAt(ctx context.Context, ref, path string) ([]byte, error)
 	IsAncestor(ctx context.Context, a, b string) (bool, error)
 }
@@ -140,6 +141,8 @@ type commentSnapshot struct {
 	shaToPS  map[string]int
 	current  int
 	revision string
+	// labels are the current patch set's votes.
+	labels map[string]gerrit.LabelInfo
 }
 
 // ghSHA is the GitHub commit standing for patch set ps.
@@ -235,6 +238,9 @@ func (c *Comments) Sync(ctx context.Context, n int) error {
 		if err := c.syncResolution(ctx, n, pr, snap, threads); err != nil {
 			return err
 		}
+		if err := c.dismissStale(ctx, n, pr, snap, m); err != nil {
+			return err
+		}
 		break
 	}
 	var ts []state.Thread
@@ -264,7 +270,7 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	for i := range s.gerrit {
 		s.byID[s.gerrit[i].ID] = &s.gerrit[i]
 	}
-	ch, err := c.Gerrit.GetChange(ctx, n, "ALL_REVISIONS", "MESSAGES", "DETAILED_ACCOUNTS")
+	ch, err := c.Gerrit.GetChange(ctx, n, "ALL_REVISIONS", "MESSAGES", "DETAILED_ACCOUNTS", "DETAILED_LABELS")
 	if err != nil {
 		return nil, err
 	}
@@ -274,6 +280,7 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	}
 	s.revision = ch.CurrentRevision
 	s.messages = ch.Messages
+	s.labels = ch.Labels
 	s.current = s.shaToPS[ch.CurrentRevision]
 	// GitHub-born revisions have their own SHAs (design §5.2).
 	s.psGitHub = map[int]string{}
@@ -1031,6 +1038,66 @@ func (c *Comments) lineLen(ctx context.Context, n, ps int, path string, line int
 		return 0
 	}
 	return len(lines[line-1])
+}
+
+// --- approvals ---
+
+// dismissStale dismisses GitHub approvals and change requests that Gerrit
+// no longer agrees with (design §6.4): the reviewer's Code-Review vote is
+// now the other way or gone, because they changed it in Gerrit, a new
+// patch set reset it, or it was never cast (made on an older patch set).
+// Only reviews already mirrored count, so a vote still on its way is not
+// mistaken for a missing one; GitHub then shows what Gerrit counts.
+func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapshot, m *commentMap) error {
+	if c.Users == nil || c.GerritAs == nil {
+		return nil // no votes are cast from GitHub
+	}
+	// GitHub's review state per reviewer is their latest approval, change
+	// request or dismissal; comments do not change it.
+	latest := map[string]github.Review{}
+	for _, rv := range s.reviews {
+		switch rv.State {
+		case "APPROVED", "CHANGES_REQUESTED", "DISMISSED":
+			k := strings.ToLower(rv.User.Login)
+			if cur, ok := latest[k]; !ok || !rv.SubmittedAt.Before(cur.SubmittedAt) {
+				latest[k] = rv
+			}
+		}
+	}
+	for _, login := range sortedStringKeys(latest) {
+		rv := latest[login]
+		if rv.State == "DISMISSED" || c.mine(rv.User.Login) || m.byGitHub[ghKey(kindReviewBody, rv.ID)] == nil {
+			continue
+		}
+		user, ok := c.Users.GerritUser(ctx, rv.User.Login)
+		if !ok {
+			continue // never voted: the review is only text in Gerrit
+		}
+		v, voted := 0, false
+		for _, a := range s.labels["Code-Review"].All {
+			if strings.EqualFold(a.Username, user) && a.Value != 0 {
+				v, voted = a.Value, true
+			}
+		}
+		if (rv.State == "APPROVED" && v > 0) || (rv.State == "CHANGES_REQUESTED" && v < 0) {
+			continue
+		}
+		now := "has no Code-Review vote"
+		if voted {
+			now = "is now Code-Review " + voteString(v)
+		}
+		msg := fmt.Sprintf("In [Gerrit](%s), @%s %s on patch set %d, and Gerrit's vote is what counts.",
+			c.Gerrit.ChangeURL(c.Project, n), rv.User.Login, now, s.current)
+		if c.DryRun {
+			c.Logger.Info("dry run: would dismiss GitHub review", "change", n, "pr", pr, "review", rv.ID, "reason", now)
+			continue
+		}
+		if err := c.GitHub.DismissReview(ctx, pr, rv.ID, msg); err != nil {
+			return fmt.Errorf("dismissing review %d on #%d: %w", rv.ID, pr, err)
+		}
+		c.Logger.Info("dismissed GitHub review Gerrit disagrees with", "change", n, "pr", pr, "review", rv.ID, "user", rv.User.Login, "state", rv.State, "gerrit", now)
+	}
+	return nil
 }
 
 // --- resolution ---
