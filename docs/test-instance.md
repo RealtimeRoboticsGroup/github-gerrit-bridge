@@ -119,7 +119,9 @@ GitHub by a trusted reviewer; a push by someone else uploaded as the
 pusher; draft toggles; and a chain submitted in Gerrit itself, where the
 bridge must retarget the PRs to `main` within replication's 15 seconds for
 GitHub to show them merged; and a PR from AustinSchuhBRT's fork
-(`AustinSchuhBRT/bridge-scratch`, branch `main`), with Gerrit patch sets
+(`AustinSchuhBRT/bridge-scratch-fork`, branch `main`; the first fork,
+`AustinSchuhBRT/bridge-scratch`, stopped being one when the repository
+was made public), with Gerrit patch sets
 pushed back to the fork while maintainer edits are allowed and reported
 in `gerrit/sync` when they are not; and CI in Gerrit's Checks tab (each
 job running, then passed or failed, Rerun adding an attempt) and on GitHub

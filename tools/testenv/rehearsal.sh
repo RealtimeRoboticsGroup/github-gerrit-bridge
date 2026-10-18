@@ -218,9 +218,9 @@ wait_for "GitHub shows both PRs merged" gmerged
 
 # --- 10. A PR from a fork, on a branch named like the repository's main ---
 step "10. A PR from AustinSchuhBRT's fork"
-FORK=AustinSchuhBRT/bridge-scratch
+FORK=AustinSchuhBRT/bridge-scratch-fork
 K="Fork ${RUN}"
-(cd "${BRT_CLONE}" && { git remote get-url fork >/dev/null 2>&1 || git remote add fork "https://github.com/${FORK}.git"; } &&
+(cd "${BRT_CLONE}" && { git remote set-url fork "https://github.com/${FORK}.git" 2>/dev/null || git remote add fork "https://github.com/${FORK}.git"; } &&
   git fetch -q github && git checkout -q -B "fork-${RUN}" github/main)
 commit "${BRT_CLONE}" "fork-${RUN}.txt" "${K}"
 (cd "${BRT_CLONE}" && git push -qf fork HEAD:refs/heads/main 2>/dev/null)
