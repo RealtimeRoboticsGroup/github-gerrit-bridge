@@ -57,6 +57,9 @@ type chainEntry struct {
 // from there. The test instance's Gerrit is not reachable from GitHub.
 const gerritLogo = `<img src="https://gerrit-review.googlesource.com/favicon.ico" alt="Gerrit" height="16">`
 
+// githubLogo is GitHub's favicon, marking the PR links.
+const githubLogo = `<img src="https://github.githubassets.com/favicons/favicon.png" alt="GitHub" height="16">`
+
 // linksBlock renders the bridge-owned block.
 func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note string) string {
 	var b strings.Builder
@@ -70,14 +73,18 @@ func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note
 	var lines []string
 	for _, e := range slices.Backward(chain) {
 		line := fmt.Sprintf("[change %d, patch set %d](%s/%d)", e.Change, e.PatchSet, e.URL, e.PatchSet)
+		var pr []string
 		switch {
 		case e.PR != 0:
-			line += fmt.Sprintf(" (#%d)", e.PR)
+			pr = append(pr, fmt.Sprintf("%s #%d", githubLogo, e.PR))
 		case !e.This:
-			line += " (no PR yet)"
+			pr = append(pr, "no PR yet:")
 		}
 		if e.Subject != "" {
-			line += " " + e.Subject
+			pr = append(pr, e.Subject)
+		}
+		if len(pr) > 0 {
+			line += " (" + strings.Join(pr, " ") + ")"
 		}
 		if e.This {
 			line = "**" + line + "** ← this PR"
