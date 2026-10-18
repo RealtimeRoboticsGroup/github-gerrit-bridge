@@ -377,7 +377,7 @@ func TestChainBecomesStack(t *testing.T) {
 		t.Errorf("stacks = %v", got)
 	}
 	body := w.pr(2).Body
-	for _, want := range []string{"Body of 2, ps 1.", linksStart, "**[change 2, patch set 1](https://g/c/p/+/2/1) (" + githubLogo + " #2 Change 2)** ← this PR", "[change 1, patch set 1](https://g/c/p/+/1/1) (" + githubLogo + " #1 Change 1)"} {
+	for _, want := range []string{"Body of 2, ps 1.", linksStart, "**[Change 2, patch set 1](https://g/c/p/+/2/1) (" + githubLogo + " #2)** ← this PR", "[Change 1, patch set 1](https://g/c/p/+/1/1) (" + githubLogo + " #1)"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("PR body missing %q:\n%s", want, body)
 		}
@@ -401,7 +401,7 @@ func TestSingleChangeHasNoStack(t *testing.T) {
 		t.Errorf("stacks=%v draft=%v", w.stacks, w.pr(1).Draft)
 	}
 	// A chain of one still links to Gerrit, with the patch set.
-	if body := w.pr(1).Body; !strings.Contains(body, "[change 1, patch set 1](https://g/c/p/+/1/1) ("+githubLogo+" #1 Change 1)** ← this PR") {
+	if body := w.pr(1).Body; !strings.Contains(body, "[Change 1, patch set 1](https://g/c/p/+/1/1) ("+githubLogo+" #1)** ← this PR") {
 		t.Errorf("PR body has no link to its patch set:\n%s", body)
 	}
 	w.gerrit[1].WIP = false

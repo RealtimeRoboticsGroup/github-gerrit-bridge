@@ -72,19 +72,16 @@ func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note
 	b.WriteString("**Relation chain**\n\n")
 	var lines []string
 	for _, e := range slices.Backward(chain) {
-		line := fmt.Sprintf("[change %d, patch set %d](%s/%d)", e.Change, e.PatchSet, e.URL, e.PatchSet)
-		var pr []string
+		title := e.Subject
+		if title == "" {
+			title = fmt.Sprintf("change %d", e.Change)
+		}
+		line := fmt.Sprintf("[%s, patch set %d](%s/%d)", escapeLinkText(title), e.PatchSet, e.URL, e.PatchSet)
 		switch {
 		case e.PR != 0:
-			pr = append(pr, fmt.Sprintf("%s #%d", githubLogo, e.PR))
+			line += fmt.Sprintf(" (%s #%d)", githubLogo, e.PR)
 		case !e.This:
-			pr = append(pr, "no PR yet:")
-		}
-		if e.Subject != "" {
-			pr = append(pr, e.Subject)
-		}
-		if len(pr) > 0 {
-			line += " (" + strings.Join(pr, " ") + ")"
+			line += " (no PR yet)"
 		}
 		if e.This {
 			line = "**" + line + "** ← this PR"
@@ -117,4 +114,10 @@ func composeBody(current, message, lastHash, block string) (body, hash string) {
 		return block, hash
 	}
 	return part + "\n\n" + block, hash
+}
+
+// escapeLinkText keeps a commit subject from breaking out of a Markdown
+// link's text.
+func escapeLinkText(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `[`, `\[`, `]`, `\]`).Replace(s)
 }
