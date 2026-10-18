@@ -471,6 +471,21 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		_, err := gh.AddToStack(ctx, a.Stack, a.PRs)
 		return err
 	case ClosePR:
+		if s.Changes[a.Change].Status == "MERGED" {
+			// GitHub may have just marked it merged (replication landed
+			// its head on the target branch while this plan was made):
+			// then there is nothing to close or explain.
+			cur, err := gh.GetPull(ctx, a.PR)
+			if err != nil {
+				return err
+			}
+			if cur.Merged || cur.State != "open" {
+				return c.updateState(ctx, a.Change, "PR merged on GitHub", func(st *state.Change) {
+					st.State.ClosedNoticePosted = true
+					st.State.Lifecycle = s.Changes[a.Change].Status
+				})
+			}
+		}
 		if a.Comment != "" {
 			if _, err := gh.CreateIssueComment(ctx, a.PR, a.Comment+"\n\n"+noticeMarker); err != nil {
 				return err
