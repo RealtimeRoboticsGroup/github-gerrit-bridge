@@ -124,9 +124,23 @@ step "3. Amend only the middle change, then rebase the top"
   git push -q gerrit HEAD:refs/for/main 2>/dev/null)
 frozen() { [[ "$(me api "repos/${R}/pulls/${P3}" --jq .base.ref)" == gerrit-base/* ]]; }
 wait_for "the top PR moves to a frozen base and leaves the stack" frozen
+# head_commit <pr> <jq>: a field of the PR head's commit.
+head_commit() { me api "repos/${R}/commits/$(me api "repos/${R}/pulls/$1" --jq .head.sha)" --jq "$2"; }
+appended() { [[ "$(head_commit "${P2}" '[.parents[].sha] | join(" ")')" == "${HEAD2}" ]] &&
+  [[ "$(head_commit "${P2}" '.commit.message')" == "Patch set 2 from Gerrit"* ]]; }
+wait_for "the amend is a new commit on top of patch set 1 (history kept)" appended
+outdated_only() {  # the suggestion on line 1 is outdated (the line changed); the thread is still there
+  me api graphql -f query="query{repository(owner:\"AustinSchuh\",name:\"bridge-scratch\"){pullRequest(number:${P2}){reviewThreads(first:50){nodes{comments(first:1){nodes{body}}}}}}}" \
+    --jq '.data.repository.pullRequest.reviewThreads.nodes[].comments.nodes[].body' | grep -q "Rehearsal ${RUN}: suggestion"
+}
+wait_for "the review threads stay on the PR" outdated_only
 (cd "${ME_CLONE}" && git cherry-pick "chain-${RUN}" >/dev/null && git push -q gerrit HEAD:refs/for/main 2>/dev/null)
 rejoined() { [[ "$(me api "repos/${R}/pulls/${P3}" --jq '.stack.size // 0')" == 3 ]] && [[ "$(me api "repos/${R}/pulls/${P3}" --jq .base.ref)" == gerrit/* ]]; }
 wait_for "rebasing it rejoins the stack" rejoined
+merge_of_base() { [[ "$(head_commit "${P3}" '.parents | length')" == 2 ]] &&
+  [[ "$(head_commit "${P3}" '.commit.message')" == "Patch set 2 from Gerrit, rebased"* ]] &&
+  [[ "$(me api "repos/${R}/pulls/${P3}/files" --jq '[.[].filename] | join(" ")')" == "chain-${RUN}-3.txt" ]]; }
+wait_for "the rebase is a merge of the new base; the PR still shows only its own file" merge_of_base
 
 # --- 4. Approve on GitHub, /submit from GitHub, replication marks merged ---
 step "4. Approve on GitHub, then /submit"
@@ -191,6 +205,13 @@ F1=$(change "${E1}"); F2=$(change "${E2}"); O1=$(pr_for "${E1}"); O2=$(pr_for "$
 for c in "${F1}" "${F2}"; do gerrit_as AustinSchuh POST "changes/${c}/revisions/current/review" '{"labels":{"Code-Review":2}}' >/dev/null; done
 gsubmittable() { for c in "${F1}" "${F2}"; do gerrit "changes/${c}?o=SUBMITTABLE" | jq -e '.submittable' || return 1; done; }
 wait_for "both submittable once CI verifies" gsubmittable
+# Amend the top one, so its PR head is the bridge's history commit: the
+# bridge must swap in Gerrit's commit before replication lands it.
+(cd "${ME_CLONE}" && echo "amended" >> "gsubmit-${RUN}-2.txt" && git commit -qa --amend --no-edit && git push -q gerrit HEAD:refs/for/main 2>/dev/null)
+ps2_on_github() { [[ "$(head_commit "${O2}" '.commit.message')" == "Patch set 2 from Gerrit"* ]]; }
+wait_for "the amend reaches the PR as a new commit" ps2_on_github
+for c in "${F1}" "${F2}"; do gerrit_as AustinSchuh POST "changes/${c}/revisions/current/review" '{"labels":{"Code-Review":2}}' >/dev/null; done
+wait_for "both submittable again once CI verifies" gsubmittable
 gerrit_as AustinSchuh POST "changes/${F2}/submit" "{}" >/dev/null
 gmerged() { for p in "${O1}" "${O2}"; do [[ "$(me api "repos/${R}/pulls/${p}" --jq .merged)" == true ]] || return 1; done; }
 wait_for "GitHub shows both PRs merged" gmerged

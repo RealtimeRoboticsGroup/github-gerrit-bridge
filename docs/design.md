@@ -231,7 +231,9 @@ mapping be partly rebuilt if `refs/bridge/*` is ever lost.
 For each open, non-private change in a chain, bottom to top:
 
 1. Fetch the current patch set into `gitmirror`.
-2. Force-push it to `refs/heads/gerrit/<Change-Id>` on GitHub. This branch
+2. Push it to `refs/heads/gerrit/<Change-Id>` on GitHub. The first patch
+   set is Gerrit's commit itself. Later ones go on top of the PR's history
+   (§5.2.1), so the PR keeps every patch set. This branch
    is bridge-owned, and the name stays the same across patch sets. One
    Change-Id can exist on several target branches (for example
    cherry-picks), so changes that target anything other than the default
@@ -393,8 +395,23 @@ Conclusions:
   changed (it is expected to show up as outdated straight away).
 
 Appending a commit instead of force-pushing (§5.2) changes nothing about
-comments, because GitHub re-maps against the PR diff either way. Appending
-only protects the GitHub user's local branch.
+where comments land, because GitHub re-maps against the PR diff either
+way. It keeps the history, though, and that is what reviewers on GitHub
+use: "changes since your last review", the per-commit views, and the
+commits their comments were written against. So since 2026-10-17 every
+new patch set of a Gerrit-born change goes on top of its PR's head too:
+
+- **Same parent** (an amend): a commit "Patch set N from Gerrit" with the
+  patch set's tree, on top of the head.
+- **New parent** (rebased in Gerrit, or the change below has a new patch
+  set): a merge commit "Patch set N from Gerrit, rebased" of the head and
+  the new parent's GitHub commit, with the patch set's tree. The PR's diff
+  against its base is still exactly the patch set's own change.
+- **Same tree and parent** (say, a commit-message edit): nothing is pushed.
+
+The GitHub commits then differ from Gerrit's, as for GitHub-born changes,
+and `revisions.json` maps them. At submit the bridge swaps each PR's head
+for Gerrit's commit (§6.7), so GitHub can still show it merged.
 
 ### 5.3 Conflicts in code
 
@@ -587,9 +604,10 @@ The scenarios:
 Each side always links to the other, so users can find it.
 
 - **GitHub PR body:** a block the bridge owns, between
-  `<!-- bridge:links -->` markers. It holds the Gerrit change URL and
-  number, the current patch set, and the Gerrit relation chain (each entry
-  with its matching PR). The bridge rewrites only this block, so users'
+  `<!-- bridge:links -->` markers. It holds the Gerrit relation chain, top
+  first as in Gerrit and shown even for a single change. Each entry links
+  to its Gerrit change and its PR, and this PR's own entry links to the
+  current patch set. The bridge rewrites only this block, so users'
   edits elsewhere in the body are kept.
 - **GitHub checks:** every `gerrit/*` check run's `details_url` points at
   the Gerrit change, so it is one click from the merge box.
@@ -803,9 +821,11 @@ change. This matches the semantics on both sides.
 - **Gerrit submit** (single change or the whole chain): Gerrit updates
   `main`, and replication copies it to GitHub. If submit used
   fast-forward/merge, GitHub sees the PR head SHAs in `main` and
-  auto-detects the merge. If submit used rebase/cherry-pick, the SHAs differ,
-  so the bridge closes each PR with "Merged as \<sha\> in Gerrit change N"
-  and deletes the `gerrit/<Change-Id>` branches. GitHub retargets the remaining stack
+  auto-detects the merge. Otherwise the PR heads are not the merged commits
+  (rebase/cherry-pick submits, and PRs with patch-set history). For
+  Gerrit-born PRs the bridge swaps the heads in (next point). Other PRs are
+  closed with "Merged in Gerrit: change N". The `gerrit/<Change-Id>`
+  branches are then deleted, and GitHub retargets the remaining stack
   layers.
 - **Showing the PRs as merged (measured 2026-10-11).** GitHub marks a PR
   merged only when its head commit arrives on the PR's **base** branch. A
@@ -814,12 +834,16 @@ change. This matches the semantics on both sides.
   even after a minute), and once the commits are in, the PR can no longer
   be retargeted ("no new commits"). So when Gerrit reports a change merged
   and the PR's head is exactly the merged commit, the bridge immediately
-  takes the PR out of its stack and retargets it to the target branch;
-  replication then lands the commits and GitHub shows it merged. The
+  takes the PR out of its stack and retargets it to the target branch.
+  A Gerrit-born PR whose head is its patch-set history (§5.2.1) first has
+  its head swapped for the merged commit, a force-push. This also covers
+  submits that rebased the commit. `/submit` does both before submitting.
+  Replication then lands the commits and GitHub shows it merged. The
   bridge hears the merge event within a second, while replication waits
   `replicationDelay` (default 15 s; AOS uses the default). If replication wins anyway, or the
   submit rewrote the commit (rebase, cherry-pick, any GitHub-born squash
   that is not a no-op), the PR is closed with a "Merged in Gerrit" notice.
+  For a Gerrit-born PR with history, that happens when replication wins.
   A PR's head branch is never deleted while the PR is open (that would
   close it unmerged). Verified with `tools/testenv/rehearsal.sh`.
 - **GitHub merge button**: branch protection lets only the bridge App push

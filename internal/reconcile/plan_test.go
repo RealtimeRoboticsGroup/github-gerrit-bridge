@@ -24,8 +24,10 @@ type world struct {
 	appendOK map[int]bool
 	// onGitHubMain is what replication has pushed to GitHub's main.
 	onGitHubMain map[string]bool
-	nextNum      int
-	log          []string
+	// parents is the commit graph, for HasParent.
+	parents map[string][]string
+	nextNum int
+	log     []string
 }
 
 func newWorld(t *testing.T) *world {
@@ -33,6 +35,7 @@ func newWorld(t *testing.T) *world {
 		t: t, gerrit: map[int]*GerritChange{}, branch: map[string]string{"main": "m0"},
 		prs: map[int]*github.PullRequest{}, stacks: map[int]*github.Stack{}, state: map[int]*state.Change{},
 		onMain: map[string]bool{"m0": true}, appendOK: map[int]bool{}, onGitHubMain: map[string]bool{}, nextNum: 1,
+		parents: map[string][]string{},
 	}
 }
 
@@ -47,6 +50,7 @@ func (w *world) upload(n int, rev, parent string) {
 	}
 	c.PatchSet++
 	c.Revision, c.Parent = rev, parent
+	w.parents[rev] = []string{parent}
 	c.Subject = fmt.Sprintf("Change %d", n)
 	c.Message = fmt.Sprintf("Change %d\n\nBody of %d, ps %d.\n\nChange-Id: %s", n, n, c.PatchSet, c.ChangeID)
 }
@@ -75,6 +79,7 @@ func (w *world) snapshot() *Snapshot {
 	}
 	s.AppendOK = map[int]bool{}
 	s.SameTree = map[int]string{}
+	s.HasParent = map[int]bool{}
 	for n, st := range w.state {
 		if st.State.Origin == "github" {
 			s.GitHubBranches[st.State.HeadBranch] = w.branch[st.State.HeadBranch]
@@ -120,7 +125,24 @@ func (w *world) snapshot() *Snapshot {
 		cp := *st
 		s.State[n] = &cp
 	}
+	for n, c := range s.Changes {
+		if gh, ok := s.GitHubBranches[s.head(n, c.ChangeID)]; ok && !s.githubBorn(n) {
+			s.HasParent[n] = w.isAncestor(s.ghCommit(c.Parent), gh)
+		}
+	}
 	return s
+}
+
+func (w *world) isAncestor(a, b string) bool {
+	if a == b {
+		return true
+	}
+	for _, p := range w.parents[b] {
+		if w.isAncestor(a, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *world) stackOf(pr int) *github.Stack {
@@ -150,6 +172,11 @@ func (w *world) apply(p *Plan) {
 				sha := ap.Revision
 				if !ap.Force {
 					sha = "append(" + ap.Onto + "," + ap.Revision + ")"
+					w.parents[sha] = []string{ap.Onto}
+					if ap.Merge != "" {
+						sha = "merge(" + ap.Onto + "," + ap.Merge + "," + ap.Revision + ")"
+						w.parents[sha] = []string{ap.Onto, ap.Merge}
+					}
 				}
 				w.branch[name] = sha
 				if w.state[ap.Change] == nil {
@@ -262,6 +289,10 @@ func (w *world) apply(p *Plan) {
 		if st == nil || st.State.PR == 0 {
 			continue
 		}
+		if gh := w.branch[d.Head]; st.State.Origin != "github" && gh == w.gerrit[n].Revision &&
+			!slices.ContainsFunc(st.Revisions, func(r state.Revision) bool { return r.GitHubSHA == gh }) {
+			st.Revisions = append(st.Revisions, state.Revision{PatchSet: w.gerrit[n].PatchSet, GerritSHA: gh, GitHubSHA: gh})
+		}
 		st.State.Title = w.gerrit[n].Subject
 		st.State.BodyHash = d.BodyHash
 		if st.State.Origin == "github" {
@@ -346,10 +377,14 @@ func TestChainBecomesStack(t *testing.T) {
 		t.Errorf("stacks = %v", got)
 	}
 	body := w.pr(2).Body
-	for _, want := range []string{"Body of 2, ps 1.", linksStart, "[change 2](https://g/c/p/+/2)", "← this PR", "(#1) Change 1"} {
+	for _, want := range []string{"Body of 2, ps 1.", linksStart, "[change 2, patch set 1](https://g/c/p/+/2/1)** ← this PR", "[change 1](https://g/c/p/+/1) (#1) Change 1"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("PR body missing %q:\n%s", want, body)
 		}
+	}
+	// Top first, as in Gerrit.
+	if i3, i1 := strings.Index(body, "Change 3"), strings.Index(body, "Change 1"); i3 < 0 || i1 < i3 {
+		t.Errorf("relation chain not top first:\n%s", body)
 	}
 	// A converged world stays still.
 	if p := MakePlan(w.snapshot()); len(p.Actions) != 0 {
@@ -364,6 +399,10 @@ func TestSingleChangeHasNoStack(t *testing.T) {
 	w.converge()
 	if len(w.stacks) != 0 || !w.pr(1).Draft {
 		t.Errorf("stacks=%v draft=%v", w.stacks, w.pr(1).Draft)
+	}
+	// A chain of one still links to Gerrit, with the patch set.
+	if body := w.pr(1).Body; !strings.Contains(body, "[change 1, patch set 1](https://g/c/p/+/1/1)** ← this PR") {
+		t.Errorf("PR body has no link to its patch set:\n%s", body)
 	}
 	w.gerrit[1].WIP = false
 	w.converge()
@@ -904,16 +943,134 @@ func TestReplicationFirstFallsBackToClose(t *testing.T) {
 	}
 }
 
-func TestRebasedSubmitCloses(t *testing.T) {
+func TestRebasedSubmitShowsMerged(t *testing.T) {
 	w := newWorld(t)
 	w.upload(1, "a1", "m0")
 	w.converge()
-	// Submitted with rebase: Gerrit merged a different commit.
+	// Submitted with rebase: Gerrit merged a different commit, which the
+	// bridge swaps in before replication brings it.
 	w.gerrit[1].Status = "MERGED"
 	w.gerrit[1].Revision = "a1-rebased"
 	w.onMain["a1-rebased"] = true
 	w.converge()
+	if got := w.branch["gerrit/"+cid(1)]; got != "a1-rebased" {
+		t.Errorf("head = %s, want the merged commit", got)
+	}
+	w.replicate()
+	w.converge()
+	if pr := w.pr(1); !pr.Merged {
+		t.Errorf("PR = %s merged=%v; want merged", pr.State, pr.Merged)
+	}
+}
+
+func TestRebasedSubmitAfterReplicationCloses(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.converge()
+	w.gerrit[1].Status = "MERGED"
+	w.gerrit[1].Revision = "a1-rebased"
+	w.onMain["a1-rebased"] = true
+	w.replicate() // replication beat the bridge
+	w.converge()
 	if pr := w.pr(1); pr.State != "closed" || pr.Merged {
 		t.Errorf("PR = %s merged=%v; want closed with a notice", pr.State, pr.Merged)
+	}
+}
+
+// Design §5.2.1: a Gerrit-born PR keeps every patch set in its history.
+func TestGerritPatchSetsKeepHistory(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.converge()
+	head := "gerrit/" + cid(1)
+	if got := w.branch[head]; got != "a1" {
+		t.Fatalf("first patch set: head = %s, want Gerrit's commit a1", got)
+	}
+	w.upload(1, "a2", "m0") // amended
+	w.converge()
+	if got := w.branch[head]; got != "append(a1,a2)" {
+		t.Errorf("amend: head = %s, want a2's tree on top of a1", got)
+	}
+	w.upload(1, "a3", "m1") // rebased
+	w.onMain["m1"] = true
+	w.parents["m1"] = []string{"m0"}
+	w.converge()
+	if got := w.branch[head]; got != "merge(append(a1,a2),m1,a3)" {
+		t.Errorf("rebase: head = %s, want a merge of m1 on top of the history", got)
+	}
+	w.upload(1, "a4", "m1") // amended again
+	w.converge()
+	if got := w.branch[head]; got != "append(merge(append(a1,a2),m1,a3),a4)" {
+		t.Errorf("amend after rebase: head = %s", got)
+	}
+	if p := MakePlan(w.snapshot()); len(p.Actions) != 0 {
+		t.Errorf("not idempotent: %v", p.Actions)
+	}
+	// Submitted: the bridge swaps in Gerrit's commit, and GitHub shows the
+	// PR merged when replication brings it.
+	w.gerrit[1].Status = "MERGED"
+	w.onMain["a4"] = true
+	w.converge()
+	if got := w.branch[head]; got != "a4" {
+		t.Errorf("submit: head = %s, want the merged commit a4", got)
+	}
+	w.replicate()
+	w.converge()
+	if !w.pr(1).Merged {
+		t.Error("PR not merged on GitHub")
+	}
+}
+
+func TestStackKeepsHistory(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.upload(2, "b1", "a1")
+	w.converge()
+	w.upload(1, "a2", "m0")
+	w.converge()
+	w.checkBase(t, 2, "gerrit-base/"+cid(2))
+	if got := w.branch["gerrit-base/"+cid(2)]; got != "a1" {
+		t.Errorf("frozen base at %s, want a1", got)
+	}
+	// Rebased onto a2: a merge of layer 1's new head, so layer 2's diff
+	// against it is b2's alone.
+	w.upload(2, "b2", "a2")
+	w.converge()
+	if got := w.branch["gerrit/"+cid(2)]; got != "merge(b1,append(a1,a2),b2)" {
+		t.Errorf("layer 2 head = %s", got)
+	}
+	w.checkBase(t, 2, "gerrit/"+cid(1))
+	if got := w.stacksAsChanges(); !reflect.DeepEqual(got, [][]int{{1, 2}}) {
+		t.Errorf("stacks = %v", got)
+	}
+	// Both submitted: both heads become Gerrit's commits, retargeted.
+	w.gerrit[1].Status, w.gerrit[2].Status = "MERGED", "MERGED"
+	w.onMain["a2"], w.onMain["b2"] = true, true
+	w.converge()
+	for n, want := range map[int]string{1: "a2", 2: "b2"} {
+		if got := w.branch["gerrit/"+cid(n)]; got != want {
+			t.Errorf("change %d head = %s, want %s", n, got, want)
+		}
+	}
+	w.replicate()
+	w.converge()
+	for n := 1; n <= 2; n++ {
+		if !w.pr(n).Merged {
+			t.Errorf("change %d: PR not merged", n)
+		}
+	}
+}
+
+func TestGerritMessageOnlyEditPushesNothing(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.converge()
+	w.upload(1, "a1msg", "m0") // same tree, new message
+	s := w.snapshot()
+	s.SameTree[1] = "a1"
+	for _, a := range MakePlan(s).Actions {
+		if a.Kind == PushBranches {
+			t.Errorf("pushed for a message-only edit: %v", a)
+		}
 	}
 }

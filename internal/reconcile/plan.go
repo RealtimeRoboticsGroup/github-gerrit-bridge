@@ -51,11 +51,16 @@ type Snapshot struct {
 	// same parent tree as the one last synced to GitHub, so a Gerrit edit
 	// can be appended to the user's branch as a fast-forward (design §5.2).
 	AppendOK map[int]bool
-	// SameTree maps a GitHub-born change to its GitHub head when that head
-	// has the current patch set's tree and parent tree: rule 1 says they
-	// are the same revision (e.g. a commit-message edit in Gerrit), so
+	// SameTree maps a change to its GitHub head when that head has the
+	// current patch set's tree and stands on the same parent: rule 1 says
+	// they are the same revision (e.g. a commit-message edit in Gerrit), so
 	// nothing is pushed.
 	SameTree map[int]string
+	// HasParent marks Gerrit-born changes whose GitHub head already
+	// contains the GitHub commit of the current patch set's parent, so a
+	// new patch set goes on top as a plain commit; otherwise (rebased in
+	// Gerrit) it is a merge of the new parent.
+	HasParent map[int]bool
 	// Repo is the GitHub repository, owner/name.
 	Repo string
 	// NoPush marks GitHub-born changes from forks whose authors do not
@@ -209,7 +214,9 @@ func short(sha string) string { return sha[:min(len(sha), 8)] }
 //   - a Gerrit edit to a GitHub-born change goes on top of the user's
 //     branch (a fast-forward, so `git pull` works);
 //   - a change whose parent is GitHub-born sits on the parent's GitHub
-//     commit rather than on Gerrit's squash of it.
+//     commit rather than on Gerrit's squash of it;
+//   - a new patch set of a Gerrit-born change goes on top of its PR's
+//     history (design §5.2.1).
 type Append struct {
 	Change   int
 	PatchSet int
@@ -219,6 +226,9 @@ type Append struct {
 	// KeepMessage reuses the patch set's message (a re-parented change)
 	// instead of "Patch set N from Gerrit" (an edit appended to a branch).
 	KeepMessage bool
+	// Merge, if set, is a second parent: the new base of a patch set that
+	// was rebased in Gerrit.
+	Merge string
 	// Force pushes Revision itself instead (the patch set was rebased in
 	// Gerrit, so appending would mix two bases).
 	Force bool
@@ -310,9 +320,22 @@ func MakePlan(s *Snapshot) *Plan {
 		switch ge, known := synced[gh]; {
 		case onGitHub && known && ge == c.Revision:
 			// Rule 1: GitHub already has this revision.
-		case born && onGitHub && known && s.SameTree[n] == gh:
+		case onGitHub && known && s.SameTree[n] == gh:
 			// Rule 1: same tree and parent tree; record, don't push.
+		case !born && known:
+			// A new patch set goes on top of the PR's history (design
+			// §5.2.1), so GitHub keeps every patch set: reviewers see what
+			// changed since they last looked, and comments stay on the
+			// commits they were written against. A rebase becomes a merge
+			// of the new parent.
+			ap := Append{Change: n, PatchSet: c.PatchSet, Revision: c.Revision, Onto: gh, Lease: gh}
+			if !s.HasParent[n] {
+				ap.Merge = ghParent
+			}
+			appends[d.Head] = ap
 		case !born && ghParent == c.Parent:
+			// First export, or a head the bridge did not write (Gerrit
+			// owns these branches): Gerrit's commit itself.
 			refs[d.Head] = c.Revision
 		case !born:
 			appends[d.Head] = Append{Change: n, PatchSet: c.PatchSet, Revision: c.Revision, Onto: ghParent,
@@ -422,21 +445,6 @@ func MakePlan(s *Snapshot) *Plan {
 		}
 	}
 
-	// Branch pushes, leased on what we observed.
-	push := Action{Kind: PushBranches, Refs: map[string]string{}, Leases: map[string]string{}, Appends: appends}
-	for name, sha := range refs {
-		if s.GitHubBranches[name] != sha {
-			push.Refs[name] = sha
-			push.Leases[name] = s.GitHubBranches[name]
-		}
-	}
-	for name, a := range appends {
-		push.Leases[name] = a.Lease
-	}
-	if len(push.Refs) > 0 || len(appends) > 0 {
-		p.Actions = append(p.Actions, push)
-	}
-
 	// Close PRs of changes that are no longer mirrored.
 	for _, n := range sortedKeys(s.Changes) {
 		c := s.Changes[n]
@@ -451,14 +459,21 @@ func MakePlan(s *Snapshot) *Plan {
 		if pr.State != "open" || pr.Merged {
 			continue
 		}
-		if c.Status == "MERGED" && pr.Head.SHA == c.Revision && !s.OnGitHubBranch[c.Revision] {
-			// The PR's head is exactly the merged commit, and replication
-			// has not brought it to GitHub yet. GitHub marks a PR merged
-			// when its commits land on its *base* branch, so point the PR
-			// at the target branch now (leaving its stack); when they
-			// land, GitHub shows it merged. (Measured 2026-10-11: a PR
-			// still based on the layer below stays open, and once the
-			// commits are in, it can no longer be retargeted.)
+		// A Gerrit-born PR's head is the history of its patch sets, not
+		// the merged commit: swap in the merged commit, which the bridge's
+		// own branch may hold.
+		swap := c.Status == "MERGED" && !s.githubBorn(n) && pr.Head.SHA != c.Revision
+		if c.Status == "MERGED" && (pr.Head.SHA == c.Revision || swap) && !s.OnGitHubBranch[c.Revision] {
+			// The PR's head is (now) exactly the merged commit, and
+			// replication has not brought it to GitHub yet. GitHub marks a
+			// PR merged when its commits land on its *base* branch, so
+			// point the PR at the target branch now (leaving its stack);
+			// when they land, GitHub shows it merged. (Measured
+			// 2026-10-11: a PR still based on the layer below stays open,
+			// and once the commits are in, it can no longer be retargeted.)
+			if swap {
+				refs[s.head(n, c.ChangeID)] = c.Revision
+			}
 			if pr.Base.Ref != s.Branch {
 				p.Actions = append(p.Actions, Action{Kind: UpdatePR, Change: n, PR: pr.Number,
 					Update: &github.PullUpdate{Base: ptr(s.Branch)}})
@@ -479,6 +494,21 @@ func MakePlan(s *Snapshot) *Plan {
 			msg = ""
 		}
 		p.Actions = append(p.Actions, Action{Kind: ClosePR, Change: n, PR: pr.Number, Comment: msg})
+	}
+
+	// Branch pushes, leased on what we observed.
+	push := Action{Kind: PushBranches, Refs: map[string]string{}, Leases: map[string]string{}, Appends: appends}
+	for name, sha := range refs {
+		if s.GitHubBranches[name] != sha {
+			push.Refs[name] = sha
+			push.Leases[name] = s.GitHubBranches[name]
+		}
+	}
+	for name, a := range appends {
+		push.Leases[name] = a.Lease
+	}
+	if len(push.Refs) > 0 || len(appends) > 0 {
+		p.Actions = append(p.Actions, push)
 	}
 
 	// Stacks. Each path of 2+ changes is a desired stack; a PR that does

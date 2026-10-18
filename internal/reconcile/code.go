@@ -287,6 +287,10 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 		}
 	}
 
+	if err := c.observeHistory(ctx, s, env); err != nil {
+		return nil, err
+	}
+
 	stacks, err := c.GitHub.ListStacks(ctx)
 	if err != nil {
 		return nil, err
@@ -304,6 +308,58 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 		}
 	}
 	return s, nil
+}
+
+// observeHistory fills in HasParent and SameTree for Gerrit-born changes
+// whose GitHub head stands for an older patch set: a new patch set goes on
+// top of that history (design §5.2.1).
+func (c *Code) observeHistory(ctx context.Context, s *Snapshot, env []string) error {
+	s.HasParent = map[int]bool{}
+	var todo []int
+	for _, n := range sortedKeys(s.Changes) {
+		ch := s.Changes[n]
+		gh, ok := s.GitHubBranches[s.head(n, ch.ChangeID)]
+		if s.githubBorn(n) || ch.Status != "NEW" || ch.Private || !ok || gh == ch.Revision {
+			continue
+		}
+		if _, known := s.githubFor(n)[gh]; known {
+			todo = append(todo, n)
+		}
+	}
+	if len(todo) == 0 {
+		return nil
+	}
+	// The heads are commits the bridge made, but the mirror may not have
+	// them (a fresh mirror, or another replica made them).
+	var specs []string
+	for _, n := range todo {
+		head := s.head(n, s.Changes[n].ChangeID)
+		specs = append(specs, "+refs/heads/"+head+":refs/remotes/github/heads/"+head)
+	}
+	if _, err := c.Mirror.GitEnv(ctx, env, nil, append([]string{"fetch", "--quiet", c.GitHubURL}, specs...)...); err != nil {
+		return err
+	}
+	for _, n := range todo {
+		ch := s.Changes[n]
+		gh := s.GitHubBranches[s.head(n, ch.ChangeID)]
+		_, err := c.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", s.ghCommit(ch.Parent), gh)
+		var ge *gitmirror.Error
+		switch {
+		case err == nil:
+			s.HasParent[n] = true
+		case errors.As(err, &ge) && ge.Stderr == "":
+			// Exit 1: rebased onto something the head does not contain.
+		default:
+			return err
+		}
+		if s.HasParent[n] {
+			out, err := c.Mirror.Git(ctx, nil, "rev-parse", ch.Revision+"^{tree}", gh+"^{tree}")
+			if f := strings.Fields(string(out)); err == nil && len(f) == 2 && f[0] == f[1] {
+				s.SameTree[n] = gh
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Code) githubEnv(ctx context.Context) ([]string, error) {
@@ -463,8 +519,9 @@ func (c *Code) linkPR(ctx context.Context, n int, origin, branch, changeID strin
 	})
 }
 
-// appendCommit makes a commit with a patch set's tree on top of the
-// user's GitHub head (design §5.2: a fast-forward, so `git pull` works).
+// appendCommit makes a commit with a patch set's tree on top of a GitHub
+// head (design §5.2: a fast-forward, so `git pull` works), merging in the
+// new base of a rebased patch set.
 func (c *Code) appendCommit(ctx context.Context, a Append) (string, error) {
 	out, err := c.Mirror.Git(ctx, nil, "log", "-1", "--format=%T%x00%an%x00%ae%x00%ad", "--date=raw", a.Revision)
 	if err != nil {
@@ -476,6 +533,11 @@ func (c *Code) appendCommit(ctx context.Context, a Append) (string, error) {
 	}
 	env := []string{"GIT_AUTHOR_NAME=" + f[1], "GIT_AUTHOR_EMAIL=" + f[2], "GIT_AUTHOR_DATE=" + f[3]}
 	msg := fmt.Sprintf("Patch set %d from Gerrit\n\n%s\n", a.PatchSet, c.changeURL(a.Change))
+	parents := []string{"-p", a.Onto}
+	if a.Merge != "" {
+		msg = fmt.Sprintf("Patch set %d from Gerrit, rebased\n\n%s\n", a.PatchSet, c.changeURL(a.Change))
+		parents = append(parents, "-p", a.Merge)
+	}
 	if a.KeepMessage {
 		// Same message, author and dates: deterministic, so a retry
 		// makes the same commit.
@@ -490,7 +552,7 @@ func (c *Code) appendCommit(ctx context.Context, a Append) (string, error) {
 		msg = g[0]
 		env = append(env, "GIT_COMMITTER_NAME="+g[1], "GIT_COMMITTER_EMAIL="+g[2], "GIT_COMMITTER_DATE="+strings.TrimSpace(g[3]))
 	}
-	commit, err := c.Mirror.GitEnv(ctx, env, []byte(msg), "commit-tree", f[0], "-p", a.Onto, "-F", "-")
+	commit, err := c.Mirror.GitEnv(ctx, env, []byte(msg), append(append([]string{"commit-tree", f[0]}, parents...), "-F", "-")...)
 	if err != nil {
 		return "", err
 	}
@@ -575,10 +637,13 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan) error {
 					GitHubSHA: gh, Tree: tree, ParentTree: parentTree})
 				newRevision[n] = true
 			}
-			if st.State.Origin != "github" && !known {
+			if gh := s.GitHubBranches[d.Head]; st.State.Origin != "github" && gh != "" &&
+				!slices.ContainsFunc(st.Revisions, func(r state.Revision) bool { return r.GerritSHA == ch.Revision && r.GitHubSHA == gh }) {
+				// Gerrit's commit itself (a first export), or a head with
+				// its tree (rule 1).
 				newRevision[n] = true
 				st.Revisions = append(st.Revisions, state.Revision{
-					PatchSet: ch.PatchSet, GerritSHA: ch.Revision, GitHubSHA: ch.Revision,
+					PatchSet: ch.PatchSet, GerritSHA: ch.Revision, GitHubSHA: gh,
 					Tree: tree, ParentTree: parentTree,
 				})
 			}
@@ -669,12 +734,13 @@ func sortedStringKeys[V any](m map[string]V) []string {
 
 // PrepareSubmit readies the PRs of the changes a submit of change n will
 // merge, before the bridge submits it (/submit): each PR whose head is
-// exactly its change's commit leaves its stack and is retargeted to the
-// target branch. When replication then lands the commits, GitHub shows
-// every PR merged, which it only does for PRs based on that branch
-// (design §6.7). Doing it before the submit means the bridge never races
-// replication. If the submit fails, the next reconcile restores the
-// stack. The caller holds the branch lock.
+// (or, for a Gerrit-born change, is made) exactly its change's commit
+// leaves its stack and is retargeted to the target branch. When
+// replication then lands the commits, GitHub shows every PR merged, which
+// it only does for PRs based on that branch (design §6.7). Doing it before
+// the submit means the bridge never races replication. If the submit
+// fails, the next reconcile restores the stack, and the next patch set
+// goes on top of Gerrit's commit. The caller holds the branch lock.
 func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 	together, err := c.Gerrit.SubmittedTogether(ctx, n)
 	if err != nil {
@@ -689,6 +755,8 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 	}
 	var prs []*github.PullRequest
 	unstack := map[int]bool{}
+	var specs []string // Gerrit-born heads to swap for Gerrit's commits
+	var fetch []string // and where to fetch those commits from
 	for _, ch := range together {
 		st, err := c.Store.Load(ctx, ch.Number)
 		if err != nil {
@@ -701,7 +769,19 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 		if err != nil {
 			return err
 		}
-		if pr.State != "open" || pr.Head.SHA != ch.CurrentRevision || pr.Base.Ref == ch.Branch {
+		if pr.State != "open" {
+			continue
+		}
+		if pr.Head.SHA != ch.CurrentRevision {
+			rev, ok := ch.Current()
+			if st.State.Origin == "github" || !ok {
+				continue // squashed in Gerrit: closed with a notice instead
+			}
+			ref := "refs/heads/" + st.State.HeadBranch
+			specs = append(specs, "--force-with-lease="+ref+":"+pr.Head.SHA, ch.CurrentRevision+":"+ref)
+			fetch = append(fetch, rev.Ref)
+		}
+		if pr.Base.Ref == ch.Branch {
 			continue
 		}
 		pr.Base.Ref = ch.Branch // the target, for below
@@ -712,9 +792,23 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 	}
 	if c.DryRun {
 		if len(prs) > 0 {
-			c.Logger.Info("dry run: would retarget PRs before submit", "change", n, "prs", len(prs))
+			c.Logger.Info("dry run: would retarget PRs before submit", "change", n, "prs", len(prs), "swapped_heads", len(specs)/2)
 		}
 		return nil
+	}
+	if len(specs) > 0 {
+		if _, err := c.Mirror.Git(ctx, nil, append([]string{"fetch", "--quiet", "origin"}, fetch...)...); err != nil {
+			return err
+		}
+		env, err := c.githubEnv(ctx)
+		if err != nil {
+			return err
+		}
+		args := append([]string{"push", "--porcelain", "--atomic", c.GitHubURL}, specs...)
+		if out, err := c.Mirror.GitEnv(ctx, env, nil, args...); err != nil {
+			return fmt.Errorf("swapping in Gerrit's commits before submit: %w\n%s", err, out)
+		}
+		c.Logger.Info("swapped PR heads for Gerrit's commits before submit", "change", n, "heads", len(specs)/2)
 	}
 	for _, sn := range sortedKeys(unstack) {
 		if err := c.GitHub.Unstack(ctx, sn); err != nil && !github.IsNotFound(err) {

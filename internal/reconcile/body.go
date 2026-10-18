@@ -3,6 +3,7 @@ package reconcile
 import (
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -50,24 +51,32 @@ type chainEntry struct {
 	This    bool
 }
 
+// gerritLogo is Gerrit's favicon (the same file every Gerrit serves), from
+// Gerrit's own review site; GitHub proxies it, so viewers do not load it
+// from there. The test instance's Gerrit is not reachable from GitHub.
+const gerritLogo = `<img src="https://gerrit-review.googlesource.com/favicon.ico" alt="Gerrit" height="16">`
+
 // linksBlock renders the bridge-owned block.
 func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note string) string {
 	var b strings.Builder
 	b.WriteString(linksStart + "\n---\n")
-	fmt.Fprintf(&b, "**Gerrit:** [change %d](%s), patch set %d. Review here or in Gerrit; Gerrit submits.\n", number, changeURL, patchSet)
-	if len(chain) > 1 {
-		b.WriteString("\n**Relation chain** (bottom first):\n")
-		for i, e := range chain {
-			pr := "no PR yet"
-			if e.PR != 0 {
-				pr = fmt.Sprintf("#%d", e.PR)
-			}
-			line := fmt.Sprintf("[%d](%s) (%s) %s", e.Change, e.URL, pr, e.Subject)
-			if e.This {
-				line = "**" + line + "** ← this PR"
-			}
-			fmt.Fprintf(&b, "%d. %s\n", i+1, line)
+	if len(chain) == 0 {
+		chain = []chainEntry{{Change: number, URL: changeURL, This: true}}
+	}
+	// The relation chain, top first as Gerrit lists it, even for a single
+	// change: its own line is this PR's link to Gerrit.
+	b.WriteString("**Relation chain**\n")
+	for _, e := range slices.Backward(chain) {
+		pr := "no PR yet"
+		if e.PR != 0 {
+			pr = fmt.Sprintf("#%d", e.PR)
 		}
+		line := fmt.Sprintf("%s [change %d](%s) (%s) %s", gerritLogo, e.Change, e.URL, pr, e.Subject)
+		if e.This {
+			// The subject is the PR's title, just above.
+			line = fmt.Sprintf("%s **[change %d, patch set %d](%s/%d)** ← this PR", gerritLogo, e.Change, patchSet, e.URL, patchSet)
+		}
+		fmt.Fprintf(&b, "- %s\n", line)
 	}
 	if note != "" {
 		b.WriteString("\n" + note + "\n")
