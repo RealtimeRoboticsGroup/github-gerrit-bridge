@@ -305,9 +305,22 @@ func (s *Server) GrantRunAs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	access := map[string]any{"add": map[string]any{"GLOBAL_CAPABILITIES": map[string]any{"permissions": map[string]any{
-		"runAs": map[string]any{"rules": map[string]any{bridge: map[string]any{"action": "ALLOW"}}},
-	}}}}
+	admins, err := s.groupID(ctx, "Administrators")
+	if err != nil {
+		return err
+	}
+	access := map[string]any{"add": map[string]any{
+		"GLOBAL_CAPABILITIES": map[string]any{"permissions": map[string]any{
+			"runAs": map[string]any{"rules": map[string]any{bridge: map[string]any{"action": "ALLOW"}}},
+		}},
+		// Administrators may abandon anyone's change through Administrate
+		// Server, which Gerrit does not apply to a user the bridge acts as
+		// (Run-As): closing a PR on GitHub, which abandons its change as
+		// the closer, needs the explicit grant. AOS needs it too.
+		"refs/*": map[string]any{"permissions": map[string]any{
+			"abandon": map[string]any{"rules": map[string]any{admins: map[string]any{"action": "ALLOW"}}},
+		}},
+	}}
 	return s.Admin.Do(ctx, http.MethodPost, "projects/All-Projects/access", access, nil)
 }
 

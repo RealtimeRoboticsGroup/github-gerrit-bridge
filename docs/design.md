@@ -830,7 +830,7 @@ mirrored are checked, and only for reviewers with a Gerrit account.
 | Event                     | Mirror                                          |
 |---------------------------|-------------------------------------------------|
 | WIP on/off                | Draft / ready for review                        |
-| Abandon / Restore         | Close / Reopen (stack: `/unstack` that layer); and back: closing or reopening the PR abandons or restores the change as whoever did it, if Gerrit lets them (else the PR is put back, with a notice) |
+| Abandon / Restore         | Close / Reopen (stack: `/unstack` that layer); and back: closing or reopening the PR abandons or restores the change as whoever did it, if Gerrit lets them (else the PR is put back, with a notice). Administrate Server does not carry through Run-As, so administrators need an explicit Abandon grant (`refs/*`, All-Projects) to abandon others' changes this way |
 | Private change            | **Never mirrored**                              |
 | Reviewer added / attention| Request review (mapped users only)              |
 | Hashtags                  | Labels (optional)                               |
