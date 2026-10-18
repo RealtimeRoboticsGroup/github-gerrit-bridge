@@ -44,11 +44,12 @@ func hashString(s string) string {
 
 // chainEntry is one line of the relation chain in the links block.
 type chainEntry struct {
-	Change  int
-	URL     string
-	PR      int
-	Subject string
-	This    bool
+	Change   int
+	PatchSet int
+	URL      string
+	PR       int
+	Subject  string
+	This     bool
 }
 
 // gerritLogo is Gerrit's favicon (the same file every Gerrit serves), from
@@ -61,23 +62,30 @@ func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note
 	var b strings.Builder
 	b.WriteString(linksStart + "\n---\n")
 	if len(chain) == 0 {
-		chain = []chainEntry{{Change: number, URL: changeURL, This: true}}
+		chain = []chainEntry{{Change: number, PatchSet: patchSet, URL: changeURL, This: true}}
 	}
 	// The relation chain, top first as Gerrit lists it, even for a single
 	// change: its own line is this PR's link to Gerrit.
-	b.WriteString("**Relation chain**\n")
+	b.WriteString("**Relation chain**\n\n")
+	var lines []string
 	for _, e := range slices.Backward(chain) {
-		pr := "no PR yet"
-		if e.PR != 0 {
-			pr = fmt.Sprintf("#%d", e.PR)
+		line := fmt.Sprintf("[change %d, patch set %d](%s/%d)", e.Change, e.PatchSet, e.URL, e.PatchSet)
+		switch {
+		case e.PR != 0:
+			line += fmt.Sprintf(" #%d", e.PR)
+		case !e.This:
+			line += " (no PR yet)"
 		}
-		line := fmt.Sprintf("%s [change %d](%s) (%s) %s", gerritLogo, e.Change, e.URL, pr, e.Subject)
+		if e.Subject != "" {
+			line += " " + e.Subject
+		}
 		if e.This {
-			// The subject is the PR's title, just above.
-			line = fmt.Sprintf("%s **[change %d, patch set %d](%s/%d)** ← this PR", gerritLogo, e.Change, patchSet, e.URL, patchSet)
+			line = "**" + line + "** ← this PR"
 		}
-		fmt.Fprintf(&b, "- %s\n", line)
+		lines = append(lines, gerritLogo+" "+line)
 	}
+	// GitHub keeps line breaks in PR bodies.
+	b.WriteString(strings.Join(lines, "\n") + "\n")
 	if note != "" {
 		b.WriteString("\n" + note + "\n")
 	}

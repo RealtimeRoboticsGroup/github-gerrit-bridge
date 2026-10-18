@@ -370,9 +370,9 @@ func MakePlan(s *Snapshot) *Plan {
 			d.PR = pr.Number
 		}
 		var chain []chainEntry
-		if path := pathOf[n]; len(path) > 1 {
+		if path := pathOf[n]; len(path) > 0 {
 			for _, m := range path {
-				e := chainEntry{Change: m, URL: mirrored[m].URL, Subject: mirrored[m].Subject, This: m == n}
+				e := chainEntry{Change: m, PatchSet: mirrored[m].PatchSet, URL: mirrored[m].URL, Subject: mirrored[m].Subject, This: m == n}
 				if prFor[m] != nil {
 					e.PR = prFor[m].Number
 				}
