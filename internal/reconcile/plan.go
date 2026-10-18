@@ -120,6 +120,19 @@ func (s *Snapshot) githubFor(n int) map[string]string {
 	return m
 }
 
+// bridgeHead is the GitHub head of Gerrit-born change n, on branch head,
+// if it stands for the current patch set: Gerrit's commit itself (a first
+// export) or one with its tree and parent (rule 1). Any other head the
+// bridge did not record is someone's push, which only the importer may
+// map to a patch set (design §5.2.2).
+func (s *Snapshot) bridgeHead(n int, head string) string {
+	gh, c := s.GitHubBranches[head], s.Changes[n]
+	if c == nil || gh == "" || (gh != c.Revision && s.SameTree[n] != gh) {
+		return ""
+	}
+	return gh
+}
+
 // ActionKind orders actions: a plan is applied in this order.
 type ActionKind int
 

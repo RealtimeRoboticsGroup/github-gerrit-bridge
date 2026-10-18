@@ -637,11 +637,8 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan) error {
 					GitHubSHA: gh, Tree: tree, ParentTree: parentTree})
 				newRevision[n] = true
 			}
-			if gh := s.GitHubBranches[d.Head]; st.State.Origin != "github" && (gh == ch.Revision || (gh != "" && s.SameTree[n] == gh)) &&
+			if gh := s.bridgeHead(n, d.Head); st.State.Origin != "github" && gh != "" &&
 				!slices.ContainsFunc(st.Revisions, func(r state.Revision) bool { return r.GerritSHA == ch.Revision && r.GitHubSHA == gh }) {
-				// Gerrit's commit itself (a first export), or a head with
-				// its tree (rule 1). Any other head is someone's push,
-				// which only the importer may map.
 				newRevision[n] = true
 				st.Revisions = append(st.Revisions, state.Revision{
 					PatchSet: ch.PatchSet, GerritSHA: ch.Revision, GitHubSHA: gh,

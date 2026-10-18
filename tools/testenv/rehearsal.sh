@@ -283,6 +283,37 @@ gerrit_as AustinSchuh POST "changes/${E1}/abandon" "{}" >/dev/null
 closed() { [[ "$(me api "repos/${R}/pulls/${PE}" --jq .state)" == closed ]]; }
 wait_for "abandoning closes the PR" closed
 
+# --- 12. Someone restacks a Gerrit-born stack on GitHub (design §5.2.2):
+# what GitHub's "Rebase stack" button does, pushed as AustinSchuhBRT ---
+step "12. AustinSchuhBRT rebases AustinSchuh's Gerrit stack on GitHub"
+U1="Restack ${RUN} part 1"; U2="Restack ${RUN} part 2"
+(cd "${ME_CLONE}" && git fetch -q gerrit && git checkout -q -B "restack-${RUN}" gerrit/main~1)
+commit "${ME_CLONE}" "restack-${RUN}-1.txt" "${U1}"
+commit "${ME_CLONE}" "restack-${RUN}-2.txt" "${U2}"
+(cd "${ME_CLONE}" && git push -q gerrit HEAD:refs/for/main 2>/dev/null)
+two_restack() { [[ -n "$(pr_for "${U1}")" && -n "$(pr_for "${U2}")" ]] && [[ "$(me api "repos/${R}/pulls/$(pr_for "${U2}")" --jq '.stack.size // 0')" == 2 ]]; }
+wait_for "a stack of 2 PRs on an older main" two_restack
+H1=$(change "${U1}"); H2=$(change "${U2}"); V1=$(pr_for "${U1}"); V2=$(pr_for "${U2}")
+CID1=$(gerrit "changes/${H1}" | jq -r .change_id); CID2=$(gerrit "changes/${H2}" | jq -r .change_id)
+(cd "${BRT_CLONE}" && git fetch -q github && git checkout -q -B "restack-${RUN}" "github/gerrit/${CID2}" &&
+  git rebase -q github/main 2>/dev/null &&
+  git push -q --force github "HEAD~1:refs/heads/gerrit/${CID1}" "HEAD:refs/heads/gerrit/${CID2}" 2>/dev/null)
+RB1=$(cd "${BRT_CLONE}" && git rev-parse HEAD~1); RB2=$(cd "${BRT_CLONE}" && git rev-parse HEAD)
+restacked() {
+  local a b; a=$(gerrit "changes/${H1}?o=CURRENT_REVISION&o=DETAILED_ACCOUNTS&o=CURRENT_COMMIT"); b=$(gerrit "changes/${H2}?o=CURRENT_REVISION&o=DETAILED_ACCOUNTS&o=CURRENT_COMMIT")
+  jq -e '.revisions[.current_revision] | select(._number == 2 and .uploader.username == "AustinSchuhBRT")' <<<"$a" &&
+    jq -e '.revisions[.current_revision] | select(._number == 2 and .uploader.username == "AustinSchuhBRT")' <<<"$b" &&
+    [[ "$(jq -r '.revisions[.current_revision].commit.parents[0].commit' <<<"$b")" == "$(jq -r .current_revision <<<"$a")" ]] &&
+    [[ "$(jq -r '.revisions[.current_revision].commit.parents[0].commit' <<<"$a")" == "$(gerrit "projects/bridge-scratch/branches/main" | jq -r .revision)" ]]
+}
+wait_for "both layers become patch set 2, uploaded by the pusher, chained on the current main" restacked
+[[ "$(gerrit "changes/${H1}?o=DETAILED_ACCOUNTS" | jq -r .owner.username)" == AustinSchuh ]] && pass "the change stays AustinSchuh's" || fail "owner changed"
+kept() { [[ "$(me api "repos/${R}/pulls/${V1}" --jq .head.sha)" == "${RB1}" && "$(me api "repos/${R}/pulls/${V2}" --jq .head.sha)" == "${RB2}" ]]; }
+sleep 10 # give the bridge a chance to (wrongly) push over the rebase
+kept && pass "the bridge leaves the rebased branches as pushed" || fail "the rebase was overwritten"
+wait_for "gerrit/sync says the top layer is in sync" status_is "${V2}" gerrit/sync success
+for c in "${H2}" "${H1}"; do gerrit_as AustinSchuh POST "changes/${c}/abandon" "{}" >/dev/null; done
+
 echo
 echo "Rehearsal ${RUN}: ${PASSED} passed, ${FAILED} failed"
 ((FAILED == 0))

@@ -1064,6 +1064,26 @@ func TestStackKeepsHistory(t *testing.T) {
 	}
 }
 
+func TestBridgeHead(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.converge()
+	s := w.snapshot()
+	head := "gerrit/" + cid(1)
+	if got := s.bridgeHead(1, head); got != "a1" {
+		t.Errorf("Gerrit's own commit: bridgeHead = %q, want a1", got)
+	}
+	s.GitHubBranches[head] = "a1-same-tree"
+	s.SameTree[1] = "a1-same-tree"
+	if got := s.bridgeHead(1, head); got != "a1-same-tree" {
+		t.Errorf("same tree and parent: bridgeHead = %q", got)
+	}
+	s.GitHubBranches[head] = "someones-push"
+	if got := s.bridgeHead(1, head); got != "" {
+		t.Errorf("a push: bridgeHead = %q, want none", got)
+	}
+}
+
 func TestGerritMessageOnlyEditPushesNothing(t *testing.T) {
 	w := newWorld(t)
 	w.upload(1, "a1", "m0")
@@ -1088,6 +1108,11 @@ func TestPushToGerritBornBranchIsNotOverwritten(t *testing.T) {
 	w.converge()
 	if got := w.branch["gerrit/"+cid(1)]; got != "rebased-on-github" {
 		t.Errorf("head = %s: the push was overwritten", got)
+	}
+	// Nor may the converged state record the push as the patch set's
+	// GitHub commit: that would hide it from the importer.
+	if gh := w.snapshot().bridgeHead(1, "gerrit/"+cid(1)); gh != "" {
+		t.Errorf("bridgeHead = %s: a push would be recorded as patch set 1", gh)
 	}
 	// Imported as patch set 2: in sync, nothing pushed.
 	w.upload(1, "a2", "m1")
