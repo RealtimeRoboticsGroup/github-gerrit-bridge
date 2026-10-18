@@ -55,10 +55,10 @@ type chainEntry struct {
 // gerritLogo is Gerrit's favicon (the same file every Gerrit serves), from
 // Gerrit's own review site; GitHub proxies it, so viewers do not load it
 // from there. The test instance's Gerrit is not reachable from GitHub.
-const gerritLogo = `<img src="https://gerrit-review.googlesource.com/favicon.ico" alt="Gerrit" height="16">`
+const gerritLogo = `<img src="https://gerrit-review.googlesource.com/favicon.ico" alt="Gerrit" height="16" align="absmiddle">`
 
 // githubLogo is GitHub's favicon, marking the PR links.
-const githubLogo = `<img src="https://github.githubassets.com/favicons/favicon.png" alt="GitHub" height="16">`
+const githubLogo = `<img src="https://github.githubassets.com/favicons/favicon.png" alt="GitHub" height="16" align="absmiddle">`
 
 // linksBlock renders the bridge-owned block.
 func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note string) string {
