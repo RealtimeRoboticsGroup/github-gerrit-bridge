@@ -731,13 +731,14 @@ func TestGitHubBornGerritEditAppends(t *testing.T) {
 	if got := w.branch["feature"]; got != "append(h1,s2)" {
 		t.Errorf("feature = %s, want a commit appended on h1", got)
 	}
-	// Rebased in Gerrit: force-push the patch set itself.
+	// Rebased in Gerrit: a merge of the new parent, still a fast-forward
+	// of the user's branch (it used to be force-pushed).
 	w.upload(1, "s3", "m1")
 	w.onMain["m1"] = true
 	w.appendOK[1] = false
 	w.converge()
-	if got := w.branch["feature"]; got != "s3" {
-		t.Errorf("feature = %s, want s3", got)
+	if got := w.branch["feature"]; got != "merge(append(h1,s2),m1,s3)" {
+		t.Errorf("feature = %s, want a merge of m1 on top of the user's branch", got)
 	}
 }
 

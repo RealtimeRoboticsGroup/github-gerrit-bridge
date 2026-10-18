@@ -353,9 +353,11 @@ in Gerrit (an edit, "Apply fix", or a rebase):
   user's branch with `tree = tree(new PS)` and message
   "Patch set N from Gerrit (Jane Doe)". This is a fast-forward, so the user's
   local branch history is preserved and `git pull` just works.
-- **Parent changed** (rebased in Gerrit): force-push the Gerrit commit
-  itself. This is the same experience as a GitHub-side restack, and
-  `gh stack sync` recovers it.
+- **Parent changed** (rebased in Gerrit): append a merge commit "Patch
+  set N from Gerrit, rebased" of the branch and the new parent's GitHub
+  commit, with the patch set's tree, as for Gerrit-born changes (§5.2.1).
+  Still a fast-forward, so the history and `git pull` keep working. (Until
+  2026-10-18 this force-pushed the Gerrit commit itself.)
 
 **Changes that start in Gerrit** keep the simple path from §5.1. The SHAs
 are identical and nothing is squashed.

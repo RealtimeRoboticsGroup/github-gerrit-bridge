@@ -247,8 +247,8 @@ type Append struct {
 	// Merge, if set, is a second parent: the new base of a patch set that
 	// was rebased in Gerrit.
 	Merge string
-	// Force pushes Revision itself instead (the patch set was rebased in
-	// Gerrit, so appending would mix two bases).
+	// Force pushes Revision itself instead: the merged commit swapped onto
+	// a GitHub-born PR's branch at submit (design §6.7).
 	Force bool
 }
 
@@ -367,8 +367,14 @@ func MakePlan(s *Snapshot) *Plan {
 		case s.NoPush[n]:
 			// A fork that does not allow maintainer edits.
 		default:
-			appends[d.Head] = Append{Change: n, PatchSet: c.PatchSet, Revision: c.Revision, Onto: gh, Lease: gh,
-				Force: !s.AppendOK[n]}
+			// A Gerrit edit goes on top of the user's branch, so their
+			// history and `git pull` keep working; a rebase in Gerrit is a
+			// merge of the new parent, as for Gerrit-born changes.
+			ap := Append{Change: n, PatchSet: c.PatchSet, Revision: c.Revision, Onto: gh, Lease: gh}
+			if !s.AppendOK[n] {
+				ap.Merge = ghParent
+			}
+			appends[d.Head] = ap
 		}
 		var note string
 		switch {
