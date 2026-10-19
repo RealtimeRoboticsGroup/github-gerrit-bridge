@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf8"
 	"sync"
 	"time"
 
@@ -222,8 +223,11 @@ func voteString(v int) string {
 }
 
 // who names a Gerrit account: its full name, and the username too, since
-// anyone can set their full name to someone else's.
+// anyone can set their full name to someone else's. The name is kept
+// short, and its spacing plain, so no line it is in loses the username
+// when cut.
 func who(a gerrit.AccountInfo) string {
+	a.Name = shorten(strings.Join(strings.Fields(a.Name), " "), maxName)
 	switch {
 	case a.Name != "" && a.Username != "" && !strings.EqualFold(a.Name, a.Username):
 		return a.Name + " (" + a.Username + ")"
@@ -239,8 +243,15 @@ func truncateDesc(s string) string {
 	if len(s) <= 140 {
 		return s
 	}
-	return s[:137] + "..."
+	cut := 137
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
+
+// maxName bounds a full name where the bridge shows one, in characters.
+const maxName = 40
 
 // desiredStatuses computes the statuses for a change's current revision.
 func desiredStatuses(ch *gerrit.ChangeInfo, changeURL string, ciLabels []string, run ciRun, uploaderTrusted bool, group string) []github.Status {

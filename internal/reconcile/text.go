@@ -39,7 +39,33 @@ func noMarkers(s string) string { return markerStart.ReplaceAllString(s, "${1}"+
 // second audit found four ways past an approximation), and a joiner in
 // code only shows when copied. Suggestion blocks, which must be exact,
 // are kept apart by the caller (suggestionFence).
-func noMentions(s string) string { return atSign.ReplaceAllString(s, "${0}"+zwj) }
+func noMentions(s string) string {
+	var b strings.Builder
+	last := 0
+	for _, m := range atSign.FindAllStringIndex(s, -1) {
+		if !isAt(s, m) {
+			continue
+		}
+		b.WriteString(s[last:m[1]] + zwj)
+		last = m[1]
+	}
+	return b.String() + s[last:]
+}
+
+// isAt reports whether atSign's match m in s is an @: a character
+// reference without its semicolon that runs on into more digits ("&#640;")
+// is another character.
+func isAt(s string, m []int) bool {
+	ref := s[m[0]:m[1]]
+	if !strings.HasPrefix(ref, "&#") || strings.HasSuffix(ref, ";") || m[1] == len(s) {
+		return true
+	}
+	next := s[m[1]]
+	if ref[2] == 'x' || ref[2] == 'X' {
+		return !strings.ContainsRune("0123456789abcdefABCDEF", rune(next))
+	}
+	return next < '0' || next > '9'
+}
 
 // forGitHub defuses text for the bridge to post on GitHub.
 func forGitHub(s string) string { return noMentions(noMarkers(s)) }

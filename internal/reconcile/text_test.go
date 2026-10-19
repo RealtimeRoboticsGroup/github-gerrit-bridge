@@ -28,6 +28,13 @@ func TestForGitHubBreaksEveryAt(t *testing.T) {
 	if unGitHub(got) != in {
 		t.Errorf("round trip: %q", unGitHub(got))
 	}
+	// References to other characters are left alone; ones that end
+	// where the text does are @s.
+	for in, want := range map[string]string{"&#640; &#x40a; &#X40F": "&#640; &#x40a; &#X40F", "x&#64": "x&#64" + zwj, "&#x40g": "&#x40" + zwj + "g"} {
+		if got := forGitHub(in); got != want {
+			t.Errorf("forGitHub(%q) = %q, want %q", in, got, want)
+		}
+	}
 }
 
 // A suggestion's fence cannot be closed by the suggested text, so the text
@@ -117,5 +124,14 @@ func TestPRBodyFitsGitHub(t *testing.T) {
 func TestWhoNamesTheUsername(t *testing.T) {
 	if got := who(gerrit.AccountInfo{Name: "Austin Schuh", Username: "mallory"}); got != "Austin Schuh (mallory)" {
 		t.Errorf("who = %q", got)
+	}
+	// A name padded to push the username out of a cut status line.
+	long := "Austin" + strings.Repeat(" \t\u00a0", 100) + "Schuh" + strings.Repeat("é", 200)
+	d := truncateDesc("+2 " + who(gerrit.AccountInfo{Name: long, Username: "mallory"}))
+	if !strings.Contains(d, "(mallory)") || !utf8.ValidString(d) || strings.ContainsAny(d, "\t\u00a0") {
+		t.Errorf("description = %q", d)
+	}
+	if d := truncateDesc(strings.Repeat("é", 100)); !utf8.ValidString(d) {
+		t.Errorf("cut inside a character: %q", d)
 	}
 }
