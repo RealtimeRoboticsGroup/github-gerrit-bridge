@@ -75,7 +75,16 @@ func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note
 	// change: its own line is this PR's link to Gerrit.
 	b.WriteString("**Relation chain**\n\n")
 	var lines []string
-	for _, e := range slices.Backward(chain) {
+	shown, below, above := chain, 0, 0
+	if len(chain) > maxChainLinks {
+		i := slices.IndexFunc(chain, func(e chainEntry) bool { return e.This })
+		below = max(0, min(i-maxChainLinks/2, len(chain)-maxChainLinks))
+		shown, above = chain[below:below+maxChainLinks], len(chain)-below-maxChainLinks
+	}
+	if above > 0 {
+		lines = append(lines, fmt.Sprintf("… %d more above, in Gerrit", above))
+	}
+	for _, e := range slices.Backward(shown) {
 		title := e.Subject
 		if title == "" {
 			title = fmt.Sprintf("change %d", e.Change)
@@ -91,6 +100,9 @@ func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note
 			line = "**" + line + "** ← this PR"
 		}
 		lines = append(lines, gerritLogo+" "+line)
+	}
+	if below > 0 {
+		lines = append(lines, fmt.Sprintf("… %d more below, in Gerrit", below))
 	}
 	// GitHub keeps line breaks in PR bodies.
 	b.WriteString(strings.Join(lines, "\n") + "\n")
@@ -120,6 +132,12 @@ const (
 	maxPRBody    = 60000
 	maxLinkTitle = 200
 )
+
+// maxChainLinks bounds the relation chain a PR shows to the changes
+// nearest its own (fourth audit: anyone can stack changes on someone's,
+// and each is a line in the description of every PR in the chain, which
+// GitHub would refuse once long enough).
+const maxChainLinks = 15
 
 const tooLongForGitHub = "\n\n[… too long for GitHub; the rest is in Gerrit]"
 

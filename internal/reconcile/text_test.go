@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -118,6 +119,38 @@ func TestPRBodyFitsGitHub(t *testing.T) {
 	}
 	if short, _ := composeBody("Subject\n\nShort.\n", block); short != "Short.\n\n"+block {
 		t.Errorf("short body changed: %q", short)
+	}
+}
+
+// A long chain shows the links nearest the PR's own change, and how many
+// more there are, so no chain makes descriptions GitHub refuses.
+func TestLongChainIsWindowed(t *testing.T) {
+	var chain []chainEntry
+	for n := 1; n <= 100; n++ {
+		chain = append(chain, chainEntry{Change: n, PatchSet: 1, URL: fmt.Sprintf("u%d", n), Subject: strings.Repeat("é", maxLinkTitle), This: n == 50})
+	}
+	block := linksBlock("u50", 50, 1, chain, "")
+	if got := strings.Count(block, "patch set 1]"); got != maxChainLinks {
+		t.Errorf("%d links, want %d", got, maxChainLinks)
+	}
+	for _, want := range []string{"… 43 more above, in Gerrit", "… 42 more below, in Gerrit", "(u50/1)** ← this PR", "(u43/1)", "(u57/1)"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("block lacks %q", want)
+		}
+	}
+	if len(block) > maxPRBody/2 {
+		t.Errorf("block is %d bytes", len(block))
+	}
+	// Near either end, the window stays full.
+	chain[49].This, chain[0].This = false, true
+	block = linksBlock("u1", 1, 1, chain, "")
+	if strings.Count(block, "patch set 1]") != maxChainLinks || strings.Contains(block, "more below") || !strings.Contains(block, "… 85 more above") {
+		t.Errorf("at the bottom: %s", block)
+	}
+	chain[0].This, chain[99].This = false, true
+	block = linksBlock("u100", 100, 1, chain, "")
+	if strings.Count(block, "patch set 1]") != maxChainLinks || strings.Contains(block, "more above") || !strings.Contains(block, "… 85 more below") {
+		t.Errorf("at the top: %s", block)
 	}
 }
 
