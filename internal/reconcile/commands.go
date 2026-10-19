@@ -215,8 +215,10 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) st
 	if age := c.now().Sub(ic.CreatedAt); age > maxCommandAge {
 		return fmt.Sprintf("@%s: `/submit` was not run: it is more than %v old. Post it again.", ic.User.Login, maxCommandAge)
 	}
-	// And one the commenter could have seen: on GitHub. A patch set
-	// uploaded in Gerrit just before the comment may not be yet.
+	// And one the commenter could have seen: on GitHub, for a minute
+	// (minSeen) when they wrote it. A patch set uploaded in Gerrit just
+	// before the comment may not be yet, and one pushed moments before it
+	// was not read (fourth audit).
 	st, err := c.Store.Load(ctx, n)
 	if err != nil {
 		c.Logger.Warn("reading state for /submit", "change", n, "err", err)
@@ -224,10 +226,14 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) st
 	}
 	seen := false
 	for _, r := range st.Revisions {
-		seen = seen || (r.GerritSHA == rev && r.GitHubSHA != "")
+		at := r.At
+		if at.IsZero() {
+			at = uploaded // recorded before At was kept
+		}
+		seen = seen || (r.GerritSHA == rev && r.GitHubSHA != "" && !at.After(ic.CreatedAt.Add(-minSeen)))
 	}
 	if !seen {
-		return fmt.Sprintf("@%s: `/submit` was not run: change %d's current patch set is not on GitHub (not yet, or not at all: see the change). Submit it in Gerrit, or post again once it is here.", ic.User.Login, n)
+		return fmt.Sprintf("@%s: `/submit` was not run: change %d's current patch set was not on GitHub when you wrote it (not yet, only just, or not at all: see the change). Submit it in Gerrit, or post again once it is here.", ic.User.Login, n)
 	}
 	// Check first, so PRs are only reshaped for a submit that will happen.
 	if ok, why, err := c.Submitter.CanSubmitAs(ctx, user, n, rev); err != nil || !ok {

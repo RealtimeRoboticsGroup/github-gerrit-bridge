@@ -251,14 +251,38 @@ func TestOldSubmitCommandsExpire(t *testing.T) {
 	}
 }
 
-// /submit is for a patch set its author could have seen: one on GitHub.
+// /submit is for a patch set its author could have seen: one on GitHub
+// for a minute when they wrote it.
 func TestSubmitNeedsThePatchSetOnGitHub(t *testing.T) {
 	c, h, sub := newCommands(t)
 	posted := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	sub.rev, sub.uploaded = "sha4", posted.Add(-time.Minute) // uploaded in Gerrit, not exported yet
 	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: posted})
 	c.Run(context.Background(), 5)
-	if len(sub.calls) != 0 || !strings.Contains(h.ics[len(h.ics)-1].Body, "is not on GitHub (not yet, or not at all") {
+	if len(sub.calls) != 0 || !strings.Contains(h.ics[len(h.ics)-1].Body, "was not on GitHub when you wrote it") {
 		t.Errorf("calls=%v reply=%q", sub.calls, h.ics[len(h.ics)-1].Body)
+	}
+	// Nor one pushed to GitHub moments before the comment (fourth audit).
+	for _, tc := range []struct {
+		before time.Duration
+		ran    bool
+		old    bool // recorded before At was kept: Gerrit's upload time stands in
+	}{{30 * time.Second, false, false}, {2 * time.Minute, true, false}, {30 * time.Second, false, true}} {
+		c, h, sub := newCommands(t)
+		sub.rev, sub.uploaded = "sha3", posted.Add(-time.Hour)
+		st, _ := c.Store.Load(context.Background(), 5)
+		st.Revisions[1].At = posted.Add(-tc.before)
+		if tc.old {
+			st.Revisions[1].At, sub.uploaded = time.Time{}, posted.Add(-tc.before)
+		}
+		if err := c.Store.Save(context.Background(), 5, st, "at"); err != nil {
+			t.Fatal(err)
+		}
+		c.Now = func() time.Time { return posted.Add(time.Minute) }
+		h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: posted})
+		c.Run(context.Background(), 5)
+		if ran := len(sub.calls) != 0; ran != tc.ran {
+			t.Errorf("on GitHub %v before: ran %v, reply %q", tc.before, ran, h.ics[len(h.ics)-1].Body)
+		}
 	}
 }

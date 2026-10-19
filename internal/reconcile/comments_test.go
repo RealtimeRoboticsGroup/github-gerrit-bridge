@@ -1161,7 +1161,7 @@ func TestGitHubApprovalBecomesVote(t *testing.T) {
 // never had) goes on the patch set GitHub had when it was written, as its
 // author; one written before GitHub had any is the bridge's. So a
 // trusted reviewer's "retest" never starts CI on a patch set uploaded
-// after it.
+// after it, or less than a minute before.
 func TestCommentsGoOnThePatchSetTheirAuthorCouldSee(t *testing.T) {
 	e := newCommentsEnv(t)
 	e.runAs()
@@ -1176,7 +1176,10 @@ func TestCommentsGoOnThePatchSetTheirAuthorCouldSee(t *testing.T) {
 		return github.IssueComment{ID: id, Body: body, User: github.User{Login: "bob"}, CreatedAt: at,
 			HTMLURL: fmt.Sprintf("https://github.com/o/r/pull/1#issuecomment-%d", id)}
 	}
-	e.h.ics = append(e.h.ics, ic(1, "retest one", t0.Add(time.Minute)), ic(2, "retest two", t0.Add(2*time.Hour)), ic(3, "too early", t0.Add(-time.Minute)))
+	e.h.ics = append(e.h.ics, ic(1, "retest one", t0.Add(time.Minute)), ic(2, "retest two", t0.Add(2*time.Hour)), ic(3, "too early", t0.Add(-time.Minute)),
+		// Seconds after patch set 2 reached GitHub: its author cannot
+		// have read it (fourth audit).
+		ic(4, "retest moments after", t0.Add(time.Hour+30*time.Second)))
 	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "COMMENTED", CommitID: "unimported", User: github.User{Login: "bob"},
 		Body: "review of a push", SubmittedAt: t0.Add(time.Minute), HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
 	e.h.rcs = append(e.h.rcs, github.ReviewComment{ID: 80, ReviewID: 81, Path: "a.txt", CommitID: "unimported", OriginalCommitID: "unimported",
@@ -1188,7 +1191,7 @@ func TestCommentsGoOnThePatchSetTheirAuthorCouldSee(t *testing.T) {
 	e.h.reviews = append(e.h.reviews, github.Review{ID: 71, State: "COMMENTED", CommitID: "unimported", User: github.User{Login: "bob"},
 		Body: "early review", SubmittedAt: t0.Add(-time.Minute), HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-71"})
 	e.sync(t)
-	want := map[string]string{"retest one": "1 bobg", "retest two": "2 bobg", "too early": "3 ", "review of a push": "1 bobg", "on a file of a push": "1 bobg",
+	want := map[string]string{"retest one": "1 bobg", "retest two": "2 bobg", "too early": "3 ", "retest moments after": "1 bobg", "review of a push": "1 bobg", "on a file of a push": "1 bobg",
 		"early file comment": "3 ", "early review": "3 "}
 	for _, gc := range e.g.comments {
 		for text, w := range want {

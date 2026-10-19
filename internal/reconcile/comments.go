@@ -159,13 +159,15 @@ type commentSnapshot struct {
 	labels map[string]gerrit.LabelInfo
 }
 
-// seen is the newest patch set GitHub had at t, so the one someone
-// commenting then could have seen; 0 if none. A comment that names no
-// commit (an issue comment, a review of a commit Gerrit never had) goes
-// on it, not on whatever is current when the bridge gets to it: a
-// trusted reviewer's "retest" must not start CI on a patch set uploaded
-// after it.
+// seen is the newest patch set GitHub had for minSeen at t, so the one
+// someone commenting then could have seen; 0 if none. A comment that
+// names no commit (an issue comment, a review of a commit Gerrit never
+// had) goes on it, not on whatever is current when the bridge gets to
+// it: a trusted reviewer's "retest" must not start CI on a patch set
+// uploaded after it, or pushed moments before it (fourth audit), which
+// they could not have read.
 func (s *commentSnapshot) seen(t time.Time) int {
+	t = t.Add(-minSeen)
 	ps := 0
 	for _, r := range s.revisions {
 		at := r.At
@@ -178,6 +180,11 @@ func (s *commentSnapshot) seen(t time.Time) int {
 	}
 	return ps
 }
+
+// minSeen is how long a patch set must have been on GitHub before a
+// comment counts as being about it (seen); it also covers the clocks of
+// the bridge, which records when, and GitHub, which dates comments.
+const minSeen = time.Minute
 
 // ghSHA is the GitHub commit standing for patch set ps.
 func (s *commentSnapshot) ghSHA(ps int) string {
