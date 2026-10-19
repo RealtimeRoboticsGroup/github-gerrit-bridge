@@ -329,7 +329,8 @@ func watchLoginUsers(ctx context.Context, s *testgerrit.Server, bridgeDir, spec 
 			case r == "trusted":
 				w.groups = append(w.groups, testgerrit.TrustedGroup, testgerrit.SubmitGroup)
 			case r == "admin":
-				w.groups = append(w.groups, "Administrators")
+				// As AustinSchuh on AOS.
+				w.groups = append(w.groups, "Administrators", "Sudo")
 			case strings.Contains(r, "@"):
 				// Like a user adding their address under Settings ->
 				// Email Addresses (the plugin does not import it).

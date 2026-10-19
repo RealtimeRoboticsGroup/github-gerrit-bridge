@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -27,8 +29,20 @@ var (
 	AOSProject string
 )
 
-// AOSGroups are the internal groups AOS's access rules name.
-var AOSGroups = []string{"Administrators", "Forge Author", "Service Users", "Submitters", "Sudo", "Verified Users"}
+// AOSGroups are the internal groups AOS's access rules name. On AOS
+// (All-Users refs/groups/*, 2026-10-19) every one is hidden from
+// non-members, and Verified Users includes Service Users (and a single-user
+// group of AustinSchuh's, who is also a member).
+var (
+	AOSGroups   = []string{"Administrators", "Forge Author", "Service Users", "Submitters", "Sudo", "Verified Users"}
+	AOSIncludes = map[string][]string{TrustedGroup: {"Service Users"}}
+)
+
+// BridgeVisibleGroups are the groups the bridge needs to see, made visible
+// to all (design §9.1): its identity.never_groups, and CI's trusted group,
+// whose members' Gerrit patch sets reach contributors' branches and whose
+// writes to GitHub are not limited.
+var BridgeVisibleGroups = []string{"Administrators", "Service Users", TrustedGroup}
 
 // Gerrit 3.14 refuses to store a legacy label function (AOS's still carry
 // MaxWithBlock from an older version, which Gerrit applies as a submit
@@ -80,6 +94,17 @@ func (s *Server) ConfigureAllProjects(ctx context.Context) error {
 			var ge *gerrit.Error
 			if !errors.As(err, &ge) || ge.Status != http.StatusConflict {
 				return fmt.Errorf("group %s: %w", g, err)
+			}
+		}
+		visible := slices.Contains(BridgeVisibleGroups, g)
+		if err := s.Admin.Do(ctx, http.MethodPut, "groups/"+url.PathEscape(g)+"/options", map[string]any{"visible_to_all": visible}, nil); err != nil {
+			return fmt.Errorf("group %s visibility: %w", g, err)
+		}
+	}
+	for g, incs := range AOSIncludes {
+		for _, inc := range incs {
+			if err := s.Admin.Do(ctx, http.MethodPut, "groups/"+url.PathEscape(g)+"/groups/"+url.PathEscape(inc), nil, nil); err != nil {
+				return fmt.Errorf("including %s in %s: %w", inc, g, err)
 			}
 		}
 	}

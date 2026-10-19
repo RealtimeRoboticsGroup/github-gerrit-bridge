@@ -1468,10 +1468,20 @@ and Abandon and Toggle Work In Progress for Administrators.
   **`receive.maxBatchChanges`** (say 50) in gerrit.config: one push
   cannot then bring hundreds of changes to mirror.
 - **Administrators' GitHub logins** in `identity.github_to_gerrit`: they
-  are not matched by username (`identity.never_groups`). Every group
-  listed there must be visible to the bridge account (Administrators:
-  "Make group visible to all registered users"); the bridge refuses to
-  start otherwise.
+  are not matched by username (`identity.never_groups`).
+- **Groups the bridge must see**: AOS hides every group from
+  non-members. Make Administrators and Service Users (the
+  `identity.never_groups`; the bridge refuses to start unless it can see
+  them) and Verified Users (CI's trusted group: whose Gerrit patch sets
+  reach contributors' branches, and whose writes to GitHub are not
+  limited) "visible to all registered users". The test site models AOS's
+  groups (hidden; Verified Users includes Service Users) plus exactly
+  this (`testgerrit.BridgeVisibleGroups`).
+- **The bridge's own Gerrit account.** On AOS, `realtimeroboticsbot` is
+  CI's account (Service Users, so trusted by CI and voting Verified).
+  The bridge needs a separate one, in none of those groups, even if it
+  uses the same GitHub bot login (whose GitHub actions are never mapped
+  to any Gerrit account).
 - **The bridge behind a TLS proxy** that forwards only `/webhook` and
   `/checks/`, buffers request bodies, and is listed in
   `github.webhook_trusted_proxies`; `listen` stays on loopback.

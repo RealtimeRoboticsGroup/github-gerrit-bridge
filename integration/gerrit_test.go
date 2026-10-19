@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -644,5 +645,36 @@ func TestAccessIsAOSsPlusTheBridges(t *testing.T) {
 		if strings.Join(got, "\n") != strings.Join(want, "\n") {
 			t.Errorf("%s's access differs from AOS's plus the bridge's:\n got: %q\nwant: %q", tc.project, got, want)
 		}
+	}
+}
+
+// Groups are as on AOS (hidden, Verified Users including Service Users),
+// plus only what the bridge needs: its never_groups and CI's trusted group
+// visible to all, so it can check them; the others it cannot see.
+func TestGroupsAreAOSsPlusTheBridges(t *testing.T) {
+	ctx := context.Background()
+	for _, g := range testgerrit.AOSGroups {
+		var info struct {
+			Options struct {
+				VisibleToAll bool `json:"visible_to_all"`
+			} `json:"options"`
+		}
+		if err := srv.Admin.Do(ctx, http.MethodGet, "groups/"+url.PathEscape(g), nil, &info); err != nil {
+			t.Fatal(err)
+		}
+		if want := slices.Contains(testgerrit.BridgeVisibleGroups, g); info.Options.VisibleToAll != want {
+			t.Errorf("%s visible to all = %v, want %v", g, info.Options.VisibleToAll, want)
+		}
+	}
+	var inc []gerrit.GroupInfo
+	if err := srv.Admin.Do(ctx, http.MethodGet, "groups/"+url.PathEscape(testgerrit.TrustedGroup)+"/groups/", nil, &inc); err != nil || len(inc) != 1 || inc[0].Name != "Service Users" {
+		t.Errorf("%s includes %+v (%v), want Service Users", testgerrit.TrustedGroup, inc, err)
+	}
+	bridge := &gerrit.Client{BaseURL: srv.URL, User: env.Bridge.Username, Password: env.Bridge.HTTPPassword}
+	if _, err := bridge.GroupMembers(ctx, testgerrit.TrustedGroup); err != nil {
+		t.Errorf("the bridge cannot read %s: %v", testgerrit.TrustedGroup, err)
+	}
+	if _, err := bridge.GroupMembers(ctx, "Sudo"); err == nil {
+		t.Error("the bridge can read Sudo, which AOS hides")
 	}
 }
