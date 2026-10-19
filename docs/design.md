@@ -1053,8 +1053,10 @@ defenses, by threat:
   wins; reopening is not pushing). A pure rebase of the current patch set
   (GitHub's Rebase or Update branch: `git merge-tree` of it onto the new
   parent gives the pushed tree, without conflicts) is uploaded on behalf
-  of its uploader, as Gerrit's own rebase is. Anything else, and anything
-  no webhook explains, is uploaded by the bridge, which CI does not trust;
+  of its uploader, as Gerrit's own rebase is, but only onto a parent on
+  the target branch or one that uploader uploaded: the parent's code is
+  built too (second audit). Anything else, and anything no webhook
+  explains, is uploaded by the bridge, which CI does not trust;
   a trusted reviewer starts CI. The log is only searched back a few
   hundred entries per branch. The commit's committer email is never
   used, since anyone can write any email.
