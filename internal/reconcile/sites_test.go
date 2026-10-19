@@ -233,7 +233,9 @@ func (s *sites) queryChanges(w http.ResponseWriter, r *http.Request) {
 	out := []*gerrit.ChangeInfo{}
 	for _, n := range sortedKeys(s.changes) {
 		ci := s.changes[n]
-		if strings.Contains(q, "change:"+ci.ChangeID) || (strings.Contains(q, "status:open") && ci.Status == "NEW") {
+		_, hasCommit := ci.Revisions[strings.TrimPrefix(q[strings.LastIndex(q, " ")+1:], "commit:")]
+		if strings.Contains(q, "change:"+ci.ChangeID) || (strings.Contains(q, "status:open") && ci.Status == "NEW") ||
+			(strings.Contains(q, "commit:") && hasCommit) {
 			out = append(out, ci)
 		}
 	}

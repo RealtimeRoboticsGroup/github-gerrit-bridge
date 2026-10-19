@@ -479,7 +479,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		}
 	}
 
-	user, login, err := im.uploader(ctx, pr, cur, later, h, gerritParent)
+	user, login, err := im.uploader(ctx, pr, cur, later, h, gerritParent, branch)
 	if err != nil {
 		return nil, err
 	}
@@ -709,7 +709,7 @@ func (im *Importer) checkSize(ctx context.Context, h, parent string) error {
 // current patch set too. A pure rebase of the current patch set is
 // uploaded on behalf of its uploader, as Gerrit's own rebase is. Anything
 // else is the bridge's, and needs a trusted reviewer to start CI.
-func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *gerrit.ChangeInfo, later bool, h, parent string) (user, login string, err error) {
+func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *gerrit.ChangeInfo, later bool, h, parent, branch string) (user, login string, err error) {
 	if !im.Uploader.CanActAs() {
 		return "", "", nil
 	}
@@ -736,11 +736,40 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		return "", "", err
 	}
 	if pure {
-		im.Logger.Info("pure rebase: uploading on behalf of the current patch set's uploader", "pr", pr.Number, "pusher", login, "uploader", prev)
-		return prev, login, nil
+		// The new parent's code is built too: it must be the branch's,
+		// or the uploader's own (second audit: anything else would let
+		// someone rebase a trusted change onto their own code).
+		trusted, err := im.parentTrusted(ctx, parent, branch, prev)
+		if err != nil {
+			return "", "", err
+		}
+		if trusted {
+			im.Logger.Info("pure rebase: uploading on behalf of the current patch set's uploader", "pr", pr.Number, "pusher", login, "uploader", prev)
+			return prev, login, nil
+		}
+		im.Logger.Info("rebase onto a parent the uploader did not upload: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
+		return "", login, nil
 	}
 	im.Logger.Info("someone else's push: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
 	return "", login, nil
+}
+
+// parentTrusted reports whether parent is on Gerrit's branch, or is a
+// patch set uploaded by user.
+func (im *Importer) parentTrusted(ctx context.Context, parent, branch, user string) (bool, error) {
+	if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", parent, "refs/remotes/gerrit/heads/"+branch); err == nil {
+		return true, nil
+	}
+	cs, err := im.Gerrit.QueryChanges(ctx, fmt.Sprintf("project:%s commit:%s", gerrit.QueryString(im.Project), parent), "ALL_REVISIONS", "DETAILED_ACCOUNTS")
+	if err != nil {
+		return false, err
+	}
+	for _, c := range cs {
+		if rev, ok := c.Revisions[parent]; ok && strings.EqualFold(rev.Uploader.Username, user) && rev.Uploader.AccountID != im.Bridge.AccountID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // pusher says who pushed h to pr's branch: GitHub's activity log for that

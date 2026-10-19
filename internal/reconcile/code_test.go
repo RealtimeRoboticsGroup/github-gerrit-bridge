@@ -366,8 +366,8 @@ func TestRestackedGerritStackImportsInOrder(t *testing.T) {
 	if err := im.Import(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
-	if len(up.uploads) != 2 {
-		t.Fatalf("uploads = %v", up.uploads)
+	if len(up.uploads) != 2 || !strings.HasPrefix(up.uploads[0], "austin ") || !strings.HasPrefix(up.uploads[1], "austin ") {
+		t.Fatalf("uploads = %v, want both on behalf of austin (pure rebases onto main and onto austin's own)", up.uploads)
 	}
 	p1, p2 := s.changes[1].CurrentRevision, s.changes[2].CurrentRevision
 	if got := s.git("m.git", "rev-parse", p2+"^"); got != p1 {
@@ -1083,5 +1083,29 @@ func TestImportRefusesLinkFooterToAnotherChange(t *testing.T) {
 	}
 	if s.changes[1].CurrentRevision != before || len(up.uploads) != 0 {
 		t.Errorf("uploads %v; change 1 moved: %v", up.uploads, s.changes[1].CurrentRevision != before)
+	}
+}
+
+// A pure rebase borrows the uploader's trust only onto a parent that is
+// the branch's or theirs: here brt uploads the parent change, then
+// restacks austin's change onto it, and that layer is the bridge's.
+func TestPureRebaseOntoSomeoneElsesParentIsTheBridges(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, true)
+	ctx := context.Background()
+	r := s.changes[1].Revisions[g[0]]
+	r.Uploader = s.accounts["brt"]
+	s.changes[1].Revisions[g[0]] = r
+	r1 := s.rebase(g[0], m1)
+	r2 := s.rebase(g[1], r1)
+	s.push("github.git", r1, "refs/heads/gerrit/"+ids[0])
+	s.push("github.git", r2, "refs/heads/gerrit/"+ids[1])
+	s.pulls[10].Head.SHA, s.pulls[20].Head.SHA = r1, r2
+	im.Pushers.Record(r1, "brt")
+	im.Pushers.Record(r2, "brt")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 2 || !strings.HasPrefix(up.uploads[0], "brt ") || !strings.HasPrefix(up.uploads[1], " ") {
+		t.Errorf("uploads = %v, want brt's own layer as brt and austin's as the bridge", up.uploads)
 	}
 }
