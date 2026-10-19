@@ -327,3 +327,106 @@ func TestETagCache(t *testing.T) {
 		t.Errorf("recached: %q, %d not-modified, %d calls", title, notModified, calls)
 	}
 }
+
+// fakeLists serves PR 1's REST lists with ETags (bump a version to change
+// one) and counts GraphQL queries by kind.
+type fakeLists struct {
+	version map[string]int // list path suffix -> version
+	items   map[string]int // list path suffix -> item count
+	noETag  bool
+	queries map[string]int
+}
+
+func (f *fakeLists) handler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/graphql" {
+		b, _ := io.ReadAll(r.Body)
+		kind := "edits"
+		switch {
+		case strings.Contains(string(b), "reviewThreads(first: 100"):
+			kind = "threads"
+		case strings.Contains(string(b), "reviews(first: 100"):
+			kind = "review-edits"
+		}
+		f.queries[kind]++
+		fmt.Fprint(w, `{"data":{"repository":{"pullRequest":{}}}}`)
+		return
+	}
+	suffix := strings.TrimPrefix(r.URL.Path, "/repos/o/r/")
+	etag := fmt.Sprintf(`"%s-%d"`, suffix, f.version[suffix])
+	if !f.noETag {
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", etag)
+	}
+	items := make([]string, f.items[suffix])
+	for i := range items {
+		items[i] = fmt.Sprintf(`{"id":%d}`, i+1)
+	}
+	fmt.Fprint(w, "["+strings.Join(items, ",")+"]")
+}
+
+// GraphQL answers that REST vouches for are reused while every page of
+// the lists behind them is unchanged, and asked again the moment one
+// changes; thread resolution, which REST cannot see, is always asked
+// unless there are no review comments at all.
+func TestGraphQLAnswersVouchedByREST(t *testing.T) {
+	f := &fakeLists{version: map[string]int{}, items: map[string]int{"pulls/1/comments": 1}, queries: map[string]int{}}
+	srv := httptest.NewServer(http.HandlerFunc(f.handler))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	ctx := context.Background()
+	call := func() {
+		t.Helper()
+		if _, err := c.Edits(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.ReviewEdits(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.ReviewThreads(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := func(edits, reviewEdits, threads int) {
+		t.Helper()
+		// queryEdits asks twice: issue comments, then review threads.
+		if f.queries["edits"] != 2*edits || f.queries["review-edits"] != reviewEdits || f.queries["threads"] != threads {
+			t.Errorf("queries = %v, want edits %d, review-edits %d, threads %d", f.queries, edits, reviewEdits, threads)
+		}
+	}
+	call()
+	want(1, 1, 1)
+	call() // nothing changed: only the threads are asked again
+	want(1, 1, 2)
+	f.version["issues/1/comments"]++ // an issue comment edited
+	call()
+	want(2, 1, 3)
+	f.version["pulls/1/comments"]++ // a review comment edited
+	call()
+	want(3, 1, 4)
+	f.version["pulls/1/reviews"]++ // a review body edited
+	call()
+	want(3, 2, 5)
+	f.items["pulls/1/comments"] = 0 // no review comments: no threads
+	f.version["pulls/1/comments"]++
+	call()
+	want(4, 2, 5)
+}
+
+// Without ETags, nothing is vouched for.
+func TestGraphQLAnswersWithoutETags(t *testing.T) {
+	f := &fakeLists{version: map[string]int{}, items: map[string]int{}, noETag: true, queries: map[string]int{}}
+	srv := httptest.NewServer(http.HandlerFunc(f.handler))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	for range 2 {
+		if _, err := c.Edits(context.Background(), 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.queries["edits"] != 4 {
+		t.Errorf("queries = %v", f.queries)
+	}
+}

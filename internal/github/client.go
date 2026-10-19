@@ -36,6 +36,8 @@ type Client struct {
 	// cannot serve anything stale.
 	etags     map[string]*cached
 	etagOrder []string
+	// answers are GraphQL answers REST vouches for (reviews.go).
+	answers map[string]vouchedAnswer
 }
 
 type cached struct {

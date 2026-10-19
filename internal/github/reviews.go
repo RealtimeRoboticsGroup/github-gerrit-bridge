@@ -3,7 +3,9 @@ package github
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -132,7 +134,7 @@ type ReviewThread struct {
 }
 
 // ReviewThreads lists PR n's review threads.
-func (c *Client) ReviewThreads(ctx context.Context, n int) ([]ReviewThread, error) {
+func (c *Client) queryReviewThreads(ctx context.Context, n int) ([]ReviewThread, error) {
 	const q = `query($o: String!, $r: String!, $n: Int!, $after: String) {
   repository(owner: $o, name: $r) { pullRequest(number: $n) {
     reviewThreads(first: 100, after: $after) {
@@ -267,7 +269,7 @@ func escapePath(p string) string {
 
 // ReviewEdits is Edits for PR n's review bodies, by review database id
 // (kept apart: reviews and comments are numbered separately).
-func (c *Client) ReviewEdits(ctx context.Context, n int) (map[int64]string, error) {
+func (c *Client) queryReviewEdits(ctx context.Context, n int) (map[int64]string, error) {
 	const q = `query($o: String!, $r: String!, $n: Int!, $after: String) {
   repository(owner: $o, name: $r) { pullRequest(number: $n) {
     reviews(first: 100, after: $after) { pageInfo { hasNextPage endCursor }
@@ -316,7 +318,7 @@ func (c *Client) ReviewEdits(ctx context.Context, n int) (map[int64]string, erro
 //
 // Unlike updated_at, which GitHub also moves without an edit, GraphQL's
 // lastEditedAt is set only by an edit, and editor says whose.
-func (c *Client) Edits(ctx context.Context, n int) (map[int64]string, error) {
+func (c *Client) queryEdits(ctx context.Context, n int) (map[int64]string, error) {
 	type comment struct {
 		DatabaseID   int64      `json:"databaseId"`
 		LastEditedAt *time.Time `json:"lastEditedAt"`
@@ -483,4 +485,111 @@ func (c *Client) Activity(ctx context.Context, n int) (*PRActivity, error) {
 		}
 	}
 	return a, nil
+}
+
+// GraphQL has no conditional requests, so a PR's GraphQL answers that REST
+// can vouch for are kept and reused while the REST lists behind them are
+// unchanged: every page comes back 304, which costs no rate limit (design
+// §9). What REST cannot see is always asked: a thread's resolution changes
+// no REST answer (checked live, 2026-10-19).
+
+// Edits returns who last edited each edited comment on PR n, issue and
+// review comments alike, by database id (see queryEdits). An edit changes
+// the comment's body and updated_at, so while both comment lists are
+// unchanged the last answer stands.
+func (c *Client) Edits(ctx context.Context, n int) (map[int64]string, error) {
+	return c.vouched(ctx, "edits/"+strconv.Itoa(n), []string{
+		c.RepoPath("issues/" + strconv.Itoa(n) + "/comments"),
+		c.RepoPath("pulls/" + strconv.Itoa(n) + "/comments"),
+	}, func() (map[int64]string, error) { return c.queryEdits(ctx, n) })
+}
+
+// ReviewEdits is Edits for review bodies, vouched for by the review list.
+func (c *Client) ReviewEdits(ctx context.Context, n int) (map[int64]string, error) {
+	return c.vouched(ctx, "review-edits/"+strconv.Itoa(n), []string{
+		c.RepoPath("pulls/" + strconv.Itoa(n) + "/reviews"),
+	}, func() (map[int64]string, error) { return c.queryReviewEdits(ctx, n) })
+}
+
+// ReviewThreads lists PR n's review threads (see queryReviewThreads). A PR
+// without review comments has none, which REST says for free; otherwise
+// it is always asked, since resolving a thread changes nothing in REST.
+func (c *Client) ReviewThreads(ctx context.Context, n int) ([]ReviewThread, error) {
+	_, count, err := c.listPrint(ctx, c.RepoPath("pulls/"+strconv.Itoa(n)+"/comments"))
+	if err != nil {
+		return nil, err
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	return c.queryReviewThreads(ctx, n)
+}
+
+type vouchedAnswer struct {
+	print string
+	value map[int64]string
+}
+
+// vouched returns the answer cached under key if the lists at paths are
+// unchanged since it was computed, and computes (and caches) it if not.
+func (c *Client) vouched(ctx context.Context, key string, paths []string, compute func() (map[int64]string, error)) (map[int64]string, error) {
+	var print strings.Builder
+	for _, p := range paths {
+		pp, _, err := c.listPrint(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		if pp == "" {
+			print.Reset() // a page without an ETag: nothing to vouch with
+			break
+		}
+		print.WriteString(pp + "\n")
+	}
+	c.mu.Lock()
+	cached, ok := c.answers[key]
+	c.mu.Unlock()
+	if ok && print.Len() > 0 && cached.print == print.String() {
+		return maps.Clone(cached.value), nil
+	}
+	v, err := compute()
+	if err != nil {
+		return nil, err
+	}
+	if print.Len() > 0 {
+		c.mu.Lock()
+		if c.answers == nil {
+			c.answers = map[string]vouchedAnswer{}
+		}
+		c.answers[key] = vouchedAnswer{print: print.String(), value: maps.Clone(v)}
+		c.mu.Unlock()
+	}
+	return v, nil
+}
+
+// listPrint fetches every page of the list at path (free when unchanged,
+// through the ETag cache) and returns the pages' ETags together, "" if a
+// page had none, and how many items there are.
+func (c *Client) listPrint(ctx context.Context, path string) (string, int, error) {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	next := path + sep + "per_page=100"
+	var print strings.Builder
+	count := 0
+	for next != "" {
+		var page []json.RawMessage
+		resp, err := c.Do(ctx, http.MethodGet, next, nil, &page)
+		if err != nil {
+			return "", 0, err
+		}
+		etag := resp.Header.Get("ETag")
+		if etag == "" {
+			return "", len(page), nil
+		}
+		print.WriteString(etag + " ")
+		count += len(page)
+		next = nextLink(resp.Header.Get("Link"))
+	}
+	return print.String(), count, nil
 }

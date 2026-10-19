@@ -1224,7 +1224,16 @@ Known gaps:
   for each installation. Measured on the test instance: a comment sync
   is ~6 REST GETs and ~6 GraphQL queries per PR, so a resync of a few
   hundred open PRs every 30 minutes would spend most of the hourly
-  GraphQL budget; GraphQL has no conditional requests.
+  GraphQL budget; GraphQL has no conditional requests. So GraphQL answers
+  that REST can vouch for are reused while every page of the REST lists
+  behind them comes back 304: who edited comments (the issue and review
+  comment lists; an edit changes the comment's body and `updated_at`) and
+  review bodies (the review list). Checked live on 2026-10-19: editing an
+  issue comment, a review comment or a review body changes its list's
+  ETag (and the PR's); resolving or unresolving a thread changes no list
+  and only sometimes the PR, so threads are always asked for, except on a
+  PR with no review comments, which has none. A steady PR then costs one
+  GraphQL query per sync if it has review comments, else none.
 - With `-v`, every Gerrit and GitHub request and git command is logged
   with its duration, and reconciles that wait or take more than 3s are
   always logged.
