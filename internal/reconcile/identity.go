@@ -45,7 +45,9 @@ type Users struct {
 	// service accounts and administrators). Gerrit must implement
 	// GroupMembers; any lookup error matches nobody, including a 404,
 	// which is also what Gerrit says for a group the bridge cannot see:
-	// CheckGroups at startup makes sure it can see them all.
+	// CheckGroups at startup makes sure it can see them all, and again
+	// every few minutes, matching nobody while it cannot (fourth audit: a
+	// hidden or external group included later hid its members).
 	NeverGroups []string
 	// NeverLogins are GitHub logins never matched (the bridge's own: its
 	// edits and pushes are its own, not those of whoever owns its token).
@@ -59,7 +61,20 @@ type Users struct {
 
 	mu    sync.Mutex
 	cache map[string]cachedUser
-	pinMu sync.Mutex
+	// checked is when CheckGroups last passed.
+	checked time.Time
+	pinMu   sync.Mutex
+	now     func() time.Time
+}
+
+// groupsRecheck is how often excluded checks NeverGroups again.
+const groupsRecheck = 5 * time.Minute
+
+func (u *Users) clock() time.Time {
+	if u.now != nil {
+		return u.now()
+	}
+	return time.Now()
 }
 
 // Pins stores identity pins (state.Store).
@@ -96,6 +111,17 @@ func (u *Users) excluded(ctx context.Context, username string) bool {
 	gl, ok := u.Gerrit.(groupLister)
 	if !ok {
 		return true
+	}
+	u.mu.Lock()
+	stale := u.clock().Sub(u.checked) > groupsRecheck
+	u.mu.Unlock()
+	if stale {
+		if err := u.CheckGroups(ctx); err != nil {
+			if u.Logger != nil {
+				u.Logger.Error("excluded groups cannot all be listed; matching nobody", "err", err)
+			}
+			return true
+		}
 	}
 	for _, g := range u.NeverGroups {
 		members, err := gl.GroupMembers(ctx, g)
@@ -142,6 +168,11 @@ func (u *Users) CheckGroups(ctx context.Context) error {
 		if err := checkGroup(ctx, gl, g, map[string]bool{}); err != nil {
 			errs = append(errs, fmt.Errorf("identity.never_groups %q: %w", g, err))
 		}
+	}
+	if len(errs) == 0 {
+		u.mu.Lock()
+		u.checked = u.clock()
+		u.mu.Unlock()
 	}
 	return errors.Join(errs...)
 }

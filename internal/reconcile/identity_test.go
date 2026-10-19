@@ -245,4 +245,21 @@ func TestUsersNeverGroupsFailClosed(t *testing.T) {
 			t.Errorf("including %s: %v", inc, err)
 		}
 	}
+	// Checked at startup, then a hidden group included: once the check is
+	// due again, nobody is matched until it passes (fourth audit).
+	now := time.Now()
+	u = &Users{Gerrit: fakeAccounts{users: []string{"alice"}, groups: map[string][]string{"Service Users": nil}},
+		NeverGroups: []string{"Service Users"}, now: func() time.Time { return now }}
+	if err := u.CheckGroups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	u.Gerrit = fakeAccounts{users: []string{"alice"}, groups: map[string][]string{"Service Users": nil}, includes: map[string][]string{"Service Users": {hidden}}}
+	if _, ok := u.GerritUser(ctx, "alice"); !ok {
+		t.Error("alice not matched while the last check holds")
+	}
+	now = now.Add(groupsRecheck + time.Second)
+	u.cache = nil
+	if user, ok := u.GerritUser(ctx, "alice"); ok {
+		t.Errorf("alice acts as %q though the excluded groups cannot all be listed", user)
+	}
 }
