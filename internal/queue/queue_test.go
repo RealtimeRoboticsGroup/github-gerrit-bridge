@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -193,4 +194,21 @@ func TestWaited(t *testing.T) {
 		t.Errorf("waited %v", w)
 	}
 	q.Done(k)
+}
+
+func TestUrgentKeysFirst(t *testing.T) {
+	q := New[string]()
+	q.Urgent = func(k string) bool { return strings.HasPrefix(k, "!") }
+	for _, k := range []string{"a", "b", "!merge1", "c", "!merge2"} {
+		q.Add(k)
+	}
+	var got []string
+	for q.Len() > 0 {
+		k, _ := q.Get()
+		got = append(got, k)
+		q.Done(k)
+	}
+	if strings.Join(got, " ") != "!merge1 !merge2 a b c" {
+		t.Errorf("order = %v", got)
+	}
 }

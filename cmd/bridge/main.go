@@ -190,6 +190,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	// replication's delay (design §6.7).
 	q.MinInterval = 10 * time.Second
 	q.Throttled = reconcile.FromGitHub
+	q.Urgent = reconcile.Urgent
 	router := reconcile.NewRouter(cfg.Gerrit.Project, q, logger)
 	router.Pushers = &reconcile.Pushers{}
 	stream := &events.Stream{

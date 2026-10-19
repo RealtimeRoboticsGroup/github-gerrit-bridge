@@ -52,6 +52,7 @@ func TestRouterEvents(t *testing.T) {
 		`{"type":"patchset-created","change":{"project":"p","branch":"main","number":5}}`,
 		`{"type":"comment-added","change":{"project":"p","branch":"rel","number":7}}`,
 		`{"type":"change-abandoned","change":{"project":"p","branch":"rel","number":7}}`,
+		`{"type":"change-merged","change":{"project":"p","branch":"rel","number":8}}`,
 		`{"type":"comment-added","change":{"project":"other","number":6}}`,
 		`{"type":"comment-added","change":{"project":"p","number":5}}`,
 		`{"type":"ref-updated","refUpdate":{"project":"p","refName":"refs/heads/main"}}`,
@@ -65,8 +66,8 @@ func TestRouterEvents(t *testing.T) {
 	r.Delivery(&github.Delivery{Event: "pull_request_review_comment", PR: 9})
 	r.Delivery(&github.Delivery{Event: "push"})
 	// patchset-created: code and comments; comment-added: comments only;
-	// change-abandoned: code only.
-	want := []string{"branch/main", "comments/5", "comments/7", "branch/rel", "pr/9", "pr-comments/9"}
+	// change-abandoned: code only; change-merged: its PRs first, then code.
+	want := []string{"branch/main", "comments/5", "comments/7", "branch/rel", "merged/8", "pr/9", "pr-comments/9"}
 	if got := drain(q); !equal(got, want) {
 		t.Errorf("queued %v, want %v", got, want)
 	}
@@ -216,5 +217,32 @@ func TestFromGitHub(t *testing.T) {
 		if FromGitHub(k) != want {
 			t.Errorf("FromGitHub(%+v) = %v", k, !want)
 		}
+	}
+}
+
+// A merge's PR work waits for whoever holds the branch, but not for
+// anyone else waiting: while it waits, nobody else gets the lock.
+func TestUrgentLockGoesFirst(t *testing.T) {
+	c := &Code{}
+	l := c.branchLock("main")
+	l.mu.Lock()
+	l.urgent = 1 // a merge waiting
+	l.mu.Unlock()
+	got := make(chan struct{})
+	go func() { u := c.lock("main"); close(got); u() }()
+	select {
+	case <-got:
+		t.Fatal("a comment sync took the lock ahead of a waiting merge")
+	case <-time.After(50 * time.Millisecond):
+	}
+	u := c.lockUrgent("main") // the merge gets it, and lets go
+	l.mu.Lock()
+	l.urgent-- // the simulated waiter gives up
+	l.mu.Unlock()
+	u()
+	select {
+	case <-got:
+	case <-time.After(time.Second):
+		t.Fatal("the comment sync never got the lock")
 	}
 }

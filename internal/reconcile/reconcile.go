@@ -31,6 +31,9 @@ type Key struct {
 	PR int
 	// PRComments: a PR's reviews or comments changed.
 	PRComments int
+	// Merged: a change merged in Gerrit; ready its PRs for replication
+	// before anything else (design §6.7).
+	Merged int
 }
 
 func (k Key) String() string {
@@ -41,6 +44,8 @@ func (k Key) String() string {
 		return "pr/" + strconv.Itoa(k.PR)
 	case k.PRComments != 0:
 		return "pr-comments/" + strconv.Itoa(k.PRComments)
+	case k.Merged != 0:
+		return "merged/" + strconv.Itoa(k.Merged)
 	default:
 		return "branch/" + k.Branch
 	}
@@ -81,6 +86,9 @@ func (r *Router) Event(e *events.Event) {
 	if e.Change != nil {
 		// Code is reconciled a whole target branch at a time, so chains
 		// and stacks are planned together.
+		if e.Type == "change-merged" && e.Change.Number > 0 {
+			r.Queue.Add(Key{Merged: e.Change.Number})
+		}
 		if e.Change.Branch != "" && e.Type != "comment-added" {
 			r.Queue.Add(Key{Branch: e.Change.Branch})
 		}
@@ -112,6 +120,10 @@ func (r *Router) Resync(reason string) {
 	default:
 	}
 }
+
+// Urgent reports whether k races something: a merge's PRs must be ready
+// before replication pushes it.
+func Urgent(k Key) bool { return k.Merged != 0 }
 
 // FromGitHub reports whether k is one GitHub webhooks queue (anyone can
 // cause those), rather than Gerrit's events or a resync.

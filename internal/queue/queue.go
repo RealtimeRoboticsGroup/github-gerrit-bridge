@@ -37,6 +37,9 @@ type Queue[K comparable] struct {
 	// Throttled, if set, says which keys MinInterval applies to (say,
 	// those strangers can cause); nil means all.
 	Throttled func(K) bool
+	// Urgent, if set, says which keys go to the next free worker ahead
+	// of the others (in order among themselves).
+	Urgent func(K) bool
 }
 
 // New returns an empty queue with a 1s..5m retry backoff.
@@ -121,10 +124,17 @@ func (q *Queue[K]) Get() (k K, ok bool) {
 	if q.shutdown {
 		return k, false
 	}
-	k = q.order[0]
-	var zero K
-	q.order[0] = zero
-	q.order = q.order[1:]
+	i := 0
+	if q.Urgent != nil {
+		for j, o := range q.order {
+			if q.Urgent(o) {
+				i = j
+				break
+			}
+		}
+	}
+	k = q.order[i]
+	q.order = append(q.order[:i:i], q.order[i+1:]...)
 	delete(q.dirty, k)
 	q.processing[k] = struct{}{}
 	q.started[k] = time.Now()

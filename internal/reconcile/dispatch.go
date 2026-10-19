@@ -26,6 +26,18 @@ func (d *Dispatcher) Reconcile(ctx context.Context, k Key) error {
 		return d.Code.Reconcile(ctx, k)
 	case k.Comments != 0:
 		return d.syncComments(ctx, k.Comments)
+	case k.Merged != 0:
+		// Just the PR heads and bases (Code.PrepareSubmit), ahead of
+		// everything waiting: replication pushes the merge to GitHub
+		// within seconds, and only PRs based on the branch, with Gerrit's
+		// commits as heads, then show merged. The branch's full reconcile
+		// follows.
+		st, err := d.Store.Load(ctx, k.Merged)
+		if err != nil || st.State.PR == 0 {
+			return err
+		}
+		defer d.Code.lockUrgent(st.State.Branch)()
+		return d.Code.PrepareSubmit(ctx, k.Merged)
 	case k.PR != 0, k.PRComments != 0:
 		pr := max(k.PR, k.PRComments)
 		n := d.Store.ChangeForPR(pr)

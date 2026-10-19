@@ -876,7 +876,14 @@ mirrored are checked, and only for reviewers with a Gerrit account.
   rebased the commit. `/submit` does both before submitting.
   Replication then lands the commits and GitHub shows it merged. The
   bridge hears the merge event within a second, while replication waits
-  `replicationDelay` (default 15 s; AOS uses the default). If replication wins anyway, or the
+  `replicationDelay` (default 15 s; AOS uses the default). A full
+  reconcile of the branch can take longer than that (many open PRs,
+  comment syncs queued by a resync), so a `change-merged` event queues a
+  `merged/N` key that does only the swap and retarget (`PrepareSubmit`),
+  goes to the next free worker ahead of everything else, and takes the
+  branch lock ahead of anyone else waiting for it; the full reconcile
+  follows (audit follow-up 2026-10-19; slow or late reconciles are logged).
+  If replication wins anyway, or the
   submit rewrote the commit (rebase, cherry-pick, any GitHub-born squash
   that is not a no-op), the PR is closed with a "Merged in Gerrit" notice.
   That happens when replication wins, or for a fork without maintainer

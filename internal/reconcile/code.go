@@ -52,22 +52,65 @@ type Code struct {
 	// locks serializes reconciles of one target branch. The queue already
 	// does for Branch keys; Change and PR keys resolve to a branch here.
 	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	locks map[string]*branchLock
 }
 
-func (c *Code) lock(branch string) func() {
+// branchLock is a mutex whose urgent waiters go first.
+type branchLock struct {
+	mu     sync.Mutex
+	cond   *sync.Cond
+	held   bool
+	urgent int // urgent waiters
+}
+
+func (l *branchLock) lock(urgent bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if urgent {
+		l.urgent++
+		defer func() { l.urgent-- }()
+	}
+	for l.held || (!urgent && l.urgent > 0) {
+		l.cond.Wait()
+	}
+	l.held = true
+}
+
+func (l *branchLock) unlock() {
+	l.mu.Lock()
+	l.held = false
+	l.cond.Broadcast()
+	l.mu.Unlock()
+}
+
+func (c *Code) branchLock(branch string) *branchLock {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.locks == nil {
-		c.locks = map[string]*sync.Mutex{}
+		c.locks = map[string]*branchLock{}
 	}
 	l := c.locks[branch]
 	if l == nil {
-		l = &sync.Mutex{}
+		l = &branchLock{}
+		l.cond = sync.NewCond(&l.mu)
 		c.locks[branch] = l
 	}
-	c.mu.Unlock()
-	l.Lock()
-	return l.Unlock
+	return l
+}
+
+func (c *Code) lock(branch string) func() {
+	l := c.branchLock(branch)
+	l.lock(false)
+	return l.unlock
+}
+
+// lockUrgent is lock, ahead of anyone waiting for it without urgency: a
+// merge in Gerrit must reach the PRs before replication does (§6.7),
+// whatever comment syncs are waiting.
+func (c *Code) lockUrgent(branch string) func() {
+	l := c.branchLock(branch)
+	l.lock(true)
+	return l.unlock
 }
 
 // maxPasses bounds plan/apply rounds per reconcile. New PRs need one pass
@@ -1088,7 +1131,7 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 		rev, ok := ch.Current()
 		switch {
 		case pr.Head.SHA == ch.CurrentRevision || !ok:
-		case !st.Mirrors(ch.CurrentRevision, pr.Head.SHA):
+		case len(st.Revisions) == 0 || st.Revisions[len(st.Revisions)-1].GitHubSHA != pr.Head.SHA:
 			// A push not imported yet: never overwritten.
 			c.Logger.Warn("PR head is not the patch set being submitted; not swapping it", "change", ch.Number, "pr", pr.Number, "head", pr.Head.SHA)
 		default:

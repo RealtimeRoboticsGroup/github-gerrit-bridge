@@ -1036,3 +1036,35 @@ func TestTwoQuickPREdits(t *testing.T) {
 		t.Errorf("message %q", got)
 	}
 }
+
+// Merged in Gerrit (rebased on submit, so a new patch set): the merged key
+// swaps the PR's history head for the merged commit and bases it on main
+// at once, so replication's push shows it merged.
+func TestMergedKeyReadiesPRsForReplication(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	m1 := s.commit(m0, "b.txt", "b\n", "main moves")
+	s.push("gerrit.git", m1, "refs/heads/main")
+	g1 := s.commit(m0, "one.txt", "1\n", "One\n\nChange-Id: "+cid(1)+"\n")
+	h1 := s.commit(g1, "one.txt", "1b\n", "Patch set 2 from Gerrit") // GitHub history
+	merged := s.commit(m1, "one.txt", "1b\n", "One\n\nChange-Id: "+cid(1)+"\n")
+	ci := s.change(1, cid(1), merged, "One\n\nChange-Id: "+cid(1)+"\n", "MERGED")
+	ci.Revisions[merged] = gerritRev(ci.Revisions[merged], 3)
+	s.push("gerrit.git", merged, ci.Revisions[merged].Ref)
+	s.push("github.git", h1, "refs/heads/gerrit/"+cid(1))
+	s.pr(10, "gerrit/"+cid(1), h1, "gerrit/somewhere", "bot")
+	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, PR: 10, Branch: "main", Origin: "gerrit", HeadBranch: "gerrit/" + cid(1), Lifecycle: "NEW"},
+		Revisions: []state.Revision{{PatchSet: 2, GerritSHA: "ps2", GitHubSHA: h1}}})
+	d := &Dispatcher{Code: c, Store: store}
+	if err := d.Reconcile(ctx, Key{Merged: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ref("github.git", "refs/heads/gerrit/"+cid(1)); got != merged {
+		t.Errorf("head = %s, want the merged commit %s", short(got), short(merged))
+	}
+	if s.pulls[10].Base.Ref != "main" {
+		t.Errorf("base = %s", s.pulls[10].Base.Ref)
+	}
+}
