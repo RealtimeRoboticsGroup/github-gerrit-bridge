@@ -120,7 +120,7 @@ func TestSafeDefaults(t *testing.T) {
 	if c.Listen != "127.0.0.1:8080" || c.ResyncInterval != 30*time.Minute {
 		t.Errorf("listen %q, resync %v", c.Listen, c.ResyncInterval)
 	}
-	if want := []string{"Service Users", "Non-Interactive Users", "Administrators"}; strings.Join(c.Identity.NeverGroups, ",") != strings.Join(want, ",") {
+	if want := []string{"Service Users", "Administrators"}; strings.Join(c.Identity.NeverGroups, ",") != strings.Join(want, ",") {
 		t.Errorf("never_groups = %q", c.Identity.NeverGroups)
 	}
 }
