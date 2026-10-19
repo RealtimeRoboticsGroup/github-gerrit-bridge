@@ -1159,3 +1159,19 @@ func TestRefusedGitHubCommentDoesNotStopTheSync(t *testing.T) {
 		t.Errorf("the refused comment was tried again (%d more calls)", e.g.attempts-attempts)
 	}
 }
+
+// A suggestion holding backticks gets a longer fence, so the suggested
+// text cannot close it and stays code: exact, and mentioning nobody.
+func TestSuggestionWithBackticksStaysCode(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.g.user("c1", "a.txt", 2, 2, "Like this.", "", true)
+	e.g.comments[0].FixSuggestions = []gerrit.FixSuggestion{{Replacements: []gerrit.FixReplacement{{
+		Path: "a.txt", Range: gerrit.Range{StartLine: 2, EndLine: 3}, Replacement: "```\n@everyone\n"}}}}
+	e.sync(t)
+	if len(e.h.rcs) != 1 {
+		t.Fatalf("got %+v", e.h.rcs)
+	}
+	if b := e.h.rcs[0].Body; !strings.Contains(b, "````suggestion\n```\n@everyone\n````") {
+		t.Errorf("body:\n%s", b)
+	}
+}

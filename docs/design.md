@@ -1202,10 +1202,15 @@ Known gaps:
 
 - Gerrit renders a subset of Markdown, and GitHub renders GFM, so most
   content passes through unchanged.
-- **As built (2026-10-18): copied text is defused.** Whatever the bridge
-  posts on one side with words from the other (`internal/reconcile/text.go`)
-  has `@mentions` outside code, and `<!-- bridge:` markers anywhere, broken
-  with a zero-width joiner, which renders as nothing: the bridge's account
+- **As built (2026-10-18, revised after the second audit): copied text is
+  defused.** Whatever the bridge posts on one side with words from the
+  other (`internal/reconcile/text.go`) has every `@` (literal, as an HTML
+  character reference, full-width or small), and `<!-- bridge:` markers,
+  broken with a zero-width joiner, which renders as nothing, code
+  included: an approximation of what GitHub renders as code was fooled
+  four ways. Suggestion blocks stay exact, inside a fence longer than any
+  run of backticks in them, so nothing in them is ever outside code.
+  Names in bold have Markdown and `&` escaped. The bridge's account
   must not notify whoever the author named, and must not carry markers it
   would read back as its own state. Where PR descriptions flow back into
   commit messages, the joiners are taken out again, so round trips are

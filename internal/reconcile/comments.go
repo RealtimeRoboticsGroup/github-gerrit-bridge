@@ -415,7 +415,9 @@ func (c *Comments) ghBody(n int, gc *gerrit.CommentInfo, current int, note, sugg
 	}
 	b.WriteString(forGitHub(strings.TrimSpace(gc.Message)))
 	if suggestion != "" {
-		b.WriteString("\n\n" + forGitHub(suggestion))
+		// Exact: it may be committed. Its fence keeps it code, where
+		// nothing in it mentions anyone.
+		b.WriteString("\n\n" + suggestion)
 	}
 	b.WriteString("\n\n" + gerritFooter(n, gc.ID))
 	return b.String()
@@ -1336,7 +1338,7 @@ func (c *Comments) messageURL(n int, msg gerrit.ChangeMessage) string {
 
 // --- suggestions (design §8) ---
 
-var suggestionBlock = regexp.MustCompile("(?s)```suggestion[^\n]*\n(.*?)```")
+var suggestionOpen = regexp.MustCompile("(?m)^(```+)suggestion[^\n]*\n")
 
 // toSuggestion renders a Gerrit fix suggestion as a GitHub suggestion
 // block, and the lines it must be anchored on. Only a single replacement in
@@ -1357,7 +1359,8 @@ func (c *Comments) toSuggestion(ctx context.Context, n int, gc *gerrit.CommentIn
 	if !ok {
 		return "", 0, 0, false
 	}
-	return "```suggestion\n" + text + "```", first, last, true
+	f := suggestionFence(text)
+	return f + "suggestion\n" + text + f, first, last, true
 }
 
 // applyReplacement returns the new text of the whole lines a replacement
@@ -1393,12 +1396,18 @@ func applyReplacement(lines []string, r gerrit.FixReplacement) (string, int, int
 // fromSuggestion turns a GitHub suggestion block into a Gerrit fix on
 // lines first..last of path, returning the message without the block.
 func fromSuggestion(body, path string, first, last, lastLen int) (string, []gerrit.FixSuggestion) {
-	sm := suggestionBlock.FindStringSubmatchIndex(body)
-	if sm == nil || first < 1 || last < first {
+	om := suggestionOpen.FindStringSubmatchIndex(body)
+	if om == nil || first < 1 || last < first {
 		return body, nil
 	}
-	replacement := strings.TrimSuffix(body[sm[2]:sm[3]], "\n")
-	msg := strings.TrimSpace(body[:sm[0]] + "_(Suggested change attached: use Apply fix.)_" + body[sm[1]:])
+	fence := body[om[2]:om[3]]
+	end := strings.Index(body[om[1]:], fence)
+	if end < 0 {
+		return body, nil
+	}
+	end += om[1]
+	replacement := strings.TrimSuffix(body[om[1]:end], "\n")
+	msg := strings.TrimSpace(body[:om[0]] + "_(Suggested change attached: use Apply fix.)_" + body[end+len(fence):])
 	return msg, []gerrit.FixSuggestion{{
 		Description: "Suggested on GitHub",
 		Replacements: []gerrit.FixReplacement{{

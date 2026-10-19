@@ -21,41 +21,25 @@ import (
 // back (PR descriptions into commit messages), so round trips are exact.
 const zwj = "‍"
 
-var (
-	markerStart = regexp.MustCompile(`(?i)(<!--\s*/?bridge)(:)`)
-	mention     = regexp.MustCompile(`(^|[^A-Za-z0-9_` + "`" + `@/\\])@([A-Za-z0-9])`)
-	fence       = regexp.MustCompile("^\\s{0,3}(```|~~~)")
-)
+var markerStart = regexp.MustCompile(`(?i)(<!--\s*/?bridge)(:)`)
+
+// atSign matches an @ however it can be written so that GitHub (or Gerrit)
+// reads it as one: literally, as an HTML character reference (decoded
+// before mentions are found; with or without the semicolon, which HTML
+// tolerates), or as a full-width or small at sign.
+var atSign = regexp.MustCompile(`(?i)@|&#0*64;?|&#x0*40;?|&commat;|\x{FF20}|\x{FE6B}`)
 
 // noMarkers breaks bridge markers in s, code included: the bridge's
 // marker regexps do not know about code.
 func noMarkers(s string) string { return markerStart.ReplaceAllString(s, "${1}"+zwj+"${2}") }
 
-// noMentions breaks @mentions in s outside code, where they would notify
-// (in code they are shown as written and notify nobody).
-func noMentions(s string) string {
-	lines := strings.Split(s, "\n")
-	inFence := false
-	for i, l := range lines {
-		if fence.MatchString(l) {
-			inFence = !inFence
-			continue
-		}
-		if inFence {
-			continue
-		}
-		// Inline code spans: leave the parts between backticks alone.
-		parts := strings.Split(l, "`")
-		for j := 0; j < len(parts); j += 2 {
-			if j == len(parts)-1 && j > 0 && len(parts)%2 == 0 {
-				break // an unclosed backtick: GitHub shows it literally
-			}
-			parts[j] = mention.ReplaceAllString(parts[j], "${1}@"+zwj+"${2}")
-		}
-		lines[i] = strings.Join(parts, "`")
-	}
-	return strings.Join(lines, "\n")
-}
+// noMentions breaks every @ in s, wherever it is: no mention survives a
+// joiner after its @. Code included: telling code from text the way
+// GitHub's Markdown renderer does is not something to approximate (the
+// second audit found four ways past an approximation), and a joiner in
+// code only shows when copied. Suggestion blocks, which must be exact,
+// are kept apart by the caller (suggestionFence).
+func noMentions(s string) string { return atSign.ReplaceAllString(s, "${0}"+zwj) }
 
 // forGitHub defuses text for the bridge to post on GitHub.
 func forGitHub(s string) string { return noMentions(noMarkers(s)) }
@@ -64,11 +48,14 @@ func forGitHub(s string) string { return noMentions(noMarkers(s)) }
 // notifies @mentioned users too). Markers mean nothing in Gerrit.
 func forGerrit(s string) string { return noMentions(s) }
 
-var brokenMarker = regexp.MustCompile(`(?i)(<!--\s*/?bridge)` + zwj + `:`)
+var (
+	brokenMarker = regexp.MustCompile(`(?i)(<!--\s*/?bridge)` + zwj + `:`)
+	brokenAt     = regexp.MustCompile(`(?i)(@|&#0*64;?|&#x0*40;?|&commat;|\x{FF20}|\x{FE6B})` + zwj)
+)
 
 // unGitHub removes the joiners forGitHub added.
 func unGitHub(s string) string {
-	return brokenMarker.ReplaceAllString(strings.ReplaceAll(s, "@"+zwj, "@"), "${1}:")
+	return brokenMarker.ReplaceAllString(brokenAt.ReplaceAllString(s, "${1}"), "${1}:")
 }
 
 // inlineName is a free-form name (a Gerrit full name) safe to put in bold
@@ -76,7 +63,7 @@ func unGitHub(s string) string {
 func inlineName(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	s = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `_`, `\_`, `[`, `\[`, `]`, `\]`, `(`, `\(`, `)`, `\)`,
-		`<`, `&lt;`, `>`, `&gt;`, "`", "\\`", `~`, `\~`, `#`, `\#`, `|`, `\|`).Replace(s)
+		`&`, `&amp;`, `<`, `&lt;`, `>`, `&gt;`, "`", "\\`", `~`, `\~`, `#`, `\#`, `|`, `\|`).Replace(s)
 	return forGitHub(s)
 }
 
@@ -84,4 +71,19 @@ func inlineName(s string) string {
 func whoMD(a gerrit.AccountInfo) string {
 	a.Name, a.Username = inlineName(a.Name), inlineName(a.Username)
 	return who(a)
+}
+
+// suggestionFence is a code fence for text that text itself cannot close:
+// longer than any run of backticks in it.
+func suggestionFence(text string) string {
+	longest, run := 0, 0
+	for _, r := range text {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	return strings.Repeat("`", max(3, longest+1))
 }
