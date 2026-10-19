@@ -747,6 +747,39 @@ func TestPREditsMirroredOncePerReconcile(t *testing.T) {
 	}
 }
 
+// A PR's commits' Change-Id is public once they are pushed: one that
+// someone else's change (or another PR's) already has gives the PR its
+// own keyed Change-Id instead of stopping its import (fourth audit). One
+// the PR's author already uploaded is still theirs to sort out.
+func TestSquattedChangeIDFallsBackToTheKeyedOne(t *testing.T) {
+	for _, owner := range []string{"brt", "bridge", "austin"} {
+		s, im, up, m1, _, _ := gerritBornWorld(t, false)
+		s.accounts["bridge"] = im.Bridge
+		msg := "New\n\nChange-Id: " + cid(77) + "\n"
+		h := s.commit(m1, "new.txt", "n\n", msg)
+		s.push("github.git", h, "refs/heads/topic")
+		pr := s.pr(60, "topic", h, "main", "austin")
+		s.pushed("o/r", "refs/heads/topic", h, "austin")
+		squat := s.commit(m1, "squat.txt", "s\n", msg)
+		ci := s.change(77, cid(77), squat, msg, "NEW")
+		ci.Owner = s.accounts[owner]
+		err := im.Import(context.Background(), "main")
+		if owner == "austin" {
+			if sts := s.statuses[h]; len(up.uploads) != 0 || err != nil || len(sts) != 1 || sts[0].State != "failure" {
+				t.Errorf("author's own change: err %v, uploads %v, gerrit/sync %+v; want the PR refused", err, up.uploads, sts)
+			}
+			continue
+		}
+		if err != nil || len(up.uploads) != 1 {
+			t.Fatalf("%s's change: err %v, uploads %v", owner, err, up.uploads)
+		}
+		got := s.git("m.git", "log", "-1", "--format=%B", strings.Fields(up.uploads[0])[1])
+		if id, _ := footerChangeID(got); id != im.derivedChangeID(pr) {
+			t.Errorf("%s's change: uploaded with Change-Id %s, want the PR's keyed one", owner, id)
+		}
+	}
+}
+
 // A change is taken for a PR's import whose link was lost only if its
 // GitHub-PR trailer, the last paragraph's, names an open PR, and its owner
 // (who uploaded patch set 1, which no later patch set changes) is the

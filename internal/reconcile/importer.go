@@ -516,7 +516,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	}
 
 	// The change's identity.
-	changeID := ""
+	changeID, fromCommits := "", false
 	if st != nil {
 		changeID = st.State.ChangeID
 	}
@@ -530,36 +530,52 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			if !ok {
 				return nil, &syncError{state: "pending", msg: fmt.Sprintf("Commit %s has Change-Id lines Gerrit could read differently; keep at most one, in the last paragraph", own[i])}
 			}
-			changeID = id
+			changeID, fromCommits = id, id != ""
 		}
 	}
 	if changeID == "" {
 		changeID = im.derivedChangeID(pr)
 	}
-	existing, err := im.Gerrit.QueryChanges(ctx, fmt.Sprintf("project:%s branch:%s change:%s",
-		gerrit.QueryString(im.Project), gerrit.QueryString(branch), changeID), "ALL_REVISIONS", "ALL_COMMITS", "DETAILED_ACCOUNTS")
+	find := func(id string) (*gerrit.ChangeInfo, error) {
+		existing, err := im.Gerrit.QueryChanges(ctx, fmt.Sprintf("project:%s branch:%s change:%s",
+			gerrit.QueryString(im.Project), gerrit.QueryString(branch), id), "ALL_REVISIONS", "ALL_COMMITS", "DETAILED_ACCOUNTS")
+		if err != nil || len(existing) == 0 {
+			return nil, err
+		}
+		return &existing[0], nil
+	}
+	cur, err := find(changeID)
 	if err != nil {
 		return nil, err
 	}
-	var cur *gerrit.ChangeInfo
-	if len(existing) > 0 {
-		cur = &existing[0]
-		if st == nil {
-			adopt, err := im.ownUpload(ctx, cur, pr, h)
-			if err != nil {
+	for cur != nil && st == nil {
+		adopt, err := im.ownUpload(ctx, cur, pr, h)
+		if err != nil {
+			return nil, err
+		}
+		if adopt {
+			// Uploaded for this PR, but the link was never saved (a
+			// crash, a refused state push): link it, and import next
+			// time.
+			if err := im.link(ctx, cur.Number, "github", branch, changeID, pr); err != nil {
 				return nil, err
 			}
-			if adopt {
-				// Uploaded for this PR, but the link was never saved (a
-				// crash, a refused state push): link it, and import next
-				// time.
-				if err := im.link(ctx, cur.Number, "github", branch, changeID, pr); err != nil {
-					return nil, err
-				}
-				im.Logger.Warn("adopted a change uploaded for a PR whose link was lost", "pr", pr.Number, "change", cur.Number)
-				return nil, &syncError{state: "pending", msg: fmt.Sprintf("Linked to Gerrit change %d", cur.Number), retry: true}
-			}
+			im.Logger.Warn("adopted a change uploaded for a PR whose link was lost", "pr", pr.Number, "change", cur.Number)
+			return nil, &syncError{state: "pending", msg: fmt.Sprintf("Linked to Gerrit change %d", cur.Number), retry: true}
 		}
+		if author, ok := im.Identity.GerritUser(ctx, pr.User.Login); !fromCommits || (ok && strings.EqualFold(cur.Owner.Username, author) && cur.Owner.AccountID != im.Bridge.AccountID) {
+			break // the author's own change: theirs to sort out
+		}
+		// Someone else's change has the Change-Id of this PR's commits,
+		// which anyone can read once they are pushed (fourth audit): the
+		// PR gets its own, which nobody can work out.
+		im.Logger.Warn("the PR's Change-Id is another change's; using its own", "pr", pr.Number, "change", cur.Number, "change_id", changeID)
+		changeID, fromCommits = im.derivedChangeID(pr), false
+		if cur, err = find(changeID); err != nil {
+			return nil, err
+		}
+	}
+	if cur != nil {
 		if st == nil || st.State.Change != cur.Number {
 			// Never let two PRs fight over one change.
 			return nil, &syncError{state: "failure", msg: fmt.Sprintf("Change-Id %s already belongs to Gerrit change %d; give this PR's commits a new Change-Id", changeID, cur.Number)}
