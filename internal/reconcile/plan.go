@@ -329,6 +329,12 @@ func MakePlan(s *Snapshot) *Plan {
 		if _, onGitHub := s.GitHubBranches[s.head(n, c.ChangeID)]; (s.Withheld[n] || s.Deferred[n]) && !onGitHub {
 			continue // never exported (or not yet): no branch, no PR
 		}
+		if st := s.State[n]; (st == nil || st.State.PR == 0) && importedFrom(c.Message, s.Repo) {
+			// A PR's import whose link is not saved yet: the importer
+			// links it (Importer.ownUpload), not a Gerrit-born change to
+			// open a second PR for.
+			continue
+		}
 		if c.Status == "NEW" && !c.Private {
 			mirrored[n] = c
 			byRev[c.Revision] = n
@@ -764,6 +770,12 @@ func sortedKeys[V any](m map[int]V) []int {
 // bridgeTrailers are the trailers the bridge adds to imported commits.
 // Signed-off-by is a trailer too: the importer carries sign-offs from the
 // commits, so they are not part of the PR text.
+// importedFrom reports whether a commit message has the GitHub-PR footer
+// the importer gives a PR of repo's.
+func importedFrom(message, repo string) bool {
+	return regexp.MustCompile(`(?m)^GitHub-PR: https://github\.com/` + regexp.QuoteMeta(repo) + `/pull/\d+\s*$`).MatchString(message)
+}
+
 var bridgeTrailers = regexp.MustCompile(`(?m)^(Change-Id|GitHub-PR|Signed-off-by): .*$`)
 
 // prTextFromMessage is the PR title and body a commit message stands for:

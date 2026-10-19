@@ -461,6 +461,23 @@ func TestDeferredChangeWaits(t *testing.T) {
 	}
 }
 
+// A change the importer uploaded for a PR, whose link is not saved yet,
+// is not taken for a Gerrit-born change: no second PR is opened for it.
+func TestUnlinkedImportGetsNoPR(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.gerrit[1].Message += "\nGitHub-PR: https://github.com/o/r/pull/7"
+	w.upload(2, "b1", "m0")
+	w.gerrit[2].Message += "\nGitHub-PR: https://github.com/other/repo/pull/7"
+	w.converge()
+	if w.state[1] != nil {
+		t.Error("a PR was opened for an unlinked import")
+	}
+	if w.state[2] == nil {
+		t.Error("a change citing another repository's PR was not mirrored")
+	}
+}
+
 func TestSingleChangeHasNoStack(t *testing.T) {
 	w := newWorld(t)
 	w.upload(1, "a1", "m0")

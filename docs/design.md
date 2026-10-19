@@ -1158,7 +1158,10 @@ defenses, by threat:
   unless that change is this PR's own upload whose link was never saved
   (a crash, a refused state push): nobody linked to it, its first patch
   set carries this PR's `GitHub-PR:` footer, and the bridge or the PR's
-  author uploaded it. Then it is linked, and the upload recorded.
+  author uploaded it. Then it is linked, and the upload recorded; until
+  then the export leaves alone a change with no PR whose message has a
+  `GitHub-PR:` footer for this repository, instead of taking it for a
+  Gerrit-born change and opening a second PR (seen on the test site).
   The bridge reads a PR commit's Change-Id only in its canonical form (one
   `Change-Id: I<40 hex>` footer in the last paragraph) and refuses commits
   with any other line that might name a change (other spellings or
