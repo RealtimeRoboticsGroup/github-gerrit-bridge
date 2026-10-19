@@ -366,6 +366,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	// Statuses need the patch set on GitHub; refresh them as soon as the
 	// code mirror puts it there.
 	code.OnExported = checks.Sync
+	if err := checks.CheckUntrusted(ctx, self.AccountID); err != nil {
+		return err
+	}
 	code.Trusted, code.Importer.Trusted = checks.IsTrusted, checks.IsTrusted
 	code.Importer.ChangeIDKey = []byte("change-id\x00" + webhookSecret)
 	// Anyone can register on Gerrit; each new PR costs ~15 GitHub writes,

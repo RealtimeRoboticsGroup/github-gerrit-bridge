@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"testing"
@@ -201,4 +202,29 @@ func TestStatusesWithinTheirCausesBudget(t *testing.T) {
 	if who := statusCause(f.ch, gerrit.RevisionInfo{Created: "2026-10-19 13:00:00.000000000", Uploader: mallory}, "gerrit/Code-Review"); who.AccountID != 9 {
 		t.Errorf("upload's status caused by %+v", who)
 	}
+}
+
+// The bridge will not run as a member of CI's trusted group, nor without
+// knowing it is not one.
+func TestBridgeAccountMustNotBeTrusted(t *testing.T) {
+	ctx := context.Background()
+	f := &checksFakes{group: []gerrit.AccountInfo{{AccountID: 5}}}
+	c := &Checks{Gerrit: f, TrustedGroup: "Verified Users", Logger: slog.Default()}
+	if err := c.CheckUntrusted(ctx, 9); err != nil {
+		t.Errorf("an untrusted bridge refused: %v", err)
+	}
+	c.trusted = nil
+	if err := c.CheckUntrusted(ctx, 5); err == nil {
+		t.Error("a trusted bridge started")
+	}
+	c = &Checks{Gerrit: failingGroups{f}, TrustedGroup: "Verified Users", Logger: slog.Default()}
+	if err := c.CheckUntrusted(ctx, 9); err == nil {
+		t.Error("started without knowing")
+	}
+}
+
+type failingGroups struct{ *checksFakes }
+
+func (failingGroups) GroupMembers(context.Context, string) ([]gerrit.AccountInfo, error) {
+	return nil, errors.New("no such group")
 }

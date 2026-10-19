@@ -186,6 +186,24 @@ func statusCause(ch *gerrit.ChangeInfo, rev gerrit.RevisionInfo, context string)
 // ChangeURL is the Gerrit web URL of change n.
 func (c *Checks) ChangeURL(n int) string { return c.Gerrit.ChangeURL(c.Project, n) }
 
+// CheckUntrusted refuses an account in the trusted group, or one it
+// cannot tell about: CI builds that group's uploads and retests with
+// secrets, so were the bridge's account in it, every push the bridge
+// uploads as itself (anyone's) and every comment it posts as itself would
+// be built (design §6.5).
+func (c *Checks) CheckUntrusted(ctx context.Context, account int) error {
+	if c.TrustedGroup == "" {
+		return nil
+	}
+	switch trusted, known := c.IsTrusted(ctx, account); {
+	case !known:
+		return fmt.Errorf("cannot read ci.trusted_group %q, to check the bridge's account is not in it; make it visible to the bridge", c.TrustedGroup)
+	case trusted:
+		return fmt.Errorf("the bridge's Gerrit account is in ci.trusted_group %q (directly or through a group it includes): CI would build everything the bridge uploads or posts as itself; take it out", c.TrustedGroup)
+	}
+	return nil
+}
+
 // IsTrusted reports whether account is in the trusted group. known is
 // false if the group could not be read (then nothing is claimed).
 func (c *Checks) IsTrusted(ctx context.Context, account int) (trusted, known bool) {
