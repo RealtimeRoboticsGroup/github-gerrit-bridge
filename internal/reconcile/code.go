@@ -155,8 +155,9 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 func (c *Code) export(ctx context.Context, branch string) error {
 	handled := map[int]bool{} // PRs whose GitHub side was mirrored this time
 	skip := map[int]bool{}    // changes whose PR GitHub refused an action on
+	refused := map[int]bool{} // changes whose push the guard refuses
 	for pass := 0; pass < maxPasses; pass++ {
-		snap, err := c.observe(ctx, branch)
+		snap, err := c.observe(ctx, branch, refused)
 		if err != nil {
 			return fmt.Errorf("observing %s: %w", branch, err)
 		}
@@ -188,6 +189,18 @@ func (c *Code) export(ctx context.Context, branch string) error {
 		}
 		if c.DryRun {
 			return nil
+		}
+		more, err := c.refusedPushes(ctx, snap, plan)
+		if err != nil {
+			return err
+		}
+		if len(more) > 0 {
+			// Withheld, and planned again without them.
+			for _, n := range sortedKeys(more) {
+				c.Logger.Warn("its push would bring "+withheldWhat+" changes to GitHub; withheld", "change", n)
+				refused[n] = true
+			}
+			continue
 		}
 		if err := c.apply(ctx, snap, plan, skip); err != nil {
 			return err
@@ -250,18 +263,22 @@ func (c *Code) changesConfig(ctx context.Context, branch, commit string) (bool, 
 
 // withhold marks the open changes that change withheldPaths (design §7.1):
 // anyone registered on Gerrit can upload one, and GitHub would run it,
-// with the repository's secrets, from the branch the bridge pushes. Each
-// gets a notice in Gerrit, once per patch set. Nothing here fails the
-// branch: a change that cannot be checked is withheld, and a notice Gerrit
-// will not take is not retried.
-func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string) error {
+// with the repository's secrets, from the branch the bridge pushes. So
+// are those in refused, whose push the guard refuses (refusedPushes).
+// Each gets a notice in Gerrit, once per patch set. Nothing here fails
+// the branch: a change that cannot be checked is withheld, and a notice
+// Gerrit will not take is not retried.
+func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused map[int]bool) error {
 	s.Withheld = map[int]bool{}
 	for _, n := range sortedKeys(s.Changes) {
 		ch := s.Changes[n]
 		if ch.Status != "NEW" || ch.Private {
 			continue
 		}
-		w, err := c.changesConfig(ctx, branch, ch.Revision)
+		w, err := refused[n], error(nil)
+		if !w {
+			w, err = c.changesConfig(ctx, branch, ch.Revision)
+		}
 		if err != nil {
 			c.Logger.Warn("cannot tell whether a change touches "+withheldWhat+"; withheld", "change", n, "err", err)
 			s.Withheld[n] = true
@@ -274,8 +291,8 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string) error {
 		if st := s.State[n]; c.DryRun || (st != nil && st.State.WithheldNotice == ch.PatchSet) {
 			continue
 		}
-		msg := fmt.Sprintf("Patch set %d is not mirrored to GitHub: it changes %s (here, in a change below it, or by being based on an "+
-			"older version of the branch), and GitHub would use that, with the repository's secrets, from the branch the bridge pushes. "+
+		msg := fmt.Sprintf("Patch set %d is not mirrored to GitHub: it changes %s (here, below it in Gerrit or in the GitHub commits it "+
+			"builds on, or by being based on an older version of the branch), and GitHub would use that, with the repository's secrets, from the branch the bridge pushes. "+
 			"Review it here, or rebase it.", ch.PatchSet, withheldWhat)
 		if !c.notice(ctx, n, ch, msg) {
 			continue
@@ -390,7 +407,7 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 
 // observe gathers a Snapshot for branch from Gerrit, the mirror, GitHub
 // and refs/bridge.
-func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
+func (c *Code) observe(ctx context.Context, branch string, refused map[int]bool) (*Snapshot, error) {
 	s := &Snapshot{
 		Branch: branch, DefaultBranch: c.DefaultBranch,
 		Changes: map[int]*GerritChange{}, OnBranch: map[string]bool{},
@@ -467,7 +484,7 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 	if _, err := c.Mirror.Git(ctx, nil, append([]string{"fetch", "--quiet", "origin"}, refspecs...)...); err != nil {
 		return nil, err
 	}
-	if err := c.withhold(ctx, s, branch); err != nil {
+	if err := c.withhold(ctx, s, branch, refused); err != nil {
 		return nil, err
 	}
 	if err := c.markForeign(ctx, s); err != nil {
@@ -1009,17 +1026,7 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		}
 		urls := []string{c.GitHubURL}
 		specs := map[string][]string{}
-		// Whatever the plan says, nothing goes to the repository that
-		// changes .github/ (GitHub would run it; withhold).
-		guard := func(name, commit string) error {
-			if _, _, fork := github.SplitHeadKey(name); fork || commit == "" {
-				return nil // runs in the fork, with its own secrets; or a deletion
-			}
-			if w, err := c.changesConfig(ctx, s.Branch, commit); err != nil || w {
-				return cmp.Or(err, fmt.Errorf("refusing to push %s to %s: it changes %s", short(commit), name, withheldWhat))
-			}
-			return nil
-		}
+		guard := func(name, commit string) error { return c.pushGuard(ctx, s.Branch, name, commit) }
 		for _, name := range sortedStringKeys(a.Refs) {
 			if err := guard(name, a.Refs[name]); err != nil {
 				return err
@@ -1171,6 +1178,60 @@ func (c *Code) linkPR(ctx context.Context, n int, origin, branch, changeID strin
 // appendCommit makes a commit with a patch set's tree on top of a GitHub
 // head (design §5.2: a fast-forward, so `git pull` works), merging in the
 // new base of a rebased patch set.
+// pushGuard refuses to push commit to the repository's branch name if it
+// changes withheldPaths (GitHub would run it; withhold), whatever a plan
+// says.
+func (c *Code) pushGuard(ctx context.Context, branch, name, commit string) error {
+	if _, _, fork := github.SplitHeadKey(name); fork || commit == "" {
+		return nil // runs in the fork, with its own secrets; or a deletion
+	}
+	if w, err := c.changesConfig(ctx, branch, commit); err != nil || w {
+		return cmp.Or(err, fmt.Errorf("refusing to push %s to %s: it changes %s", short(commit), name, withheldWhat))
+	}
+	return nil
+}
+
+// refusedPushes is the changes whose pushes in p pushGuard refuses.
+// withhold checks a change's Gerrit commits, but a push can carry GitHub
+// commits Gerrit lacks: those a GitHub-born parent's PR was squashed
+// from, below a change exported onto them, which may have changed
+// .github/ and changed it back (fourth audit). Withheld instead, they do
+// not stop the branch's other pushes. A refused push that is no one
+// change's still fails in applyOne.
+func (c *Code) refusedPushes(ctx context.Context, s *Snapshot, p *Plan) (map[int]bool, error) {
+	owner := map[string]int{}
+	for n, d := range p.Desired {
+		owner[d.Head] = n
+		if d.Frozen != "" {
+			owner[d.Frozen] = n
+		}
+	}
+	refused := map[int]bool{}
+	for _, a := range p.Actions {
+		if a.Kind != PushBranches {
+			continue
+		}
+		for name, commit := range a.Refs {
+			if n, ok := owner[name]; ok && c.pushGuard(ctx, s.Branch, name, commit) != nil {
+				refused[n] = true
+			}
+		}
+		for name, ap := range a.Appends {
+			commit := ap.Revision
+			if !ap.Force {
+				var err error
+				if commit, err = c.appendCommit(ctx, ap); err != nil {
+					return nil, err
+				}
+			}
+			if c.pushGuard(ctx, s.Branch, name, commit) != nil {
+				refused[ap.Change] = true
+			}
+		}
+	}
+	return refused, nil
+}
+
 func (c *Code) appendCommit(ctx context.Context, a Append) (string, error) {
 	out, err := c.Mirror.Git(ctx, nil, "log", "-1", "--format=%T%x00%an%x00%ae%x00%ad", "--date=raw", a.Revision)
 	if err != nil {
