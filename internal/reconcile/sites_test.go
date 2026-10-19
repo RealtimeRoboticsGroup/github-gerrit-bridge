@@ -386,8 +386,11 @@ func (s *sites) graphql(w http.ResponseWriter, r *http.Request) {
 	}
 	var nodes []map[string]any
 	pr := map[string]any{"timelineItems": map[string]any{"nodes": &nodes}}
-	if a.TextEditor != "" {
-		pr["lastEditedAt"], pr["editor"] = s.clock, actor{a.TextEditor}
+	if a.BodyEditor != "" {
+		pr["lastEditedAt"], pr["editor"] = s.clock, actor{a.BodyEditor}
+	}
+	if a.TitleEditor != "" {
+		nodes = append(nodes, map[string]any{"__typename": "RenamedTitleEvent", "createdAt": s.clock, "actor": actor{a.TitleEditor}})
 	}
 	if a.DraftActor != "" {
 		nodes = append(nodes, map[string]any{"__typename": "ConvertToDraftEvent", "createdAt": s.clock, "actor": actor{a.DraftActor}})

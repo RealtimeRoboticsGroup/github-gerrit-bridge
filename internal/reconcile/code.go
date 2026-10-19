@@ -934,7 +934,21 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 			} else {
 				title, body := strings.TrimSpace(pr.Title), prBodyForMessage(pr.Body)
 				msg := commitMessage(title, body, ch.Message)
-				if note, err := c.asEditor(ctx, ch, pr, act.TextEditor, true, http.MethodPut, "message", map[string]string{"message": msg},
+				// Each part edited is its editor's (fourth audit: whoever
+				// renamed a PR was taken for whoever edited its body).
+				gTitle, gBody := prTextFromMessage(ch.Message)
+				var editors []string
+				if title != gTitle {
+					editors = append(editors, act.TitleEditor)
+				}
+				if body != gBody {
+					editors = append(editors, act.BodyEditor)
+				}
+				editor := ""
+				if len(editors) > 0 && (len(editors) == 1 || strings.EqualFold(editors[0], editors[1])) {
+					editor = editors[0]
+				}
+				if note, err := c.asEditor(ctx, ch, pr, editor, true, http.MethodPut, "message", map[string]string{"message": msg},
 					"edited this PR's title or description", "change the commit message of"); err != nil {
 					return changed, err
 				} else if note != "" {

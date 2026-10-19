@@ -430,9 +430,9 @@ func (c *Client) LastStateEvent(ctx context.Context, n int) (*IssueEvent, error)
 // PRActivity says who last changed a PR's text and its draft state, for
 // mirroring those changes as the person who made them.
 type PRActivity struct {
-	// TextEditor last edited the title or description ("" if nobody
-	// has since the PR was opened).
-	TextEditor string
+	// TitleEditor last renamed the PR, and BodyEditor last edited its
+	// description ("" if nobody has since the PR was opened).
+	TitleEditor, BodyEditor string
 	// DraftActor last converted the PR to a draft or marked it ready.
 	DraftActor string
 }
@@ -467,9 +467,8 @@ func (c *Client) Activity(ctx context.Context, n int) (*PRActivity, error) {
 	}
 	pr := data.Repository.PullRequest
 	a := &PRActivity{}
-	var textAt time.Time
 	if pr.LastEditedAt != nil && pr.Editor != nil {
-		a.TextEditor, textAt = pr.Editor.Login, *pr.LastEditedAt
+		a.BodyEditor = pr.Editor.Login
 	}
 	for _, e := range pr.TimelineItems.Nodes { // oldest first
 		if e.Actor == nil {
@@ -477,9 +476,7 @@ func (c *Client) Activity(ctx context.Context, n int) (*PRActivity, error) {
 		}
 		switch e.Type {
 		case "RenamedTitleEvent":
-			if !e.CreatedAt.Before(textAt) {
-				a.TextEditor, textAt = e.Actor.Login, e.CreatedAt
-			}
+			a.TitleEditor = e.Actor.Login
 		case "ConvertToDraftEvent", "ReadyForReviewEvent":
 			a.DraftActor = e.Actor.Login
 		}

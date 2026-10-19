@@ -686,7 +686,7 @@ func TestPREditBecomesCommitMessageAsTheEditor(t *testing.T) {
 		s, c, snap := editsWorld(t, origin)
 		s.pulls[70].Title = "Seven, better"
 		s.pulls[70].Body = "Does seven things well.\n\nBug: 7\n\n" + linksStart + "\nblock\n" + linksEnd
-		s.activity[70] = github.PRActivity{TextEditor: "austin"}
+		s.activity[70] = github.PRActivity{TitleEditor: "austin", BodyEditor: "austin"}
 		changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{})
 		if err != nil || !changed {
 			t.Fatalf("%s: changed=%v err=%v", origin, changed, err)
@@ -963,7 +963,7 @@ func TestShortenedDescriptionIsNoEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap.State[7], _ = c.Store.Load(context.Background(), 7)
-	s.activity[70] = github.PRActivity{TextEditor: "bot"}
+	s.activity[70] = github.PRActivity{TitleEditor: "bot", BodyEditor: "bot"}
 	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 || len(s.comments[70]) != 0 {
 		t.Errorf("changed=%v err=%v calls=%v notices=%v", changed, err, s.calls, s.comments[70])
 	}
@@ -975,7 +975,7 @@ func TestShortenedDescriptionIsNoEdit(t *testing.T) {
 func TestPRMirroredOncePerReconcile(t *testing.T) {
 	s, c, snap := editsWorld(t, "gerrit")
 	s.pulls[70].Title = "Seven, better"
-	s.activity[70] = github.PRActivity{TextEditor: "austin"}
+	s.activity[70] = github.PRActivity{TitleEditor: "austin", BodyEditor: "austin"}
 	handled := map[int]bool{70: true}
 	if changed, err := c.mirrorPREdits(context.Background(), snap, handled); err != nil || changed || len(s.calls) != 0 {
 		t.Fatalf("handled PR mirrored again: changed=%v err=%v calls=%v", changed, err, s.calls)
@@ -1000,7 +1000,7 @@ func TestPREditGerritRefusesIsExplained(t *testing.T) {
 	s, c, snap := editsWorld(t, "gerrit")
 	snap.Changes[7].Uploader = "brt"
 	s.pulls[70].Title = "Hijacked"
-	s.activity[70] = github.PRActivity{TextEditor: "brt"} // may not edit change 7
+	s.activity[70] = github.PRActivity{TitleEditor: "brt", BodyEditor: "brt"} // may not edit change 7
 	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
@@ -1015,6 +1015,39 @@ func TestPREditGerritRefusesIsExplained(t *testing.T) {
 	}
 }
 
+// A PR's title and description each have their own last editor: the
+// uploader renaming the PR does not make someone else's description edit
+// theirs (fourth audit).
+func TestPRTitleAndBodyEditorsAreEach(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		title, body  string
+		titleEd, bEd string
+		mirrored     bool
+	}{
+		{"title by the uploader", "Seven, better", "", "austin", "brt", true},
+		{"body by someone else", "", "Does seven things, says brt.", "austin", "brt", false},
+		{"both, by two people", "Seven, better", "Does seven things, says brt.", "austin", "brt", false},
+		{"both, by the uploader", "Seven, better", "Does seven things well.", "austin", "austin", true},
+	} {
+		s, c, snap := editsWorld(t, "gerrit")
+		s.may[7] = append(s.may[7], "brt")
+		if tc.title != "" {
+			s.pulls[70].Title = tc.title
+		}
+		if tc.body != "" {
+			s.pulls[70].Body = tc.body + "\n\n" + linksStart + "\nblock\n" + linksEnd
+		}
+		s.activity[70] = github.PRActivity{TitleEditor: tc.titleEd, BodyEditor: tc.bEd}
+		if _, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := len(s.calls) == 1 && s.calls[0] == "message 7 as austin"; got != tc.mirrored {
+			t.Errorf("%s: calls %v, notices %v", tc.name, s.calls, s.comments[70])
+		}
+	}
+}
+
 // A commit message edit makes a new patch set, and CI trusts its
 // uploader: retitling someone else's PR on GitHub must not make the editor
 // the uploader of their code.
@@ -1022,7 +1055,7 @@ func TestPREditByNonUploaderIsRefused(t *testing.T) {
 	s, c, snap := editsWorld(t, "gerrit")
 	s.may[7] = append(s.may[7], "brt")
 	s.pulls[70].Title = "Seven, retitled"
-	s.activity[70] = github.PRActivity{TextEditor: "brt"}
+	s.activity[70] = github.PRActivity{TitleEditor: "brt", BodyEditor: "brt"}
 	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 {
 		t.Fatalf("changed=%v err=%v calls=%v", changed, err, s.calls)
 	}
@@ -1045,7 +1078,7 @@ func TestPREditByUserWithoutGerritAccount(t *testing.T) {
 		s.may[7] = append(s.may[7], "bridge")
 		s.pulls[70].User.Login = tc.author
 		s.pulls[70].Title = "Seven, by a stranger"
-		s.activity[70] = github.PRActivity{TextEditor: "stranger"}
+		s.activity[70] = github.PRActivity{TitleEditor: "stranger", BodyEditor: "stranger"}
 		changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{})
 		if err != nil || changed != tc.mirrored {
 			t.Fatalf("%s: changed=%v err=%v", tc.name, changed, err)
@@ -1077,7 +1110,7 @@ func TestPREditAndGerritEditBothGerritWins(t *testing.T) {
 	s, c, snap := editsWorld(t, "gerrit")
 	s.pulls[70].Title = "GitHub's"
 	snap.Changes[7].Message, snap.Changes[7].Subject = "Gerrit's\n\nChange-Id: "+cid(7)+"\n", "Gerrit's"
-	s.activity[70] = github.PRActivity{TextEditor: "austin"}
+	s.activity[70] = github.PRActivity{TitleEditor: "austin", BodyEditor: "austin"}
 	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 {
 		t.Fatalf("changed=%v err=%v calls=%v", changed, err, s.calls)
 	}
@@ -1760,7 +1793,7 @@ func TestTwoQuickPREdits(t *testing.T) {
 	s, c, snap := editsWorld(t, "gerrit")
 	ctx := context.Background()
 	s.pulls[70].Title = "Seven, better"
-	s.activity[70] = github.PRActivity{TextEditor: "austin"}
+	s.activity[70] = github.PRActivity{TitleEditor: "austin", BodyEditor: "austin"}
 	if changed, err := c.mirrorPREdits(ctx, snap, map[int]bool{}); err != nil || !changed {
 		t.Fatalf("first: changed=%v err=%v", changed, err)
 	}
@@ -2234,7 +2267,7 @@ func TestPREditedAgainWhileMirroring(t *testing.T) {
 	s.pulls[70].Title = "Seven, by someone"
 	snapTitle := *s.pulls[70]
 	snap.PRs[70] = &snapTitle // what observe saw
-	s.activity[70] = github.PRActivity{TextEditor: "austin"}
+	s.activity[70] = github.PRActivity{TitleEditor: "austin", BodyEditor: "austin"}
 	s.onActivity = func() { s.pulls[70].Title = "Seven, by austin" } // austin edits again
 	changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{})
 	if err != nil || !changed || len(s.calls) != 0 {
