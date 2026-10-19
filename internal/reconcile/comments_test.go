@@ -923,6 +923,39 @@ func TestReviewEditedByOtherIsNotTheAuthors(t *testing.T) {
 	}
 }
 
+// A review's inline comments and its body share a batch only when they
+// are posted as the same person: a body someone else edited is never
+// posted as the review's author along with its unedited comments.
+func TestReviewBodyEditedByOtherIsNotPostedWithItsComments(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	id := e.h.human("a.txt", 3, "sha2", "nit", 0)
+	rid := id + 5000
+	e.h.reviews = append(e.h.reviews, github.Review{ID: rid, State: "COMMENTED", CommitID: "sha2", User: github.User{Login: "bob"},
+		Body: "retest", HTMLURL: fmt.Sprintf("https://github.com/o/r/pull/1#pullrequestreview-%d", rid)})
+	e.h.reviewEdits = map[int64]string{rid: "mallory"}
+	e.sync(t)
+	var body, nit bool
+	for _, gc := range e.g.comments {
+		switch {
+		case strings.Contains(gc.Message, "retest"):
+			body = true
+			if gc.Author.AccountID != bridgeID {
+				t.Errorf("a review body mallory edited was posted as %+v", gc.Author)
+			}
+		case strings.Contains(gc.Message, "nit"):
+			nit = true
+			if gc.Author.AccountID == bridgeID {
+				t.Errorf("bob's own inline comment was posted by the bridge")
+			}
+		}
+	}
+	if !body || !nit {
+		t.Errorf("not all mirrored (body %v, inline %v): %+v", body, nit, e.g.comments)
+	}
+	e.settled(t)
+}
+
 func TestGitHubApprovalBecomesVote(t *testing.T) {
 	e := newCommentsEnv(t)
 	e.runAs()

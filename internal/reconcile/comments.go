@@ -824,7 +824,9 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		if c.claim(s, m, claimed, authors[login], src, ps, path, ci, plain...) {
 			return
 		}
-		k := key + "|" + strconv.Itoa(ps)
+		// Who posts is part of the key: one review's inline comments and
+		// its body, one of them edited by someone else, are two posts.
+		k := batchKey(key, ps, login)
 		b := batches[k]
 		if b == nil {
 			b = &batch{ps: ps, login: login, comments: map[string][]gerrit.CommentInput{}, plain: map[string][]gerrit.CommentInput{}}
@@ -968,7 +970,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			if rv.State == "APPROVED" {
 				v = 2
 			}
-			if b := batches[key+"|"+strconv.Itoa(ps)]; b != nil { // nil: posted already
+			if b := batches[batchKey(key, ps, login)]; b != nil { // nil: posted already
 				b.labels = map[string]int{"Code-Review": v}
 			}
 		}
@@ -1010,6 +1012,12 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		c.Logger.Info("mirrored GitHub comments to Gerrit", "change", n, "pr", pr, "batch", k, "patch_set", b.ps)
 	}
 	return len(order) > 0 && !c.DryRun, nil
+}
+
+// batchKey names the batch of GitHub comments that key's source (a review,
+// an issue comment) posts on patch set ps as login ("" for the bridge).
+func batchKey(key string, ps int, login string) string {
+	return key + "|" + strconv.Itoa(ps) + "|" + login
 }
 
 // refusedID stands in for the Gerrit comment of a GitHub comment Gerrit
