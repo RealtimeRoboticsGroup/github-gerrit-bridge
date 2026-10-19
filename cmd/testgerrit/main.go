@@ -169,6 +169,11 @@ func run() error {
 		if err := setupCI(ctx, s, filepath.Join(*site, "ci"), *replicate, *ciUser); err != nil {
 			return err
 		}
+		// An HTTP password, so gerrit-buildkite can read a patch set's
+		// real uploader over REST (-http_password_file).
+		if _, err := s.SetUpLoginUser(ctx, *ciUser, nil, filepath.Join(*site, "ci", "http-password")); err != nil {
+			return fmt.Errorf("CI HTTP password: %w", err)
+		}
 	}
 	if *loginUsers != "" {
 		go watchLoginUsers(ctx, s, bridgeDir, *loginUsers)

@@ -82,7 +82,7 @@ unit bridge-test-gerrit "Bridge test instance: Gerrit" \
 unit bridge-test-buildkite "Bridge test instance: fake Buildkite" \
   "${TE}/bin/fakebuildkite --duration 20s --gerrit_url http://127.0.0.1:18080/gerrit" "" ""
 unit bridge-test-ci "Bridge test instance: gerrit-buildkite" \
-  "${GBK} -token fake -api_url http://127.0.0.1:18090/ -webhook_token test-webhook-token -user buildkite -key ${SITE}/ci/id_ed25519 -server localhost -project bridge-scratch -buildkite_project ci -organization test -database ${TE}/buildkite.db" \
+  "${GBK} -token fake -api_url http://127.0.0.1:18090/ -webhook_token test-webhook-token -user buildkite -key ${SITE}/ci/id_ed25519 -gerrit_url http://127.0.0.1:18080/gerrit -http_password_file ${SITE}/ci/http-password -server localhost -project bridge-scratch -buildkite_project ci -organization test -database ${TE}/buildkite.db" \
   "After=bridge-test-gerrit.service bridge-test-buildkite.service" \
   "Environment=PATH=${SITE}/ci/bin:/usr/bin:/bin"
 unit bridge-test-bridge "Bridge test instance: the bridge" \
