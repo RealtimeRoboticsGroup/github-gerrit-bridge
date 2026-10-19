@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
@@ -17,8 +18,11 @@ import (
 // Submitter submits a Gerrit change as a user.
 type Submitter interface {
 	// CanSubmitAs reports whether user may submit change now; if not, why.
-	CanSubmitAs(ctx context.Context, user string, change int) (bool, string, error)
-	SubmitAs(ctx context.Context, user string, change int) error
+	// Current is change's current patch set and when it was uploaded.
+	Current(ctx context.Context, change int) (rev string, uploaded time.Time, err error)
+	CanSubmitAs(ctx context.Context, user string, change int, rev string) (bool, string, error)
+	// SubmitAs submits revision rev, which must still be current.
+	SubmitAs(ctx context.Context, user string, change int, rev string) error
 }
 
 // RunAsSubmitter submits with X-Gerrit-RunAs, so the user's own
@@ -26,9 +30,26 @@ type Submitter interface {
 // the Run As capability.
 type RunAsSubmitter struct{ Gerrit *gerrit.Client }
 
+// Current implements Submitter.
+func (r RunAsSubmitter) Current(ctx context.Context, change int) (string, time.Time, error) {
+	ci, err := r.Gerrit.GetChange(ctx, change, "CURRENT_REVISION")
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	rev, ok := ci.Current()
+	if !ok {
+		return "", time.Time{}, fmt.Errorf("change %d has no current revision", change)
+	}
+	t, err := time.Parse("2006-01-02 15:04:05.999999999", rev.Created)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("change %d: patch set time %q: %w", change, rev.Created, err)
+	}
+	return ci.CurrentRevision, t, nil
+}
+
 // CanSubmitAs implements Submitter.
-func (r RunAsSubmitter) CanSubmitAs(ctx context.Context, user string, change int) (bool, string, error) {
-	actions, err := r.Gerrit.As(user).RevisionActions(ctx, change)
+func (r RunAsSubmitter) CanSubmitAs(ctx context.Context, user string, change int, rev string) (bool, string, error) {
+	actions, err := r.Gerrit.As(user).RevisionActions(ctx, change, rev)
 	if err != nil {
 		return false, "", err
 	}
@@ -43,8 +64,8 @@ func (r RunAsSubmitter) CanSubmitAs(ctx context.Context, user string, change int
 }
 
 // SubmitAs implements Submitter.
-func (r RunAsSubmitter) SubmitAs(ctx context.Context, user string, change int) error {
-	_, err := r.Gerrit.As(user).Submit(ctx, change)
+func (r RunAsSubmitter) SubmitAs(ctx context.Context, user string, change int, rev string) error {
+	_, err := r.Gerrit.As(user).Submit(ctx, change, rev)
 	return err
 }
 
@@ -76,6 +97,18 @@ type Commands struct {
 	BridgeLogin string
 	DryRun      bool
 	Logger      *slog.Logger
+	// Now is the clock (time.Now if nil).
+	Now func() time.Time
+}
+
+// maxCommandAge is how old a command may be and still run.
+const maxCommandAge = 24 * time.Hour
+
+func (c *Commands) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
 }
 
 var (
@@ -138,8 +171,22 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) st
 		return fmt.Sprintf("@%s: `/submit` needs a linked Gerrit account, and yours is not linked. "+
 			"Ask an admin to add you to the bridge's identity map, or submit in Gerrit.", ic.User.Login)
 	}
+	// A command is for the patch set its author saw: not for one uploaded
+	// after it, nor, long after, for whatever the change has become (the
+	// bridge was down, say).
+	rev, uploaded, err := c.Submitter.Current(ctx, n)
+	if err != nil {
+		c.Logger.Warn("finding the patch set to submit", "change", n, "err", err)
+		return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not reach Gerrit (see its log). Post it again.", ic.User.Login)
+	}
+	if ic.CreatedAt.Before(uploaded) {
+		return fmt.Sprintf("@%s: `/submit` was not run: change %d has a patch set newer than your comment. Post it again to submit that.", ic.User.Login, n)
+	}
+	if age := c.now().Sub(ic.CreatedAt); age > maxCommandAge {
+		return fmt.Sprintf("@%s: `/submit` was not run: it is more than %v old. Post it again.", ic.User.Login, maxCommandAge)
+	}
 	// Check first, so PRs are only reshaped for a submit that will happen.
-	if ok, why, err := c.Submitter.CanSubmitAs(ctx, user, n); err != nil || !ok {
+	if ok, why, err := c.Submitter.CanSubmitAs(ctx, user, n, rev); err != nil || !ok {
 		if err != nil {
 			c.Logger.Warn("checking submit from GitHub", "change", n, "by", ic.User.Login, "err", err)
 			why = "The bridge could not ask Gerrit (see its log)."
@@ -153,7 +200,7 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) st
 			c.Logger.Warn("preparing PRs for submit", "change", n, "err", err)
 		}
 	}
-	err := c.Submitter.SubmitAs(ctx, user, n)
+	err = c.Submitter.SubmitAs(ctx, user, n, rev)
 	if err == nil {
 		c.Logger.Info("submitted from GitHub", "change", n, "by", ic.User.Login, "as", user)
 		return fmt.Sprintf("@%s: submitted change %d in Gerrit as %s, with any changes below it. "+

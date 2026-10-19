@@ -226,7 +226,15 @@ func (f *fakeGitHub) ListReviews(context.Context, int) ([]github.Review, error) 
 	return append([]github.Review(nil), f.reviews...), nil
 }
 func (f *fakeGitHub) ListIssueComments(context.Context, int) ([]github.IssueComment, error) {
-	return append([]github.IssueComment(nil), f.ics...), nil
+	out := append([]github.IssueComment(nil), f.ics...)
+	for i := range out {
+		if out[i].CreatedAt.IsZero() {
+			// GitHub always says; tests that do not care get a time
+			// after the fake Gerrit's patch sets.
+			out[i].CreatedAt = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+		}
+	}
+	return out, nil
 }
 func (f *fakeGitHub) Edits(context.Context, int) (map[int64]string, error) {
 	out := map[int64]string{}

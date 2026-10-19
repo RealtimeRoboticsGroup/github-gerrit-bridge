@@ -13,17 +13,30 @@ import (
 )
 
 type fakeSubmitter struct {
-	calls  []string
+	calls  []string // "user@rev"
 	err    error
 	cannot string // CanSubmitAs refuses with this
+	// rev is the current patch set, uploaded at uploaded.
+	rev      string
+	uploaded time.Time
 }
 
-func (f *fakeSubmitter) CanSubmitAs(_ context.Context, user string, change int) (bool, string, error) {
+func (f *fakeSubmitter) Current(context.Context, int) (string, time.Time, error) {
+	if f.rev == "" {
+		return "sha2", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), nil
+	}
+	return f.rev, f.uploaded, nil
+}
+
+func (f *fakeSubmitter) CanSubmitAs(_ context.Context, user string, change int, rev string) (bool, string, error) {
 	return f.cannot == "", f.cannot, nil
 }
 
-func (f *fakeSubmitter) SubmitAs(_ context.Context, user string, change int) error {
+func (f *fakeSubmitter) SubmitAs(_ context.Context, user string, change int, rev string) error {
 	f.calls = append(f.calls, user)
+	if f.rev != "" {
+		f.calls[len(f.calls)-1] += "@" + rev
+	}
 	return f.err
 }
 
@@ -31,7 +44,7 @@ func newCommands(t *testing.T) (*Commands, *fakeGitHub, *fakeSubmitter) {
 	e := newCommentsEnv(t) // change 5 linked to PR 1, lifecycle NEW
 	sub := &fakeSubmitter{}
 	return &Commands{GitHub: e.h, Submitter: sub, Store: e.st, Identity: &Users{Overrides: map[string]string{"AustinSchuh": "alice"}},
-		BridgeLogin: "bridge", Logger: slog.Default()}, e.h, sub
+		BridgeLogin: "bridge", Logger: slog.Default(), Now: func() time.Time { return time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC) }}, e.h, sub
 }
 
 func TestSubmitCommandRunsOnce(t *testing.T) {
@@ -143,5 +156,36 @@ func TestSubmitErrorsDoNotLeakDetails(t *testing.T) {
 	c.Run(context.Background(), 5)
 	if got := h.ics[len(h.ics)-1].Body; strings.Contains(got, "gerrit.internal") || !strings.Contains(got, "see its log") {
 		t.Errorf("reply = %q", got)
+	}
+}
+
+// /submit is for the patch set its author saw.
+func TestSubmitCommandIsForThePatchSetItsAuthorSaw(t *testing.T) {
+	c, h, sub := newCommands(t)
+	posted := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	sub.rev, sub.uploaded = "sha3", posted.Add(time.Minute) // pushed after the comment
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: posted})
+	c.Run(context.Background(), 5)
+	if len(sub.calls) != 0 || !strings.Contains(h.ics[len(h.ics)-1].Body, "a patch set newer than your comment") {
+		t.Errorf("calls=%v reply=%q", sub.calls, h.ics[len(h.ics)-1].Body)
+	}
+	// Posted after the patch set: that revision is what is submitted.
+	sub.uploaded = posted.Add(-time.Minute)
+	h.ics = append(h.ics, github.IssueComment{ID: 2, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: posted})
+	c.Run(context.Background(), 5)
+	if len(sub.calls) != 1 || sub.calls[0] != "alice@sha3" {
+		t.Errorf("calls = %v, want alice submitting sha3", sub.calls)
+	}
+}
+
+func TestOldSubmitCommandsExpire(t *testing.T) {
+	c, h, sub := newCommands(t)
+	posted := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	sub.rev, sub.uploaded = "sha3", posted.Add(-time.Hour)
+	c.Now = func() time.Time { return posted.Add(maxCommandAge + time.Minute) }
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: posted})
+	c.Run(context.Background(), 5)
+	if len(sub.calls) != 0 || !strings.Contains(h.ics[len(h.ics)-1].Body, "old. Post it again") {
+		t.Errorf("calls=%v reply=%q", sub.calls, h.ics[len(h.ics)-1].Body)
 	}
 }

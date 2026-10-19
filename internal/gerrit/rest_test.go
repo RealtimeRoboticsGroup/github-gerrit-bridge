@@ -119,3 +119,19 @@ func TestRegistered(t *testing.T) {
 		t.Errorf("registered = %v, want %v", got, want)
 	}
 }
+
+func TestSubmitNamesTheRevision(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.Method + " " + r.URL.Path
+		fmt.Fprint(w, ")]}'\n{}")
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, User: "bridge", Password: "secret"}
+	if _, err := c.Submit(context.Background(), 5, "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	if path != "POST /a/changes/5/revisions/abc123/submit" {
+		t.Errorf("submitted %s", path)
+	}
+}

@@ -155,6 +155,7 @@ type RevisionInfo struct {
 	Ref      string      `json:"ref"`
 	Uploader AccountInfo `json:"uploader"`
 	Commit   CommitInfo  `json:"commit"`
+	Created  string      `json:"created"` // "2006-01-02 15:04:05.000000000", UTC
 }
 
 // CommitInfo is a commit's metadata (CURRENT_COMMIT / ALL_COMMITS).
@@ -433,10 +434,11 @@ func (c *Client) GroupMembers(ctx context.Context, group string) ([]AccountInfo,
 	return out, err
 }
 
-// Submit submits a change (with its unsubmitted ancestors).
-func (c *Client) Submit(ctx context.Context, change int) (*ChangeInfo, error) {
+// Submit submits revision rev of a change (with its unsubmitted
+// ancestors). Gerrit refuses if rev is no longer current.
+func (c *Client) Submit(ctx context.Context, change int, rev string) (*ChangeInfo, error) {
 	var ci ChangeInfo
-	err := c.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/submit", change), map[string]any{}, &ci)
+	err := c.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/revisions/%s/submit", change, url.PathEscape(rev)), map[string]any{}, &ci)
 	return &ci, err
 }
 
@@ -448,9 +450,9 @@ type ActionInfo struct {
 
 // RevisionActions lists what the caller may do with change's current
 // patch set ("submit" among them when it is submittable by them).
-func (c *Client) RevisionActions(ctx context.Context, change int) (map[string]ActionInfo, error) {
+func (c *Client) RevisionActions(ctx context.Context, change int, rev string) (map[string]ActionInfo, error) {
 	out := map[string]ActionInfo{}
-	err := c.Do(ctx, http.MethodGet, fmt.Sprintf("changes/%d/revisions/current/actions", change), nil, &out)
+	err := c.Do(ctx, http.MethodGet, fmt.Sprintf("changes/%d/revisions/%s/actions", change, url.PathEscape(rev)), nil, &out)
 	return out, err
 }
 

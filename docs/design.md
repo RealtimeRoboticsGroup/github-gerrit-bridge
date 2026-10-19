@@ -1107,7 +1107,11 @@ defenses, by threat:
   GitHub text the bridge posts in Gerrit as itself, has its `@mentions`
   broken (§8), so nobody can make the bridge notify people or teams.
 - `/submit` first asks Gerrit whether the user may submit, and only then
-  reshapes PRs (§6.7).
+  reshapes PRs (§6.7). It submits the patch set its author saw: one
+  uploaded after the comment, or a comment more than a day old (the
+  bridge was down, say), is refused with a request to post it again, and
+  the revision checked is the one submitted (Gerrit refuses if it is no
+  longer current).
 
 Known gaps:
 
