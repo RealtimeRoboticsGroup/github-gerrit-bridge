@@ -58,6 +58,11 @@ type Importer struct {
 	// refused are PR heads refused for good (too big, or failing git's
 	// object checks), by SHA: they are not fetched again.
 	refused map[string]string
+	// slow are PRs whose head took too long to fetch, until when none of
+	// their heads is fetched: a fetch cut off keeps nothing, so each new
+	// head of a huge branch would cost the full deadline, under the
+	// branch's lock, every time (fourth audit).
+	slow map[int]time.Time
 
 	// onImported runs after a patch set is imported (Code.OnExported).
 	onImported func(ctx context.Context, n int) error
@@ -151,6 +156,25 @@ func (im *Importer) refuse(pr int, sha, why string) {
 		im.refused = map[string]string{} // bounded: forgetting costs a refetch
 	}
 	im.refused[fmt.Sprintf("%d %s", pr, sha)] = why
+}
+
+// slowFor is how long a PR whose head was too slow to fetch is not
+// fetched again, whatever its head.
+const slowFor = time.Hour
+
+func (im *Importer) coolOff(pr int) {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	if im.slow == nil || len(im.slow) > 10000 {
+		im.slow = map[int]time.Time{}
+	}
+	im.slow[pr] = time.Now().Add(slowFor)
+}
+
+func (im *Importer) slowUntil(pr int) time.Time {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	return im.slow[pr]
 }
 
 func (im *Importer) refusedWhy(pr int, sha string) string {
@@ -289,6 +313,10 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 			failed[l] = why // not fetched again
 			continue
 		}
+		if until := im.slowUntil(l.pr.Number); time.Now().Before(until) {
+			failed[l] = fmt.Sprintf("Fetching it took more than %v: too big to import; not tried again before %s", fetchOneTimeout, until.UTC().Format(time.RFC3339))
+			continue
+		}
 		spec := "+refs/heads/" + l.pr.Head.Ref + ":refs/remotes/github/heads/" + l.pr.Head.Ref
 		if _, _, fork := github.SplitHeadKey(l.pr.HeadKey(repo)); fork {
 			// GitHub keeps every PR's head in the base repository.
@@ -326,6 +354,7 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 				case errors.Is(ferr, errFetchTooSlow):
 					failed[l] = fmt.Sprintf("Fetching it took more than %v: too big to import", fetchOneTimeout)
 					im.refuse(l.pr.Number, l.pr.Head.SHA, failed[l])
+					im.coolOff(l.pr.Number)
 					im.Logger.Warn("PR head too slow to fetch", "pr", l.pr.Number)
 				case errors.As(ferr, &ge) && strings.Contains(ge.Stderr, "fsck error"):
 					failed[l] = "Its commits fail git's object checks (fsck), so they are not imported"
@@ -963,7 +992,7 @@ func (im *Importer) parentTrusted(ctx context.Context, parent, branch, user stri
 
 // Fetch deadlines: all open PRs' heads at once, then each alone.
 var (
-	fetchAllTimeout = 5 * time.Minute
+	fetchAllTimeout = 2 * time.Minute
 	fetchOneTimeout = 2 * time.Minute
 	errFetchTooSlow = errors.New("fetch took too long")
 )

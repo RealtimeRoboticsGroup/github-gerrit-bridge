@@ -1545,6 +1545,23 @@ func TestImportRefusesHeadsTooSlowToFetch(t *testing.T) {
 	if why := im.refusedWhy(70, h); why == "" {
 		t.Error("not refused")
 	}
+	// Nor is its next head fetched for a while, with a fast fetch even
+	// (fourth audit): a fetch cut off keeps nothing, so each new head of a
+	// huge branch would cost the whole deadline again.
+	fetchAllTimeout, fetchOneTimeout = time.Minute, time.Minute
+	h2 := s.commit(h, "big.txt", "bigger\n", "Bigger")
+	s.push("github.git", h2, "refs/heads/big")
+	s.pulls[70].Head.SHA = h2
+	s.pushed("o/r", "refs/heads/big", h2, "austin")
+	if err := im.Import(context.Background(), "main"); err != nil {
+		t.Fatal(err)
+	}
+	if sts := s.statuses[h2]; len(up.uploads) != 0 || len(sts) != 1 || !strings.Contains(sts[0].Description, "not tried again before") {
+		t.Errorf("next head: uploads %v, gerrit/sync %+v", up.uploads, sts)
+	}
+	if _, err := im.Mirror.Git(context.Background(), nil, "cat-file", "-e", h2); err == nil {
+		t.Error("the next head was fetched")
+	}
 }
 
 // Closed PRs' heads do not stay in the mirror, and a same-repo branch
