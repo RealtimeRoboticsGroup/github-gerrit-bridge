@@ -91,6 +91,10 @@ type Identity struct {
 	// the same username, which is how Gerrit's github plugin names the
 	// accounts it creates. Default true; nil means unset.
 	MatchUsernames *bool `yaml:"match_usernames"`
+	// NeverGroups are Gerrit groups whose members MatchUsernames never
+	// matches: service accounts, and administrators, whose GitHub logins
+	// must be listed in GitHubToGerrit by hand.
+	NeverGroups []string `yaml:"never_groups"`
 }
 
 // MatchesUsernames reports whether MatchUsernames is on (the default).
@@ -153,6 +157,7 @@ func Parse(b []byte) (*Config, error) {
 			KeepaliveInterval: 15 * time.Second,
 			KeepaliveCountMax: 3,
 		}},
+		Identity: Identity{NeverGroups: []string{"Service Users", "Non-Interactive Users", "Administrators"}},
 		CI: CI{
 			TrustedGroup:   "Verified Users",
 			Labels:         []string{"Verified"},

@@ -42,6 +42,7 @@ go_test(
         "identity_test.go",
         "importer_test.go",
         "plan_test.go",
+        "push_test.go",
         "reconcile_test.go",
         "sites_test.go",
     ],

@@ -39,6 +39,9 @@ type Users struct {
 	// service accounts: "Service Users", "Non-Interactive Users"). Gerrit
 	// must implement GroupMembers; a lookup error matches nobody.
 	NeverGroups []string
+	// NeverLogins are GitHub logins never matched (the bridge's own: its
+	// edits and pushes are its own, not those of whoever owns its token).
+	NeverLogins []string
 	// Pins, with GitHub, pin each Gerrit account to the GitHub account
 	// (numeric id) it was first matched to (design §7.1). Nil: no pinning.
 	Pins   Pins
@@ -59,7 +62,7 @@ type Pins interface {
 
 // GitHubUsers resolves logins to GitHub's numeric account ids.
 type GitHubUsers interface {
-	UserID(ctx context.Context, login string) (int64, error)
+	UserID(ctx context.Context, login string) (int64, time.Time, error)
 }
 
 // groupLister lists a Gerrit group's members.
@@ -118,6 +121,11 @@ func (u *Users) GerritUser(ctx context.Context, login string) (string, bool) {
 	if login == "" {
 		return "", false
 	}
+	for _, n := range u.NeverLogins {
+		if strings.EqualFold(n, login) {
+			return "", false
+		}
+	}
 	key := strings.ToLower(login)
 	u.mu.Lock()
 	if c, ok := u.cache[key]; ok && time.Since(c.at) < userCacheTTL {
@@ -126,9 +134,9 @@ func (u *Users) GerritUser(ctx context.Context, login string) (string, bool) {
 	}
 	u.mu.Unlock()
 
-	user, ok, err := u.lookup(ctx, login)
+	user, account, ok, err := u.lookup(ctx, login)
 	if err == nil && ok && u.Pins != nil {
-		ok, err = u.pinned(ctx, login, user)
+		ok, err = u.pinned(ctx, login, user, account)
 	}
 	if err != nil {
 		// Don't cache errors; fall back to the bridge this time.
@@ -149,44 +157,72 @@ func (u *Users) GerritUser(ctx context.Context, login string) (string, bool) {
 	return user, ok
 }
 
-// lookup finds login's Gerrit account by override or username.
-func (u *Users) lookup(ctx context.Context, login string) (string, bool, error) {
+// lookup finds login's Gerrit account by override or username. account is
+// the matched account's id, or 0 for an override.
+func (u *Users) lookup(ctx context.Context, login string) (user string, account int, ok bool, err error) {
 	for gh, user := range u.Overrides {
 		if strings.EqualFold(gh, login) {
-			return user, true, nil
+			if gerrit.AmbiguousUsername(user) {
+				u.warn("override names a Gerrit username Gerrit would read as another account; not acting as it", login, user)
+				return "", 0, false, nil
+			}
+			return user, 0, true, nil
 		}
 	}
 	if u.Gerrit == nil {
-		return "", false, nil
+		return "", 0, false, nil
 	}
 	accts, err := u.Gerrit.QueryAccounts(ctx, "username:"+gerrit.QueryString(login)+" is:active")
 	if err != nil {
-		return "", false, err
+		return "", 0, false, err
 	}
-	user := ""
+	var matches []gerrit.AccountInfo
 	for _, a := range accts {
 		if strings.EqualFold(a.Username, login) {
-			user = a.Username
+			matches = append(matches, a)
 		}
 	}
-	if user == "" {
-		return "", false, nil
+	if len(matches) != 1 {
+		if len(matches) > 1 {
+			u.warn("GitHub login matches several Gerrit accounts (by case); not acting as any", login, matches[0].Username)
+		}
+		return "", 0, false, nil
+	}
+	user, account = matches[0].Username, matches[0].AccountID
+	// Gerrit reads "1000000" as account 1000000 and "me" as the caller,
+	// wherever it takes an account: whoever registers that login on GitHub
+	// would act as someone else.
+	if gerrit.AmbiguousUsername(user) {
+		u.warn("Gerrit would read this username as another account; not acting as it", login, user)
+		return "", 0, false, nil
 	}
 	if u.excluded(ctx, user) {
-		if u.Logger != nil {
-			u.Logger.Warn("GitHub login matches an excluded Gerrit account; not acting as it", "github_login", login, "gerrit_user", user)
-		}
-		return "", false, nil
+		u.warn("GitHub login matches an excluded Gerrit account; not acting as it", login, user)
+		return "", 0, false, nil
 	}
-	return user, true, nil
+	return user, account, true, nil
+}
+
+func (u *Users) warn(msg, login, user string) {
+	if u.Logger != nil {
+		u.Logger.Warn(msg, "github_login", login, "gerrit_user", user)
+	}
+}
+
+// registeredLooker says when a Gerrit account was registered.
+type registeredLooker interface {
+	Registered(ctx context.Context, account int) (time.Time, error)
 }
 
 // pinned checks that login is still the GitHub account the Gerrit account
 // user was first seen as (by numeric id), pinning it on first sight.
 // Logins are freed by renames, and whoever takes one must not inherit the
-// Gerrit account.
-func (u *Users) pinned(ctx context.Context, login, user string) (bool, error) {
-	id, err := u.GitHub.UserID(ctx, login)
+// Gerrit account. Before pinning a username match (account != 0), the
+// GitHub account must be older than the Gerrit account: one created after
+// it cannot be the account it was registered with, so it is someone who
+// took the login of an account the bridge had not yet seen.
+func (u *Users) pinned(ctx context.Context, login, user string, account int) (bool, error) {
+	id, created, err := u.GitHub.UserID(ctx, login)
 	if err != nil {
 		return false, err
 	}
@@ -207,6 +243,23 @@ func (u *Users) pinned(ctx context.Context, login, user string) (bool, error) {
 					"github_login", login, "github_id", id, "gerrit_user", user, "pinned_id", p.GitHubID, "pinned_login", p.GitHubLogin)
 			}
 			return false, nil
+		}
+		if account != 0 {
+			rl, ok := u.Gerrit.(registeredLooker)
+			if !ok {
+				return false, errors.New("cannot tell when Gerrit accounts were registered")
+			}
+			registered, err := rl.Registered(ctx, account)
+			if err != nil {
+				return false, err
+			}
+			if created.IsZero() || created.After(registered) {
+				if u.Logger != nil {
+					u.Logger.Warn("GitHub account is newer than the Gerrit account with its login; not acting as it (add an override if it is theirs)",
+						"github_login", login, "github_id", id, "github_created", created, "gerrit_user", user, "gerrit_registered", registered)
+				}
+				return false, nil
+			}
 		}
 		if u.DryRun {
 			return true, nil

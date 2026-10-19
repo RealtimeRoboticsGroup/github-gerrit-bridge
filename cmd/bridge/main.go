@@ -262,10 +262,11 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		DryRun:        dryRun,
 		Logger:        logger,
 	}
-	// Never act as the bridge itself or a service account (CI, say), even
-	// if someone registers that login on GitHub.
+	// Never act as the bridge itself, a service account (CI, say) or an
+	// administrator by matching usernames, even if someone registers that
+	// login on GitHub; nor as anyone for the bridge's own GitHub login.
 	users := &reconcile.Users{Overrides: cfg.Identity.GitHubToGerrit, Logger: logger,
-		Never: []string{self.Username}, NeverGroups: []string{"Service Users", "Non-Interactive Users"},
+		Never: []string{self.Username}, NeverGroups: cfg.Identity.NeverGroups, NeverLogins: []string{login},
 		// A Gerrit account follows the GitHub account (numeric id) it was
 		// first matched to, not whoever holds the login later.
 		Pins: store, GitHub: gh, DryRun: dryRun}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
@@ -13,16 +14,26 @@ import (
 type fakeAccounts struct {
 	users  []string
 	groups map[string][]string
+	// registered is when each account (by index+1 in users) was
+	// registered; unset means 2020.
+	registered map[int]time.Time
 }
 
 func (f fakeAccounts) QueryAccounts(_ context.Context, q string) ([]gerrit.AccountInfo, error) {
 	var out []gerrit.AccountInfo
-	for _, u := range f.users {
-		if strings.Contains(strings.ToLower(q), strings.ToLower(u)) {
-			out = append(out, gerrit.AccountInfo{Username: u})
+	for i, u := range f.users {
+		if strings.Contains(strings.ToLower(q), `"`+strings.ToLower(u)+`"`) || strings.Contains(strings.ToLower(q), ":"+strings.ToLower(u)+" ") {
+			out = append(out, gerrit.AccountInfo{AccountID: i + 1, Username: u})
 		}
 	}
 	return out, nil
+}
+
+func (f fakeAccounts) Registered(_ context.Context, account int) (time.Time, error) {
+	if t, ok := f.registered[account]; ok {
+		return t, nil
+	}
+	return time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), nil
 }
 
 func (f fakeAccounts) GroupMembers(_ context.Context, group string) ([]gerrit.AccountInfo, error) {
@@ -57,11 +68,14 @@ func TestUsersNeverMatchesServiceAccounts(t *testing.T) {
 
 type fakeIDs map[string]int64
 
-func (f fakeIDs) UserID(_ context.Context, login string) (int64, error) {
+// githubCreated is when every fakeIDs account was created.
+var githubCreated = time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+
+func (f fakeIDs) UserID(_ context.Context, login string) (int64, time.Time, error) {
 	if id, ok := f[strings.ToLower(login)]; ok {
-		return id, nil
+		return id, githubCreated, nil
 	}
-	return 0, errors.New("404 Not Found")
+	return 0, time.Time{}, errors.New("404 Not Found")
 }
 
 type memPins struct{ ids *state.Identities }
@@ -107,5 +121,67 @@ func TestUsersPinGitHubIDs(t *testing.T) {
 	u.cache = nil
 	if _, ok := u.GerritUser(ctx, "alice"); ok {
 		t.Error("deleted GitHub account still maps")
+	}
+}
+
+func TestUsersRefuseUsernamesGerritReadsAsOtherAccounts(t *testing.T) {
+	// Gerrit takes "1000000" as account 1000000 and "me"/"self" as the
+	// caller wherever it takes an account, so whoever registers such a
+	// login on GitHub (and Gerrit) would act as someone else.
+	u := &Users{
+		Gerrit:    fakeAccounts{users: []string{"1000000", "Self", "me", "alice2"}},
+		Overrides: map[string]string{"bob": "1000001"},
+	}
+	ctx := context.Background()
+	for _, login := range []string{"1000000", "self", "me", "bob"} {
+		if user, ok := u.GerritUser(ctx, login); ok {
+			t.Errorf("%s acts as %q", login, user)
+		}
+	}
+	if user, ok := u.GerritUser(ctx, "alice2"); !ok || user != "alice2" {
+		t.Errorf("alice2 = %q %v", user, ok)
+	}
+}
+
+func TestUsersRefuseLoginsMatchingSeveralAccounts(t *testing.T) {
+	u := &Users{Gerrit: fakeAccounts{users: []string{"Alice", "alice"}}}
+	if user, ok := u.GerritUser(context.Background(), "alice"); ok {
+		t.Errorf("alice acts as %q", user)
+	}
+}
+
+func TestUsersNeverMatchTheBridgesOwnLogin(t *testing.T) {
+	u := &Users{Overrides: map[string]string{"bridge-bot": "alice"}, NeverLogins: []string{"Bridge-Bot"}}
+	if user, ok := u.GerritUser(context.Background(), "bridge-bot"); ok {
+		t.Errorf("the bridge's login acts as %q", user)
+	}
+}
+
+func TestUsersRefuseGitHubAccountsNewerThanTheGerritAccount(t *testing.T) {
+	// "admin" was registered in Gerrit (2020) long before anyone took the
+	// login on GitHub: that GitHub account cannot be admin's, however the
+	// login came free.
+	pins := &memPins{ids: &state.Identities{ByUser: map[string]state.Identity{}}}
+	u := &Users{
+		Gerrit: fakeAccounts{users: []string{"admin", "alice"}, registered: map[int]time.Time{
+			1: time.Date(2010, 1, 1, 0, 0, 0, 0, time.UTC),
+		}},
+		Overrides: map[string]string{"admin-on-github": "admin"},
+		Pins:      pins, GitHub: fakeIDs{"admin": 7, "alice": 8, "admin-on-github": 9},
+	}
+	ctx := context.Background()
+	if user, ok := u.GerritUser(ctx, "admin"); ok {
+		t.Errorf("a newer GitHub account acts as %q", user)
+	}
+	if _, ok := pins.ids.ByUser["admin"]; ok {
+		t.Errorf("pinned: %+v", pins.ids.ByUser)
+	}
+	// Older GitHub accounts match and pin, and overrides are trusted as
+	// written.
+	if user, ok := u.GerritUser(ctx, "alice"); !ok || user != "alice" {
+		t.Errorf("alice = %q %v", user, ok)
+	}
+	if user, ok := u.GerritUser(ctx, "admin-on-github"); !ok || user != "admin" {
+		t.Errorf("override = %q %v", user, ok)
 	}
 }

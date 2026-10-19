@@ -205,12 +205,16 @@ func (c *Client) Login(ctx context.Context) (string, error) {
 	return u.Login, err
 }
 
-// UserID returns the numeric id of the account that has login now. Logins
-// can change hands (after a rename); ids never do.
-func (c *Client) UserID(ctx context.Context, login string) (int64, error) {
-	var u User
+// UserID returns the numeric id of the account that has login now, and
+// when it was created. Logins can change hands (after a rename); ids never
+// do.
+func (c *Client) UserID(ctx context.Context, login string) (int64, time.Time, error) {
+	var u struct {
+		ID      int64     `json:"id"`
+		Created time.Time `json:"created_at"`
+	}
 	_, err := c.Do(ctx, http.MethodGet, "/users/"+url.PathEscape(login), nil, &u)
-	return u.ID, err
+	return u.ID, u.Created, err
 }
 
 // UpdateReviewComment replaces a review comment's body.

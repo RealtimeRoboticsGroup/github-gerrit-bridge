@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
 )
 
@@ -67,10 +69,17 @@ type SuexecUploader struct {
 	Bridge           Uploader
 }
 
+var suexecUser = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]*$`)
+
 // Upload implements Uploader.
 func (u SuexecUploader) Upload(ctx context.Context, user, commit, target string, opts []string) error {
 	if user == "" {
 		return u.Bridge.Upload(ctx, "", commit, target, opts)
+	}
+	// The name goes on Gerrit's SSH command line, where Gerrit reads it as
+	// an account: it must be a plain username.
+	if gerrit.AmbiguousUsername(user) || !suexecUser.MatchString(user) {
+		return fmt.Errorf("refusing to upload as %q: not a plain username", user)
 	}
 	remote := "ssh://" + url.PathEscape("Gerrit Code Review") + "@" + u.Address + "/" + u.Project
 	ssh := "ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=30 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" +

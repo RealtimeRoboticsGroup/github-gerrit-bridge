@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Client calls Gerrit's authenticated REST endpoints (/a/...).
@@ -35,7 +36,20 @@ func (c *Client) Anon() *Client {
 	return &Client{BaseURL: c.BaseURL, HTTP: c.HTTP, Anonymous: true}
 }
 
-// As returns a client acting as user via Run-As.
+// AmbiguousUsername reports whether Gerrit would not read user as a
+// username where it takes an account (X-Gerrit-RunAs, suexec --as, the
+// accounts/ API): Gerrit tries "self"/"me" and numeric account ids first,
+// so a user named "1000000" stands for account 1000000, and "me" for the
+// caller.
+func AmbiguousUsername(user string) bool {
+	if strings.EqualFold(user, "self") || strings.EqualFold(user, "me") {
+		return true
+	}
+	return strings.Trim(user, "0123456789") == ""
+}
+
+// As returns a client acting as user via Run-As. Requests fail if user is
+// an AmbiguousUsername.
 func (c *Client) As(user string) *Client {
 	cp := *c
 	cp.RunAs = user
@@ -202,6 +216,9 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 	}
 	req.Header.Set("Accept", "application/json")
 	if c.RunAs != "" {
+		if AmbiguousUsername(c.RunAs) {
+			return fmt.Errorf("refusing to run as %q: Gerrit would not read it as a username", c.RunAs)
+		}
 		req.Header.Set("X-Gerrit-RunAs", c.RunAs)
 	}
 	if in != nil {
@@ -435,6 +452,18 @@ func (c *Client) RevisionActions(ctx context.Context, change int) (map[string]Ac
 	out := map[string]ActionInfo{}
 	err := c.Do(ctx, http.MethodGet, fmt.Sprintf("changes/%d/revisions/current/actions", change), nil, &out)
 	return out, err
+}
+
+// Registered returns when account was registered.
+func (c *Client) Registered(ctx context.Context, account int) (time.Time, error) {
+	var out struct {
+		RegisteredOn string `json:"registered_on"`
+	}
+	if err := c.Do(ctx, http.MethodGet, fmt.Sprintf("accounts/%d/detail", account), nil, &out); err != nil {
+		return time.Time{}, err
+	}
+	// Gerrit's timestamps are UTC: "2006-01-02 15:04:05.000000000".
+	return time.Parse("2006-01-02 15:04:05.999999999", out.RegisteredOn)
 }
 
 // QueryAccounts returns the accounts matching query, with details.

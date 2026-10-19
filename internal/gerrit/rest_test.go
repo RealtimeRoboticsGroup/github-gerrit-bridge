@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func TestQueryChangesPaging(t *testing.T) {
@@ -75,5 +76,46 @@ func TestErrorStatus(t *testing.T) {
 func TestQueryString(t *testing.T) {
 	if got := QueryString(`a "b" \c`); got != `"a \"b\" \\c"` {
 		t.Errorf("QueryString = %s", got)
+	}
+}
+
+func TestRunAsRefusesNamesGerritReadsAsOtherAccounts(t *testing.T) {
+	var runAs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runAs = append(runAs, r.Header.Get("X-Gerrit-RunAs"))
+		fmt.Fprint(w, ")]}'\n{}")
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, User: "bridge", Password: "secret"}
+	ctx := context.Background()
+	for _, user := range []string{"1000000", "self", "Me"} {
+		if err := c.As(user).Do(ctx, http.MethodGet, "accounts/self", nil, nil); err == nil {
+			t.Errorf("ran as %q", user)
+		}
+	}
+	if err := c.As("alice").Do(ctx, http.MethodGet, "accounts/self", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(runAs) != 1 || runAs[0] != "alice" {
+		t.Errorf("requests ran as %q", runAs)
+	}
+}
+
+func TestRegistered(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/a/accounts/1000001/detail" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, ")]}'\n"+`{"_account_id":1000001,"registered_on":"2026-10-01 12:34:56.000000000"}`)
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, User: "bridge", Password: "secret"}
+	got, err := c.Registered(context.Background(), 1000001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 10, 1, 12, 34, 56, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("registered = %v, want %v", got, want)
 	}
 }
