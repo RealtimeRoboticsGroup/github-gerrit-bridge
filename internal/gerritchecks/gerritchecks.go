@@ -183,9 +183,11 @@ type Handler struct {
 	cache map[[2]int]entry
 	busy  chan struct{}
 	once  sync.Once
-	// window and calls count Buildkite calls in the current minute.
+	// window, calls and reads count Buildkite calls and Gerrit reads in
+	// the current minute.
 	window time.Time
 	calls  int
+	reads  int
 	now    func() time.Time // tests
 }
 
@@ -203,6 +205,8 @@ const (
 	// cause, well inside Buildkite's rate limit, which the bridge also
 	// needs for gerrit/Verified.
 	maxBuildkitePerMinute = 60
+	// maxGerritPerMinute bounds the Gerrit reads anonymous requests cause.
+	maxGerritPerMinute = 300
 )
 
 func (h *Handler) clock() time.Time {
@@ -213,16 +217,21 @@ func (h *Handler) clock() time.Time {
 }
 
 // spend takes one Buildkite call from this minute's budget.
-func (h *Handler) spend() bool {
+func (h *Handler) spend() bool { return h.take(&h.calls, maxBuildkitePerMinute) }
+
+// read takes one Gerrit read from this minute's budget.
+func (h *Handler) read() bool { return h.take(&h.reads, maxGerritPerMinute) }
+
+func (h *Handler) take(n *int, limit int) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if now := h.clock(); now.Sub(h.window) >= time.Minute {
-		h.window, h.calls = now, 0
+		h.window, h.calls, h.reads = now, 0, 0
 	}
-	if h.calls >= maxBuildkitePerMinute {
+	if *n >= limit {
 		return false
 	}
-	h.calls++
+	*n++
 	return true
 }
 
@@ -289,6 +298,9 @@ func (h *Handler) compute(ctx context.Context, change, ps int) entry {
 	fail := func(status int, msg string) entry {
 		b, _ := json.Marshal(map[string]string{"error": msg})
 		return entry{at: time.Now(), status: status, body: b}
+	}
+	if !h.read() {
+		return fail(http.StatusServiceUnavailable, "busy")
 	}
 	ch, err := h.Gerrit.GetChange(ctx, change, "ALL_REVISIONS")
 	var ge *gerrit.Error

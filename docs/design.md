@@ -1144,8 +1144,8 @@ defenses, by threat:
 - **The public `/checks` endpoint** reads changes anonymously, so it shows
   nothing anonymous users cannot already see. Answers are cached briefly,
   failures are not (and a client hanging up does not cause one), at most 4
-  are computed at once, and anonymous requests cause at most 60 Buildkite
-  calls a minute, so they cannot exhaust the rate limit the bridge needs
+  are computed at once, and anonymous requests cause at most 300 Gerrit
+  reads and 60 Buildkite calls a minute, so they cannot exhaust the rate limit the bridge needs
   for `gerrit/Verified`. Its plugin's Rerun posts as the user, so it
   grants nothing.
 - **Webhooks.** HMAC-checked; at most 32 read at once and 4 from any one

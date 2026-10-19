@@ -214,3 +214,33 @@ func TestHandlerBoundsBuildkiteCalls(t *testing.T) {
 		t.Errorf("next minute: %d", w.Code)
 	}
 }
+
+// Anonymous requests for changes that do not exist still read Gerrit:
+// those reads are bounded too.
+func TestHandlerBoundsGerritReads(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	reads := 0
+	h := &Handler{Project: "p", Gerrit: countingChanges{&reads}, Builds: &fakeBuilds{}, Logger: slog.Default(),
+		now: func() time.Time { return now }}
+	busy := 0
+	for i := 1; i <= maxGerritPerMinute+5; i++ {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.SetPathValue("change", strconv.Itoa(i))
+		r.SetPathValue("patchset", "1")
+		h.ServeHTTP(w, r)
+		if w.Code == http.StatusServiceUnavailable {
+			busy++
+		}
+	}
+	if reads != maxGerritPerMinute || busy != 5 {
+		t.Errorf("Gerrit reads %d, busy answers %d", reads, busy)
+	}
+}
+
+type countingChanges struct{ n *int }
+
+func (c countingChanges) GetChange(context.Context, int, ...string) (*gerrit.ChangeInfo, error) {
+	*c.n++
+	return nil, &gerrit.Error{Status: http.StatusNotFound}
+}
