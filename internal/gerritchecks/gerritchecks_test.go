@@ -126,9 +126,19 @@ func TestHandler(t *testing.T) {
 	}
 	// Another project's change, a private one (Gerrit is read as the
 	// bridge, which could be its reviewer), none, no such patch set.
+	// All alike: which one, says what is there (fourth audit).
+	var first string
 	for _, path := range []string{"/checks/6/1", "/checks/8/1", "/checks/7/1", "/checks/5/3", "/checks/5/x", "/checks/-1/1"} {
-		if w, _ := get(path); w.Code == 200 || strings.Contains(w.Body.String(), "secret") {
+		w, _ := get(path)
+		if w.Code == 200 || strings.Contains(w.Body.String(), "secret") {
 			t.Errorf("GET %s = %d %s", path, w.Code, w.Body)
+		}
+		if w.Code == http.StatusNotFound {
+			if first == "" {
+				first = w.Body.String()
+			} else if w.Body.String() != first {
+				t.Errorf("GET %s = %s, unlike %s", path, w.Body, first)
+			}
 		}
 	}
 }
@@ -275,6 +285,29 @@ func TestHandlerBoundsEachClient(t *testing.T) {
 	now = now.Add(time.Minute)
 	if code := get("203.0.113.9", 2000); code == http.StatusTooManyRequests {
 		t.Error("still refused the next minute")
+	}
+	// One IPv6 host is a /64 (fourth audit).
+	now, refused = now.Add(time.Minute), 0
+	for i := 1; i <= maxMissesPerClient+10; i++ {
+		if get(fmt.Sprintf("2001:db8:1:2::%x", i), 3000+i) == http.StatusTooManyRequests {
+			refused++
+		}
+	}
+	if refused != 10 {
+		t.Errorf("one /64: refused %d", refused)
+	}
+	// So many clients that they are not all counted: new ones wait for the
+	// next minute, and those counted keep their budgets.
+	now = now.Add(time.Minute)
+	get("203.0.113.9", 5001)
+	for i := range maxClients {
+		h.misses[fmt.Sprint("filler", i)] = 1
+	}
+	if code := get("203.0.113.11", 5002); code != http.StatusTooManyRequests {
+		t.Errorf("a new client got %d with the client map full", code)
+	}
+	if code := get("203.0.113.9", 5003); code == http.StatusTooManyRequests || h.misses["203.0.113.9"] != 2 {
+		t.Errorf("a counted client got %d (count %d)", code, h.misses["203.0.113.9"])
 	}
 }
 

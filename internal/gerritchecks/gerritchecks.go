@@ -214,8 +214,10 @@ const (
 	// maxGerritPerMinute bounds the Gerrit reads anonymous requests cause.
 	maxGerritPerMinute = 300
 	// maxMissesPerClient bounds one client's uncached requests a minute,
-	// so it alone cannot spend the budgets above.
+	// so it alone cannot spend the budgets above, and maxClients the
+	// clients counted.
 	maxMissesPerClient = 30
+	maxClients         = 10000
 )
 
 func (h *Handler) clock() time.Time {
@@ -236,8 +238,13 @@ func (h *Handler) miss(client string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.roll()
-	if h.misses == nil || len(h.misses) > 10000 {
-		h.misses = map[string]int{} // bounded; the shared budgets still hold
+	if h.misses == nil {
+		h.misses = map[string]int{}
+	}
+	if _, known := h.misses[client]; !known && len(h.misses) >= maxClients {
+		// Bounded: new clients wait for the next minute. (Starting over
+		// would let enough of them reset everyone's budget; fourth audit.)
+		return false
 	}
 	if h.misses[client] >= maxMissesPerClient {
 		return false
@@ -290,6 +297,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if host, _, err := net.SplitHostPort(client); err == nil {
 			client = host
+		}
+		if ip := net.ParseIP(client); ip != nil && ip.To4() == nil {
+			// One IPv6 host has a /64 to rotate through (fourth audit).
+			client = ip.Mask(net.CIDRMask(64, 128)).String()
 		}
 		if !h.miss(client) {
 			http.Error(w, "busy", http.StatusTooManyRequests)
@@ -344,8 +355,12 @@ func (h *Handler) compute(ctx context.Context, change, ps int) entry {
 	}
 	ch, err := h.Gerrit.GetChange(ctx, change, "ALL_REVISIONS")
 	var ge *gerrit.Error
+	// One answer for a change that is not there, is private or another
+	// project's, or lacks the patch set: which, says what it is (fourth
+	// audit: that a private change exists, say).
+	const notFound = "no such change or patch set"
 	if errors.As(err, &ge) && ge.Status == http.StatusNotFound {
-		return fail(http.StatusNotFound, "no such change")
+		return fail(http.StatusNotFound, notFound)
 	}
 	if err != nil {
 		h.Logger.Warn("checks: reading change", "change", change, "err", err)
@@ -355,7 +370,7 @@ func (h *Handler) compute(ctx context.Context, change, ps int) entry {
 		// Gerrit is read as the bridge (AOS lets no anonymous user read
 		// changes), which could be made a private change's reviewer:
 		// only what the bridge publishes on GitHub anyway is answered.
-		return fail(http.StatusNotFound, "not a change the bridge serves")
+		return fail(http.StatusNotFound, notFound)
 	}
 	sha := ""
 	for s, rev := range ch.Revisions {
@@ -364,7 +379,7 @@ func (h *Handler) compute(ctx context.Context, change, ps int) entry {
 		}
 	}
 	if sha == "" {
-		return fail(http.StatusNotFound, "no such patch set")
+		return fail(http.StatusNotFound, notFound)
 	}
 	if !h.spend() {
 		return fail(http.StatusServiceUnavailable, "busy")
