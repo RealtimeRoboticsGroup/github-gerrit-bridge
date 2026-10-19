@@ -774,7 +774,9 @@ func signOffs(texts ...string) []string {
 	seen := map[string]bool{}
 	for _, t := range texts {
 		for _, l := range signedOffBy.FindAllString(strings.ReplaceAll(t, "\r\n", "\n"), -1) {
-			l = strings.TrimSpace(l)
+			// A lone CR must not smuggle a second line (a Change-Id, say)
+			// into the squash's footer.
+			l = strings.TrimSpace(strings.ReplaceAll(l, "\r", " "))
 			if !seen[l] {
 				seen[l] = true
 				out = append(out, l)

@@ -272,3 +272,10 @@ func TestNoOpSquashNeedsTheFooterChangeID(t *testing.T) {
 		t.Errorf("squash's Change-Id = %q %v, want %s", id, ok, cid)
 	}
 }
+
+func TestSignOffsCannotCarryOtherLines(t *testing.T) {
+	got := signOffs("Fix\n\nSigned-off-by: X <x@example.com>\rChange-Id: I" + strings.Repeat("c", 40) + "\n")
+	if len(got) != 1 || strings.Contains(got[0], "\r") {
+		t.Errorf("sign-offs = %q", got)
+	}
+}
