@@ -1081,7 +1081,13 @@ defenses, by threat:
   upload under another.
 - **Bridge markers.** `<!-- bridge:… -->` markers mark state (handled
   commands, comment mappings) only in comments by the bridge's own GitHub
-  login.
+  login, and only at the end, where the bridge writes them. Text it copies
+  from the other side (Gerrit comments, messages, commit messages, Gerrit's
+  error text, quoted code) has its markers broken first (§8), so a Gerrit
+  reply cannot mark someone's `/submit` handled or a commit message cut its
+  PR description short; the PR description is split at the *last* links
+  marker. A marker edited into someone else's GitHub comment does not keep
+  it out of Gerrit.
 - **CI status.** Comes from Buildkite's API (§6.5), so no comment can fake
   it. Without Buildkite, only messages by `ci.account` (and never ones
   mirrored from GitHub) drive `gerrit/Verified`'s link and text.
@@ -1093,8 +1099,13 @@ defenses, by threat:
   timeouts. Payloads are only hints: actors and content are re-read from
   the API.
 - **Public text.** Import errors keep their details in the log, not in the
-  public status. Mirrored Gerrit comments show the username beside the
-  (free-form) full name.
+  public status, and so do `/submit` errors that are not Gerrit's own
+  refusals. Mirrored Gerrit comments, messages and `gerrit/<Label>`
+  statuses show the username beside the (free-form) full name, with
+  Markdown in names escaped.
+- **Mentions.** Gerrit text posted on GitHub under the bridge's name, and
+  GitHub text the bridge posts in Gerrit as itself, has its `@mentions`
+  broken (§8), so nobody can make the bridge notify people or teams.
 - `/submit` first asks Gerrit whether the user may submit, and only then
   reshapes PRs (§6.7).
 
@@ -1119,8 +1130,18 @@ Known gaps:
 ## 8. Content conversion (`internal/markup`)
 
 - Gerrit renders a subset of Markdown, and GitHub renders GFM, so most
-  content passes through unchanged. Each GitHub `@mention` is rewritten to
-  the mapped Gerrit user's name, and the reverse.
+  content passes through unchanged.
+- **As built (2026-10-18): copied text is defused.** Whatever the bridge
+  posts on one side with words from the other (`internal/reconcile/text.go`)
+  has `@mentions` outside code, and `<!-- bridge:` markers anywhere, broken
+  with a zero-width joiner, which renders as nothing: the bridge's account
+  must not notify whoever the author named, and must not carry markers it
+  would read back as its own state. Where PR descriptions flow back into
+  commit messages, the joiners are taken out again, so round trips are
+  exact. Text posted in Gerrit as its own author (Run-As) is left alone.
+  Rewriting mentions to the mapped user on the other side is not done.
+  Closing keywords (`Fixes #12`) are left alone: the commit lands on the
+  default branch with them anyway.
 - GitHub ```` ```suggestion ```` ⇄ Gerrit `fix_suggestions`
   (`replacements` on the same range). Gerrit's "Apply fix" and GitHub's
   "Commit suggestion" both create a new revision, which then flows through

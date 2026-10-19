@@ -80,7 +80,9 @@ type Commands struct {
 
 var (
 	submitCommand = regexp.MustCompile(`(?m)^\s*/submit\s*$`)
-	handledMarker = regexp.MustCompile(`<!-- bridge:cmd/(\d+) -->`)
+	// The bridge's replies end with it; one anywhere else is not the
+	// bridge's.
+	handledMarker = regexp.MustCompile(`<!-- bridge:cmd/(\d+) -->\s*\z`)
 )
 
 // Run handles new commands on change n's PR.
@@ -139,9 +141,10 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) st
 	// Check first, so PRs are only reshaped for a submit that will happen.
 	if ok, why, err := c.Submitter.CanSubmitAs(ctx, user, n); err != nil || !ok {
 		if err != nil {
-			why = err.Error()
+			c.Logger.Warn("checking submit from GitHub", "change", n, "by", ic.User.Login, "err", err)
+			why = "The bridge could not ask Gerrit (see its log)."
 		}
-		return fmt.Sprintf("@%s: Gerrit would not submit change %d:\n\n> %s", ic.User.Login, n, strings.ReplaceAll(why, "\n", "\n> "))
+		return fmt.Sprintf("@%s: Gerrit would not submit change %d:\n\n> %s", ic.User.Login, n, strings.ReplaceAll(forGitHub(why), "\n", "\n> "))
 	}
 	if c.BeforeSubmit != nil {
 		if err := c.BeforeSubmit(ctx, n); err != nil {
@@ -157,11 +160,13 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) st
 			"This PR closes once Gerrit reports the merge.", ic.User.Login, n, user)
 	}
 	c.Logger.Warn("submit from GitHub failed", "change", n, "by", ic.User.Login, "err", err)
-	reason := err.Error()
+	// Gerrit's own refusals are for the user; anything else stays in the
+	// log, which may name internal hosts.
+	reason := "The bridge could not reach Gerrit (see its log)."
 	var ge *gerrit.Error
-	if errors.As(err, &ge) {
+	if errors.As(err, &ge) && ge.Status < 500 {
 		reason = strings.TrimSpace(ge.Body)
 	}
 	return fmt.Sprintf("@%s: Gerrit did not submit change %d:\n\n> %s", ic.User.Login, n,
-		strings.ReplaceAll(reason, "\n", "\n> "))
+		strings.ReplaceAll(forGitHub(reason), "\n", "\n> "))
 }

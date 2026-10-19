@@ -682,7 +682,7 @@ func (im *Importer) pureRebase(ctx context.Context, commit, ref, parent, h strin
 // without Change-Id lines (the bridge adds its own).
 func prBodyForMessage(body string) string {
 	user, _ := splitBody(body)
-	user = changeIDLine.ReplaceAllString(user, "")
+	user = unGitHub(changeIDLine.ReplaceAllString(user, ""))
 	user = signedOffBy.ReplaceAllString(user, "")
 	return strings.TrimSpace(user)
 }

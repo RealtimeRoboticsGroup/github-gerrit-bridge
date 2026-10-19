@@ -219,11 +219,15 @@ func voteString(v int) string {
 	return fmt.Sprint(v)
 }
 
+// who names a Gerrit account: its full name, and the username too, since
+// anyone can set their full name to someone else's.
 func who(a gerrit.AccountInfo) string {
-	if a.Name != "" {
+	switch {
+	case a.Name != "" && a.Username != "" && !strings.EqualFold(a.Name, a.Username):
+		return a.Name + " (" + a.Username + ")"
+	case a.Name != "":
 		return a.Name
-	}
-	if a.Username != "" {
+	case a.Username != "":
 		return a.Username
 	}
 	return fmt.Sprintf("account %d", a.AccountID)

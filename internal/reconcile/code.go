@@ -439,7 +439,7 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot) (bool, error) {
 			if !errors.As(err, &ge) || ge.Status >= 500 {
 				return changed, fmt.Errorf("%s change %d as %s: %w", action, n, user, err)
 			}
-			why = fmt.Sprintf("Gerrit would not let %s %s it (%s)", user, action, strings.TrimSpace(ge.Body))
+			why = fmt.Sprintf("Gerrit would not let %s %s it (%s)", user, action, forGitHub(strings.TrimSpace(ge.Body)))
 		}
 		undo := "Reopening it"
 		if action == "restore" {
@@ -596,7 +596,7 @@ func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRe
 		c.Logger.Info("mirrored GitHub PR edit to Gerrit", "change", n, "endpoint", endpoint, "as", as)
 		return "", nil
 	case errors.As(err, &ge) && ge.Status < 500:
-		return refuse(fmt.Sprintf("Gerrit would not let %s (%s)", as, strings.TrimSpace(ge.Body))), nil
+		return refuse(fmt.Sprintf("Gerrit would not let %s (%s)", as, forGitHub(strings.TrimSpace(ge.Body)))), nil
 	default:
 		return "", fmt.Errorf("%s %s change %d as %s: %w", method, endpoint, n, as, err)
 	}

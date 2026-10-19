@@ -104,7 +104,9 @@ func isBridgeTag(tag string) bool {
 }
 
 var (
-	gerritMarker = regexp.MustCompile(`<!-- bridge:gerrit/(\d+)/([^ ]+) -->`)
+	// The bridge's mirrors end with it; one anywhere else is not the
+	// bridge's.
+	gerritMarker = regexp.MustCompile(`<!-- bridge:gerrit/(\d+)/([^ ]+) -->\s*\z`)
 	// The GitHub link in the attribution of a comment the bridge posted
 	// under its own account identifies the original. (Only the header's:
 	// the text after it is the GitHub user's, and may link anything.)
@@ -391,19 +393,11 @@ func (c *Comments) recoverThreads(s *commentSnapshot, m *commentMap, threads map
 // --- Gerrit -> GitHub ---
 
 func (c *Comments) gerritHeader(n int, gc *gerrit.CommentInfo, current int) string {
-	// The username too: anyone can set their full name to someone else's.
-	who := gc.Author.Name
-	switch u := gc.Author.Username; {
-	case who == "":
-		who = u
-	case u != "" && !strings.EqualFold(u, who):
-		who += " (" + u + ")"
-	}
 	ps := ""
 	if gc.PatchSet != 0 && gc.PatchSet != current {
 		ps = fmt.Sprintf(" on patch set %d", gc.PatchSet)
 	}
-	return fmt.Sprintf("**%s** ([Gerrit](%s))%s:", who, c.Gerrit.CommentURL(c.Project, n, gc.ID), ps)
+	return fmt.Sprintf("**%s** ([Gerrit](%s))%s:", whoMD(gc.Author), c.Gerrit.CommentURL(c.Project, n, gc.ID), ps)
 }
 
 func gerritFooter(n int, id string) string { return fmt.Sprintf("<!-- bridge:gerrit/%d/%s -->", n, id) }
@@ -416,11 +410,11 @@ func (c *Comments) ghBody(n int, gc *gerrit.CommentInfo, current int, note, sugg
 	b.WriteString(c.gerritHeader(n, gc, current))
 	b.WriteString("\n\n")
 	if note != "" {
-		b.WriteString(note + "\n\n")
+		b.WriteString(forGitHub(note) + "\n\n")
 	}
-	b.WriteString(strings.TrimSpace(gc.Message))
+	b.WriteString(forGitHub(strings.TrimSpace(gc.Message)))
 	if suggestion != "" {
-		b.WriteString("\n\n" + suggestion)
+		b.WriteString("\n\n" + forGitHub(suggestion))
 	}
 	b.WriteString("\n\n" + gerritFooter(n, gc.ID))
 	return b.String()
@@ -513,7 +507,7 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			votes = ", **" + v + "**"
 		}
 		body := fmt.Sprintf("**%s** ([Gerrit](%s)) on patch set %d%s:\n\n%s\n\n%s",
-			who(msg.Author), c.messageURL(n, msg), msg.RevisionNumber, votes, text, gerritFooter(n, msg.ID))
+			whoMD(msg.Author), c.messageURL(n, msg), msg.RevisionNumber, votes, forGitHub(text), gerritFooter(n, msg.ID))
 		out, err := c.GitHub.CreateIssueComment(ctx, pr, body)
 		if err != nil {
 			return posted, err
@@ -754,7 +748,8 @@ func gerritBody(login, url, body string, asAuthor bool) string {
 	if asAuthor {
 		return strings.TrimSpace(body)
 	}
-	return fmt.Sprintf("**@%s** ([GitHub](%s)):\n\n%s", login, url, strings.TrimSpace(body))
+	// The bridge posts it: its mentions would be the bridge's.
+	return fmt.Sprintf("**@%s** ([GitHub](%s)):\n\n%s", login, url, forGerrit(strings.TrimSpace(body)))
 }
 
 // isMirror reports whether a GitHub body was written by the bridge: a
@@ -766,6 +761,14 @@ func (c *Comments) byBridge(login string) bool {
 }
 
 func isMirror(body string) bool { return strings.Contains(body, "<!-- bridge:") }
+
+// ownMirror reports whether a GitHub comment is the bridge's copy of
+// something (under a login it no longer uses, say) rather than someone's
+// comment: it carries a marker that its author put there. A marker edited
+// into someone else's comment does not keep it out of Gerrit.
+func ownMirror(edits map[int64]string, id int64, author, body string) bool {
+	return isMirror(body) && !editedByOther(edits, id, author)
+}
 
 // mine reports whether the bridge's GitHub account wrote a comment: never
 // mirrored to Gerrit as someone's GitHub comment, whatever its text says
@@ -831,7 +834,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 	}
 	for i := range s.rcs {
 		rc := &s.rcs[i]
-		if c.mine(rc.User.Login) || isMirror(rc.Body) || m.byGitHub[ghKey(kindReviewComment, rc.ID)] != nil {
+		if c.mine(rc.User.Login) || ownMirror(s.edits, rc.ID, rc.User.Login, rc.Body) || m.byGitHub[ghKey(kindReviewComment, rc.ID)] != nil {
 			continue
 		}
 		rootID := rc.ID
@@ -916,7 +919,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		// Approvals and change requests count even without a body: they
 		// become votes (and a note saying where they came from).
 		vote := rv.State == "APPROVED" || rv.State == "CHANGES_REQUESTED"
-		if (strings.TrimSpace(rv.Body) == "" && !vote) || c.mine(rv.User.Login) || isMirror(rv.Body) || m.byGitHub[ghKey(kindReviewBody, rv.ID)] != nil {
+		if (strings.TrimSpace(rv.Body) == "" && !vote) || c.mine(rv.User.Login) || ownMirror(s.reviewEdits, rv.ID, rv.User.Login, rv.Body) || m.byGitHub[ghKey(kindReviewBody, rv.ID)] != nil {
 			continue
 		}
 		if rv.State != "COMMENTED" && !vote {
@@ -965,7 +968,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		}
 	}
 	for _, ic := range s.ics {
-		if c.mine(ic.User.Login) || isMirror(ic.Body) || m.byGitHub[ghKey(kindIssueComment, ic.ID)] != nil {
+		if c.mine(ic.User.Login) || ownMirror(s.edits, ic.ID, ic.User.Login, ic.Body) || m.byGitHub[ghKey(kindIssueComment, ic.ID)] != nil {
 			continue
 		}
 		f := false

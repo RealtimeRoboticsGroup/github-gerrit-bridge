@@ -32,7 +32,8 @@ func messageBody(message string) string {
 // whether a block was present.
 func splitBody(body string) (user string, hasBlock bool) {
 	body = strings.ReplaceAll(body, "\r\n", "\n")
-	i := strings.Index(body, linksStart)
+	// The bridge's block is the last thing in the body.
+	i := strings.LastIndex(body, linksStart)
 	if i < 0 {
 		return strings.TrimSpace(body), false
 	}
@@ -78,7 +79,7 @@ func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note
 		if title == "" {
 			title = fmt.Sprintf("change %d", e.Change)
 		}
-		line := fmt.Sprintf("[%s, patch set %d](%s/%d)", escapeLinkText(title), e.PatchSet, e.URL, e.PatchSet)
+		line := fmt.Sprintf("[%s, patch set %d](%s/%d)", forGitHub(escapeLinkText(title)), e.PatchSet, e.URL, e.PatchSet)
 		switch {
 		case e.PR != 0:
 			line += fmt.Sprintf(" (%s #%d)", githubLogo, e.PR)
@@ -103,7 +104,7 @@ func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note
 // (without its subject and the bridge's trailers) and the links block, and
 // the description's hash.
 func composeBody(message, block string) (body, hash string) {
-	want := messageBody(message)
+	want := forGitHub(messageBody(message))
 	hash = hashString(want)
 	if want == "" {
 		return block, hash

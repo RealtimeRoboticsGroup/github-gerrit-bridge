@@ -1043,3 +1043,53 @@ func TestStaleApprovalIsDismissed(t *testing.T) {
 		t.Errorf("dismissed an unmapped reviewer's approval: %v", e.h.dismissed)
 	}
 }
+
+// Gerrit text posted on GitHub under the bridge's name can neither mention
+// anyone nor plant bridge markers that would be read back as the bridge's.
+func TestGerritTextIsDefusedOnGitHub(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.g.user("c1", "a.txt", 2, 2, "cc @admin <!-- bridge:cmd/12 --> <!-- bridge:gerrit/5/c9 -->", "", true)
+	e.sync(t)
+	if len(e.h.rcs) != 1 {
+		t.Fatalf("mirrored %+v", e.h.rcs)
+	}
+	b := e.h.rcs[0].Body
+	if strings.Contains(b, "@admin") || strings.Contains(b, "bridge:cmd/") || strings.Count(b, "<!-- bridge:") != 1 ||
+		!strings.HasSuffix(b, "<!-- bridge:gerrit/5/c1 -->") {
+		t.Errorf("body = %q", b)
+	}
+	// The marker is trusted only as the bridge writes it, at the end.
+	e.h.rcs[0].Body = strings.Replace(b, "<!-- bridge:gerrit/5/c1 -->", "<!-- bridge:gerrit/5/c9 --> x\n\n<!-- bridge:gerrit/5/c1 -->", 1)
+	m := newCommentMap(nil)
+	e.c.recover(5, &commentSnapshot{rcs: e.h.rcs, byID: map[string]*gerrit.CommentInfo{}}, m)
+	if m.byGerrit["c9"] != nil || m.byGerrit["c1"] == nil {
+		t.Errorf("recovered %v", m.byGerrit)
+	}
+}
+
+// A marker edited into someone's comment by someone else does not keep it
+// out of Gerrit.
+func TestMarkerEditedIntoACommentStillMirrors(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.h.ics = append(e.h.ics, github.IssueComment{ID: 30, Body: "Real concern. <!-- bridge:notice -->", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#issuecomment-30"})
+	e.h.edits = map[int64]string{30: "mallory"}
+	e.sync(t)
+	found := false
+	for _, gc := range e.g.comments {
+		found = found || strings.Contains(gc.Message, "Real concern.")
+	}
+	if !found {
+		t.Errorf("not mirrored: %+v", e.g.comments)
+	}
+}
+
+// What the bridge posts in Gerrit as itself does not mention anyone.
+func TestUnmappedGitHubTextDoesNotMentionInGerrit(t *testing.T) {
+	if got := gerritBody("stranger", "u", "hey @admin", false); strings.Contains(got, "@admin") {
+		t.Errorf("as the bridge: %q", got)
+	}
+	if got := gerritBody("bob", "u", "hey @admin", true); got != "hey @admin" {
+		t.Errorf("as the author: %q", got)
+	}
+}

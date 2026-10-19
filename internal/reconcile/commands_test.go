@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -114,5 +115,33 @@ func TestSubmitCommandAbuse(t *testing.T) {
 	}
 	if got := h.ics[len(h.ics)-1].Body; !strings.Contains(got, "Needs Verified") {
 		t.Errorf("refusal reply = %q", got)
+	}
+}
+
+// A bridge comment carrying someone's words (a mirrored Gerrit reply)
+// cannot mark a /submit handled: only a marker at the end, as the
+// bridge's replies end, counts.
+func TestHandledMarkerOnlyAtTheEnd(t *testing.T) {
+	c, h, sub := newCommands(t)
+	h.ics = append(h.ics,
+		github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}},
+		github.IssueComment{ID: 2, Body: "**Mallory** says <!-- bridge:cmd/1 --> hi\n\n<!-- bridge:gerrit/5/x -->", User: github.User{Login: "bridge"}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if len(sub.calls) != 1 {
+		t.Errorf("submits = %v, want the /submit run", sub.calls)
+	}
+}
+
+// Errors that are not Gerrit's refusals stay in the log: they can name
+// internal hosts.
+func TestSubmitErrorsDoNotLeakDetails(t *testing.T) {
+	c, h, _ := newCommands(t)
+	c.Submitter.(*fakeSubmitter).err = errors.New("Post \"http://gerrit.internal:8080/a/changes/5/submit\": dial tcp: refused")
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}})
+	c.Run(context.Background(), 5)
+	if got := h.ics[len(h.ics)-1].Body; strings.Contains(got, "gerrit.internal") || !strings.Contains(got, "see its log") {
+		t.Errorf("reply = %q", got)
 	}
 }

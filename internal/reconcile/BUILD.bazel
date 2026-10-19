@@ -16,6 +16,7 @@ go_library(
         "push.go",
         "pushers.go",
         "reconcile.go",
+        "text.go",
     ],
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile",
     visibility = ["//:__subpackages__"],
@@ -45,6 +46,7 @@ go_test(
         "push_test.go",
         "reconcile_test.go",
         "sites_test.go",
+        "text_test.go",
     ],
     embed = [":reconcile"],
     deps = [
