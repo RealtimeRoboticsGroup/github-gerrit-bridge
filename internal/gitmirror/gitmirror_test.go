@@ -36,6 +36,9 @@ func TestInitIdempotentAndRevParse(t *testing.T) {
 	if strings.TrimSpace(string(out)) != "/b" {
 		t.Errorf("origin = %q", out)
 	}
+	if out, _ := r.Git(ctx, nil, "config", "fetch.writeCommitGraph"); strings.TrimSpace(string(out)) != "true" {
+		t.Errorf("fetch.writeCommitGraph = %q", out)
+	}
 	if v, err := r.RevParse(ctx, "refs/heads/nope"); v != "" || err != nil {
 		t.Errorf("RevParse missing = %q, %v", v, err)
 	}

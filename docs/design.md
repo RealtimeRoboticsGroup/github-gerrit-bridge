@@ -1217,8 +1217,17 @@ Known gaps:
   reconciliation is level-triggered, that is enough.
 - `/healthz` and `/metrics` (Prometheus). Metrics: queue depth, reconcile
   latency, API errors, and GitHub rate-limit budget.
-- Rate limits: GitHub ETag conditional requests; GraphQL for bulk reads; a
-  token bucket for each installation.
+- Rate limits: GitHub ETag conditional requests (as built 2026-10-19:
+  every GET is revalidated with `If-None-Match`, and GitHub's 304s, which
+  do not count against the rate limit, are answered from an in-memory
+  cache of up to 4096 responses); GraphQL for bulk reads; a token bucket
+  for each installation. Measured on the test instance: a comment sync
+  is ~6 REST GETs and ~6 GraphQL queries per PR, so a resync of a few
+  hundred open PRs every 30 minutes would spend most of the hourly
+  GraphQL budget; GraphQL has no conditional requests.
+- With `-v`, every Gerrit and GitHub request and git command is logged
+  with its duration, and reconciles that wait or take more than 3s are
+  always logged.
 - `bridge resync <change>` / `bridge resync --all` admin commands, and a dry-run
   mode that only logs the actions it would take. The dry-run mode is essential
   for bringing the bridge up against a real repo.

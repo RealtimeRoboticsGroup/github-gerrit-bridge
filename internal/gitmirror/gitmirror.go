@@ -88,6 +88,11 @@ func (r *Repo) Init(ctx context.Context) error {
 			return err
 		}
 	}
+	// Keep a commit-graph as fetches bring history in: ancestry checks
+	// (one per open change per reconcile) then stay cheap on a long one.
+	if _, err := r.Git(ctx, nil, "config", "fetch.writeCommitGraph", "true"); err != nil {
+		return err
+	}
 	if _, err := r.Git(ctx, nil, "remote", "get-url", "origin"); err != nil {
 		_, err = r.Git(ctx, nil, "remote", "add", "origin", r.Remote)
 		return err

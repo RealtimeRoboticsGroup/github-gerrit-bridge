@@ -30,6 +30,50 @@ type Client struct {
 
 	mu   sync.Mutex
 	rate RateLimit
+	// etags caches GET responses by URL, revalidated with If-None-Match:
+	// GitHub answers 304 when nothing changed, and 304s do not count
+	// against the rate limit. GitHub decides what changed, so the cache
+	// cannot serve anything stale.
+	etags     map[string]*cached
+	etagOrder []string
+}
+
+type cached struct {
+	etag   string
+	header http.Header
+	body   []byte
+}
+
+// Bounds on the ETag cache: entries, and the largest body kept.
+const (
+	maxCachedResponses = 4096
+	maxCachedBody      = 1 << 20
+)
+
+func (c *Client) cachedGet(u string) *cached {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.etags[u]
+}
+
+func (c *Client) cacheGet(u string, resp *http.Response, body []byte) {
+	etag := resp.Header.Get("ETag")
+	if etag == "" || len(body) > maxCachedBody {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.etags == nil {
+		c.etags = map[string]*cached{}
+	}
+	if _, ok := c.etags[u]; !ok {
+		c.etagOrder = append(c.etagOrder, u)
+		if len(c.etagOrder) > maxCachedResponses {
+			delete(c.etags, c.etagOrder[0])
+			c.etagOrder = c.etagOrder[1:]
+		}
+	}
+	c.etags[u] = &cached{etag: etag, header: resp.Header.Clone(), body: body}
 }
 
 // RateLimit is the most recent core rate-limit state GitHub reported.
@@ -113,6 +157,12 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) (*htt
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	var prev *cached
+	if method == http.MethodGet {
+		if prev = c.cachedGet(u); prev != nil {
+			req.Header.Set("If-None-Match", prev.etag)
+		}
+	}
 	hc := c.HTTP
 	if hc == nil {
 		hc = http.DefaultClient
@@ -130,6 +180,14 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) (*htt
 	}
 	if len(b) > maxResponse {
 		return resp, fmt.Errorf("%s %s: response larger than %d bytes", method, path, maxResponse)
+	}
+	switch {
+	case resp.StatusCode == http.StatusNotModified && prev != nil:
+		// Unchanged: the cached answer, with its headers (Link, for
+		// paging).
+		resp.StatusCode, resp.Header, b = http.StatusOK, prev.header.Clone(), prev.body
+	case method == http.MethodGet && resp.StatusCode == http.StatusOK:
+		c.cacheGet(u, resp, b)
 	}
 	if resp.StatusCode/100 != 2 {
 		ae := &APIError{Method: method, Path: path, Status: resp.StatusCode}

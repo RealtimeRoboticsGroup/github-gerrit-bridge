@@ -286,3 +286,44 @@ func TestPusher(t *testing.T) {
 		}
 	}
 }
+
+// GETs are revalidated with their ETag: an unchanged answer comes back as
+// a 304 (free against the rate limit) and is served from the cache, links
+// and all; a changed one replaces it.
+func TestETagCache(t *testing.T) {
+	version, calls, notModified := "v1", 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		etag := `"` + version + `"`
+		if r.Header.Get("If-None-Match") == etag {
+			notModified++
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Link", `<https://api.github.com/next>; rel="next"`)
+		fmt.Fprintf(w, `[{"number":1,"title":%q}]`, version)
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	ctx := context.Background()
+	get := func() (string, string) {
+		var out []PullRequest
+		resp, err := c.Do(ctx, http.MethodGet, "/repos/o/r/pulls", nil, &out)
+		if err != nil || len(out) != 1 {
+			t.Fatalf("get: %v %v", out, err)
+		}
+		return out[0].Title, resp.Header.Get("Link")
+	}
+	get()
+	if title, link := get(); title != "v1" || notModified != 1 || link == "" {
+		t.Errorf("cached: %q link %q, %d not-modified", title, link, notModified)
+	}
+	version = "v2"
+	if title, _ := get(); title != "v2" {
+		t.Errorf("changed: %q", title)
+	}
+	if title, _ := get(); title != "v2" || notModified != 2 || calls != 4 {
+		t.Errorf("recached: %q, %d not-modified, %d calls", title, notModified, calls)
+	}
+}
