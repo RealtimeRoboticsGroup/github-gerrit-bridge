@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"strconv"
 	"fmt"
 	"regexp"
 	"slices"
@@ -79,6 +80,11 @@ type Snapshot struct {
 	// push to it. Nothing of it reaches the PR: not its code, nor its
 	// commit message.
 	Foreign map[int]bool
+	// Unlinked marks changes no PR is linked to that the importer made for
+	// one: the GitHub-PR trailer, which anyone adding a patch set can
+	// write (fourth audit), names a PR, and the change's owner, whom no
+	// patch set changes, is the bridge or that PR's author.
+	Unlinked map[int]bool
 	// Deferred marks changes without a PR yet whose owner has used up
 	// their budget of new PRs (Code.PRBudget): not mirrored for now.
 	Deferred map[int]bool
@@ -343,7 +349,7 @@ func MakePlan(s *Snapshot) *Plan {
 		if _, onGitHub := s.GitHubBranches[s.head(n, c.ChangeID)]; (s.Withheld[n] || s.Deferred[n]) && !onGitHub {
 			continue // never exported (or not yet): no branch, no PR
 		}
-		if st := s.State[n]; (st == nil || st.State.PR == 0) && importedFrom(c.Message, s.Repo) {
+		if s.Unlinked[n] {
 			// A PR's import whose link is not saved yet: the importer
 			// links it (Importer.ownUpload), not a Gerrit-born change to
 			// open a second PR for.
@@ -790,10 +796,34 @@ func sortedKeys[V any](m map[int]V) []int {
 // bridgeTrailers are the trailers the bridge adds to imported commits.
 // Signed-off-by is a trailer too: the importer carries sign-offs from the
 // commits, so they are not part of the PR text.
-// importedFrom reports whether a commit message has the GitHub-PR footer
-// the importer gives a PR of repo's.
-func importedFrom(message, repo string) bool {
-	return regexp.MustCompile(`(?m)^GitHub-PR: https://github\.com/` + regexp.QuoteMeta(repo) + `/pull/\d+\s*$`).MatchString(message)
+// prFooter is the PR a commit message's GitHub-PR trailer names, as the
+// importer writes it: one line of the last paragraph. "" if none.
+func prFooter(message string) string {
+	msg := strings.TrimSpace(strings.ReplaceAll(message, "\r\n", "\n"))
+	if i := strings.LastIndex(msg, "\n\n"); i >= 0 {
+		msg = msg[i+2:]
+	}
+	url := ""
+	for _, l := range strings.Split(msg, "\n") {
+		if v, ok := strings.CutPrefix(l, "GitHub-PR: "); ok {
+			if url != "" {
+				return ""
+			}
+			url = strings.TrimSpace(v)
+		}
+	}
+	return url
+}
+
+// importedFrom is the number of the PR of repo's whose GitHub-PR trailer
+// a commit message has, if any.
+func importedFrom(message, repo string) (int, bool) {
+	sm := regexp.MustCompile(`^https://github\.com/` + regexp.QuoteMeta(repo) + `/pull/(\d+)$`).FindStringSubmatch(prFooter(message))
+	if sm == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(sm[1])
+	return n, err == nil
 }
 
 var bridgeTrailers = regexp.MustCompile(`(?m)^(Change-Id|GitHub-PR|Signed-off-by): .*$`)

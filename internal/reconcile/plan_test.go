@@ -36,6 +36,7 @@ type world struct {
 	hold map[int]bool
 	// deferred changes' owners are over their new-PR budget.
 	deferred map[int]bool
+	unlinked map[int]bool // as Code.markUnlinked would say
 }
 
 func newWorld(t *testing.T) *world {
@@ -68,7 +69,7 @@ func (w *world) snapshot() *Snapshot {
 		Branch: "main", DefaultBranch: "main",
 		Changes: map[int]*GerritChange{}, OnBranch: w.onMain,
 		GitHubBranches: map[string]string{}, PRs: map[int]*github.PullRequest{}, State: map[int]*state.Change{},
-		Repo: "o/r", NoPush: map[int]bool{}, Withheld: w.withheld, Foreign: w.foreign, Hold: w.hold, Deferred: w.deferred,
+		Repo: "o/r", NoPush: map[int]bool{}, Withheld: w.withheld, Foreign: w.foreign, Hold: w.hold, Deferred: w.deferred, Unlinked: w.unlinked,
 	}
 	// Like Code.observe: closed changes drop out once the bridge has
 	// recorded them closed, unless their PR is still open.
@@ -466,15 +467,14 @@ func TestDeferredChangeWaits(t *testing.T) {
 func TestUnlinkedImportGetsNoPR(t *testing.T) {
 	w := newWorld(t)
 	w.upload(1, "a1", "m0")
-	w.gerrit[1].Message += "\nGitHub-PR: https://github.com/o/r/pull/7"
 	w.upload(2, "b1", "m0")
-	w.gerrit[2].Message += "\nGitHub-PR: https://github.com/other/repo/pull/7"
+	w.unlinked = map[int]bool{1: true}
 	w.converge()
 	if w.state[1] != nil {
 		t.Error("a PR was opened for an unlinked import")
 	}
 	if w.state[2] == nil {
-		t.Error("a change citing another repository's PR was not mirrored")
+		t.Error("another change was not mirrored")
 	}
 }
 

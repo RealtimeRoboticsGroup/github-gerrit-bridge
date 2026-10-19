@@ -565,12 +565,15 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]bool)
 		heads[s.head(n, ch.ChangeID)] = true
 	}
 	repoName := c.GitHub.Owner + "/" + c.GitHub.Repo
+	byNumber := map[int]*github.PullRequest{}
 	for i := range openPRs {
 		pr := &openPRs[i]
+		byNumber[pr.Number] = pr
 		if heads[pr.HeadKey(repoName)] {
 			s.PRs[pr.Number] = pr
 		}
 	}
+	c.markUnlinked(ctx, s, repoName, byNumber)
 	for n, st := range s.State {
 		if pr := st.State.PR; pr != 0 && s.PRs[pr] == nil && s.Changes[n] != nil {
 			got, err := c.GitHub.GetPull(ctx, pr)
@@ -627,6 +630,23 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]bool)
 		}
 	}
 	return s, nil
+}
+
+// markUnlinked sets s.Unlinked, given repo's open PRs by number.
+func (c *Code) markUnlinked(ctx context.Context, s *Snapshot, repo string, open map[int]*github.PullRequest) {
+	s.Unlinked = map[int]bool{}
+	for n, ch := range s.Changes {
+		num, ok := importedFrom(ch.Message, repo)
+		if st := s.State[n]; !ok || (st != nil && st.State.PR != 0) {
+			continue
+		}
+		if ch.OwnerID != 0 && ch.OwnerID == c.BridgeAccount {
+			s.Unlinked[n] = true
+		} else if pr := open[num]; pr != nil && c.Identity != nil {
+			author, ok := c.Identity.GerritUser(ctx, pr.User.Login)
+			s.Unlinked[n] = ok && strings.EqualFold(author, ch.Owner)
+		}
+	}
 }
 
 // observeHistory fills in HasParent and SameTree for changes whose GitHub

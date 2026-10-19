@@ -1021,8 +1021,13 @@ func prBodyForMessage(body string) string {
 	user, _ := splitBody(body)
 	user = unGitHub(changeLinkLine.ReplaceAllString(changeIDLine.ReplaceAllString(user, ""), ""))
 	user = signedOffBy.ReplaceAllString(user, "")
+	// Nor the bridge's own trailer: a PR naming another would make its
+	// change look like that PR's import.
+	user = githubPRLine.ReplaceAllString(user, "")
 	return strings.TrimSpace(user)
 }
+
+var githubPRLine = regexp.MustCompile(`(?m)^GitHub-PR:.*$`)
 
 // signedOffBy matches DCO sign-off trailers. Projects like AOS require one
 // (a Signed-off-by submit requirement), so a squash must keep them.
@@ -1174,7 +1179,7 @@ func (im *Importer) ownUpload(ctx context.Context, cur *gerrit.ChangeInfo, pr *g
 		if r.Number != 1 {
 			continue
 		}
-		if r.RealUploader != nil || !strings.Contains(r.Commit.Message, "\nGitHub-PR: "+pr.HTMLURL+"\n") {
+		if r.RealUploader != nil || prFooter(r.Commit.Message) != pr.HTMLURL {
 			return false, nil
 		}
 		if r.Uploader.AccountID == im.Bridge.AccountID {

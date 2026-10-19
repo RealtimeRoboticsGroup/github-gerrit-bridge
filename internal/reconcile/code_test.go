@@ -747,6 +747,45 @@ func TestPREditsMirroredOncePerReconcile(t *testing.T) {
 	}
 }
 
+// A change is taken for a PR's import whose link was lost only if its
+// GitHub-PR trailer, the last paragraph's, names an open PR, and its owner
+// (who uploaded patch set 1, which no later patch set changes) is the
+// bridge or that PR's author: anyone can add a patch set with the trailer
+// to someone's change, which kept it off GitHub (fourth audit).
+func TestUnlinkedImportNeedsItsOwner(t *testing.T) {
+	ctx := context.Background()
+	c := &Code{BridgeAccount: 1, Identity: &Users{Overrides: map[string]string{"austin": "austin", "brt": "brt"}}}
+	open := map[int]*github.PullRequest{7: {Number: 7, User: github.User{Login: "austin"}}}
+	trailer := "T\n\nBody.\n\nSigned-off-by: A <a@example.com>\nGitHub-PR: https://github.com/o/r/pull/7\nChange-Id: I1\n"
+	s := &Snapshot{State: map[int]*state.Change{5: {State: state.ChangeState{PR: 70}}}, Changes: map[int]*GerritChange{
+		1: {Message: trailer, OwnerID: 1, Owner: "bridge"},
+		2: {Message: trailer, OwnerID: 5, Owner: "austin"},
+		3: {Message: trailer, OwnerID: 6, Owner: "brt"},                                                         // someone's own change
+		4: {Message: "T\n\nGitHub-PR: https://github.com/o/r/pull/7\n\nChange-Id: I1\n", OwnerID: 1, Owner: "bridge"}, // not the trailer
+		5: {Message: trailer, OwnerID: 1, Owner: "bridge"},                                                          // linked
+		6: {Message: strings.Replace(trailer, "/7", "/8", 1), OwnerID: 5, Owner: "austin"},                          // no such open PR
+		7: {Message: strings.Replace(trailer, "o/r", "x/y", 1), OwnerID: 1, Owner: "bridge"},                        // another repository's
+		8: {Message: strings.Replace(trailer, "Change-Id", "GitHub-PR: https://github.com/o/r/pull/7\nChange-Id", 1), OwnerID: 1, Owner: "bridge"}, // two
+	}}
+	c.markUnlinked(ctx, s, "o/r", open)
+	if want := map[int]bool{1: true, 2: true}; !reflect.DeepEqual(trueKeys(s.Unlinked), want) {
+		t.Errorf("unlinked %v, want %v", trueKeys(s.Unlinked), want)
+	}
+	if got := prBodyForMessage("Mine.\nGitHub-PR: https://github.com/o/r/pull/9\n"); got != "Mine." {
+		t.Errorf("PR body %q kept another PR's trailer", got)
+	}
+}
+
+func trueKeys(m map[int]bool) map[int]bool {
+	out := map[int]bool{}
+	for k, v := range m {
+		if v {
+			out[k] = true
+		}
+	}
+	return out
+}
+
 // A fork's owner can move its branch under the bridge's lease whenever
 // they like: that leaves out only the changes appended there (fourth
 // audit), and what went to the repository is still recorded.
@@ -1600,9 +1639,15 @@ func TestLostLinkIsAdopted(t *testing.T) {
 		}
 	}
 	up.alone = false
+	// Nor one whose footer is not the trailer.
+	ci := &gerrit.ChangeInfo{Number: 9, Status: "NEW", Revisions: map[string]gerrit.RevisionInfo{"x": {Number: 1, Uploader: im.Bridge,
+		Commit: gerrit.CommitInfo{Message: "T\n\nGitHub-PR: " + pr.HTMLURL + "\n\nChange-Id: I1\n"}}}}
+	if got, _ := im.ownUpload(ctx, ci, pr, h); got {
+		t.Error("adopted a change whose GitHub-PR line is not its trailer")
+	}
 	// Nor one another PR is linked to.
 	s.save(ctx, im.Store, 9, &state.Change{State: state.ChangeState{Change: 9, PR: 61}})
-	ci := &gerrit.ChangeInfo{Number: 9, Status: "NEW", Revisions: map[string]gerrit.RevisionInfo{"x": {Number: 1, Uploader: s.accounts["austin"],
+	ci = &gerrit.ChangeInfo{Number: 9, Status: "NEW", Revisions: map[string]gerrit.RevisionInfo{"x": {Number: 1, Uploader: s.accounts["austin"],
 		Commit: gerrit.CommitInfo{Message: "T\n\nGitHub-PR: " + pr.HTMLURL + "\nChange-Id: I1\n"}}}}
 	if got, _ := im.ownUpload(ctx, ci, pr, h); got {
 		t.Error("adopted a change another PR is linked to")
