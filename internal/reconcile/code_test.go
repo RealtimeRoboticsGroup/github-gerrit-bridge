@@ -694,6 +694,59 @@ func TestOnePRGitHubRefusesDoesNotStopTheRest(t *testing.T) {
 	}
 }
 
+// GitHub's side is mirrored on a reconcile's first pass only: someone
+// toggling another PR's draft state each time the bridge mirrors one
+// cannot keep the branch from converging (fourth audit), and the plan
+// leaves what waits for the next reconcile as it is.
+func TestPREditsMirroredOncePerReconcile(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	for n := 1; n <= 2; n++ {
+		msg := fmt.Sprintf("Change %d\n\nChange-Id: %s\n", n, cid(n))
+		rev := s.commit(m0, fmt.Sprintf("%d.txt", n), "x\n", msg)
+		ci := s.change(n, cid(n), rev, msg, "NEW")
+		r := ci.Revisions[rev]
+		r.Commit.Subject, r.Commit.Parents = fmt.Sprintf("Change %d", n), []struct {
+			Commit string `json:"commit"`
+		}{{m0}}
+		ci.Revisions[rev] = r
+		s.may[n] = []string{"austin"}
+	}
+	if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	pr := map[int]int{}
+	for n := 1; n <= 2; n++ {
+		st, _ := store.Load(ctx, n)
+		if pr[n] = st.State.PR; pr[n] == 0 || st.State.SyncedWIP != "ready" {
+			t.Fatalf("change %d: %+v, want a PR in sync", n, st.State)
+		}
+	}
+	// austin marks #1 a draft; whenever the bridge asks who, someone
+	// toggles the other PR.
+	other := map[int]int{pr[1]: pr[2], pr[2]: pr[1]}
+	s.pulls[pr[1]].Draft = true
+	s.activity[pr[1]] = github.PRActivity{DraftActor: "austin"}
+	asked := pr[1]
+	s.onActivity = func() {
+		o := s.pulls[other[asked]]
+		o.Draft = !o.Draft
+		s.activity[o.Number] = github.PRActivity{DraftActor: "austin"}
+		asked = o.Number
+	}
+	if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	if !s.changes[1].WorkInProgress || s.changes[2].WorkInProgress || !s.pulls[pr[2]].Draft {
+		t.Errorf("WIP %v %v, #%d draft %v: want #1's toggle mirrored, #%d's left for the next reconcile",
+			s.changes[1].WorkInProgress, s.changes[2].WorkInProgress, pr[2], s.pulls[pr[2]].Draft, pr[2])
+	}
+}
+
 // A fork's owner can move its branch under the bridge's lease whenever
 // they like: that leaves out only the changes appended there (fourth
 // audit), and what went to the repository is still recorded.

@@ -162,7 +162,14 @@ func (c *Code) export(ctx context.Context, branch string) error {
 			return fmt.Errorf("observing %s: %w", branch, err)
 		}
 		snap.hold(handled)
-		if !c.DryRun {
+		if !c.DryRun && pass > 0 {
+			// GitHub's side is mirrored on the first pass only: anything
+			// newer waits for the next reconcile, and the plan leaves it
+			// as it is (fourth audit: an edit to another PR before each
+			// pass kept the branch from converging).
+			snap.holdPending()
+		}
+		if !c.DryRun && pass == 0 {
 			changed, err := c.mirrorPRStates(ctx, snap, handled)
 			if err != nil {
 				return fmt.Errorf("mirroring PR closes on %s: %w", branch, err)
@@ -773,6 +780,34 @@ func githubText(pr *github.PullRequest) string {
 
 func wipState(wip bool) string { return map[bool]string{true: "wip", false: "ready"}[wip] }
 
+// editedOnGitHub reports whether PR pr's text, or its draft state,
+// differs from change ch's because of an edit on GitHub since they were
+// last in sync (mirrorPREdits).
+func editedOnGitHub(ch *GerritChange, st *state.Change, pr *github.PullRequest) (text, draft bool) {
+	gt, ht := hashString(gerritText(ch.Message)), hashString(githubText(pr))
+	gw, hw := wipState(ch.WIP), wipState(pr.Draft)
+	return gt != ht && st.State.SyncedText != "" && ht != st.State.SyncedText,
+		gw != hw && st.State.SyncedWIP != "" && hw != st.State.SyncedWIP
+}
+
+// holdPending holds the changes whose PRs have a close, reopen, edit or
+// draft toggle that mirrorPRStates or mirrorPREdits might carry to Gerrit.
+func (s *Snapshot) holdPending() {
+	for n, st := range s.State {
+		ch := s.Changes[n]
+		if ch == nil || st == nil || st.State.PR == 0 || s.PRs[st.State.PR] == nil {
+			continue
+		}
+		pr := s.PRs[st.State.PR]
+		text, draft := editedOnGitHub(ch, st, pr)
+		closed := ch.Status == "NEW" && pr.State == "closed" && !pr.Merged
+		reopened := ch.Status == "ABANDONED" && pr.State == "open"
+		if closed || reopened || (ch.Status == "NEW" && pr.State == "open" && (text || draft)) {
+			s.Hold[n] = true
+		}
+	}
+}
+
 // mirrorPREdits carries PR edits made on GitHub over to Gerrit (design
 // §6.0): a new title or description becomes the change's commit message,
 // and a draft toggle its work-in-progress state, whichever side changed
@@ -793,8 +828,7 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 		}
 		gt, ht := hashString(gerritText(ch.Message)), hashString(githubText(pr))
 		gw, hw := wipState(ch.WIP), wipState(pr.Draft)
-		textEdited := gt != ht && st.State.SyncedText != "" && ht != st.State.SyncedText
-		draftToggled := gw != hw && st.State.SyncedWIP != "" && hw != st.State.SyncedWIP
+		textEdited, draftToggled := editedOnGitHub(ch, st, pr)
 		if !textEdited && !draftToggled {
 			continue
 		}
