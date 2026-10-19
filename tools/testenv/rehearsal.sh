@@ -236,10 +236,11 @@ fork_imported() { [[ "$(gerrit "changes/?q=project:bridge-scratch+message:%22For
 wait_for "imported, owned by AustinSchuhBRT" fork_imported
 FK=$(change "${K}")
 wait_for "gerrit/sync reports success" status_is "${FQ}" gerrit/sync success
-# A new patch set in Gerrit, by AustinSchuh.
+# A new patch set in Gerrit, by AustinSchuh, as its author: on AOS anyone
+# may add a patch set to someone else's change, but not as them.
 gerrit_ps() {  # gerrit_ps <file>: amend change FK with a new file and push
   (cd "${ME_CLONE}" && git fetch -q gerrit "$(gerrit "changes/${FK}?o=CURRENT_REVISION" | jq -r '.revisions[.current_revision].ref')" &&
-    git checkout -q FETCH_HEAD && echo "$1" > "$1" && git add "$1" && git commit -q --amend --no-edit && git push -q gerrit HEAD:refs/for/main 2>/dev/null)
+    git checkout -q FETCH_HEAD && echo "$1" > "$1" && git add "$1" && git commit -q --amend --no-edit --reset-author && git push -q gerrit HEAD:refs/for/main 2>/dev/null)
 }
 gerrit_ps "fork-${RUN}-gerrit.txt"
 on_fork() { me api "repos/${FORK}/contents/$1?ref=main" --silent 2>/dev/null; }

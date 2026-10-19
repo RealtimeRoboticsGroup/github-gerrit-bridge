@@ -1297,7 +1297,9 @@ func TestFirstUploadNeedsTheAuthorsPush(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, im, up, m1, _, _ := gerritBornWorld(t, false)
-			h := s.commit(m1, "new.txt", "n\n", "New")
+			s.commit(m1, "new.txt", "n\n", "New")
+			s.git("work", "commit", "-q", "--amend", "--no-edit", "--author=Someone Else <else@example.com>")
+			h := s.git("work", "rev-parse", "HEAD")
 			s.push("github.git", h, "refs/heads/topic")
 			s.pr(60, "topic", h, "main", "austin")
 			if tc.pusher != "" {
@@ -1308,6 +1310,12 @@ func TestFirstUploadNeedsTheAuthorsPush(t *testing.T) {
 			}
 			if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], tc.want+" ") {
 				t.Fatalf("uploads = %v, want one as %q", up.uploads, tc.want)
+			}
+			// Uploaded as austin, it is austin's; the bridge's keeps the
+			// commit's author.
+			want := map[string]string{"austin": "austin@example.com", "": "else@example.com"}[tc.want]
+			if got := s.git("m.git", "log", "-1", "--format=%ae", strings.Fields(strings.TrimPrefix(up.uploads[0], tc.want+" "))[0]); got != want {
+				t.Errorf("author %s, want %s", got, want)
 			}
 		})
 	}

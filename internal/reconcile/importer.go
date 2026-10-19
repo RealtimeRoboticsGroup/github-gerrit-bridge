@@ -610,7 +610,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		gerritMoved = true
 	}
 
-	s, err := im.squash(ctx, pr, own, h, gerritParent, changeID, message, committer)
+	s, err := im.squash(ctx, pr, own, h, gerritParent, changeID, message, committer, user != "")
 	if err != nil {
 		return nil, err
 	}
@@ -1015,7 +1015,7 @@ func signOffs(texts ...string) []string {
 //
 // message, if set, is the commit message to use (a Gerrit-born change's);
 // otherwise it is built from the PR.
-func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []string, h, parent, changeID, message string, committer gerrit.AccountInfo) (string, error) {
+func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []string, h, parent, changeID, message string, committer gerrit.AccountInfo, asCommitter bool) (string, error) {
 	info, err := im.Mirror.Git(ctx, nil, "log", "-1", "--format=%P%x00%an%x00%ae%x00%ad%x00%ce%x00%cd%x00%B", "--date=raw", h)
 	if err != nil {
 		return "", err
@@ -1030,6 +1030,13 @@ func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []st
 	// carries the bridge's own message, with exactly one Change-Id
 	// (second audit, 2026-10-19).
 	_, an, ae, ad, cd := f[0], f[1], f[2], f[3], f[5]
+	if asCommitter {
+		// Uploaded as a user, it is theirs: nobody may upload a commit
+		// as someone else's (AOS gives Forge Author to few, and an email
+		// GitHub has, a noreply one say, need not be theirs in Gerrit).
+		// Others' sign-offs stay in the message.
+		an, ae = committer.Name, committer.Email
+	}
 	// Sign-offs from every commit in the layer (oldest first) and from the
 	// PR description are kept; the squashed commit represents them all.
 	texts := []string{}

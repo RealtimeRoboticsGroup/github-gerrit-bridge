@@ -305,17 +305,17 @@ exactly one Gerrit change**:
      If that Change-Id already belongs to a *different* PR or to a change
      the bridge didn't create, refuse and explain in `gerrit/sync`. That
      prevents two PRs from fighting over one change.
-   - author: taken from `H_k`, which is the person who wrote the code.
-     Committer: the Gerrit account the push runs as (step 2). Gerrit
-     rejects a push whose committer email is not one of the uploader's
-     emails unless the uploader has Forge Committer, and with `suexec` the
+   - author: the Gerrit account the push runs as (step 2), when that is a
+     user: nobody uploads a commit as someone else's (AOS's rule: "you
+     can push to someone else's change, but you can't pretend to be
+     them"; Forge Author is a few accounts'), and the email GitHub has
+     (a noreply one, say) need not be theirs in Gerrit. The commits'
+     sign-offs, others' included, stay in the message. When the bridge
+     uploads, the author is `H_k`'s (the bridge has Forge Author).
+     Committer: the Gerrit account the push runs as. Gerrit rejects a
+     push whose committer email is not one of the uploader's emails
+     unless the uploader has Forge Committer, and with `suexec` the
      uploader is the user, not the bridge.
-   - **No-op squash:** if the layer is exactly one commit, that commit
-     already has the chosen Change-Id, its parent is the Gerrit commit
-     chosen above, and its committer email belongs to the pushing Gerrit
-     account, then `S_k = H_k`. Nothing is rewritten, and the SHAs
-     match on both sides. Users with the commit-msg hook and one commit per
-     layer always end up here.
    - author/committer dates: taken from `H_k`. **Squashing is deterministic.**
      The same GitHub state always produces the same `S_k` SHA, so retries
      never create extra patch sets ("no new changes" is a no-op for Gerrit).

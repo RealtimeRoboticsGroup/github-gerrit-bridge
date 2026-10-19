@@ -62,11 +62,11 @@ func TestSquashIsDeterministicAndKeepsTree(t *testing.T) {
 		HTMLURL: "https://github.com/o/r/pull/3"}
 	who := gerrit.AccountInfo{Name: "Alice", Email: "alice@example.com"}
 	ctx := context.Background()
-	s1, err := im.squash(ctx, pr, []string{h, c1}, h, base, "I"+strings.Repeat("a", 40), "", who)
+	s1, err := im.squash(ctx, pr, []string{h, c1}, h, base, "I"+strings.Repeat("a", 40), "", who, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s2, _ := im.squash(ctx, pr, []string{h, c1}, h, base, "I"+strings.Repeat("a", 40), "", who)
+	s2, _ := im.squash(ctx, pr, []string{h, c1}, h, base, "I"+strings.Repeat("a", 40), "", who, false)
 	if s1 != s2 {
 		t.Errorf("squash not deterministic: %s vs %s", s1, s2)
 	}
@@ -85,6 +85,12 @@ func TestSquashIsDeterministicAndKeepsTree(t *testing.T) {
 	if got := g.run("log", "-1", "--format=%ae %ce", s1); got != "austin@example.com alice@example.com" {
 		t.Errorf("author/committer = %s", got)
 	}
+	// Uploaded as a user, it is authored by them: nobody uploads a commit
+	// as someone else's (AOS: "you can't pretend to be them").
+	s3, _ := im.squash(ctx, pr, []string{h, c1}, h, base, "I"+strings.Repeat("a", 40), "", who, true)
+	if got := g.run("log", "-1", "--format=%an <%ae> %ad", "--date=raw", s3); got != "Alice <alice@example.com> "+g.run("log", "-1", "--format=%ad", "--date=raw", h) {
+		t.Errorf("author = %s", got)
+	}
 }
 
 // A PR's own commit is never uploaded as it is, even a single commit
@@ -97,7 +103,7 @@ func TestSquashNeverUploadsThePRsCommit(t *testing.T) {
 	cid := "I" + strings.Repeat("b", 40)
 	h := g.commit("a.txt", "x\n", "Do it\n\nChange-Id: "+cid)
 	who := gerrit.AccountInfo{Name: "Austin", Email: "austin@example.com"}
-	s, err := im.squash(context.Background(), &github.PullRequest{Title: "Do it", HTMLURL: "https://github.com/o/r/pull/1"}, []string{h}, h, base, cid, "", who)
+	s, err := im.squash(context.Background(), &github.PullRequest{Title: "Do it", HTMLURL: "https://github.com/o/r/pull/1"}, []string{h}, h, base, cid, "", who, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +146,7 @@ func TestSquashKeepsSignOffs(t *testing.T) {
 	c2 := g.commit("a.txt", "2\n", "two\n\nSigned-off-by: Bob <bob@example.com>\nSigned-off-by: Austin <austin@example.com>")
 	pr := &github.PullRequest{Title: "T", Body: "Body.\n\nSigned-off-by: Carol <carol@example.com>", HTMLURL: "u"}
 	s, err := im.squash(context.Background(), pr, []string{c2, c1}, c2, base, "I"+strings.Repeat("c", 40), "",
-		gerrit.AccountInfo{Name: "A", Email: "a@example.com"})
+		gerrit.AccountInfo{Name: "A", Email: "a@example.com"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +230,7 @@ func TestSquashUsesGerritMessage(t *testing.T) {
 	h := g.commit("a.txt", "x\n", "Rebased on GitHub")
 	msg := "Subject\n\nBody.\n\nChange-Id: I" + strings.Repeat("d", 40) + "\nSigned-off-by: Austin <austin@example.com>\n"
 	s, err := im.squash(context.Background(), &github.PullRequest{Title: "PR title"}, []string{h}, h, base, "I"+strings.Repeat("d", 40), msg,
-		gerrit.AccountInfo{Name: "A", Email: "a@example.com"})
+		gerrit.AccountInfo{Name: "A", Email: "a@example.com"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +276,7 @@ func TestNoOpSquashNeedsTheFooterChangeID(t *testing.T) {
 	cid, victim := "I"+strings.Repeat("b", 40), "I"+strings.Repeat("c", 40)
 	h := g.commit("a.txt", "x\n", "Do it\n\nChange-Id: "+cid+"\n\nChange-Id: "+victim)
 	who := gerrit.AccountInfo{Name: "Austin", Email: "austin@example.com"}
-	s, err := im.squash(context.Background(), &github.PullRequest{Title: "Do it"}, []string{h}, h, base, cid, "", who)
+	s, err := im.squash(context.Background(), &github.PullRequest{Title: "Do it"}, []string{h}, h, base, cid, "", who, false)
 	if err != nil {
 		t.Fatal(err)
 	}
