@@ -198,7 +198,16 @@ func reconcileOne(ctx context.Context, q *queue.Queue[Key], rec Reconciler, k Ke
 			q.Retry(k)
 		}
 	}()
-	if err := rec.Reconcile(ctx, k); err != nil {
+	start := time.Now()
+	err := rec.Reconcile(ctx, k)
+	// Merges race replication (15s on AOS): slow or late runs are worth
+	// seeing.
+	if took, waited := time.Since(start), q.Waited(k); took+waited > 3*time.Second {
+		logger.Info("slow reconcile", "key", k.String(), "waited", waited.Round(time.Millisecond), "took", took.Round(time.Millisecond))
+	} else {
+		logger.Debug("reconciled", "key", k.String(), "waited", waited.Round(time.Millisecond), "took", took.Round(time.Millisecond))
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return
 		}

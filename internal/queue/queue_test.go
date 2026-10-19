@@ -182,3 +182,15 @@ func TestMinIntervalOnlyForThrottledKeys(t *testing.T) {
 		t.Errorf("an unthrottled key waited: %d queued", q.Len())
 	}
 }
+
+func TestWaited(t *testing.T) {
+	q := New[string]()
+	q.Add("k")
+	time.Sleep(20 * time.Millisecond)
+	q.Add("k") // still the first Add that counts
+	k, _ := q.Get()
+	if w := q.Waited(k); w < 20*time.Millisecond {
+		t.Errorf("waited %v", w)
+	}
+	q.Done(k)
+}

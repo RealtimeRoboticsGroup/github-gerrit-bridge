@@ -23,6 +23,8 @@ type Queue[K comparable] struct {
 	processing map[K]struct{} // keys a worker holds
 	failures   map[K]int      // consecutive failures, for Retry backoff
 	started    map[K]time.Time
+	queuedAt   map[K]time.Time // when a dirty key was first added
+	waited     map[K]time.Duration
 	shutdown   bool
 
 	// MinRetry and MaxRetry bound the exponential backoff used by Retry.
@@ -44,6 +46,8 @@ func New[K comparable]() *Queue[K] {
 		processing: map[K]struct{}{},
 		failures:   map[K]int{},
 		started:    map[K]time.Time{},
+		queuedAt:   map[K]time.Time{},
+		waited:     map[K]time.Duration{},
 		MinRetry:   time.Second,
 		MaxRetry:   5 * time.Minute,
 	}
@@ -62,6 +66,7 @@ func (q *Queue[K]) Add(k K) {
 		return
 	}
 	q.dirty[k] = struct{}{}
+	q.queuedAt[k] = time.Now()
 	if _, ok := q.processing[k]; ok {
 		// Done will re-queue it.
 		return
@@ -123,7 +128,17 @@ func (q *Queue[K]) Get() (k K, ok bool) {
 	delete(q.dirty, k)
 	q.processing[k] = struct{}{}
 	q.started[k] = time.Now()
+	q.waited[k] = q.started[k].Sub(q.queuedAt[k])
+	delete(q.queuedAt, k)
 	return k, true
+}
+
+// Waited is how long the key a worker holds waited to be handed out,
+// from the first Add that made it dirty.
+func (q *Queue[K]) Waited(k K) time.Duration {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.waited[k]
 }
 
 // Done releases k. If k was added while it was being processed, it is
@@ -134,6 +149,7 @@ func (q *Queue[K]) Done(k K) {
 	delete(q.processing, k)
 	started := q.started[k]
 	delete(q.started, k)
+	delete(q.waited, k)
 	if _, ok := q.dirty[k]; ok && !q.shutdown {
 		// Still dirty while it waits, so Add does not queue it sooner.
 		if wait := q.MinInterval - time.Since(started); wait > 0 && (q.Throttled == nil || q.Throttled(k)) {
