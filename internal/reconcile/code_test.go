@@ -370,7 +370,7 @@ func TestPushToGerritBornPRBecomesPatchSet(t *testing.T) {
 	r1 := s.rebase(g[0], m1)
 	s.push("github.git", r1, "refs/heads/gerrit/"+ids[0])
 	s.pulls[10].Head.SHA = r1
-	im.Pushers.Record(r1, "brt")
+	s.webhookPush(im.Pushers, 10, "brt")
 	if err := im.Import(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
@@ -410,8 +410,8 @@ func TestRestackedGerritStackImportsInOrder(t *testing.T) {
 	s.push("github.git", r1, "refs/heads/gerrit/"+ids[0])
 	s.push("github.git", r2, "refs/heads/gerrit/"+ids[1])
 	s.pulls[10].Head.SHA, s.pulls[20].Head.SHA = r1, r2
-	im.Pushers.Record(r1, "brt")
-	im.Pushers.Record(r2, "brt")
+	s.webhookPush(im.Pushers, 10, "brt")
+	s.webhookPush(im.Pushers, 20, "brt")
 	if err := im.Import(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
@@ -884,7 +884,7 @@ func TestLaterImportKeepsMessageAddsSignOffs(t *testing.T) {
 	h := s.commit(r1, "one.txt", "1 fixed\n", "Fix\n\nSigned-off-by: BRT <brt@example.com>")
 	s.push("github.git", h, "refs/heads/feature")
 	s.pulls[10].Head.SHA = h
-	im.Pushers.Record(h, "brt")
+	s.webhookPush(im.Pushers, 10, "brt")
 	if err := im.Import(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
@@ -920,7 +920,7 @@ func TestPushAfterForeignPatchSetIsTheAuthors(t *testing.T) {
 	h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
 	s.push("github.git", h, "refs/heads/feature")
 	s.pulls[10].Head.SHA = h
-	im.Pushers.Record(h, "austin")
+	s.webhookPush(im.Pushers, 10, "austin")
 	if err := im.Import(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
@@ -948,7 +948,7 @@ func TestPushAfterForeignPatchSetIsTheAuthors(t *testing.T) {
 	r := s2.rebase(g2[0], m1b)
 	s2.push("github.git", r, "refs/heads/feature")
 	s2.pulls[10].Head.SHA = r
-	im2.Pushers.Record(r, "brt")
+	s2.webhookPush(im2.Pushers, 10, "brt")
 	if err := im2.Import(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
@@ -1004,7 +1004,7 @@ func TestOwnExportOfOlderPatchSetIsNotImported(t *testing.T) {
 	s.push("gerrit.git", ps2, "refs/changes/01/1/2")
 	ci.Revisions[ps2] = gerrit.RevisionInfo{Number: 2, Ref: "refs/changes/01/1/2", Uploader: s.accounts["austin"], Commit: gerrit.CommitInfo{Message: "One\n\nChange-Id: " + ids[0] + "\n"}}
 	ci.CurrentRevision = ps2
-	im.Pushers.Record(g[0], "bot")
+	s.webhookPush(im.Pushers, 10, "bot")
 	if err := im.Import(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
@@ -1067,7 +1067,7 @@ func TestWhoUploadsAPush(t *testing.T) {
 			}
 			s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
 			s.pulls[10].Head.SHA = h
-			im.Pushers.Record(h, tc.pusher)
+			s.webhookPush(im.Pushers, 10, tc.pusher)
 			if err := im.Import(ctx, "main"); err != nil {
 				t.Fatal(err)
 			}
@@ -1088,7 +1088,7 @@ func TestNoUploadAsAnInactiveAccount(t *testing.T) {
 	h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
 	s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
 	s.pulls[10].Head.SHA = h
-	im.Pushers.Record(h, "austin")
+	s.webhookPush(im.Pushers, 10, "austin")
 	if err := im.Import(context.Background(), "main"); err != nil {
 		t.Fatal(err)
 	}
@@ -1108,7 +1108,7 @@ func TestUpdateBranchOnSomeoneElsesPRStaysTheirs(t *testing.T) {
 	h := s.git("work", "rev-parse", "HEAD")
 	s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
 	s.pulls[10].Head.SHA = h
-	im.Pushers.Record(h, "brt")
+	s.webhookPush(im.Pushers, 10, "brt")
 	if err := im.Import(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
@@ -1294,7 +1294,7 @@ func TestPusherFromGitHubsActivityLog(t *testing.T) {
 			if tc.logged != "" {
 				s.pushed("o/r", "refs/heads/gerrit/"+ids[0], h, tc.logged)
 			}
-			im.Pushers.Record(h, tc.webhook)
+			s.webhookPush(im.Pushers, 10, tc.webhook)
 			if err := im.Import(context.Background(), "main"); err != nil {
 				t.Fatal(err)
 			}
@@ -1309,10 +1309,15 @@ func TestPusherFromGitHubsActivityLog(t *testing.T) {
 // maintainer opening a PR from a stranger's branch, or a branch someone
 // else moved before the bridge saw the PR, is the bridge's to upload.
 func TestFirstUploadNeedsTheAuthorsPush(t *testing.T) {
-	for _, tc := range []struct{ name, pusher, want string }{
-		{"the author's push", "austin", "austin"},
-		{"someone else's branch", "brt", ""},
-		{"nobody says", "", ""},
+	for _, tc := range []struct {
+		name, pusher, want string
+		opened             bool // a webhook says the author opened it
+	}{
+		{"the author's push", "austin", "austin", false},
+		{"someone else's branch", "brt", "", false},
+		{"nobody says", "", "", false},
+		// Opening a PR is not pushing its head (fourth audit).
+		{"opened by the author", "", "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, im, up, m1, _, _ := gerritBornWorld(t, false)
@@ -1323,6 +1328,10 @@ func TestFirstUploadNeedsTheAuthorsPush(t *testing.T) {
 			s.pr(60, "topic", h, "main", "austin")
 			if tc.pusher != "" {
 				s.pushed("o/r", "refs/heads/topic", h, tc.pusher)
+			}
+			if tc.opened {
+				im.Pushers.FromDelivery(&github.Delivery{Event: "pull_request", Action: "opened", PR: 60,
+					Payload: []byte(`{"sender":{"login":"austin"},"pull_request":{"number":60,"head":{"ref":"topic","sha":"` + h + `","repo":{"full_name":"o/r"}}}}`)})
 			}
 			if err := im.Import(context.Background(), "main"); err != nil {
 				t.Fatal(err)
@@ -1546,8 +1555,8 @@ func TestPureRebaseOntoSomeoneElsesParentIsTheBridges(t *testing.T) {
 	s.push("github.git", r1, "refs/heads/gerrit/"+ids[0])
 	s.push("github.git", r2, "refs/heads/gerrit/"+ids[1])
 	s.pulls[10].Head.SHA, s.pulls[20].Head.SHA = r1, r2
-	im.Pushers.Record(r1, "brt")
-	im.Pushers.Record(r2, "brt")
+	s.webhookPush(im.Pushers, 10, "brt")
+	s.webhookPush(im.Pushers, 20, "brt")
 	if err := im.Import(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
@@ -1577,7 +1586,7 @@ func TestPureRebaseOntoParentUploadedOnBehalfIsTheBridges(t *testing.T) {
 	r2 := s.rebase(g[1], r1)
 	s.push("github.git", r2, "refs/heads/gerrit/"+ids[1])
 	s.pulls[20].Head.SHA = r2
-	im.Pushers.Record(r2, "brt")
+	s.webhookPush(im.Pushers, 20, "brt")
 	if err := im.Import(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}

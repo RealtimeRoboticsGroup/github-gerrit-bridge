@@ -225,27 +225,47 @@ func TestPushersFromWebhooks(t *testing.T) {
 	q := queue.New[Key]()
 	r := NewRouter("p", q, slog.Default())
 	r.Pushers = &Pushers{}
+	head := func(ref, sha string) string {
+		return `"head":{"ref":"` + ref + `","sha":"` + sha + `","repo":{"full_name":"fork/r"}}`
+	}
 	r.Delivery(&github.Delivery{Event: "pull_request", Action: "synchronize", PR: 3,
-		Payload: []byte(`{"sender":{"login":"bob"},"pull_request":{"number":3,"head":{"sha":"abc"}}}`)})
+		Payload: []byte(`{"sender":{"login":"bob"},"pull_request":{"number":3,` + head("b", "abc") + `}}`)})
 	r.Delivery(&github.Delivery{Event: "push",
-		Payload: []byte(`{"sender":{"login":"carol"},"after":"def","ref":"refs/heads/x"}`)})
+		Payload: []byte(`{"sender":{"login":"carol"},"after":"def","ref":"refs/heads/x","repository":{"full_name":"O/R"}}`)})
 	r.Delivery(&github.Delivery{Event: "pull_request", Action: "edited", PR: 3,
-		Payload: []byte(`{"sender":{"login":"mallory"},"pull_request":{"number":3,"head":{"sha":"abc"}}}`)})
-	// Reopening is not pushing, and pushing someone's commit again does not
-	// make it yours.
+		Payload: []byte(`{"sender":{"login":"mallory"},"pull_request":{"number":3,` + head("b", "abc") + `}}`)})
+	// Opening or reopening a PR is not pushing its head (anyone may open
+	// one from someone else's branch), and a push to another branch is
+	// not a push to this one.
+	r.Delivery(&github.Delivery{Event: "pull_request", Action: "opened", PR: 4,
+		Payload: []byte(`{"sender":{"login":"maint"},"pull_request":{"number":4,` + head("g", "ghi") + `}}`)})
 	r.Delivery(&github.Delivery{Event: "pull_request", Action: "reopened", PR: 4,
-		Payload: []byte(`{"sender":{"login":"maint"},"pull_request":{"number":4,"head":{"sha":"ghi"}}}`)})
+		Payload: []byte(`{"sender":{"login":"maint"},"pull_request":{"number":4,` + head("g", "ghi") + `}}`)})
 	r.Delivery(&github.Delivery{Event: "push",
-		Payload: []byte(`{"sender":{"login":"maint"},"after":"abc","ref":"refs/heads/test-it"}`)})
-	if r.Pushers.Lookup("abc") != "bob" || r.Pushers.Lookup("def") != "carol" || r.Pushers.Lookup("ghi") != "" {
-		t.Errorf("abc=%q def=%q ghi=%q", r.Pushers.Lookup("abc"), r.Pushers.Lookup("def"), r.Pushers.Lookup("ghi"))
+		Payload: []byte(`{"sender":{"login":"maint"},"after":"abc","ref":"refs/heads/test-it","repository":{"full_name":"fork/r"}}`)})
+	for _, c := range []struct{ repo, ref, sha, want string }{
+		{"fork/r", "refs/heads/b", "abc", "bob"},
+		{"o/r", "refs/heads/x", "def", "carol"},
+		{"fork/r", "refs/heads/g", "ghi", ""},
+		{"fork/r", "refs/heads/test-it", "abc", "maint"},
+		{"o/r", "refs/heads/b", "abc", ""},
+	} {
+		if got := r.Pushers.Lookup(c.repo, c.ref, c.sha); got != c.want {
+			t.Errorf("%s %s %s: %q, want %q", c.repo, c.ref, c.sha, got, c.want)
+		}
 	}
 	p := &Pushers{}
 	for i := range maxPushers + 10 {
-		p.Record(fmt.Sprint(i), "x")
+		p.Record("o/r", "refs/heads/x", fmt.Sprint(i), "x")
 	}
-	if p.Lookup("0") != "" || p.Lookup(fmt.Sprint(maxPushers+9)) != "x" || len(p.bySHA) != maxPushers {
+	if p.Lookup("o/r", "refs/heads/x", "0") != "" || p.Lookup("o/r", "refs/heads/x", fmt.Sprint(maxPushers+9)) != "x" || len(p.byPush) != maxPushers || len(p.order) != maxPushers {
 		t.Error("pusher log not bounded")
+	}
+	// The latest push wins, as in GitHub's activity log, and takes no
+	// more room.
+	p.Record("o/r", "refs/heads/x", fmt.Sprint(maxPushers+9), "y")
+	if p.Lookup("o/r", "refs/heads/x", fmt.Sprint(maxPushers+9)) != "y" || p.Lookup("o/r", "refs/heads/x", "10") != "x" {
+		t.Error("a second push of the same commit to the same branch was not its pusher's")
 	}
 }
 

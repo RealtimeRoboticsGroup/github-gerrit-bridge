@@ -213,6 +213,13 @@ func (s *sites) pr(n int, head, sha, base, author string) *github.PullRequest {
 	return pr
 }
 
+// webhookPush records, as a webhook would, that login pushed PR n's head
+// to its branch.
+func (s *sites) webhookPush(p *Pushers, n int, login string) {
+	pr := s.pulls[n]
+	p.Record(pr.Head.Repo.FullName, "refs/heads/"+pr.Head.Ref, pr.Head.SHA, login)
+}
+
 // ghEvent records that login closed or reopened PR n, a minute after the
 // last thing that happened.
 func (s *sites) ghEvent(n int, event, login string) {

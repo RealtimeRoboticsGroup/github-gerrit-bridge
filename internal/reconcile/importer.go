@@ -956,18 +956,19 @@ const pusherWait = 10 * time.Minute
 // pusher says who pushed h to pr's branch: GitHub's activity log for that
 // branch (in the fork, for a fork's PR), which outlives the bridge's
 // restarts and covers webhooks it missed; or, if the log does not list it
-// yet, the push webhook. "" if neither says.
+// yet, the webhook for that push to that branch. "" if neither says.
 func (im *Importer) pusher(ctx context.Context, pr *github.PullRequest, h string) (string, error) {
 	repo := im.GitHub.Owner + "/" + im.GitHub.Repo
 	if pr.Head.Repo != nil && pr.Head.Repo.FullName != "" {
 		repo = pr.Head.Repo.FullName
 	}
-	login, err := im.GitHub.Pusher(ctx, repo, "refs/heads/"+pr.Head.Ref, h)
+	ref := "refs/heads/" + pr.Head.Ref
+	login, err := im.GitHub.Pusher(ctx, repo, ref, h)
 	if err != nil {
 		return "", fmt.Errorf("who pushed %s to #%d: %w", short(h), pr.Number, err)
 	}
 	if login == "" && im.Pushers != nil {
-		login = im.Pushers.Lookup(h)
+		login = im.Pushers.Lookup(repo, ref, h)
 	}
 	return login, nil
 }
