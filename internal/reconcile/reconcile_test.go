@@ -210,12 +210,12 @@ func TestPushersFromWebhooks(t *testing.T) {
 	}
 }
 
-// Only keys GitHub webhooks queue are throttled; a Gerrit merge's branch
-// reconcile must not wait (it races replication).
-func TestFromGitHub(t *testing.T) {
-	for k, want := range map[Key]bool{{PR: 5}: true, {PRComments: 5}: true, {Branch: "main"}: false, {Comments: 7}: false} {
-		if FromGitHub(k) != want {
-			t.Errorf("FromGitHub(%+v) = %v", k, !want)
+// Everything but a merge's PRs is throttled: anyone can cause events on
+// either side, and a merge races replication.
+func TestThrottled(t *testing.T) {
+	for k, want := range map[Key]bool{{PR: 5}: true, {PRComments: 5}: true, {Branch: "main"}: true, {Comments: 7}: true, {Merged: 7}: false} {
+		if Throttled(k) != want {
+			t.Errorf("Throttled(%+v) = %v", k, !want)
 		}
 	}
 }

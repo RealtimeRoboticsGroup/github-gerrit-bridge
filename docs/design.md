@@ -1139,9 +1139,10 @@ defenses, by threat:
   inside the deployment, not for the proxy to expose. `gerrit.url` must be https unless it is a loopback
   address, since every request carries the bridge's password. Responses
   from Gerrit and GitHub are read only up to a bound.
-- **API budget.** One PR reconciles at most every 10 seconds for GitHub
-  events however many arrive for it (Gerrit's events are not held back: a
-  merge must reach GitHub within replication's delay), and events on PRs
+- **API budget.** One key (a PR, a change's comments, a branch) runs at
+  most every 10 seconds however many events arrive for it, during or
+  after a run, from either side (anyone can sign up on both); only a
+  merge's `merged/N` key is not held back, since it races replication, and events on PRs
   opened before `import_created_after` cost one lookup, not a reconcile.
 - **Submit swaps.** Before `/submit`, a PR's head is swapped for Gerrit's
   commit only if it is the bridge's record of the patch set being

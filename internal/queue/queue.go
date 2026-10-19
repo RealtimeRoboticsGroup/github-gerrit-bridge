@@ -74,8 +74,30 @@ func (q *Queue[K]) Add(k K) {
 		// Done will re-queue it.
 		return
 	}
+	if wait := q.wait(k); wait > 0 {
+		// Ran moments ago: still dirty while it waits, so further Adds
+		// do not queue it sooner.
+		time.AfterFunc(wait, func() { q.requeue(k) })
+		return
+	}
 	q.order = append(q.order, k)
 	q.cond.Signal()
+}
+
+// wait is how long throttled k must still wait since its last start, if
+// MinInterval has not passed. q.mu is held.
+func (q *Queue[K]) wait(k K) time.Duration {
+	last, ok := q.started[k]
+	if !ok || q.MinInterval <= 0 || (q.Throttled != nil && !q.Throttled(k)) {
+		return 0
+	}
+	if w := q.MinInterval - time.Since(last); w > 0 {
+		return w
+	}
+	if _, running := q.processing[k]; !running {
+		delete(q.started, k) // long enough ago: forget it
+	}
+	return 0
 }
 
 // AddAfter adds k once d has elapsed.
@@ -157,12 +179,20 @@ func (q *Queue[K]) Done(k K) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	delete(q.processing, k)
-	started := q.started[k]
-	delete(q.started, k)
 	delete(q.waited, k)
+	// started stays: it is k's last start, which throttles Adds that come
+	// after this run as well as those during it. Entries are forgotten
+	// once MinInterval has passed (wait), or swept here.
+	if len(q.started) > 4096 {
+		for o, t := range q.started {
+			if _, running := q.processing[o]; !running && time.Since(t) >= q.MinInterval {
+				delete(q.started, o)
+			}
+		}
+	}
 	if _, ok := q.dirty[k]; ok && !q.shutdown {
 		// Still dirty while it waits, so Add does not queue it sooner.
-		if wait := q.MinInterval - time.Since(started); wait > 0 && (q.Throttled == nil || q.Throttled(k)) {
+		if wait := q.wait(k); wait > 0 {
 			time.AfterFunc(wait, func() { q.requeue(k) })
 			return
 		}

@@ -212,3 +212,23 @@ func TestUrgentKeysFirst(t *testing.T) {
 		t.Errorf("order = %v", got)
 	}
 }
+
+// Adds that come just after a run are throttled too: a key cannot run
+// more often than MinInterval by timing its events between runs.
+func TestMinIntervalBetweenRuns(t *testing.T) {
+	q := New[string]()
+	q.MinInterval = 200 * time.Millisecond
+	q.Add("spam")
+	k, _ := q.Get()
+	start := time.Now()
+	q.Done(k)
+	q.Add("spam") // just after the run
+	if q.Len() != 0 {
+		t.Fatal("re-queued at once")
+	}
+	k, _ = q.Get()
+	if time.Since(start) < q.MinInterval {
+		t.Errorf("ran again after %v", time.Since(start))
+	}
+	q.Done(k)
+}

@@ -185,13 +185,12 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	}
 
 	q := queue.New[reconcile.Key]()
-	// One PR's GitHub events (a stranger commenting non-stop, say)
-	// reconcile it at most this often, so they cannot spend the whole
-	// GitHub budget. Not Gerrit's (branch and change keys): those come
-	// from Gerrit's users, and a merge must reach GitHub within
-	// replication's delay (design §6.7).
+	// One key's events (a stranger commenting non-stop, on either side)
+	// run it at most this often, so they cannot spend the whole GitHub
+	// budget. Not a merge's: it must reach GitHub within replication's
+	// delay (design §6.7).
 	q.MinInterval = 10 * time.Second
-	q.Throttled = reconcile.FromGitHub
+	q.Throttled = reconcile.Throttled
 	q.Urgent = reconcile.Urgent
 	router := reconcile.NewRouter(cfg.Gerrit.Project, q, logger)
 	router.Pushers = &reconcile.Pushers{}

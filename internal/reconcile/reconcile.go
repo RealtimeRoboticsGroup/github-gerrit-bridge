@@ -125,9 +125,11 @@ func (r *Router) Resync(reason string) {
 // before replication pushes it.
 func Urgent(k Key) bool { return k.Merged != 0 }
 
-// FromGitHub reports whether k is one GitHub webhooks queue (anyone can
-// cause those), rather than Gerrit's events or a resync.
-func FromGitHub(k Key) bool { return k.PR != 0 || k.PRComments != 0 }
+// Throttled reports whether k runs at most every queue.MinInterval:
+// everything but a merge's PRs. Anyone can cause events on either side
+// (GitHub accounts, Gerrit sign-ups), and a merge has its own key, so
+// nothing else races replication.
+func Throttled(k Key) bool { return !Urgent(k) }
 
 // Delivery queues the key a GitHub webhook is about.
 func (r *Router) Delivery(d *github.Delivery) {
