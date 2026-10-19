@@ -534,6 +534,12 @@ func TestBridgeGrants(t *testing.T) {
 	if err := srv.GrantRunAs(ctx, project); err != nil {
 		t.Fatalf("second GrantRunAs: %v", err)
 	}
+	// The bridge, though no administrator, can check its never-groups.
+	bridge := &gerrit.Client{BaseURL: srv.URL, User: env.Bridge.Username, Password: env.Bridge.HTTPPassword}
+	users := &reconcile.Users{Gerrit: bridge, NeverGroups: []string{"Service Users", "Administrators"}}
+	if err := users.CheckGroups(ctx); err != nil {
+		t.Errorf("the bridge cannot check its never-groups: %v", err)
+	}
 	var members []gerrit.AccountInfo
 	if err := srv.Admin.Do(ctx, "GET", "groups/Service%20Users/members/", nil, &members); err != nil {
 		t.Fatal(err)

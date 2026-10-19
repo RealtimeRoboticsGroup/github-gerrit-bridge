@@ -36,8 +36,10 @@ type Users struct {
 	// must not act as it.
 	Never []string
 	// NeverGroups are Gerrit groups whose members are never matched (the
-	// service accounts: "Service Users", "Non-Interactive Users"). Gerrit
-	// must implement GroupMembers; a lookup error matches nobody.
+	// service accounts and administrators). Gerrit must implement
+	// GroupMembers; any lookup error matches nobody, including a 404,
+	// which is also what Gerrit says for a group the bridge cannot see:
+	// CheckGroups at startup makes sure it can see them all.
 	NeverGroups []string
 	// NeverLogins are GitHub logins never matched (the bridge's own: its
 	// edits and pushes are its own, not those of whoever owns its token).
@@ -87,10 +89,6 @@ func (u *Users) excluded(ctx context.Context, username string) bool {
 	for _, g := range u.NeverGroups {
 		members, err := gl.GroupMembers(ctx, g)
 		if err != nil {
-			var ge *gerrit.Error
-			if errors.As(err, &ge) && ge.Status == http.StatusNotFound {
-				continue // no such group on this site
-			}
 			if u.Logger != nil {
 				u.Logger.Warn("listing excluded group", "group", g, "err", err)
 			}
@@ -115,6 +113,31 @@ type cachedUser struct {
 // a new GitHub login to Gerrit is picked up within it, and a login that
 // changes hands stops acting within it.
 const userCacheTTL = 2 * time.Minute
+
+// CheckGroups makes sure the bridge can see every group in NeverGroups:
+// Gerrit answers 404 both for a group that does not exist and for one the
+// caller may not see (Administrators, by default), so an exclusion that
+// cannot be checked must be caught before anyone is matched.
+func (u *Users) CheckGroups(ctx context.Context) error {
+	if u.Gerrit == nil || len(u.NeverGroups) == 0 {
+		return nil
+	}
+	gl, ok := u.Gerrit.(groupLister)
+	if !ok {
+		return errors.New("cannot list Gerrit groups")
+	}
+	var errs []error
+	for _, g := range u.NeverGroups {
+		if _, err := gl.GroupMembers(ctx, g); err != nil {
+			var ge *gerrit.Error
+			if errors.As(err, &ge) && ge.Status == http.StatusNotFound {
+				err = errors.New("not found: it does not exist, or the bridge may not see it (make it visible to all registered users, or remove it from identity.never_groups)")
+			}
+			errs = append(errs, fmt.Errorf("identity.never_groups %q: %w", g, err))
+		}
+	}
+	return errors.Join(errs...)
+}
 
 // GerritUser implements Identity.
 func (u *Users) GerritUser(ctx context.Context, login string) (string, bool) {

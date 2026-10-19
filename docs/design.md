@@ -1064,8 +1064,11 @@ defenses, by threat:
   does not attribute) changes nothing, except on their own PR's
   bridge-owned change, which the bridge edits for them.
 - **Accounts the bridge never acts as by matching usernames.** Its own,
-  and members of `identity.never_groups` (default Service Users,
-  Non-Interactive Users and Administrators), whatever GitHub login matches
+  and members of `identity.never_groups` (default Service Users and
+  Administrators), which the bridge must be able to see (it refuses to
+  start otherwise, and any error looking one up excludes the user: Gerrit
+  answers 404 for a group the caller may not see, e.g. Administrators
+  unless it is visible to all, audit 2026-10-19), whatever GitHub login matches
   them; an administrator's login must be listed in
   `identity.github_to_gerrit`. The bridge's own GitHub login never maps to
   anyone. A login matching several accounts (by case) matches none.
@@ -1264,7 +1267,10 @@ instance (`internal/testgerrit`) is set up this way.
   Run-As), not on All-Projects.
 - **`receive.maxObjectSizeLimit`** (say 25m) in gerrit.config.
 - **Administrators' GitHub logins** in `identity.github_to_gerrit`: they
-  are not matched by username (`identity.never_groups`).
+  are not matched by username (`identity.never_groups`). Every group
+  listed there must be visible to the bridge account (Administrators:
+  "Make group visible to all registered users"); the bridge refuses to
+  start otherwise.
 - **The bridge behind a TLS proxy** that forwards only `/webhook` and
   `/checks/`; `listen` stays on loopback. `gerrit.url` is https.
 - **A dedicated GitHub bot account** for the token, not a person's: the

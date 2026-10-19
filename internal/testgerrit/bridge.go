@@ -326,6 +326,12 @@ func (s *Server) GrantRunAs(ctx context.Context, project string) error {
 	}, nil); err != nil {
 		return err
 	}
+	// The bridge never matches administrators to GitHub logins
+	// (identity.never_groups), so it must see who they are: Gerrit hides
+	// Administrators from non-members otherwise.
+	if err := s.Admin.Do(ctx, http.MethodPut, "groups/Administrators/options", map[string]any{"visible_to_all": true}, nil); err != nil {
+		return fmt.Errorf("making Administrators visible: %w", err)
+	}
 	err = s.Admin.Do(ctx, http.MethodDelete, "groups/"+url.PathEscape("Service Users")+"/members/github-bridge", nil, nil)
 	if ge := (*gerrit.Error)(nil); err != nil && !(errors.As(err, &ge) && ge.Status == http.StatusNotFound) {
 		return fmt.Errorf("leaving Service Users: %w", err)

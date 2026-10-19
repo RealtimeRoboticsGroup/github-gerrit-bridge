@@ -52,7 +52,7 @@ func TestUsersNeverMatchesServiceAccounts(t *testing.T) {
 	u := &Users{
 		Gerrit:      fakeAccounts{users: []string{"alice", "github-bridge", "buildkite"}, groups: map[string][]string{"Service Users": {"buildkite"}}},
 		Never:       []string{"github-bridge"},
-		NeverGroups: []string{"Service Users", "Non-Interactive Users"},
+		NeverGroups: []string{"Service Users"},
 	}
 	ctx := context.Background()
 	if user, ok := u.GerritUser(ctx, "Alice"); !ok || user != "alice" {
@@ -183,5 +183,26 @@ func TestUsersRefuseGitHubAccountsNewerThanTheGerritAccount(t *testing.T) {
 	}
 	if user, ok := u.GerritUser(ctx, "admin-on-github"); !ok || user != "admin" {
 		t.Errorf("override = %q %v", user, ok)
+	}
+}
+
+// Gerrit says 404 for a group the bridge may not see, as for one that
+// does not exist: either way the exclusion cannot be checked, so the
+// bridge will not start, and nobody is matched meanwhile.
+func TestUsersNeverGroupsFailClosed(t *testing.T) {
+	u := &Users{
+		Gerrit:      fakeAccounts{users: []string{"alice", "admin"}, groups: map[string][]string{"Service Users": nil}},
+		NeverGroups: []string{"Service Users", "Administrators"}, // Administrators: 404
+	}
+	ctx := context.Background()
+	if err := u.CheckGroups(ctx); err == nil || !strings.Contains(err.Error(), "Administrators") {
+		t.Errorf("CheckGroups = %v", err)
+	}
+	if user, ok := u.GerritUser(ctx, "admin"); ok {
+		t.Errorf("admin acts as %q", user)
+	}
+	u.NeverGroups = []string{"Service Users"}
+	if err := u.CheckGroups(ctx); err != nil {
+		t.Errorf("visible groups: %v", err)
 	}
 }

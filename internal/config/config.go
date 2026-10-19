@@ -102,7 +102,9 @@ type Identity struct {
 	MatchUsernames *bool `yaml:"match_usernames"`
 	// NeverGroups are Gerrit groups whose members MatchUsernames never
 	// matches: service accounts, and administrators, whose GitHub logins
-	// must be listed in GitHubToGerrit by hand.
+	// must be listed in GitHubToGerrit by hand. The bridge must be able to
+	// see each one (Gerrit hides groups otherwise, e.g. Administrators
+	// unless "visible to all"); it will not start otherwise.
 	NeverGroups []string `yaml:"never_groups"`
 }
 
@@ -168,7 +170,7 @@ func Parse(b []byte) (*Config, error) {
 			KeepaliveInterval: 15 * time.Second,
 			KeepaliveCountMax: 3,
 		}},
-		Identity: Identity{NeverGroups: []string{"Service Users", "Non-Interactive Users", "Administrators"}},
+		Identity: Identity{NeverGroups: []string{"Service Users", "Administrators"}},
 		CI: CI{
 			TrustedGroup:   "Verified Users",
 			Labels:         []string{"Verified"},
