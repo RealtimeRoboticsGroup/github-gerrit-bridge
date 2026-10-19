@@ -224,13 +224,10 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			AllowOrigin: origin, Logger: logger,
 		})
 	}
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		// Details only for this host (monitoring): the rate budget and
-		// queue depth would tell an attacker when the bridge is starved.
-		if !fromLoopback(r) {
-			fmt.Fprint(w, "ok\n")
-			return
-		}
+	// Internal: the deployment exposes only /webhook and /checks/ (the
+	// rate budget and queue depth would tell an attacker when the bridge
+	// is starved).
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		last := "never"
 		if t := stream.LastEvent(); !t.IsZero() {
 			last = t.UTC().Format(time.RFC3339)
@@ -378,12 +375,4 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	q.ShutDown()
 	wg.Wait()
 	return err
-}
-
-// fromLoopback reports whether r came from this host, directly (not
-// through a proxy, which would say so in X-Forwarded-For).
-func fromLoopback(r *http.Request) bool {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	ip := net.ParseIP(host)
-	return err == nil && ip != nil && ip.IsLoopback() && r.Header.Get("X-Forwarded-For") == "" && r.Header.Get("Forwarded") == ""
 }
