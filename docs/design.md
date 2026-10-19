@@ -1060,6 +1060,16 @@ defenses, by threat:
   a trusted reviewer starts CI. The log is only searched back a few
   hundred entries per branch. The commit's committer email is never
   used, since anyone can write any email.
+- **Patch sets someone else uploads in Gerrit.** Gerrit lets anyone with
+  Add Patch Set (Registered Users, by default) upload a patch set to any
+  change, or edit its commit message. A GitHub-born PR's branch is its
+  author's, in their fork or the repository, where on GitHub only they
+  and maintainers may push. So a Gerrit patch set reaches it only if its
+  uploader, and whoever uploaded it on their behalf, is the change's
+  owner, the bridge or in CI's trusted group: anyone else's stays in
+  Gerrit, with a notice there once per patch set, and the PR keeps its
+  code, base, title and description (third audit, confirmed live: it
+  had pushed a Gerrit user's code into a fork).
 - **PR edits.** A title or description edit makes a new patch set in
   Gerrit, so it is made only as the current patch set's uploader; anyone
   else is told to edit in Gerrit. Draft toggles and close/reopen run as
@@ -1289,11 +1299,17 @@ instance (`internal/testgerrit`) is set up this way.
   its own group. Not in Administrators, Service Users (which vote
   Verified on AOS), the CI trusted group, or any group with label, Submit,
   View Private Changes or Access Database rights. On the bridged project:
-  Read on its branches, Push and Create on `refs/for/refs/heads/*` (and Add
-  Patch Set, which Registered Users have by default), Forge Author, and
-  `refs/bridge/*` with exclusive Read plus Push and Create. Whatever the
-  bridge's account may do, a GitHub user without a Gerrit account
-  effectively may too.
+  Read on its branches, Push and Create on `refs/for/refs/heads/*`, Add
+  Patch Set, Forge Author, and `refs/bridge/*` with exclusive Read plus
+  Push and Create. Whatever the bridge's account may do, a GitHub user
+  without a Gerrit account effectively may too.
+- **Add Patch Set and Forge Author** are Registered Users' by default:
+  anyone signed in may upload a patch set to anyone's change, with any
+  author. The bridge keeps such patch sets off GitHub-born PRs (§7.1),
+  but a Gerrit-born change's PR shows them, and GitHub credits a forged
+  author's commits to whoever owns that email on GitHub. Consider
+  granting both to maintainers (and the bridge) only: owners may always
+  add patch sets to their own changes (third audit).
 - **GitHub Actions.** The bridge pushes every open change, from anyone
   registered on Gerrit, to a branch of the repository and opens a PR from
   it, so any workflow that runs on pushes to non-default branches or on

@@ -114,7 +114,7 @@ func (c *Checks) Sync(ctx context.Context, n int) error {
 		return nil
 	}
 
-	trusted, known := c.isTrusted(ctx, rev.Uploader.AccountID)
+	trusted, known := c.IsTrusted(ctx, rev.Uploader.AccountID)
 	run := latestCIRun(ch, rev.Number, c.CIMessage, c.CIAccount)
 	if c.Builds != nil {
 		builds, err := c.Builds.Builds(ctx, ch.CurrentRevision)
@@ -153,9 +153,9 @@ func (c *Checks) Sync(ctx context.Context, n int) error {
 // ChangeURL is the Gerrit web URL of change n.
 func (c *Checks) ChangeURL(n int) string { return c.Gerrit.ChangeURL(c.Project, n) }
 
-// isTrusted reports whether account is in the trusted group. known is
+// IsTrusted reports whether account is in the trusted group. known is
 // false if the group could not be read (then nothing is claimed).
-func (c *Checks) isTrusted(ctx context.Context, account int) (trusted, known bool) {
+func (c *Checks) IsTrusted(ctx context.Context, account int) (trusted, known bool) {
 	if c.TrustedGroup == "" {
 		return false, false
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -1165,6 +1166,59 @@ func TestChangesTouchingGitHubConfigAreWithheld(t *testing.T) {
 	}
 }
 
+// Gerrit lets anyone add a patch set to any change; only the owner's, the
+// bridge's and trusted members' reach a PR author's branch.
+func TestForeignPatchSetsAreMarked(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	c.BridgeAccount = 1
+	unknown := false
+	c.Trusted = func(_ context.Context, account int) (bool, bool) { return account == 7, !unknown }
+	snap := &Snapshot{Changes: map[int]*GerritChange{}, State: map[int]*state.Change{}}
+	for n, ids := range map[int][3]int{ // owner, uploader, real uploader
+		1: {5, 5, 0}, // the owner's own
+		2: {5, 9, 0}, // someone else's
+		3: {5, 7, 0}, // a trusted member's
+		4: {5, 5, 9}, // someone else's, on the owner's behalf
+		5: {5, 9, 0}, // someone else's, on a Gerrit-born change
+		6: {5, 1, 0}, // the bridge's (an import)
+	} {
+		snap.Changes[n] = &GerritChange{Number: n, Status: "NEW", Revision: fmt.Sprintf("r%d", n), PatchSet: 2,
+			OwnerID: ids[0], UploaderID: ids[1], RealUploaderID: ids[2]}
+		origin := "github"
+		if n == 5 {
+			origin = "gerrit"
+		}
+		snap.State[n] = &state.Change{State: state.ChangeState{Change: n, Origin: origin}}
+		s.save(ctx, store, n, snap.State[n])
+	}
+	for range 2 {
+		if err := c.markForeign(ctx, snap); err != nil {
+			t.Fatal(err)
+		}
+		for n := range snap.Changes {
+			snap.State[n], _ = store.Load(ctx, n)
+		}
+	}
+	if want := map[int]bool{2: true, 4: true}; !reflect.DeepEqual(snap.Foreign, want) {
+		t.Errorf("foreign = %v, want %v", snap.Foreign, want)
+	}
+	if strings.Join(s.calls, ",") != "review 2,review 4" {
+		t.Errorf("notices = %v, want one each for 2 and 4", s.calls)
+	}
+	// If the trusted group cannot be read, nobody but the owner and the
+	// bridge is trusted, and nothing is claimed in a notice.
+	unknown, s.calls = true, nil
+	snap.Changes[3].PatchSet = 3
+	if err := c.markForeign(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Foreign[3] || len(s.calls) != 0 {
+		t.Errorf("group unreadable: foreign = %v, notices %v", snap.Foreign, s.calls)
+	}
+}
+
 // Who edited is asked after the edit was seen. If the PR was edited again
 // in between, the editor named may not be this edit's: nothing is done
 // this round.
@@ -1215,5 +1269,51 @@ func TestImportRetriesAHeadNotPublishedYet(t *testing.T) {
 	}
 	if byBRT != 1 {
 		t.Errorf("uploads %v, want the fork PR's (as brt) once", up.uploads)
+	}
+}
+
+// What observe says about a GitHub-born change whose patch set someone
+// else uploaded in Gerrit.
+func TestObserveMarksForeignPatchSets(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	c.Trusted = func(context.Context, int) (bool, bool) { return false, true }
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	h1 := s.commit(m0, "b.txt", "b\n", "Mine")
+	s.push("github.git", h1, "refs/heads/feature")
+	s.pr(10, "feature", h1, "main", "brt")
+	ps1 := s.commit(m0, "b.txt", "b\n", "Mine\n\nChange-Id: "+cid(1)+"\n")
+	ps2 := s.commit(m0, "b.txt", "theirs\n", "Mine\n\nChange-Id: "+cid(1)+"\n")
+	ci := s.change(1, cid(1), ps1, "Mine", "NEW")
+	ci.Owner = gerrit.AccountInfo{AccountID: 5, Username: "brt"}
+	ps2Rev := gerrit.RevisionInfo{Number: 2, Ref: "refs/changes/01/1/2", Uploader: gerrit.AccountInfo{AccountID: 9, Username: "mallory"}}
+	ps2Rev.Commit.Parents = append(ps2Rev.Commit.Parents, struct {
+		Commit string `json:"commit"`
+	}{m0})
+	ci.Revisions[ps2] = ps2Rev
+	ci.CurrentRevision = ps2
+	s.push("gerrit.git", ps2, "refs/changes/01/1/2")
+	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, PR: 10, Branch: "main", Origin: "github", HeadBranch: "feature", Lifecycle: "NEW"},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: ps1, GitHubSHA: h1}}})
+	snap, err := c.observe(ctx, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Foreign[1] {
+		t.Errorf("foreign = %v; mallory's patch set 2 is not the author's", snap.Foreign)
+	}
+	// The owner's own is theirs; on their behalf by mallory, it is not.
+	for _, real := range []*gerrit.AccountInfo{nil, {AccountID: 9, Username: "mallory"}} {
+		ps2Rev.Uploader, ps2Rev.RealUploader = ci.Owner, real
+		ci.Revisions[ps2] = ps2Rev
+		if snap, err = c.observe(ctx, "main"); err != nil {
+			t.Fatal(err)
+		}
+		if snap.Foreign[1] != (real != nil) {
+			t.Errorf("real uploader %v: foreign = %v", real, snap.Foreign)
+		}
 	}
 }

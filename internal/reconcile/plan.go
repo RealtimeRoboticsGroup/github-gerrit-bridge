@@ -26,6 +26,9 @@ type GerritChange struct {
 	URL      string
 	// Owner and Uploader (of the current patch set) are Gerrit usernames.
 	Owner, Uploader string
+	// OwnerID, UploaderID and RealUploaderID (0 unless the patch set was
+	// uploaded on the uploader's behalf) are their accounts.
+	OwnerID, UploaderID, RealUploaderID int
 }
 
 // Snapshot is everything the planner needs about one target branch.
@@ -69,6 +72,13 @@ type Snapshot struct {
 	// pushed to the repository, with its secrets, so nothing is pushed for
 	// them, and a change without a PR yet gets none.
 	Withheld map[int]bool
+	// Foreign marks GitHub-born changes whose current patch set was
+	// uploaded in Gerrit by someone who may not push to the PR author's
+	// branch (design §7.1): Gerrit lets anyone registered add a patch set
+	// to any change, but on GitHub only the author and maintainers may
+	// push to it. Nothing of it reaches the PR: not its code, nor its
+	// commit message.
+	Foreign map[int]bool
 }
 
 // githubBorn reports whether change n came from a GitHub PR.
@@ -360,6 +370,8 @@ func MakePlan(s *Snapshot) *Plan {
 			// Never overwrite their work.
 		case s.Withheld[n]:
 			// Changes .github/: the PR keeps what it has.
+		case s.Foreign[n]:
+			// Not the author's, nor a maintainer's: the PR keeps what it has.
 		case !onGitHub && born:
 			// The author's branch is gone (or not listed): nothing to add to.
 		case !onGitHub && ghParent == c.Parent:
@@ -403,7 +415,7 @@ func MakePlan(s *Snapshot) *Plan {
 		if pr != nil {
 			d.PR = pr.Number
 		}
-		if s.Withheld[n] {
+		if s.Withheld[n] || s.Foreign[n] {
 			// Nothing pushed for it, frozen bases included; the PR keeps
 			// its base, so it points at nothing that was not pushed.
 			delete(refs, d.Frozen)
@@ -447,11 +459,11 @@ func MakePlan(s *Snapshot) *Plan {
 			u.Base = ptr(d.Base)
 			changed = true
 		}
-		if strings.TrimSpace(pr.Title) != c.Subject {
+		if strings.TrimSpace(pr.Title) != c.Subject && !s.Foreign[n] {
 			u.Title = ptr(c.Subject)
 			changed = true
 		}
-		if pr.Body != body {
+		if pr.Body != body && !s.Foreign[n] {
 			u.Body = ptr(body)
 			changed = true
 		}

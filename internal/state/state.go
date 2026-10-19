@@ -74,6 +74,9 @@ type ChangeState struct {
 	// WithheldNotice is the patch set whose "not mirrored: changes
 	// .github/" notice was posted in Gerrit.
 	WithheldNotice int `json:"withheld_notice,omitempty"`
+	// ForeignNotice is the patch set whose "not pushed to the author's
+	// branch" notice was posted in Gerrit.
+	ForeignNotice int `json:"foreign_notice,omitempty"`
 }
 
 // Revision links a patch set to the GitHub commit with the same diff

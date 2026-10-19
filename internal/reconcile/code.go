@@ -47,8 +47,13 @@ type Code struct {
 	// abandons or restores its change as whoever did it.
 	Identity    Identity
 	BridgeLogin string
-	// BridgeUser is the bridge's Gerrit username.
-	BridgeUser string
+	// BridgeUser is the bridge's Gerrit username, BridgeAccount its account.
+	BridgeUser    string
+	BridgeAccount int
+	// Trusted reports whether a Gerrit account is in CI's trusted group
+	// (known is false if that cannot be told). Only they, and a change's
+	// owner, have their Gerrit patch sets pushed to a PR author's branch.
+	Trusted func(ctx context.Context, account int) (trusted, known bool)
 
 	// locks serializes reconciles of one target branch. The queue already
 	// does for Branch keys; Change and PR keys resolve to a branch here.
@@ -224,6 +229,50 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string) error {
 	return nil
 }
 
+// markForeign marks the GitHub-born changes whose current patch set was
+// uploaded, or uploaded on someone's behalf, in Gerrit by someone other
+// than the change's owner, the bridge or a member of CI's trusted group
+// (Snapshot.Foreign). Each gets a notice in Gerrit, once per patch set.
+func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
+	s.Foreign = map[int]bool{}
+	for _, n := range sortedKeys(s.Changes) {
+		ch := s.Changes[n]
+		if ch.Status != "NEW" || !s.githubBorn(n) {
+			continue
+		}
+		known := true
+		ok := func(account int) bool {
+			if account != 0 && (account == ch.OwnerID || account == c.BridgeAccount) {
+				return true
+			}
+			if c.Trusted == nil || account == 0 {
+				return false
+			}
+			t, k := c.Trusted(ctx, account)
+			known = known && k
+			return t && k
+		}
+		if ok(ch.UploaderID) && (ch.RealUploaderID == 0 || ok(ch.RealUploaderID)) {
+			continue
+		}
+		s.Foreign[n] = true
+		if st := s.State[n]; c.DryRun || !known || (st != nil && st.State.ForeignNotice == ch.PatchSet) {
+			continue
+		}
+		msg := fmt.Sprintf("Patch set %d is not pushed to the GitHub PR's branch, which is its author's: only the change's owner, "+
+			"and members of CI's trusted group, have their patch sets pushed there.", ch.PatchSet)
+		if err := c.Gerrit.SetReview(ctx, n, ch.Revision, gerrit.ReviewInput{Message: msg, Tag: commentTag}); err != nil {
+			return err
+		}
+		if err := c.updateState(ctx, n, "foreign patch set notice", func(st *state.Change) { st.State.ForeignNotice = ch.PatchSet }); err != nil {
+			return err
+		}
+		c.Logger.Info("not pushed to the author's branch: uploaded by someone else", "change", n, "patch_set", ch.PatchSet,
+			"uploader", ch.UploaderID, "real_uploader", ch.RealUploaderID)
+	}
+	return nil
+}
+
 // observe gathers a Snapshot for branch from Gerrit, the mirror, GitHub
 // and refs/bridge.
 func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
@@ -284,6 +333,10 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 			Subject: rev.Commit.Subject, Message: rev.Commit.Message,
 			PatchSet: rev.Number, Revision: ci.CurrentRevision, Parent: rev.Commit.Parent(),
 			URL: c.changeURL(ci.Number), Owner: ci.Owner.Username, Uploader: rev.Uploader.Username,
+			OwnerID: ci.Owner.AccountID, UploaderID: rev.Uploader.AccountID,
+		}
+		if rev.RealUploader != nil {
+			s.Changes[ci.Number].RealUploaderID = rev.RealUploader.AccountID
 		}
 		if ci.Status == "NEW" && !ci.IsPrivate {
 			refspecs = append(refspecs, "+"+rev.Ref+":refs/remotes/gerrit/"+strings.TrimPrefix(rev.Ref, "refs/"))
@@ -300,6 +353,9 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 		return nil, err
 	}
 	if err := c.withhold(ctx, s, branch); err != nil {
+		return nil, err
+	}
+	if err := c.markForeign(ctx, s); err != nil {
 		return nil, err
 	}
 	revs := map[string]bool{}

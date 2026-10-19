@@ -94,6 +94,7 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("POST /repos/o/r/issues/{n}/comments", s.createComment)
 	mux.HandleFunc("POST /repos/o/r/statuses/{sha}", s.createStatus)
 	mux.HandleFunc("POST /repos/o/r/stacks/{n}/unstack", s.unstack)
+	mux.HandleFunc("GET /repos/o/r/stacks", func(w http.ResponseWriter, r *http.Request) { s.json(w, []any{}, false) })
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("fake sites: unexpected %s %s", r.Method, r.URL)
 		http.Error(w, "not faked", http.StatusNotImplemented)

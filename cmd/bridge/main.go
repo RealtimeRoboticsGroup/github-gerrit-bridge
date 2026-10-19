@@ -305,7 +305,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	if err := users.CheckGroups(ctx); err != nil {
 		return err
 	}
-	code.Identity, code.BridgeLogin, code.BridgeUser = users, login, self.Username
+	code.Identity, code.BridgeLogin, code.BridgeUser, code.BridgeAccount = users, login, self.Username, self.AccountID
 	var uploader reconcile.Uploader = reconcile.HTTPUploader{Mirror: mirror}
 	if cfg.Gerrit.SSH.PeerKeyFile != "" {
 		uploader = reconcile.SuexecUploader{
@@ -363,6 +363,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	// Statuses need the patch set on GitHub; refresh them as soon as the
 	// code mirror puts it there.
 	code.OnExported = checks.Sync
+	code.Trusted = checks.IsTrusted
 	commands := &reconcile.Commands{
 		GitHub:       gh,
 		Submitter:    reconcile.RunAsSubmitter{Gerrit: rest},

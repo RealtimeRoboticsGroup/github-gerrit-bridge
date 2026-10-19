@@ -29,6 +29,9 @@ type world struct {
 	log     []string
 	// withheld changes touch .github/ (Code.withhold).
 	withheld map[int]bool
+	// foreign changes' current patch sets are not the author's to push
+	// (Code.markForeign).
+	foreign map[int]bool
 }
 
 func newWorld(t *testing.T) *world {
@@ -61,7 +64,7 @@ func (w *world) snapshot() *Snapshot {
 		Branch: "main", DefaultBranch: "main",
 		Changes: map[int]*GerritChange{}, OnBranch: w.onMain,
 		GitHubBranches: map[string]string{}, PRs: map[int]*github.PullRequest{}, State: map[int]*state.Change{},
-		Repo: "o/r", NoPush: map[int]bool{}, Withheld: w.withheld,
+		Repo: "o/r", NoPush: map[int]bool{}, Withheld: w.withheld, Foreign: w.foreign,
 	}
 	// Like Code.observe: closed changes drop out once the bridge has
 	// recorded them closed, unless their PR is still open.
@@ -751,6 +754,35 @@ func TestGitHubBornGerritEditAppends(t *testing.T) {
 	w.converge()
 	if got := w.branch["feature"]; got != "merge(append(h1,s2),m1,s3)" {
 		t.Errorf("feature = %s, want a merge of m1 on top of the user's branch", got)
+	}
+}
+
+// A patch set someone else uploaded in Gerrit never reaches the author's
+// branch, nor does its commit message reach the PR; the owner's next one
+// does.
+func TestGitHubBornForeignPatchSetStaysInGerrit(t *testing.T) {
+	w := bornWorld(t)
+	w.converge()
+	w.upload(1, "s2", "m1") // by someone else, rebased onto their own m1
+	w.gerrit[1].Subject, w.gerrit[1].Message = "Mallory's title", "Mallory's title\n\nMallory's body.\n\nChange-Id: "+cid(1)
+	w.foreign = map[int]bool{1: true}
+	w.converge()
+	pr := w.prs[1]
+	if w.branch["feature"] != "h1" || pr.Base.Ref != "main" {
+		t.Errorf("feature = %s, base %s: a foreign patch set reached the author's PR", w.branch["feature"], pr.Base.Ref)
+	}
+	if pr.Title != "User title" || strings.Contains(pr.Body, "Mallory") {
+		t.Errorf("PR text changed to %q %q", pr.Title, pr.Body)
+	}
+	if _, ok := w.branch["gerrit-base/"+cid(1)]; ok {
+		t.Error("a frozen base was pushed for it")
+	}
+	w.upload(1, "s3", "m0") // the owner's own
+	w.gerrit[1].Subject = "Owner's title"
+	w.foreign = nil
+	w.converge()
+	if got := w.branch["feature"]; got != "append(h1,s3)" || w.prs[1].Title != "Owner's title" {
+		t.Errorf("feature = %s, title %q: the owner's patch set was not pushed", got, w.prs[1].Title)
 	}
 }
 

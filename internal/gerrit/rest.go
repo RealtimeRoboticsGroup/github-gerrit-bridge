@@ -170,8 +170,11 @@ type RevisionInfo struct {
 	Number   int         `json:"_number"`
 	Ref      string      `json:"ref"`
 	Uploader AccountInfo `json:"uploader"`
-	Commit   CommitInfo  `json:"commit"`
-	Created  string      `json:"created"` // "2006-01-02 15:04:05.000000000", UTC
+	// RealUploader is who really uploaded it, when that was on the
+	// uploader's behalf (a rebase, say).
+	RealUploader *AccountInfo `json:"real_uploader,omitempty"`
+	Commit       CommitInfo   `json:"commit"`
+	Created      string       `json:"created"` // "2006-01-02 15:04:05.000000000", UTC
 }
 
 // CommitInfo is a commit's metadata (CURRENT_COMMIT / ALL_COMMITS).
