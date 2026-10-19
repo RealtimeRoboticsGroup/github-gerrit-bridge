@@ -102,6 +102,27 @@ func TestCloseByUserWithoutGerritAccountIsUndone(t *testing.T) {
 	}
 }
 
+// Someone without a Gerrit account closing their own PR, whose change the
+// bridge owns for them, abandons it as the bridge, as their pushes are
+// uploaded (fourth audit: refused, it was reopened, over and over).
+// Someone else's close is still refused.
+func TestAuthorWithoutGerritAccountClosesTheirOwnPR(t *testing.T) {
+	for _, closer := range []string{"newbie", "stranger"} {
+		s, c, snap := prStatesWorld(t, "NEW", "closed")
+		c.BridgeUser, snap.Changes[7].Owner = "bridge", "bridge"
+		s.pulls[70].User.Login = "newbie"
+		s.may[7] = append(s.may[7], "bridge")
+		s.ghEvent(70, "closed", closer)
+		changed, err := c.mirrorPRStates(context.Background(), snap, map[int]bool{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if abandoned := s.changes[7].Status == "ABANDONED"; abandoned != (closer == "newbie") || changed != abandoned {
+			t.Errorf("%s closed it: changed %v, status %s, notices %v", closer, changed, s.changes[7].Status, s.comments[70])
+		}
+	}
+}
+
 func TestBridgesOwnCloseIsLeftToThePlan(t *testing.T) {
 	s, c, snap := prStatesWorld(t, "NEW", "closed")
 	s.ghEvent(70, "closed", "bot")

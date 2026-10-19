@@ -805,12 +805,21 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 		if c.Identity != nil {
 			user, ok = c.Identity.GerritUser(ctx, login)
 		}
+		g := c.Gerrit
+		if ok {
+			g = c.Gerrit.As(user)
+		} else if strings.EqualFold(login, pr.User.Login) && c.BridgeUser != "" && strings.EqualFold(ch.Owner, c.BridgeUser) {
+			// Their own PR, which the bridge owns for them (as asEditor
+			// says; fourth audit: refused, each close was reopened, over
+			// and over).
+			user, ok = c.BridgeUser, true
+		}
 		var why string
 		if !ok {
 			why = fmt.Sprintf("@%s has no Gerrit account to %s it with", login, action)
 		} else {
 			msg := fmt.Sprintf("PR #%d %s on GitHub.", pr.Number, past)
-			err := c.Gerrit.As(user).Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/%s", n, action), map[string]string{"message": msg}, nil)
+			err := g.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/%s", n, action), map[string]string{"message": msg}, nil)
 			if err == nil {
 				c.Logger.Info("mirrored GitHub "+past+" to Gerrit", "change", n, "pr", pr.Number, "action", action, "as", user)
 				changed, handled[pr.Number] = true, true
