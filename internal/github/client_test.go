@@ -417,6 +417,27 @@ func TestGraphQLAnswersVouchedByREST(t *testing.T) {
 	want(4, 2, 5)
 }
 
+// The answers kept are bounded: PRs anyone can open each leave some.
+func TestGraphQLAnswersBounded(t *testing.T) {
+	defer func(m int) { maxAnswers = m }(maxAnswers)
+	maxAnswers = 3
+	f := &fakeLists{version: map[string]int{}, items: map[string]int{}, queries: map[string]int{}}
+	srv := httptest.NewServer(http.HandlerFunc(f.handler))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	for pr := 1; pr <= 10; pr++ {
+		if _, err := c.Edits(context.Background(), pr); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		n := len(c.answers)
+		c.mu.Unlock()
+		if n > maxAnswers || n == 0 {
+			t.Fatalf("%d answers kept", n)
+		}
+	}
+}
+
 // Without ETags, nothing is vouched for.
 func TestGraphQLAnswersWithoutETags(t *testing.T) {
 	f := &fakeLists{version: map[string]int{}, items: map[string]int{}, noETag: true, queries: map[string]int{}}

@@ -535,6 +535,9 @@ type vouchedAnswer struct {
 // An answer is cached only if the lists were the same before and after
 // computing it, so one that raced a change (or a GraphQL view lagging
 // behind REST) is not kept.
+// maxAnswers bounds the GraphQL answers kept (a var for tests).
+var maxAnswers = 4096
+
 func (c *Client) vouched(ctx context.Context, key string, paths []string, compute func() (map[int64]string, error)) (map[int64]string, error) {
 	before, err := c.listsPrint(ctx, paths)
 	if err != nil {
@@ -555,7 +558,9 @@ func (c *Client) vouched(ctx context.Context, key string, paths []string, comput
 		return nil, err
 	}
 	c.mu.Lock()
-	if c.answers == nil {
+	if c.answers == nil || len(c.answers) >= maxAnswers {
+		// Bounded (one entry or two per PR ever synced, forks' included):
+		// forgetting costs a GraphQL query each.
 		c.answers = map[string]vouchedAnswer{}
 	}
 	if before != "" && after == before {
