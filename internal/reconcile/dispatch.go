@@ -87,6 +87,11 @@ func (d *Dispatcher) targetBranch(ctx context.Context, pr int) (string, error) {
 	if p.State != "open" {
 		return "", nil
 	}
+	// Too old to import: its events are nothing to the bridge, and must
+	// not each cost a branch reconcile.
+	if im := d.Code.Importer; im != nil && p.CreatedAt.Before(im.CreatedAfter) {
+		return "", nil
+	}
 	open, err := d.Code.GitHub.ListPulls(ctx, "open")
 	if err != nil {
 		return "", err

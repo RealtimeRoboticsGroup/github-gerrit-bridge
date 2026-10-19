@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -21,11 +23,13 @@ import (
 
 // Config is the top-level configuration.
 type Config struct {
-	// Listen is the address of the HTTP server for webhooks and /healthz.
+	// Listen is the address of the HTTP server for webhooks, /checks and
+	// /healthz. Default 127.0.0.1:8080: put a TLS proxy in front.
 	Listen  string `yaml:"listen"`
 	Workers int    `yaml:"workers"`
 	// ResyncInterval queues a full resync periodically, so missed events
-	// (or webhooks that cannot reach the bridge) heal. Zero disables.
+	// (or webhooks that cannot reach the bridge, or were refused while it
+	// was busy) heal. Default 30m; zero disables.
 	ResyncInterval time.Duration `yaml:"resync_interval"`
 	Gerrit         Gerrit        `yaml:"gerrit"`
 	GitHub         GitHub        `yaml:"github"`
@@ -72,6 +76,11 @@ type GitHub struct {
 	Owner             string `yaml:"owner"`
 	Repo              string `yaml:"repo"`
 	WebhookSecretFile string `yaml:"webhook_secret_file"`
+	// WebhookAllowedNetworks, if set, are the only addresses (CIDR) webhook
+	// deliveries are accepted from: GitHub's "hooks" ranges from
+	// https://api.github.com/meta. Only useful if the bridge sees GitHub's
+	// addresses, not a proxy's.
+	WebhookAllowedNetworks []string `yaml:"webhook_allowed_networks"`
 	// The API token comes from exactly one of these. TokenCommand is run
 	// (e.g. [gh, auth, token]) and its output cached for a few minutes.
 	TokenFile    string   `yaml:"token_file"`
@@ -108,8 +117,9 @@ type CI struct {
 	// Labels are voted by CI: shown on GitHub only as statuses, never in
 	// the votes comment.
 	Labels []string `yaml:"labels"`
-	// Account is CI's Gerrit username. When set, only its messages count
-	// as CI runs (anyone can post "Build Succeeded: <url>").
+	// Account is CI's Gerrit username. Without Buildkite, only its
+	// messages count as CI runs (anyone can post "Build Succeeded:
+	// <url>"); unset, none do.
 	Account string `yaml:"account"`
 	// MessagePattern matches CI messages; group 1 must be Started,
 	// Succeeded or Failed and group 2 the build URL. Used only without
@@ -151,8 +161,9 @@ func Load(path string) (*Config, error) {
 // typo does not silently fall back to a default.
 func Parse(b []byte) (*Config, error) {
 	c := &Config{
-		Listen:  ":8080",
-		Workers: 4,
+		Listen:         "127.0.0.1:8080",
+		Workers:        4,
+		ResyncInterval: 30 * time.Minute,
 		Gerrit: Gerrit{SSH: SSH{
 			KeepaliveInterval: 15 * time.Second,
 			KeepaliveCountMax: 3,
@@ -209,6 +220,15 @@ func (c *Config) validate() error {
 	if c.CI.ChecksURL != "" && c.CI.Buildkite == nil {
 		errs = append(errs, errors.New("ci.checks_url needs ci.buildkite"))
 	}
+	for _, n := range c.GitHub.WebhookAllowedNetworks {
+		if _, _, err := net.ParseCIDR(n); err != nil {
+			errs = append(errs, fmt.Errorf("github.webhook_allowed_networks: %w", err))
+		}
+	}
+	// Basic auth goes with every request.
+	if u, err := url.Parse(c.Gerrit.URL); c.Gerrit.URL != "" && (err != nil || (u.Scheme != "https" && !loopback(u.Hostname()))) {
+		errs = append(errs, errors.New("gerrit.url must be https (or a loopback address)"))
+	}
 	if c.ResyncInterval < 0 {
 		errs = append(errs, errors.New("resync_interval must not be negative"))
 	}
@@ -219,6 +239,14 @@ func (c *Config) validate() error {
 		errs = append(errs, errors.New("gerrit.ssh durations and counts must not be negative"))
 	}
 	return errors.Join(errs...)
+}
+
+func loopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // ReadSecret reads a secret from path, trimming surrounding whitespace.

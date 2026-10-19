@@ -96,6 +96,10 @@ func TestLatestCIRunOnlyCurrentPatchSet(t *testing.T) {
 	if run := latestCIRun(ch, 2, DefaultCIMessage, "buildkite"); run != (ciRun{"Succeeded", "https://bk/2"}) {
 		t.Errorf("run = %+v", run)
 	}
+	// Without a CI account, nobody's message is trusted for the link.
+	if run := latestCIRun(ch, 2, DefaultCIMessage, ""); run != (ciRun{}) {
+		t.Errorf("without a CI account: %+v", run)
+	}
 	if run := latestCIRun(ch, 3, DefaultCIMessage, "buildkite"); run != (ciRun{}) {
 		t.Errorf("run on ps 3 = %+v", run)
 	}

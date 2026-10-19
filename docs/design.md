@@ -1090,14 +1090,33 @@ defenses, by threat:
   it out of Gerrit.
 - **CI status.** Comes from Buildkite's API (§6.5), so no comment can fake
   it. Without Buildkite, only messages by `ci.account` (and never ones
-  mirrored from GitHub) drive `gerrit/Verified`'s link and text.
+  mirrored from GitHub) drive `gerrit/Verified`'s link and text; with
+  `ci.account` unset, no message does.
 - **The public `/checks` endpoint** reads changes anonymously, so it shows
-  nothing anonymous users cannot already see; it is cached and
-  concurrency-limited so it cannot be used to exhaust Buildkite's rate
-  limit. Its plugin's Rerun posts as the user, so it grants nothing.
-- **Webhooks.** HMAC-checked; at most 8 read at once, with read and write
-  timeouts. Payloads are only hints: actors and content are re-read from
-  the API.
+  nothing anonymous users cannot already see. Answers are cached briefly,
+  failures are not (and a client hanging up does not cause one), at most 4
+  are computed at once, and anonymous requests cause at most 60 Buildkite
+  calls a minute, so they cannot exhaust the rate limit the bridge needs
+  for `gerrit/Verified`. Its plugin's Rerun posts as the user, so it
+  grants nothing.
+- **Webhooks.** HMAC-checked; at most 32 read at once and 4 from any one
+  address, each body within 10 seconds, so a few slow senders cannot
+  refuse GitHub's deliveries; `github.webhook_allowed_networks` can limit
+  them to GitHub's hook ranges. Anything refused heals at the next resync
+  (`resync_interval`, default 30m). Payloads are only hints: actors and
+  content are re-read from the API.
+- **The server.** Listens on `127.0.0.1:8080` by default, plain HTTP: a
+  TLS proxy in front should expose only `/webhook` and `/checks/`.
+  `/healthz` gives details (rate budget, queue depth) only to requests
+  from this host. `gerrit.url` must be https unless it is a loopback
+  address, since every request carries the bridge's password. Responses
+  from Gerrit and GitHub are read only up to a bound.
+- **API budget.** One key (a PR, a change, a branch) reconciles at most
+  every 10 seconds however many events arrive for it, and events on PRs
+  opened before `import_created_after` cost one lookup, not a reconcile.
+- **Submit swaps.** Before `/submit`, a PR's head is swapped for Gerrit's
+  commit only if it is the bridge's record of the patch set being
+  submitted; a push not imported yet is never overwritten.
 - **Public text.** Import errors keep their details in the log, not in the
   public status, and so do `/submit` errors that are not Gerrit's own
   refusals. Mirrored Gerrit comments, messages and `gerrit/<Label>`
@@ -1121,7 +1140,10 @@ Known gaps:
   `refs/bridge/identities` by hand.
 - **Spam from forks.** Every fork PR becomes a Gerrit change, uploaded by
   the bridge if its author has no account, and every event on it costs
-  GitHub API calls. Rate limiting per author is not done.
+  GitHub API calls. Each PR is rate-limited, but not each author: someone
+  opening and commenting on many PRs can still use up the bridge's GitHub
+  budget (5000 calls an hour for a token) and stall it until the hour
+  resets. Block them on GitHub; a GitHub App would have a larger budget.
 - **Visibility.** The bridge mirrors whatever its account can see on the
   target branches except private changes; it must not be able to read
   restricted branches or changes.

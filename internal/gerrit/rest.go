@@ -36,6 +36,22 @@ func (c *Client) Anon() *Client {
 	return &Client{BaseURL: c.BaseURL, HTTP: c.HTTP, Anonymous: true}
 }
 
+// maxResponse bounds a REST response the client reads, and maxFileContent
+// a file's content.
+const (
+	maxResponse    = 64 << 20
+	maxFileContent = 8 << 20
+)
+
+// readLimited reads r whole, failing if it has more than limit bytes.
+func readLimited(r io.Reader, limit int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err == nil && int64(len(b)) > limit {
+		return nil, fmt.Errorf("response larger than %d bytes", limit)
+	}
+	return b, err
+}
+
 // AmbiguousUsername reports whether Gerrit would not read user as a
 // username where it takes an account (X-Gerrit-RunAs, suexec --as, the
 // accounts/ API): Gerrit tries "self"/"me" and numeric account ids first,
@@ -234,7 +250,7 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 		return err
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
+	b, err := readLimited(resp.Body, maxResponse)
 	if err != nil {
 		return err
 	}
@@ -390,7 +406,9 @@ func (c *Client) FileContent(ctx context.Context, change int, revision, path str
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
+	// Base64, so a third bigger than the file. Fix suggestions are for
+	// source files; anything bigger is not read whole into memory.
+	b, err := readLimited(resp.Body, maxFileContent*4/3+4)
 	if err != nil {
 		return nil, err
 	}

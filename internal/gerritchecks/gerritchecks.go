@@ -183,6 +183,10 @@ type Handler struct {
 	cache map[[2]int]entry
 	busy  chan struct{}
 	once  sync.Once
+	// window and calls count Buildkite calls in the current minute.
+	window time.Time
+	calls  int
+	now    func() time.Time // tests
 }
 
 type entry struct {
@@ -195,7 +199,32 @@ const (
 	cacheTTL    = 15 * time.Second
 	maxCached   = 2000
 	maxInFlight = 4
+	// maxBuildkitePerMinute bounds the Buildkite calls anonymous requests
+	// cause, well inside Buildkite's rate limit, which the bridge also
+	// needs for gerrit/Verified.
+	maxBuildkitePerMinute = 60
 )
+
+func (h *Handler) clock() time.Time {
+	if h.now != nil {
+		return h.now()
+	}
+	return time.Now()
+}
+
+// spend takes one Buildkite call from this minute's budget.
+func (h *Handler) spend() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if now := h.clock(); now.Sub(h.window) >= time.Minute {
+		h.window, h.calls = now, 0
+	}
+	if h.calls >= maxBuildkitePerMinute {
+		return false
+	}
+	h.calls++
+	return true
+}
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.once.Do(func() {
@@ -223,8 +252,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "busy", http.StatusServiceUnavailable)
 			return
 		}
-		e = h.compute(r.Context(), change, ps)
+		// Not the request's context: a client that hangs up must not
+		// leave a failure behind for everyone.
+		e = h.compute(context.Background(), change, ps)
 		<-h.busy
+		if e.status >= 500 {
+			// Transient: not cached.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(e.status)
+			w.Write(e.body)
+			return
+		}
 		h.mu.Lock()
 		if len(h.cache) >= maxCached {
 			for k, v := range h.cache {
@@ -272,6 +310,9 @@ func (h *Handler) compute(ctx context.Context, change, ps int) entry {
 	}
 	if sha == "" {
 		return fail(http.StatusNotFound, "no such patch set")
+	}
+	if !h.spend() {
+		return fail(http.StatusServiceUnavailable, "busy")
 	}
 	builds, err := h.Builds.Builds(ctx, sha)
 	if err != nil {

@@ -111,3 +111,32 @@ func TestReadSecret(t *testing.T) {
 		t.Error("empty secret accepted")
 	}
 }
+
+func TestSafeDefaults(t *testing.T) {
+	c, err := Parse([]byte(strings.Replace(full, "listen: \":9000\"\n", "", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Listen != "127.0.0.1:8080" || c.ResyncInterval != 30*time.Minute {
+		t.Errorf("listen %q, resync %v", c.Listen, c.ResyncInterval)
+	}
+	if want := []string{"Service Users", "Non-Interactive Users", "Administrators"}; strings.Join(c.Identity.NeverGroups, ",") != strings.Join(want, ",") {
+		t.Errorf("never_groups = %q", c.Identity.NeverGroups)
+	}
+}
+
+func TestGerritURLMustBeHTTPS(t *testing.T) {
+	for url, ok := range map[string]bool{"http://gerrit.example.com": false, "http://127.0.0.1:18080/gerrit": true, "http://localhost:8080": true, "https://gerrit.example.com": true} {
+		_, err := Parse([]byte(strings.Replace(full, "https://gerrit.example.com/", url, 1)))
+		if (err == nil) != ok {
+			t.Errorf("%s: err = %v", url, err)
+		}
+	}
+}
+
+func TestWebhookAllowedNetworks(t *testing.T) {
+	_, err := Parse([]byte(full + "  webhook_allowed_networks: [140.82.112.0/20, nonsense]\n"))
+	if err == nil || !strings.Contains(err.Error(), "webhook_allowed_networks") {
+		t.Errorf("err = %v", err)
+	}
+}

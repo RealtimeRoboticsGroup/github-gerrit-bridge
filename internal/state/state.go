@@ -215,6 +215,17 @@ func (s *Store) ChangeForPR(pr int) int {
 }
 
 // files maps each file in the state tree to its field.
+// Mirrors reports whether GitHub commit gh is the bridge's record of
+// Gerrit revision gerrit (exported, or imported from).
+func (c *Change) Mirrors(gerrit, gh string) bool {
+	for _, r := range c.Revisions {
+		if r.GerritSHA == gerrit && r.GitHubSHA == gh {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Change) files() map[string]any {
 	return map[string]any{
 		"state.json":     &c.State,

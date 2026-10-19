@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -107,5 +108,48 @@ func TestFirstSeenEvicts(t *testing.T) {
 	}
 	if len(h.seen) != recentDeliveries {
 		t.Errorf("seen has %d entries, want %d", len(h.seen), recentDeliveries)
+	}
+}
+
+// A few slow senders cannot take every read slot: each address gets a
+// few, and other addresses still get theirs.
+func TestWebhookReadSlotsPerAddress(t *testing.T) {
+	h := (&deliveryRecorder{}).handler()
+	h.busy = make(chan struct{}, maxConcurrentReads)
+	h.busyOnce.Do(func() {})
+	for i := 0; i < maxReadsPerAddress; i++ {
+		if !h.acquire("203.0.113.9") {
+			t.Fatalf("slot %d refused", i)
+		}
+	}
+	if h.acquire("203.0.113.9") {
+		t.Error("one address took more than its share")
+	}
+	if !h.acquire("192.0.2.1") {
+		t.Error("another address was refused")
+	}
+	h.release("203.0.113.9")
+	if !h.acquire("203.0.113.9") {
+		t.Error("a released slot was not reusable")
+	}
+}
+
+func TestWebhookAllowedNetworks(t *testing.T) {
+	r := &deliveryRecorder{}
+	h := r.handler()
+	_, gh, _ := net.ParseCIDR("140.82.112.0/20")
+	h.Allowed = []*net.IPNet{gh}
+	body := `{"action":"opened","repository":{"full_name":"AustinSchuh/bridge-scratch"},"pull_request":{"number":1}}`
+	if code := post(h, "pull_request", "d1", body, sign(body)); code != http.StatusForbidden {
+		t.Errorf("from 192.0.2.1 (httptest's address): %d", code)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+	req.RemoteAddr = "140.82.115.1:443"
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", sign(body))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted || len(r.got) != 1 {
+		t.Errorf("from GitHub: %d, %d deliveries", w.Code, len(r.got))
 	}
 }

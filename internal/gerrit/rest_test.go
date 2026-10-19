@@ -1,6 +1,7 @@
 package gerrit
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -133,5 +134,16 @@ func TestSubmitNamesTheRevision(t *testing.T) {
 	}
 	if path != "POST /a/changes/5/revisions/abc123/submit" {
 		t.Errorf("submitted %s", path)
+	}
+}
+
+func TestFileContentIsBounded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bytes.Repeat([]byte("A"), (maxFileContent*4/3+100)/4*4)) // valid base64
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, User: "bridge", Password: "secret"}
+	if _, err := c.FileContent(context.Background(), 5, "abc", "big.bin"); err == nil {
+		t.Error("read a file larger than the bound")
 	}
 }

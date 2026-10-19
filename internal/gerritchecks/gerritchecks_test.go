@@ -3,8 +3,12 @@ package gerritchecks
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -129,5 +133,84 @@ func TestPlugin(t *testing.T) {
 	js := string(Plugin("https://example.com/bridge/", `p"q`))
 	if !strings.Contains(js, `const BRIDGE_URL = "https://example.com/bridge";`) || !strings.Contains(js, `const PROJECT = "p\"q";`) {
 		t.Errorf("plugin not filled in:\n%s", js[:400])
+	}
+}
+
+// flakyChanges fails while down, or when the request's context is done.
+type flakyChanges struct {
+	fakeChanges
+	down bool
+}
+
+func (f *flakyChanges) GetChange(ctx context.Context, n int, o ...string) (*gerrit.ChangeInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if f.down {
+		return nil, errors.New("connection refused")
+	}
+	return f.fakeChanges.GetChange(ctx, n, o...)
+}
+
+// Failures are not cached, and a client hanging up does not make one: a
+// stranger could otherwise keep a patch set's Checks tab broken.
+func TestHandlerDoesNotCacheFailures(t *testing.T) {
+	gc := &flakyChanges{fakeChanges: fakeChanges{5: {Project: "p", Revisions: map[string]gerrit.RevisionInfo{"aaa": {Number: 1}}}}, down: true}
+	h := &Handler{Project: "p", Gerrit: gc, Builds: &fakeBuilds{}, Logger: slog.Default()}
+	get := func(ctx context.Context) int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/checks/5/1", nil).WithContext(ctx)
+		r.SetPathValue("change", "5")
+		r.SetPathValue("patchset", "1")
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := get(context.Background()); code != http.StatusBadGateway {
+		t.Fatalf("Gerrit down: %d", code)
+	}
+	gc.down = false
+	if code := get(context.Background()); code != 200 {
+		t.Errorf("after Gerrit came back: %d (a failure was cached)", code)
+	}
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.cache = map[[2]int]entry{}
+	if code := get(gone); code != 200 {
+		t.Errorf("client hung up: %d", code)
+	}
+}
+
+func TestHandlerBoundsBuildkiteCalls(t *testing.T) {
+	revs := map[string]gerrit.RevisionInfo{}
+	for i := 1; i <= maxBuildkitePerMinute+5; i++ {
+		revs[fmt.Sprintf("sha%d", i)] = gerrit.RevisionInfo{Number: i}
+	}
+	fb := &fakeBuilds{}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	h := &Handler{Project: "p", Gerrit: fakeChanges{5: {Project: "p", Revisions: revs}}, Builds: fb, Logger: slog.Default(),
+		now: func() time.Time { return now }}
+	busy := 0
+	for i := 1; i <= maxBuildkitePerMinute+5; i++ {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.SetPathValue("change", "5")
+		r.SetPathValue("patchset", strconv.Itoa(i))
+		h.ServeHTTP(w, r)
+		if w.Code == http.StatusServiceUnavailable {
+			busy++
+		}
+	}
+	if fb.calls != maxBuildkitePerMinute || busy != 5 {
+		t.Errorf("Buildkite calls %d, busy answers %d", fb.calls, busy)
+	}
+	now = now.Add(time.Minute)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.SetPathValue("change", "5")
+	r.SetPathValue("patchset", "1")
+	h.cache = map[[2]int]entry{}
+	h.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Errorf("next minute: %d", w.Code)
 	}
 }

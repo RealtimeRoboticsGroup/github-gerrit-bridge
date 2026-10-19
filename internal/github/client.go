@@ -18,6 +18,9 @@ import (
 // DefaultBaseURL is the github.com REST API.
 const DefaultBaseURL = "https://api.github.com"
 
+// maxResponse bounds an API response the client reads.
+const maxResponse = 64 << 20
+
 // Client is a REST client for one repository.
 type Client struct {
 	BaseURL     string // defaults to DefaultBaseURL
@@ -120,9 +123,13 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) (*htt
 	}
 	defer resp.Body.Close()
 	c.recordRate(resp.Header)
-	b, err := io.ReadAll(resp.Body)
+	// GitHub's own pages are far smaller; never read without bound.
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 	if err != nil {
 		return resp, err
+	}
+	if len(b) > maxResponse {
+		return resp, fmt.Errorf("%s %s: response larger than %d bytes", method, path, maxResponse)
 	}
 	if resp.StatusCode/100 != 2 {
 		ae := &APIError{Method: method, Path: path, Status: resp.StatusCode}

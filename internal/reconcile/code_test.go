@@ -166,7 +166,8 @@ func TestPrepareSubmitSwapsInGerritsCommit(t *testing.T) {
 	pr1.Stack = &github.PRStack{Number: 30}
 	pr2.Stack = &github.PRStack{Number: 30}
 	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, PR: 10, Branch: "main", Origin: "gerrit", HeadBranch: "gerrit/I1", Lifecycle: "NEW"}})
-	s.save(ctx, store, 2, &state.Change{State: state.ChangeState{Change: 2, PR: 20, Branch: "main", Origin: "gerrit", HeadBranch: "gerrit/I2", Lifecycle: "NEW"}})
+	s.save(ctx, store, 2, &state.Change{State: state.ChangeState{Change: 2, PR: 20, Branch: "main", Origin: "gerrit", HeadBranch: "gerrit/I2", Lifecycle: "NEW"},
+		Revisions: []state.Revision{{PatchSet: 2, GerritSHA: g2b, GitHubSHA: h2}}})
 
 	if err := c.PrepareSubmit(ctx, 2); err != nil {
 		t.Fatal(err)
@@ -475,6 +476,30 @@ func TestObserveHistory(t *testing.T) {
 // /submit of a GitHub-born PR: the author's branch gets Gerrit's squash,
 // so GitHub shows it merged; a fork that does not allow maintainer edits
 // is left alone (and closed with a notice later).
+// A push the bridge has not imported yet is never overwritten: the PR is
+// closed with a notice after the merge instead.
+func TestPrepareSubmitKeepsUnimportedPush(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	h2 := s.commit(m0, "f.txt", "2\n", "done")
+	sq := s.commit(m0, "f.txt", "2\n", "Feature\n\nChange-Id: "+cid(1)+"\n")
+	h3 := s.commit(h2, "f.txt", "3\n", "pushed just now")
+	s.change(1, cid(1), sq, "Feature\n\nChange-Id: "+cid(1)+"\n", "NEW")
+	s.push("github.git", h3, "refs/heads/feature")
+	s.pr(10, "feature", h3, "main", "brt")
+	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, PR: 10, Branch: "main", Origin: "github", HeadBranch: "feature", Lifecycle: "NEW"},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: sq, GitHubSHA: h2}}})
+	if err := c.PrepareSubmit(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ref("github.git", "refs/heads/feature"); got != h3 {
+		t.Errorf("feature = %s, want the unimported push %s kept", short(got), short(h3))
+	}
+}
+
 func TestPrepareSubmitSwapsGitHubBornBranch(t *testing.T) {
 	s := newSites(t)
 	ctx := context.Background()

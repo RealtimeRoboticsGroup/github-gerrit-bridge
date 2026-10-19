@@ -178,11 +178,13 @@ func (c *Checks) isTrusted(ctx context.Context, account int) (trusted, known boo
 
 func latestCIRun(ch *gerrit.ChangeInfo, ps int, re *regexp.Regexp, account string) ciRun {
 	var run ciRun
-	if re == nil {
+	if re == nil || account == "" {
+		// Unknown CI account: anyone can post "Build Succeeded: <url>",
+		// and the link would be theirs.
 		return run
 	}
 	for _, m := range ch.Messages { // oldest first
-		if m.RevisionNumber != ps || isBridgeTag(m.Tag) || (account != "" && !strings.EqualFold(m.Author.Username, account)) {
+		if m.RevisionNumber != ps || isBridgeTag(m.Tag) || !strings.EqualFold(m.Author.Username, account) {
 			continue // not from CI: mirrored from GitHub, or someone else
 		}
 		if sm := re.FindStringSubmatch(m.Message); len(sm) >= 3 {

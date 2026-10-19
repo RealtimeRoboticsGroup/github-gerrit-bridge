@@ -1,7 +1,9 @@
 # Example bridge configuration. Secrets live in the files named by *_file.
 
-# HTTP listener for GitHub webhooks (POST /webhook) and GET /healthz.
-listen: ":8080"
+# HTTP listener for GitHub webhooks (POST /webhook), /checks and GET
+# /healthz. Plain HTTP: put a TLS proxy in front, and expose only /webhook
+# and /checks/ through it. The default is 127.0.0.1:8080.
+listen: "127.0.0.1:8080"
 workers: 4
 # Full resync this often, in case events or webhooks were missed.
 resync_interval: 30m
@@ -35,6 +37,9 @@ github:
   owner: frc971
   repo: 971-Robot-Code
   webhook_secret_file: /etc/github-gerrit-bridge/webhook-secret
+  # Optional: accept deliveries only from GitHub's "hooks" ranges
+  # (https://api.github.com/meta), if the bridge sees GitHub's addresses.
+  # webhook_allowed_networks: [192.30.252.0/22, 185.199.108.0/22, 140.82.112.0/20, 143.55.64.0/20]
   # API token: either a file, or a command that prints one.
   token_command: [gh, auth, token]
   # token_file: /etc/github-gerrit-bridge/github-token
@@ -58,6 +63,9 @@ ci:
   trusted_group: Verified Users
   # Labels voted by CI; mirrored as gerrit/<Label> statuses.
   labels: [Verified]
+  # CI's Gerrit account. Without Buildkite, only its messages set the
+  # gerrit/Verified link; unset, none do.
+  account: buildkite
   # CI messages: group 1 Started|Succeeded|Failed, group 2 the build URL.
   message_pattern: 'Build (Started|Succeeded|Failed): (\S+)'
   # Read CI results from Buildkite rather than from CI's Gerrit messages,

@@ -1067,14 +1067,16 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 		if pr.State != "open" {
 			continue
 		}
-		if pr.Head.SHA != ch.CurrentRevision {
+		rev, ok := ch.Current()
+		switch {
+		case pr.Head.SHA == ch.CurrentRevision || !ok:
+		case !st.Mirrors(ch.CurrentRevision, pr.Head.SHA):
+			// A push not imported yet: never overwritten.
+			c.Logger.Warn("PR head is not the patch set being submitted; not swapping it", "change", ch.Number, "pr", pr.Number, "head", pr.Head.SHA)
+		default:
 			// GitHub's head is the patch sets' history (Gerrit-born) or the
 			// commits Gerrit squashed (GitHub-born): swap in Gerrit's
 			// commit, which has the same files.
-			rev, ok := ch.Current()
-			if !ok {
-				continue
-			}
 			url, branch := c.GitHubURL, st.State.HeadBranch
 			if fork, b, isFork := github.SplitHeadKey(st.State.HeadBranch); isFork {
 				if !pr.MaintainerCanModify {

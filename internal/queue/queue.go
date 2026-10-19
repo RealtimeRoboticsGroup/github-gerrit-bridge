@@ -22,10 +22,16 @@ type Queue[K comparable] struct {
 	dirty      map[K]struct{} // keys that need processing (queued or re-queued)
 	processing map[K]struct{} // keys a worker holds
 	failures   map[K]int      // consecutive failures, for Retry backoff
+	started    map[K]time.Time
 	shutdown   bool
 
 	// MinRetry and MaxRetry bound the exponential backoff used by Retry.
 	MinRetry, MaxRetry time.Duration
+	// MinInterval is the least time between the starts of two runs of
+	// one key: a key added again and again (a stranger commenting
+	// non-stop) runs at most this often, so it cannot spend the whole API
+	// budget. Others are not delayed.
+	MinInterval time.Duration
 }
 
 // New returns an empty queue with a 1s..5m retry backoff.
@@ -34,6 +40,7 @@ func New[K comparable]() *Queue[K] {
 		dirty:      map[K]struct{}{},
 		processing: map[K]struct{}{},
 		failures:   map[K]int{},
+		started:    map[K]time.Time{},
 		MinRetry:   time.Second,
 		MaxRetry:   5 * time.Minute,
 	}
@@ -112,6 +119,7 @@ func (q *Queue[K]) Get() (k K, ok bool) {
 	q.order = q.order[1:]
 	delete(q.dirty, k)
 	q.processing[k] = struct{}{}
+	q.started[k] = time.Now()
 	return k, true
 }
 
@@ -121,6 +129,22 @@ func (q *Queue[K]) Done(k K) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	delete(q.processing, k)
+	started := q.started[k]
+	delete(q.started, k)
+	if _, ok := q.dirty[k]; ok && !q.shutdown {
+		// Still dirty while it waits, so Add does not queue it sooner.
+		if wait := q.MinInterval - time.Since(started); wait > 0 {
+			time.AfterFunc(wait, func() { q.requeue(k) })
+			return
+		}
+		q.order = append(q.order, k)
+		q.cond.Signal()
+	}
+}
+
+func (q *Queue[K]) requeue(k K) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	if _, ok := q.dirty[k]; ok && !q.shutdown {
 		q.order = append(q.order, k)
 		q.cond.Signal()

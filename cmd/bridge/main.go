@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -182,6 +183,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	}
 
 	q := queue.New[reconcile.Key]()
+	// One PR's events (a stranger commenting non-stop, say) reconcile it
+	// at most this often, so they cannot spend the whole GitHub budget.
+	q.MinInterval = 10 * time.Second
 	router := reconcile.NewRouter(cfg.Gerrit.Project, q, logger)
 	router.Pushers = &reconcile.Pushers{}
 	stream := &events.Stream{
@@ -193,11 +197,17 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	repo := cfg.GitHub.Owner + "/" + cfg.GitHub.Repo
 
 	mux := http.NewServeMux()
+	var allowed []*net.IPNet
+	for _, n := range cfg.GitHub.WebhookAllowedNetworks {
+		_, ipn, _ := net.ParseCIDR(n) // validated by config
+		allowed = append(allowed, ipn)
+	}
 	mux.Handle("POST /webhook", &github.WebhookHandler{
 		Secret:  []byte(webhookSecret),
 		Repo:    repo,
 		Deliver: router.Delivery,
 		Logger:  logger,
+		Allowed: allowed,
 	})
 	if builds != nil {
 		// Public, for the bridge-checks plugin in Gerrit users' browsers.
@@ -214,7 +224,13 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			AllowOrigin: origin, Logger: logger,
 		})
 	}
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		// Details only for this host (monitoring): the rate budget and
+		// queue depth would tell an attacker when the bridge is starved.
+		if !fromLoopback(r) {
+			fmt.Fprint(w, "ok\n")
+			return
+		}
 		last := "never"
 		if t := stream.LastEvent(); !t.IsZero() {
 			last = t.UTC().Format(time.RFC3339)
@@ -362,4 +378,12 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	q.ShutDown()
 	wg.Wait()
 	return err
+}
+
+// fromLoopback reports whether r came from this host, directly (not
+// through a proxy, which would say so in X-Forwarded-For).
+func fromLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	ip := net.ParseIP(host)
+	return err == nil && ip != nil && ip.IsLoopback() && r.Header.Get("X-Forwarded-For") == "" && r.Header.Get("Forwarded") == ""
 }

@@ -143,3 +143,29 @@ func TestRetryBackoff(t *testing.T) {
 		t.Errorf("after Forget, delay %v > MinRetry", d)
 	}
 }
+
+// A key added again and again runs at most once per MinInterval; other
+// keys are not held up.
+func TestMinInterval(t *testing.T) {
+	q := New[string]()
+	q.MinInterval = 200 * time.Millisecond
+	q.Add("spam")
+	k, _ := q.Get()
+	start := time.Now()
+	q.Add("spam") // while processing
+	q.Done(k)
+	q.Add("other")
+	if k, _ := q.Get(); k != "other" {
+		t.Fatalf("got %q first, want other (spam waits)", k)
+	}
+	q.Done("other")
+	q.Add("spam") // while it waits: still once
+	k, _ = q.Get()
+	if k != "spam" || time.Since(start) < q.MinInterval {
+		t.Errorf("got %q after %v", k, time.Since(start))
+	}
+	q.Done(k)
+	if q.Len() != 0 {
+		t.Errorf("queued %d more", q.Len())
+	}
+}
