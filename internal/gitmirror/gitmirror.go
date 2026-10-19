@@ -81,16 +81,26 @@ func (e *Error) Unwrap() error { return e.Err }
 // Init creates the bare repository if needed and points origin at Remote.
 func (r *Repo) Init(ctx context.Context) error {
 	if _, err := os.Stat(r.Dir + "/HEAD"); errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(r.Dir, 0o755); err != nil {
+		// Only the bridge's: it holds refs/bridge/*, the identity pins
+		// included, and every change's code, private ones too.
+		if err := os.MkdirAll(r.Dir, 0o700); err != nil {
 			return err
 		}
 		if _, err := r.Git(ctx, nil, "init", "--bare", "--quiet"); err != nil {
 			return err
 		}
 	}
+	if err := os.Chmod(r.Dir, 0o700); err != nil {
+		return err
+	}
 	// Keep a commit-graph as fetches bring history in: ancestry checks
 	// (one per open change per reconcile) then stay cheap on a long one.
 	if _, err := r.Git(ctx, nil, "config", "fetch.writeCommitGraph", "true"); err != nil {
+		return err
+	}
+	// Credentials go only where the bridge sends them, as with its HTTP
+	// clients.
+	if _, err := r.Git(ctx, nil, "config", "http.followRedirects", "false"); err != nil {
 		return err
 	}
 	if _, err := r.Git(ctx, nil, "remote", "get-url", "origin"); err != nil {

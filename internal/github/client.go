@@ -144,6 +144,13 @@ func (e *APIError) Error() string {
 }
 
 // IsNotFound reports whether err is a 404 from GitHub.
+// sameOrigin reports whether URLs a and b have the same scheme and host.
+func sameOrigin(a, b string) bool {
+	ua, err1 := url.Parse(a)
+	ub, err2 := url.Parse(b)
+	return err1 == nil && err2 == nil && ua.Scheme == ub.Scheme && strings.EqualFold(ua.Host, ub.Host)
+}
+
 func IsNotFound(err error) bool {
 	var ae *APIError
 	return errors.As(err, &ae) && ae.Status == http.StatusNotFound
@@ -170,13 +177,17 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) (*htt
 			return nil, err
 		}
 	}
+	base := c.BaseURL
+	if base == "" {
+		base = DefaultBaseURL
+	}
 	u := path
 	if !strings.HasPrefix(path, "https://") && !strings.HasPrefix(path, "http://") {
-		base := c.BaseURL
-		if base == "" {
-			base = DefaultBaseURL
-		}
 		u = strings.TrimRight(base, "/") + path
+	} else if !sameOrigin(u, base) {
+		// Absolute URLs come from GitHub's Link headers: the token goes
+		// to GitHub only.
+		return nil, fmt.Errorf("github: refusing to send the token to %s", u)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(body))
 	if err != nil {

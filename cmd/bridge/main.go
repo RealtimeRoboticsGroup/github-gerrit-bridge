@@ -83,8 +83,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		return err
 	}
 
-	for _, f := range []string{cfg.Gerrit.HTTPPasswordFile, cfg.GitHub.WebhookSecretFile, cfg.GitHub.TokenFile,
-		cfg.Gerrit.SSH.KeyFile, cfg.Gerrit.SSH.PeerKeyFile} {
+	for _, f := range secretFiles(cfg) {
 		if f != "" && config.LooseSecret(f) {
 			logger.Warn("secret file is readable by others; make it 0600 (the peer key can act as anyone in Gerrit)", "file", f)
 		}
@@ -400,3 +399,13 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 // noRedirects keeps the bridge's credentials going only where it sent
 // them: a redirect is answered as it is, and fails as a non-2xx.
 func noRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+// secretFiles are cfg's secret and key files.
+func secretFiles(cfg *config.Config) []string {
+	secrets := []string{cfg.Gerrit.HTTPPasswordFile, cfg.GitHub.WebhookSecretFile, cfg.GitHub.TokenFile,
+		cfg.Gerrit.SSH.KeyFile, cfg.Gerrit.SSH.PeerKeyFile}
+	if cfg.CI.Buildkite != nil {
+		secrets = append(secrets, cfg.CI.Buildkite.TokenFile)
+	}
+	return secrets
+}

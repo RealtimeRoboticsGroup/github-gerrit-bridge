@@ -15,3 +15,12 @@ func TestSuexecRefusesNamesGerritReadsAsOtherAccounts(t *testing.T) {
 		}
 	}
 }
+
+// Git runs GIT_SSH_COMMAND through the shell.
+func TestShellQuote(t *testing.T) {
+	for in, want := range map[string]string{"/a b/key": `'/a b/key'`, "it's": `'it'\''s'`, "$(x)": `'$(x)'`} {
+		if got := shellQuote(in); got != want {
+			t.Errorf("shellQuote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

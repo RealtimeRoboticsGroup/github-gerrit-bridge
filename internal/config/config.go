@@ -223,6 +223,10 @@ func (c *Config) validate() error {
 		req("ci.buildkite.organization", b.Organization)
 		req("ci.buildkite.pipeline", b.Pipeline)
 		req("ci.buildkite.token_file", b.TokenFile)
+		// Its token goes with every request.
+		if u, err := url.Parse(b.APIURL); b.APIURL != "" && (err != nil || (u.Scheme != "https" && !loopback(u.Hostname()))) {
+			errs = append(errs, errors.New("ci.buildkite.api_url must be https (or a loopback address)"))
+		}
 	}
 	if c.CI.ChecksURL != "" && c.CI.Buildkite == nil {
 		errs = append(errs, errors.New("ci.checks_url needs ci.buildkite"))

@@ -535,3 +535,18 @@ func TestGraphQLAnswerRacingAChangeIsNotKept(t *testing.T) {
 		t.Errorf("queries = %v", f.queries)
 	}
 }
+
+// The token goes to GitHub only: an absolute URL elsewhere (a Link header
+// pointing off-site, say) is refused.
+func TestDoSendsTheTokenOnlyToGitHub(t *testing.T) {
+	got := ""
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got = r.Header.Get("Authorization") }))
+	defer elsewhere.Close()
+	c := &Client{BaseURL: "https://api.github.com", Tokens: StaticToken("secret")}
+	if _, err := c.Do(context.Background(), http.MethodGet, elsewhere.URL+"/x", nil, nil); err == nil || got != "" {
+		t.Errorf("err = %v, token sent: %q", err, got)
+	}
+	if !sameOrigin("https://api.github.com/x?page=2", "https://API.github.com") || sameOrigin("http://api.github.com/x", "https://api.github.com") {
+		t.Error("sameOrigin")
+	}
+}

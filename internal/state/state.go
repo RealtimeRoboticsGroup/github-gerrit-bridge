@@ -159,7 +159,14 @@ type Store struct {
 	// (commits never change); a commit's entry goes when its change moves
 	// on, so the cache holds one version per change.
 	files map[string]map[string][]byte
+	// filesBytes is the size of what files holds, bounded by
+	// maxCachedState.
+	filesBytes int
 }
+
+// maxCachedState bounds the state file cache, in bytes (a var for
+// tests). Past it the cache starts over: forgetting costs a git command.
+var maxCachedState = 64 << 20
 
 // head is change n's state commit ("" for none).
 func (s *Store) head(ctx context.Context, n int) (string, error) {
@@ -184,6 +191,9 @@ func (s *Store) setHead(n int, commit string) {
 		return
 	}
 	if old, ok := s.refs[n]; ok && old != commit {
+		for _, b := range s.files[old] {
+			s.filesBytes -= len(b)
+		}
 		delete(s.files, old)
 	}
 	if commit == "" {
@@ -215,9 +225,10 @@ func (s *Store) file(ctx context.Context, ver, name string) ([]byte, bool, error
 	if !s.isHead(ver) {
 		return b, b != nil, nil // only current state is cached
 	}
-	if s.files == nil {
-		s.files = map[string]map[string][]byte{}
+	if s.files == nil || s.filesBytes+len(b) > maxCachedState {
+		s.files, s.filesBytes = map[string]map[string][]byte{}, 0
 	}
+	s.filesBytes += len(b)
 	if s.files[ver] == nil {
 		s.files[ver] = map[string][]byte{}
 	}

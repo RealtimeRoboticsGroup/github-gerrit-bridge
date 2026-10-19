@@ -1211,7 +1211,12 @@ defenses, by threat:
   `/healthz` (rate budget, queue depth) is for probes and monitoring
   inside the deployment, not for the proxy to expose. The bridge's HTTP
   clients never follow redirects (credentials go only where it sent
-  them), and it warns at startup about secret files others can read. `gerrit.url` must be https unless it is a loopback
+  them; nor does git, in the mirror), the GitHub token goes only to
+  GitHub's API host (even for a Link header's URL), `ci.buildkite.api_url`
+  must be https too, the peer key's paths are quoted for the shell that
+  runs `GIT_SSH_COMMAND`, which also ignores the system's known hosts,
+  and it warns at startup about secret files others can read,
+  Buildkite's token included. `gerrit.url` must be https unless it is a loopback
   address, since every request carries the bridge's password. Responses
   from Gerrit and GitHub are read only up to a bound.
 - **PRs GitHub will not take.** A description is cut to fit GitHub's
@@ -1390,6 +1395,10 @@ instance (`internal/testgerrit`) is set up this way.
   bridged repository (§7), and its webhook (`/plugins/github-plugin/webhook`)
   has a secret (`github.webhookSecret`); without one it accepts unsigned
   deliveries (seen on the test site).
+- **The bridge's files**: its mirror (which holds `refs/bridge/*`, the
+  identity pins included, and every change's code, private ones too) is
+  made 0700; keep its logs, which name changes and accounts, as private
+  (third audit).
 - **The peer key** (`gerrit.ssh.peer_key_file`) can run any SSH command as
   any account, administrators included: a credential for the whole site.
   Keep it only on the bridge's host, mode 600, and rotate it if in doubt.

@@ -25,6 +25,7 @@ SECOND="${SECOND:-AustinSchuhBRT}"
 UNITS="${HOME}/.config/systemd/user"
 
 mkdir -p "${TE}/bin" "${TE}/logs" "${UNITS}"
+chmod 700 "${TE}/logs"  # debug logs name every change, private ones too
 cd "${WS}"
 for t in testgerrit fakebuildkite bridge; do
   bazel run --script_path="${TE}/bin/${t}" "//cmd/${t}" 2>/dev/null

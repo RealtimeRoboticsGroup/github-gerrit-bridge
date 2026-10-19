@@ -82,8 +82,9 @@ func (u SuexecUploader) Upload(ctx context.Context, user, commit, target string,
 		return fmt.Errorf("refusing to upload as %q: not a plain username", user)
 	}
 	remote := "ssh://" + url.PathEscape("Gerrit Code Review") + "@" + u.Address + "/" + u.Project
+	// Git runs GIT_SSH_COMMAND through the shell: the paths are quoted.
 	ssh := "ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=30 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" +
-		" -o UserKnownHostsFile=" + u.KnownHostsFile + " -i " + u.PeerKeyFile
+		" -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile=" + shellQuote(u.KnownHostsFile) + " -i " + shellQuote(u.PeerKeyFile)
 	out, err := u.Mirror.GitEnv(ctx, []string{"GIT_SSH_COMMAND=" + ssh}, nil,
 		"push", "--receive-pack=suexec --as "+user+" -- git-receive-pack", remote, commit+":"+refsFor(target, opts))
 	return uploadResult(out, err)
@@ -91,3 +92,6 @@ func (u SuexecUploader) Upload(ctx context.Context, user, commit, target string,
 
 // CanActAs implements Uploader.
 func (SuexecUploader) CanActAs() bool { return true }
+
+// shellQuote quotes s for sh.
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

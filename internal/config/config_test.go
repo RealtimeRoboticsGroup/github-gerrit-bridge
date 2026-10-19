@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	_ "embed"
 	"os"
 	"path/filepath"
@@ -128,6 +129,16 @@ func TestSafeDefaults(t *testing.T) {
 func TestGerritURLMustBeHTTPS(t *testing.T) {
 	for url, ok := range map[string]bool{"http://gerrit.example.com": false, "http://127.0.0.1:18080/gerrit": true, "http://localhost:8080": true, "https://gerrit.example.com": true} {
 		_, err := Parse([]byte(strings.Replace(full, "https://gerrit.example.com/", url, 1)))
+		if (err == nil) != ok {
+			t.Errorf("%s: err = %v", url, err)
+		}
+	}
+}
+
+func TestBuildkiteURLMustBeHTTPS(t *testing.T) {
+	bk := "ci:\n  buildkite:\n    organization: o\n    pipeline: p\n    token_file: /x\n    api_url: %s\n"
+	for url, ok := range map[string]bool{"http://buildkite.example.com": false, "http://127.0.0.1:18090": true, "https://api.buildkite.com": true} {
+		_, err := Parse([]byte(full + fmt.Sprintf(bk, url)))
 		if (err == nil) != ok {
 			t.Errorf("%s: err = %v", url, err)
 		}

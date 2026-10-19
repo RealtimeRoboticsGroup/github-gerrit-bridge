@@ -2,6 +2,7 @@ package gitmirror
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -28,6 +29,10 @@ func TestInitIdempotentAndRevParse(t *testing.T) {
 	if err := r.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
+	os.Chmod(r.Dir, 0o755) // made before mirrors were private
+	if err := r.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
 	r.Remote = "/b"
 	if err := r.Init(ctx); err != nil {
 		t.Fatal(err)
@@ -35,6 +40,12 @@ func TestInitIdempotentAndRevParse(t *testing.T) {
 	out, _ := r.Git(ctx, nil, "remote", "get-url", "origin")
 	if strings.TrimSpace(string(out)) != "/b" {
 		t.Errorf("origin = %q", out)
+	}
+	if out, _ := r.Git(ctx, nil, "config", "http.followRedirects"); strings.TrimSpace(string(out)) != "false" {
+		t.Errorf("http.followRedirects = %q", out)
+	}
+	if fi, err := os.Stat(r.Dir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("mirror mode %v (%v), want 0700", fi.Mode().Perm(), err)
 	}
 	if out, _ := r.Git(ctx, nil, "config", "fetch.writeCommitGraph"); strings.TrimSpace(string(out)) != "true" {
 		t.Errorf("fetch.writeCommitGraph = %q", out)

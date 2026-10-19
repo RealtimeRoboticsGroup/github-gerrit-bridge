@@ -327,6 +327,35 @@ func TestFileCacheKeepsOnlyCurrentState(t *testing.T) {
 	if len(st.files) != 1 {
 		t.Errorf("cache holds %d versions, want 1", len(st.files))
 	}
+	held := 0
+	for _, b := range st.files[st.refs[5]] {
+		held += len(b)
+	}
+	if held != st.filesBytes {
+		t.Errorf("cache counts %d bytes, holds %d", st.filesBytes, held)
+	}
+	// And at most maxCachedState bytes, across changes.
+	defer func(m int) { maxCachedState = m }(maxCachedState)
+	maxCachedState = 2000
+	for n := 10; n < 40; n++ {
+		c := sample()
+		c.State.Change = n
+		if err := st.Save(ctx, n, c, "save"); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := st.Load(ctx, n); err != nil || got.State.Change != n {
+			t.Fatalf("load %d: %+v %v", n, got.State, err)
+		}
+		total := 0
+		for _, files := range st.files {
+			for _, b := range files {
+				total += len(b)
+			}
+		}
+		if total > maxCachedState || total != st.filesBytes {
+			t.Fatalf("cache holds %d bytes (counted %d), bound %d", total, st.filesBytes, maxCachedState)
+		}
+	}
 }
 
 // A failed refresh after a conflict (Gerrit unreachable, say) must not
