@@ -8,7 +8,7 @@ by hand before it goes near the real Gerrit:
 | Gerrit 3.14.4 | `http://127.0.0.1:18080/gerrit/`, ssh `127.0.0.1:29418`, site `~/tmp/gerrit-test` | real, with AOS's github plugin build and settings: you log in with GitHub |
 | Replication | Gerrit's bundled plugin → `github.com/AustinSchuh/bridge-scratch`, configured like AOS's (default 15s `replicationDelay`, `rescheduleDelay = 15`, heads and tags, `force`), pushing over SSH with a deploy key | real |
 | Other plugins | the rest of AOS's `plugins/` (all bundled in the war): codemirror-editor, commit-message-length-validator, delete-project, download-commands, gitiles, hooks, plugin-manager, reviewnotes, singleusergroup, webhooks | real |
-| CI | your `gerrit-buildkite` (`~/tmp/gerrit-buildkite`, plus two local commits: `-api_url`, and building a patch set only if its real uploader is authorized, read over REST with `-gerrit_url`/`-http_password_file`) | real |
+| CI | your `gerrit-buildkite` (`~/tmp/gerrit-buildkite`, plus three local commits: `-api_url`; building a patch set only if its real uploader is authorized, read over REST with `-gerrit_url`/`-http_password_file`; and trusting a patch set's code by account, with commit-message edits taking the trust of the patch set below) | real |
 | Buildkite | `cmd/fakebuildkite` on `http://127.0.0.1:18090`: builds with two jobs, Build and Test, and the builds-by-commit API the bridge reads | stand-in |
 | Checks tab | `plugins/bridge-checks.js`, fetching from the bridge's `/checks` | real |
 | The bridge | `cmd/bridge`, config `~/tmp/gerrit-test/bridge/bridge-scratch.yaml` | real |

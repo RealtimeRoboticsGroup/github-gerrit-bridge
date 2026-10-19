@@ -1392,7 +1392,12 @@ instance (`internal/testgerrit`) is set up this way.
   uploader: with it, anyone could put their code under a trusted
   uploader's name. CI (gerrit-buildkite) must also check a patch set's
   *real* uploader, which Gerrit records for such rebases, not only the
-  one it names (second audit, confirmed live).
+  one it names (second audit, confirmed live), by account, not username;
+  and a commit-message edit's editor must neither make a stranger's code
+  trusted nor make a trusted change untrusted (the bridge's mirrored PR
+  edits are on the user's behalf): its trust is the patch set below's
+  (third audit). Run it with `-gerrit_url` (https) and
+  `-http_password_file` for its account.
 - **Administrators' `abandon` and `toggleWipState`** on the bridged
   project's `refs/heads/*` (Administrate Server is not applied through
   Run-As), not on All-Projects.
