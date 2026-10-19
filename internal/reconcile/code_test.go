@@ -1175,6 +1175,25 @@ func TestImportFetchChecksObjects(t *testing.T) {
 	}
 }
 
+// A head too slow to fetch is refused, not fetched over and over.
+func TestImportRefusesHeadsTooSlowToFetch(t *testing.T) {
+	defer func(a, o time.Duration) { fetchAllTimeout, fetchOneTimeout = a, o }(fetchAllTimeout, fetchOneTimeout)
+	fetchAllTimeout, fetchOneTimeout = time.Nanosecond, time.Nanosecond
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	h := s.commit(m1, "big.txt", "big\n", "Big")
+	s.push("github.git", h, "refs/heads/big")
+	s.pr(70, "big", h, "main", "austin")
+	if err := im.Import(context.Background(), "main"); err != nil {
+		t.Fatal(err)
+	}
+	if sts := s.statuses[h]; len(up.uploads) != 0 || len(sts) != 1 || sts[0].State != "failure" || !strings.Contains(sts[0].Description, "too big") {
+		t.Errorf("uploads %v, gerrit/sync %+v", up.uploads, sts)
+	}
+	if why := im.refusedWhy(70, h); why == "" {
+		t.Error("not refused")
+	}
+}
+
 // Closed PRs' heads do not stay in the mirror, and a same-repo branch
 // named like a fork PR's ref does not collide with it.
 func TestImportRefsDoNotPileUpOrCollide(t *testing.T) {

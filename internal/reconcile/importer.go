@@ -293,13 +293,20 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		specs[l] = spec
 		all = append(all, spec)
 	}
-	fetch := func(specs ...string) error {
-		_, err := im.Mirror.GitEnv(ctx, env, nil, append([]string{"-c", fsckFetch, "fetch", "--quiet", im.GitHubURL}, specs...)...)
+	// Size limits apply once a head is fetched: a deadline bounds what a
+	// huge one costs first (git has no fetch-side size limit).
+	fetch := func(timeout time.Duration, specs ...string) error {
+		fctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		_, err := im.Mirror.GitEnv(fctx, env, nil, append([]string{"-c", fsckFetch, "fetch", "--quiet", im.GitHubURL}, specs...)...)
+		if fctx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			return errFetchTooSlow
+		}
 		return err
 	}
 	var retry error // a PR head that could not be fetched for now
 	if len(all) > 0 {
-		if err := fetch(all...); err != nil {
+		if err := fetch(fetchAllTimeout, all...); err != nil {
 			// One PR's bad objects must not stop the others: fetch each
 			// alone. A head that fails git's object checks is refused for
 			// good; one that fails otherwise (a new PR's head GitHub has
@@ -308,10 +315,14 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 				if specs[l] == "" {
 					continue
 				}
-				ferr := fetch(specs[l])
+				ferr := fetch(fetchOneTimeout, specs[l])
 				var ge *gitmirror.Error
 				switch {
 				case ferr == nil:
+				case errors.Is(ferr, errFetchTooSlow):
+					failed[l] = fmt.Sprintf("Fetching it took more than %v: too big to import", fetchOneTimeout)
+					im.refuse(l.pr.Number, l.pr.Head.SHA, failed[l])
+					im.Logger.Warn("PR head too slow to fetch", "pr", l.pr.Number)
 				case errors.As(ferr, &ge) && strings.Contains(ge.Stderr, "fsck error"):
 					failed[l] = "Its commits fail git's object checks (fsck), so they are not imported"
 					im.refuse(l.pr.Number, l.pr.Head.SHA, failed[l])
@@ -892,6 +903,13 @@ func (im *Importer) parentTrusted(ctx context.Context, parent, branch, user stri
 	}
 	return false, nil
 }
+
+// Fetch deadlines: all open PRs' heads at once, then each alone.
+var (
+	fetchAllTimeout = 5 * time.Minute
+	fetchOneTimeout = 2 * time.Minute
+	errFetchTooSlow = errors.New("fetch took too long")
+)
 
 // pusherWait is how long after a PR opens its first import waits for
 // GitHub to say who pushed its head.

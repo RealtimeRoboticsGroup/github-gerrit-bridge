@@ -1141,7 +1141,9 @@ defenses, by threat:
   checked by git as it arrives (`fetch.fsckObjects`), so malformed trees
   and `.gitmodules` tricks never reach the mirror or Gerrit; a PR that
   fails is refused on its own (the others still import), and a head
-  refused for its objects or size is not fetched again (keyed by PR as
+  refused for its objects or size is not fetched again; nor is one that
+  took more than two minutes to fetch, since git has no fetch-side size
+  limit and the limits apply once a head is in (keyed by PR as
   well, since anyone can open a PR listing someone else's head and then
   move it). An import that fails or waits does not hold back exporting
   the branch's Gerrit changes (third audit). A stack's upper
