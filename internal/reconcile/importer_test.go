@@ -87,24 +87,26 @@ func TestSquashIsDeterministicAndKeepsTree(t *testing.T) {
 	}
 }
 
-func TestNoOpSquash(t *testing.T) {
+// A PR's own commit is never uploaded as it is, even a single commit
+// with the right Change-Id on the right parent: Gerrit reads Change-Ids
+// in more ways than the bridge checks, so the upload always carries the
+// bridge's own message.
+func TestSquashNeverUploadsThePRsCommit(t *testing.T) {
 	im, g := newImportEnv(t)
 	base := g.commit("a.txt", "base\n", "base")
 	cid := "I" + strings.Repeat("b", 40)
 	h := g.commit("a.txt", "x\n", "Do it\n\nChange-Id: "+cid)
 	who := gerrit.AccountInfo{Name: "Austin", Email: "austin@example.com"}
-	s, err := im.squash(context.Background(), &github.PullRequest{Title: "Do it"}, []string{h}, h, base, cid, "", who)
+	s, err := im.squash(context.Background(), &github.PullRequest{Title: "Do it", HTMLURL: "https://github.com/o/r/pull/1"}, []string{h}, h, base, cid, "", who)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s != h {
-		t.Errorf("single commit with the Change-Id was rewritten: %s != %s", s, h)
-	}
-	// Someone else pushing it must rewrite (committer must be the uploader).
-	s, _ = im.squash(context.Background(), &github.PullRequest{Title: "Do it"}, []string{h}, h, base, cid, "",
-		gerrit.AccountInfo{Name: "Alice", Email: "alice@example.com"})
 	if s == h {
-		t.Error("no-op squash used with a different committer")
+		t.Fatal("uploaded the PR's own commit")
+	}
+	msg := g.run("log", "-1", "--format=%B", s)
+	if id, ok := footerChangeID(msg); !ok || id != cid || !strings.Contains(msg, "GitHub-PR: ") {
+		t.Errorf("message %q", msg)
 	}
 }
 
@@ -244,7 +246,14 @@ func TestFooterChangeID(t *testing.T) {
 		// different one, or refuse.
 		{"Subject\n\nChange-Id: " + a + "\n\nChange-Id: " + b, "", false},
 		{"Subject\n\nChange-Id: " + a + "\n\nSigned-off-by: X <x@example.com>", "", false},
-		{"Subject\n\nchange-id: " + b, b, true},
+		// Anything Gerrit (JGit) might read differently is refused.
+		{"Subject\n\nchange-id: " + b, "", false},
+		{"Subject\n\n Change-Id: " + a, "", false},
+		{"Subject\n\nChange-Id : " + a, "", false},
+		{"Subject\n\nChange-Id: " + a + " trailing", "", false},
+		{"Subject\n\nLink: https://gerrit.example.com/id/" + b, "", false},
+		{"Subject\n\nChange-Id: " + a + "\nLink: https://g/id/" + b, "", false},
+		{"Subject\n\nLink: https://example.com/docs", "", true},
 		{"Subject\n\nChange-Id: " + a + "\nChange-Id: " + b, "", false},
 		{"Subject\n\nChange-Id: Inot-hex", "", false},
 	} {

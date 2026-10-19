@@ -1068,3 +1068,20 @@ func TestMergedKeyReadiesPRsForReplication(t *testing.T) {
 		t.Errorf("base = %s", s.pulls[10].Base.Ref)
 	}
 }
+
+// The same with a Link footer, which Gerrit also reads as a Change-Id.
+func TestImportRefusesLinkFooterToAnotherChange(t *testing.T) {
+	s, im, up, m1, _, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	im.Bridge.Email = "austin@example.com"
+	evil := s.commit(m1, "evil.txt", "x\n", "Evil\n\nChange-Id: "+cid(5)+"\nLink: http://127.0.0.1:18080/gerrit/id/"+ids[0]+"\n")
+	s.push("github.git", evil, "refs/heads/evil")
+	s.pr(50, "evil", evil, "main", "stranger")
+	before := s.changes[1].CurrentRevision
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if s.changes[1].CurrentRevision != before || len(up.uploads) != 0 {
+		t.Errorf("uploads %v; change 1 moved: %v", up.uploads, s.changes[1].CurrentRevision != before)
+	}
+}

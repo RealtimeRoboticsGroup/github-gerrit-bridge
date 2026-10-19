@@ -584,8 +584,9 @@ The scenarios:
   GitHub.**
   - To the same branch (`gerrit/<Change-Id>`, which collaborators may push
     to, or the user's own branch): GitHub moved, so the bridge imports a
-    new patch set. With one commit per layer and a Change-Id present, this
-    is a no-op squash with identical SHAs.
+    new patch set, with the bridge's own message (it never uploads the
+    PR's commit itself, so the SHAs differ even for one commit with a
+    Change-Id).
   - To a *new* branch with a new PR carrying the same Change-Id: the
     Change-Id is already linked to another PR, so the bridge refuses and
     points at the existing PR (§5.2 step 1).
@@ -1106,10 +1107,14 @@ defenses, by threat:
   heads are pruned from the mirror, and fetched branches
   (`refs/remotes/github/heads/…`) and fork PR heads
   (`refs/remotes/github/pull/N`) cannot collide. A Change-Id that belongs to another change is refused (§5.2).
-  The bridge reads a commit's Change-Id as Gerrit does (the footer of the
-  last paragraph, any case) and refuses commits with Change-Id lines
-  anywhere else, so it never checks one Change-Id while Gerrit files the
-  upload under another.
+  The bridge reads a PR commit's Change-Id only in its canonical form (one
+  `Change-Id: I<40 hex>` footer in the last paragraph) and refuses commits
+  with any other line that might name a change (other spellings or
+  spacing, more Change-Id lines, a `Link: …/id/I…` footer, which Gerrit
+  also reads). And it never uploads a PR's own commit: the upload always
+  carries the bridge's message with exactly one Change-Id, so Gerrit
+  files it under the change the bridge checked (second audit,
+  2026-10-19).
 - **Bridge markers.** `<!-- bridge:… -->` markers mark state (handled
   commands, comment mappings) only in comments by the bridge's own GitHub
   login, and only at the end, where the bridge writes them. Text it copies

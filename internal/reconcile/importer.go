@@ -88,18 +88,30 @@ func (e *syncError) Error() string { return e.msg }
 
 var changeIDTrailer = regexp.MustCompile(`(?m)^Change-Id: (I[0-9a-f]{40})\s*$`)
 
-// changeIDLine matches any line Gerrit might read as a Change-Id footer
-// (its keys are case-insensitive).
-var changeIDLine = regexp.MustCompile(`(?im)^[ \t]*change-id[ \t]*:[ \t]*(\S*)[ \t\r]*$`)
+// changeIDLine matches any line that might name a Change-Id, however it
+// is spelled or spaced (Gerrit's keys are case-insensitive, and JGit's
+// footer parsing has its own rules about spacing).
+var changeIDLine = regexp.MustCompile(`(?im)^[ \t]*change-id[ \t]*:[ \t]*(\S*).*$`)
 
-// footerChangeID returns the Change-Id Gerrit reads from msg: the
-// Change-Id footer of its last paragraph. ok is false when that is not
-// exactly one valid Change-Id, or when Change-Id lines appear anywhere
-// else: the bridge must never read a different Change-Id than Gerrit
-// will, or a PR could add patch sets to someone else's change.
+// changeLinkLine matches a Link footer naming a change, which Gerrit also
+// reads as a Change-Id (receive.enableChangeIdLinkFooters).
+var changeLinkLine = regexp.MustCompile(`(?im)^[ \t]*link[ \t]*:.*/id/I[0-9a-f].*$`)
+
+// canonicalChangeID is the one spelling the bridge accepts.
+var canonicalChangeID = regexp.MustCompile(`^Change-Id: (I[0-9a-f]{40})$`)
+
+// footerChangeID returns the Change-Id a PR commit names: its one
+// Change-Id footer, in its last paragraph, spelled exactly "Change-Id:
+// I<40 hex>". ok is false for anything else that might name a change
+// (another Change-Id line anywhere, any other spelling, a Link footer to
+// a change): the bridge must never pick a different change than Gerrit
+// would. The commit it uploads carries its own message anyway.
 func footerChangeID(msg string) (id string, ok bool) {
 	msg = strings.TrimSpace(strings.ReplaceAll(msg, "\r\n", "\n"))
-	all := changeIDLine.FindAllStringSubmatch(msg, -1)
+	if changeLinkLine.MatchString(msg) {
+		return "", false
+	}
+	all := changeIDLine.FindAllString(msg, -1)
 	if len(all) == 0 {
 		return "", true
 	}
@@ -107,14 +119,16 @@ func footerChangeID(msg string) (id string, ok bool) {
 	if i := strings.LastIndex(msg, "\n\n"); i >= 0 {
 		last = msg[i+2:]
 	}
-	footer := changeIDLine.FindAllStringSubmatch(last, -1)
-	if len(footer) != 1 || len(all) != 1 || !validChangeID.MatchString(footer[0][1]) {
+	footer := changeIDLine.FindAllString(last, -1)
+	if len(footer) != 1 || len(all) != 1 {
 		return "", false
 	}
-	return footer[0][1], true
+	sm := canonicalChangeID.FindStringSubmatch(strings.TrimRight(footer[0], " \t\r"))
+	if sm == nil {
+		return "", false
+	}
+	return sm[1], true
 }
-
-var validChangeID = regexp.MustCompile(`^I[0-9a-f]{40}$`)
 
 // Import imports every GitHub-born PR whose chain targets branch.
 func (im *Importer) Import(ctx context.Context, branch string) error {
@@ -778,7 +792,7 @@ func (im *Importer) pureRebase(ctx context.Context, commit, ref, parent, h strin
 // without Change-Id lines (the bridge adds its own).
 func prBodyForMessage(body string) string {
 	user, _ := splitBody(body)
-	user = unGitHub(changeIDLine.ReplaceAllString(user, ""))
+	user = unGitHub(changeLinkLine.ReplaceAllString(changeIDLine.ReplaceAllString(user, ""), ""))
 	user = signedOffBy.ReplaceAllString(user, "")
 	return strings.TrimSpace(user)
 }
@@ -819,12 +833,12 @@ func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []st
 	if len(f) != 7 {
 		return "", fmt.Errorf("parsing commit %s", h)
 	}
-	hParents, an, ae, ad, ce, cd, hMsg := f[0], f[1], f[2], f[3], f[4], f[5], f[6]
-	if len(own) == 1 && strings.TrimSpace(hParents) == parent && strings.EqualFold(ce, committer.Email) {
-		if id, ok := footerChangeID(hMsg); ok && id == changeID {
-			return h, nil // no-op squash: identical SHAs on both sides
-		}
-	}
+	// The PR's own commit is never uploaded as it is, even when it would
+	// fit: Gerrit reads Change-Ids in more ways than the bridge checks
+	// (Link footers, footer spelling), so the uploaded commit always
+	// carries the bridge's own message, with exactly one Change-Id
+	// (second audit, 2026-10-19).
+	_, an, ae, ad, cd := f[0], f[1], f[2], f[3], f[5]
 	// Sign-offs from every commit in the layer (oldest first) and from the
 	// PR description are kept; the squashed commit represents them all.
 	texts := []string{}
