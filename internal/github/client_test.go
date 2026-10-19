@@ -550,3 +550,11 @@ func TestDoSendsTheTokenOnlyToGitHub(t *testing.T) {
 		t.Error("sameOrigin")
 	}
 }
+
+// A full page of PRs (about 1.7 MB) is revalidated, not fetched in full
+// every time.
+func TestETagCacheKeepsAPageOfPRs(t *testing.T) {
+	if maxCachedBody < 100*17<<10 {
+		t.Errorf("a page of 100 PRs (%d bytes) is not cached (bound %d)", 100*17<<10, maxCachedBody)
+	}
+}

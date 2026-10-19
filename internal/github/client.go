@@ -72,11 +72,13 @@ func fullLastPage(u string, header http.Header, body []byte) bool {
 	return len(items) >= perPage
 }
 
-// Bounds on the ETag cache: entries, total and largest body kept.
+// Bounds on the ETag cache: entries, total and largest body kept. A page
+// of 100 PRs is about 1.7 MB (third audit: at 1 MB the open PR list,
+// asked for several times a reconcile, was never revalidated for free).
 const (
 	maxCachedResponses = 4096
 	maxCachedBytes     = 64 << 20
-	maxCachedBody      = 1 << 20
+	maxCachedBody      = 4 << 20
 )
 
 func (c *Client) cachedGet(u string) *cached {
