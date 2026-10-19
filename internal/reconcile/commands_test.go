@@ -10,6 +10,7 @@ import (
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
 type fakeSubmitter struct {
@@ -42,6 +43,15 @@ func (f *fakeSubmitter) SubmitAs(_ context.Context, user string, change int, rev
 
 func newCommands(t *testing.T) (*Commands, *fakeGitHub, *fakeSubmitter) {
 	e := newCommentsEnv(t) // change 5 linked to PR 1, lifecycle NEW
+	// Both patch sets the tests submit are on GitHub.
+	st, err := e.st.Load(context.Background(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Revisions = []state.Revision{{PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "sha2"}, {PatchSet: 3, GerritSHA: "sha3", GitHubSHA: "gh3"}}
+	if err := e.st.Save(context.Background(), 5, st, "revisions"); err != nil {
+		t.Fatal(err)
+	}
 	sub := &fakeSubmitter{}
 	return &Commands{GitHub: e.h, Submitter: sub, Store: e.st, Identity: &Users{Overrides: map[string]string{"AustinSchuh": "alice"}},
 		BridgeLogin: "bridge", Logger: slog.Default(), Now: func() time.Time { return time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC) }}, e.h, sub
@@ -186,6 +196,18 @@ func TestOldSubmitCommandsExpire(t *testing.T) {
 	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: posted})
 	c.Run(context.Background(), 5)
 	if len(sub.calls) != 0 || !strings.Contains(h.ics[len(h.ics)-1].Body, "old. Post it again") {
+		t.Errorf("calls=%v reply=%q", sub.calls, h.ics[len(h.ics)-1].Body)
+	}
+}
+
+// /submit is for a patch set its author could have seen: one on GitHub.
+func TestSubmitNeedsThePatchSetOnGitHub(t *testing.T) {
+	c, h, sub := newCommands(t)
+	posted := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	sub.rev, sub.uploaded = "sha4", posted.Add(-time.Minute) // uploaded in Gerrit, not exported yet
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: posted})
+	c.Run(context.Background(), 5)
+	if len(sub.calls) != 0 || !strings.Contains(h.ics[len(h.ics)-1].Body, "not on GitHub yet") {
 		t.Errorf("calls=%v reply=%q", sub.calls, h.ics[len(h.ics)-1].Body)
 	}
 }

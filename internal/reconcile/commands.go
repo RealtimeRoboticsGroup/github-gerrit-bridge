@@ -185,6 +185,20 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) st
 	if age := c.now().Sub(ic.CreatedAt); age > maxCommandAge {
 		return fmt.Sprintf("@%s: `/submit` was not run: it is more than %v old. Post it again.", ic.User.Login, maxCommandAge)
 	}
+	// And one the commenter could have seen: on GitHub. A patch set
+	// uploaded in Gerrit just before the comment may not be yet.
+	st, err := c.Store.Load(ctx, n)
+	if err != nil {
+		c.Logger.Warn("reading state for /submit", "change", n, "err", err)
+		return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not read its state (see its log). Post it again.", ic.User.Login)
+	}
+	seen := false
+	for _, r := range st.Revisions {
+		seen = seen || (r.GerritSHA == rev && r.GitHubSHA != "")
+	}
+	if !seen {
+		return fmt.Sprintf("@%s: `/submit` was not run: change %d's current patch set is not on GitHub yet. Post it again once it is.", ic.User.Login, n)
+	}
 	// Check first, so PRs are only reshaped for a submit that will happen.
 	if ok, why, err := c.Submitter.CanSubmitAs(ctx, user, n, rev); err != nil || !ok {
 		if err != nil {

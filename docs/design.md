@@ -1188,7 +1188,8 @@ defenses, by threat:
 - `/submit` first asks Gerrit whether the user may submit, and only then
   reshapes PRs (§6.7). It submits the patch set its author saw: one
   uploaded after the comment, or a comment more than a day old (the
-  bridge was down, say), is refused with a request to post it again, and
+  bridge was down, say), or one not on GitHub yet (uploaded in Gerrit
+  moments before), is refused with a request to post it again, and
   the revision checked is the one submitted (Gerrit refuses if it is no
   longer current).
 
