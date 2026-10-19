@@ -1558,6 +1558,34 @@ func sortedStringKeys[V any](m map[string]V) []string {
 	return ks
 }
 
+// maySwap refuses what applyOne would not push to a change's PR branch:
+// a branch Gerrit owns, or, for a GitHub-born change not merged yet, a
+// patch set of someone who may not push to its author's branch
+// (markForeign). A merged one lands on the target branch anyway.
+func (c *Code) maySwap(ctx context.Context, ch *gerrit.ChangeInfo, rev gerrit.RevisionInfo, st *state.Change) error {
+	name := st.State.HeadBranch
+	if name == "" || name == ch.Branch || name == c.DefaultBranch {
+		return fmt.Errorf("refusing to push to %q, which Gerrit owns", name)
+	}
+	if _, _, fork := github.SplitHeadKey(name); !fork {
+		if owned, err := c.Gerrit.BranchExists(ctx, c.Project, name); err != nil {
+			return err
+		} else if owned {
+			return fmt.Errorf("refusing to push to %s, which Gerrit owns", name)
+		}
+	}
+	if st.State.Origin == "github" && ch.Status != "MERGED" {
+		real := 0
+		if rev.RealUploader != nil {
+			real = rev.RealUploader.AccountID
+		}
+		if ok, _ := mayPushToAuthor(ctx, c.Trusted, c.BridgeAccount, ch.Owner.AccountID, rev.Uploader.AccountID, real); !ok {
+			return fmt.Errorf("patch set %d is not the author's, nor a maintainer's", rev.Number)
+		}
+	}
+	return nil
+}
+
 // PrepareSubmit readies the PRs of the changes a submit of change n will
 // merge, before the bridge submits it (/submit): each PR whose head is
 // (or, for a Gerrit-born change, is made) exactly its change's commit
@@ -1599,16 +1627,27 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 			continue
 		}
 		rev, ok := ch.Current()
+		var last state.Revision
+		if len(st.Revisions) > 0 {
+			last = st.Revisions[len(st.Revisions)-1]
+		}
 		switch {
 		case pr.Head.SHA == ch.CurrentRevision || !ok:
-		case len(st.Revisions) == 0 || st.Revisions[len(st.Revisions)-1].GitHubSHA != pr.Head.SHA:
-			// A push not imported yet: never overwritten.
+		case last.GitHubSHA != pr.Head.SHA || (ch.Status != "MERGED" && last.GerritSHA != ch.CurrentRevision):
+			// A push not imported yet, never overwritten; or, before the
+			// merge, a patch set GitHub never had (someone else's in
+			// Gerrit, say), which must not reach the author's branch this
+			// way either (fourth audit).
 			c.Logger.Warn("PR head is not the patch set being submitted; not swapping it", "change", ch.Number, "pr", pr.Number, "head", pr.Head.SHA)
 		default:
 			// GitHub's head is the patch sets' history (Gerrit-born) or the
 			// commits Gerrit squashed (GitHub-born): swap in Gerrit's
 			// commit, which has the same files.
 			url, branch := c.GitHubURL, st.State.HeadBranch
+			if err := c.maySwap(ctx, &ch, rev, st); err != nil {
+				c.Logger.Warn("not swapping it", "change", ch.Number, "pr", pr.Number, "err", err)
+				continue
+			}
 			fork, b, isFork := github.SplitHeadKey(st.State.HeadBranch)
 			if isFork {
 				if !pr.MaintainerCanModify {

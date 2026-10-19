@@ -565,23 +565,66 @@ func TestPrepareSubmitSwapsGitHubBornBranch(t *testing.T) {
 	h1 := s.commit(m0, "f.txt", "1\n", "wip")
 	h2 := s.commit(h1, "f.txt", "2\n", "done") // the author's two commits
 	sq := s.commit(m0, "f.txt", "2\n", "Feature\n\nChange-Id: "+cid(1)+"\n")
-	s.change(1, cid(1), sq, "Feature\n\nChange-Id: "+cid(1)+"\n", "NEW")
+	ci := s.change(1, cid(1), sq, "Feature\n\nChange-Id: "+cid(1)+"\n", "NEW")
+	brt, stranger := gerrit.AccountInfo{AccountID: 6}, gerrit.AccountInfo{AccountID: 7}
+	s.push("gerrit.git", m0, "refs/heads/release")
+	ci.Owner = brt
 	s.push("github.git", h2, "refs/heads/feature")
 	s.pr(10, "feature", h2, "main", "brt")
 	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, PR: 10, Branch: "main", Origin: "github", HeadBranch: "feature", Lifecycle: "NEW"},
 		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: sq, GitHubSHA: h2}}})
+	// Not swapped (fourth audit): a patch set by someone who may not push
+	// to the author's branch, one GitHub never had, or onto a branch
+	// Gerrit owns.
+	for _, tc := range []struct {
+		name     string
+		uploader gerrit.AccountInfo
+		record   string
+		head     string
+	}{{"a stranger's", stranger, sq, "feature"}, {"not GitHub's", brt, "older", "feature"}, {"Gerrit's branch", brt, sq, "release"}} {
+		r := ci.Revisions[sq]
+		r.Uploader = tc.uploader
+		ci.Revisions[sq] = r
+		st, _ := store.Load(ctx, 1)
+		st.Revisions[0].GerritSHA, st.State.HeadBranch = tc.record, tc.head
+		s.save(ctx, store, 1, st)
+		if err := c.PrepareSubmit(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.ref("github.git", "refs/heads/feature"); got != h2 || s.gitOut("github.git", "rev-parse", "--verify", "-q", "refs/heads/release") != "" {
+			t.Errorf("%s: feature = %s, swapped", tc.name, short(got))
+		}
+	}
+	r := ci.Revisions[sq]
+	r.Uploader = brt
+	ci.Revisions[sq] = r
+	st, _ := store.Load(ctx, 1)
+	st.Revisions[0].GerritSHA, st.State.HeadBranch = sq, "feature"
+	s.save(ctx, store, 1, st)
 	if err := c.PrepareSubmit(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.ref("github.git", "refs/heads/feature"); got != sq {
 		t.Errorf("feature = %s, want Gerrit's squash %s", short(got), short(sq))
 	}
+	// Merged, whoever's it is (the submitter's rebase, say) lands on the
+	// target branch anyway.
+	s.push("github.git", h2, "refs/heads/feature")
+	r.Uploader, ci.Status = stranger, "MERGED"
+	ci.Revisions[sq] = r
+	if err := c.PrepareSubmit(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ref("github.git", "refs/heads/feature"); got != sq {
+		t.Errorf("merged: feature = %s, want Gerrit's commit %s", short(got), short(sq))
+	}
+	ci.Status = "NEW"
 
 	// A fork without maintainer edits: untouched.
 	s.pulls[10].Head = github.Ref{Ref: "main", SHA: h2, Repo: &struct {
 		FullName string `json:"full_name"`
 	}{"alice/r"}}
-	st, _ := store.Load(ctx, 1)
+	st, _ = store.Load(ctx, 1)
 	st.State.HeadBranch = "alice/r:main"
 	s.save(ctx, store, 1, st)
 	if err := c.PrepareSubmit(ctx, 1); err != nil {
