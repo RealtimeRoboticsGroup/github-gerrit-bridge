@@ -382,6 +382,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		DryRun:       dryRun,
 		Logger:       logger,
 	}
+	// Keyed by GitHub user id: /submit is answered at most 20 times an
+	// hour per commenter.
+	commands.Replies = &reconcile.Budget{N: 20, Per: time.Hour}
 	dispatch := &reconcile.Dispatcher{Code: code, Comments: comments, Commands: commands, Checks: checks, Store: store, Logger: logger}
 	wg.Go(func() { reconcile.Work(ctx, q, dispatch, cfg.Workers, logger) })
 	wg.Go(func() {

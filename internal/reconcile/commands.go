@@ -95,8 +95,13 @@ type Commands struct {
 	// BridgeLogin is the bridge's GitHub login: only its replies mark a
 	// command handled.
 	BridgeLogin string
-	DryRun      bool
-	Logger      *slog.Logger
+	// Replies, if set, bounds the commands each GitHub user (by id) has
+	// answered: each answer is a comment, written with the bridge's
+	// token, and anyone can post /submit over and over on their own PR.
+	// Past it, commands are recorded as handled without an answer.
+	Replies *Budget
+	DryRun  bool
+	Logger  *slog.Logger
 	// Now is the clock (time.Now if nil).
 	Now func() time.Time
 }
@@ -160,6 +165,15 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 		}
 		if c.DryRun {
 			c.Logger.Info("dry run: would run /submit", "change", n, "pr", pr, "by", ic.User.Login)
+			continue
+		}
+		if !c.Replies.Take(ctx, int(ic.User.ID)) {
+			c.Logger.Info("/submit not answered: its author posted too many lately", "change", n, "pr", pr, "by", ic.User.Login)
+			if err := updateStateFn(ctx, c.Store, n, fmt.Sprintf("Ignored command %d", ic.ID), func(st *state.Change) {
+				st.State.HandledCommands = append(st.State.HandledCommands, ic.ID)
+			}); err != nil {
+				return err
+			}
 			continue
 		}
 		reply := ""

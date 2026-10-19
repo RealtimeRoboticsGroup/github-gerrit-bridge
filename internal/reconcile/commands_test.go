@@ -99,6 +99,35 @@ func TestEditedRepliesDoNotDecideWhatWasHandled(t *testing.T) {
 	}
 }
 
+// One commenter's /submit is answered at most so often: each answer is a
+// comment written with the bridge's token. The rest are recorded as
+// handled, unanswered.
+func TestSubmitAnswersAreBounded(t *testing.T) {
+	c, h, _ := newCommands(t)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	c.Replies = &Budget{N: 2, Per: time.Hour, now: func() time.Time { return now }}
+	for i := int64(1); i <= 4; i++ {
+		h.ics = append(h.ics, github.IssueComment{ID: i, Body: "/submit", User: github.User{Login: "stranger", ID: 99}})
+	}
+	before := len(h.ics)
+	for range 2 {
+		if err := c.Run(context.Background(), 5); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if answers := len(h.ics) - before; answers != 2 {
+		t.Errorf("%d answers, want 2", answers)
+	}
+	// The unanswered ones are not run later, once there is room.
+	now = now.Add(2 * time.Hour)
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if answers := len(h.ics) - before; answers != 2 {
+		t.Errorf("%d answers after the budget refilled, want still 2", answers)
+	}
+}
+
 func TestSubmitCommandUnmappedAndRefused(t *testing.T) {
 	c, h, sub := newCommands(t)
 	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "stranger"}})
