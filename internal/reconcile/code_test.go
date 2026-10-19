@@ -2131,6 +2131,49 @@ func TestNewPRsWithinTheOwnersBudget(t *testing.T) {
 
 // Gerrit lets anyone add a patch set to any change; only the owner's, the
 // bridge's and trusted members' reach a PR author's branch.
+// The owner's commit-message edit or rebase of someone else's patch set
+// carries that one's code: it is not pushed to the author's branch either
+// (fourth audit), as gerrit-buildkite would not build it.
+func TestForeignCodeBelowAnEditOrRebase(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	c.BridgeAccount = 1
+	snap := &Snapshot{Changes: map[int]*GerritChange{}, State: map[int]*state.Change{}}
+	for n, tc := range map[int]struct {
+		kind  string
+		below int // patch set 1's uploader
+	}{
+		1: {"NO_CODE_CHANGE", 9}, 2: {"TRIVIAL_REBASE", 9}, 3: {"TRIVIAL_REBASE_WITH_MESSAGE_UPDATE", 9},
+		4: {"NO_CODE_CHANGE", 1}, 5: {"TRIVIAL_REBASE", 5}, 6: {"REWORK", 9},
+		7: {"NO_CODE_CHANGE", 0}, // its patch sets cannot be read
+	} {
+		snap.Changes[n] = &GerritChange{Number: n, Status: "NEW", Revision: "b", PatchSet: 2, OwnerID: 5, UploaderID: 5, Kind: tc.kind}
+		if tc.below != 0 {
+			s.changes[n] = &gerrit.ChangeInfo{Number: n, Revisions: map[string]gerrit.RevisionInfo{
+				"a": {Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: tc.below}},
+				"b": {Number: 2, Kind: tc.kind, Uploader: gerrit.AccountInfo{AccountID: 5}}}}
+		}
+		snap.State[n] = &state.Change{State: state.ChangeState{Change: n, Origin: "github"}}
+		s.save(ctx, store, n, snap.State[n])
+	}
+	// The owner's edit of a stranger's rebase of the owner's code: the
+	// stranger chose its parent.
+	snap.Changes[8] = &GerritChange{Number: 8, Status: "NEW", Revision: "c", PatchSet: 3, OwnerID: 5, UploaderID: 5, Kind: "NO_CODE_CHANGE"}
+	s.changes[8] = &gerrit.ChangeInfo{Number: 8, Revisions: map[string]gerrit.RevisionInfo{
+		"a": {Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 5}},
+		"b": {Number: 2, Kind: "TRIVIAL_REBASE", Uploader: gerrit.AccountInfo{AccountID: 9}},
+		"c": {Number: 3, Kind: "NO_CODE_CHANGE", Uploader: gerrit.AccountInfo{AccountID: 5}}}}
+	snap.State[8] = &state.Change{State: state.ChangeState{Change: 8, Origin: "github"}}
+	s.save(ctx, store, 8, snap.State[8])
+	if err := c.markForeign(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	if want := map[int]bool{1: true, 2: true, 3: true, 7: true, 8: true}; !reflect.DeepEqual(snap.Foreign, want) {
+		t.Errorf("foreign = %v, want %v", snap.Foreign, want)
+	}
+}
+
 func TestForeignPatchSetsAreMarked(t *testing.T) {
 	s := newSites(t)
 	ctx := context.Background()

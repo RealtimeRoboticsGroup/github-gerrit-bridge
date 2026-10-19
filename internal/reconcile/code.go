@@ -390,8 +390,11 @@ func mayPushToAuthor(ctx context.Context, trusted func(context.Context, int) (bo
 
 // markForeign marks the GitHub-born changes whose current patch set was
 // uploaded, or uploaded on someone's behalf, in Gerrit by someone other
-// than the change's owner, the bridge or a member of CI's trusted group
-// (Snapshot.Foreign). Each gets a notice in Gerrit, once per patch set.
+// than the change's owner, the bridge or a member of CI's trusted group,
+// or whose code is such a patch set's below it (codeFrom; fourth audit:
+// the owner's commit-message edit of a stranger's patch set carried it
+// to the author's branch) (Snapshot.Foreign). Each gets a notice in
+// Gerrit, once per patch set.
 func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 	s.Foreign = map[int]bool{}
 	for _, n := range sortedKeys(s.Changes) {
@@ -400,6 +403,28 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 			continue
 		}
 		ok, known := mayPushToAuthor(ctx, c.Trusted, c.BridgeAccount, ch.OwnerID, ch.UploaderID, ch.RealUploaderID)
+		if ok && ch.Kind != "" && ch.Kind != "REWORK" {
+			// A message edit or rebase: whose code, and parent, is it?
+			ci, err := c.Gerrit.GetChange(ctx, n, "ALL_REVISIONS")
+			if err != nil {
+				c.Logger.Warn("cannot read a change's patch sets; not pushing its latest", "change", n, "err", err)
+				s.Foreign[n] = true
+				continue
+			}
+			revs := map[int]gerrit.RevisionInfo{}
+			for _, r := range ci.Revisions {
+				revs[r.Number] = r
+			}
+			ok = codeFrom(revs, ch.PatchSet, func(r gerrit.RevisionInfo) bool {
+				real := 0
+				if r.RealUploader != nil {
+					real = r.RealUploader.AccountID
+				}
+				a, k := mayPushToAuthor(ctx, c.Trusted, c.BridgeAccount, ch.OwnerID, r.Uploader.AccountID, real)
+				known = known && k
+				return a
+			})
+		}
 		if ok {
 			continue
 		}
@@ -419,6 +444,36 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 			"uploader", ch.UploaderID, "real_uploader", ch.RealUploaderID)
 	}
 	return nil
+}
+
+// codeFrom reports whether allowed holds for whoever is responsible for
+// the code of patch set ps of revs, as gerrit-buildkite's codeTrusted
+// decides it: walking down past commit-message edits, whoever made them,
+// the first patch set that is not one chose the code's parent, so allowed
+// must hold for it; and if it is a rebase, for the last rework below it
+// too, whose diff it is.
+func codeFrom(revs map[int]gerrit.RevisionInfo, ps int, allowed func(gerrit.RevisionInfo) bool) bool {
+	parentChosen := false
+	for ; ps >= 1; ps-- {
+		r, ok := revs[ps]
+		if !ok {
+			return false
+		}
+		switch r.Kind {
+		case "NO_CODE_CHANGE", "NO_CHANGE":
+			continue
+		case "TRIVIAL_REBASE", "TRIVIAL_REBASE_WITH_MESSAGE_UPDATE", "MERGE_FIRST_PARENT_UPDATE":
+			if !parentChosen {
+				if !allowed(r) {
+					return false
+				}
+				parentChosen = true
+			}
+			continue
+		}
+		return allowed(r) // REWORK, or a kind this does not know
+	}
+	return false
 }
 
 // observe gathers a Snapshot for branch from Gerrit, the mirror, GitHub
@@ -481,7 +536,7 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]bool)
 			Subject: rev.Commit.Subject, Message: rev.Commit.Message,
 			PatchSet: rev.Number, Revision: ci.CurrentRevision, Parent: rev.Commit.Parent(),
 			URL: c.changeURL(ci.Number), Owner: ci.Owner.Username, Uploader: rev.Uploader.Username,
-			OwnerID: ci.Owner.AccountID, UploaderID: rev.Uploader.AccountID,
+			OwnerID: ci.Owner.AccountID, UploaderID: rev.Uploader.AccountID, Kind: rev.Kind,
 		}
 		if rev.RealUploader != nil {
 			s.Changes[ci.Number].RealUploaderID = rev.RealUploader.AccountID

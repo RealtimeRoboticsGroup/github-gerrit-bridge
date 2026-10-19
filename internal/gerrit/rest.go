@@ -176,7 +176,10 @@ type RevisionInfo struct {
 	// RealUploader is who really uploaded it, when that was on the
 	// uploader's behalf (a rebase, say).
 	RealUploader *AccountInfo `json:"real_uploader,omitempty"`
-	Commit       CommitInfo   `json:"commit"`
+	// Kind is how it differs from the patch set before: REWORK,
+	// TRIVIAL_REBASE, NO_CODE_CHANGE (a commit-message edit), ...
+	Kind   string     `json:"kind"`
+	Commit CommitInfo `json:"commit"`
 	Created      string       `json:"created"` // "2006-01-02 15:04:05.000000000", UTC
 }
 

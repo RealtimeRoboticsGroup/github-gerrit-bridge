@@ -30,6 +30,8 @@ type GerritChange struct {
 	// OwnerID, UploaderID and RealUploaderID (0 unless the patch set was
 	// uploaded on the uploader's behalf) are their accounts.
 	OwnerID, UploaderID, RealUploaderID int
+	// Kind is the current patch set's (gerrit.RevisionInfo.Kind).
+	Kind string
 }
 
 // Snapshot is everything the planner needs about one target branch.
