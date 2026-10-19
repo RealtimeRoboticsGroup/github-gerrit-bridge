@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/anchor"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
@@ -745,8 +746,9 @@ func isUnprocessable(err error) bool {
 // (Run-As) it needs no attribution; posted by the bridge it says who
 // wrote it, and where.
 func gerritBody(login, url, body string, asAuthor bool) string {
+	body = limitComment(strings.TrimSpace(body), url)
 	if asAuthor {
-		return strings.TrimSpace(body)
+		return body
 	}
 	// The bridge posts it: its mentions would be the bridge's.
 	return fmt.Sprintf("**@%s** ([GitHub](%s)):\n\n%s", login, url, forGerrit(strings.TrimSpace(body)))
@@ -794,6 +796,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		// plain is comments without fix suggestions (the suggestion
 		// stays in the text), for Gerrit sites that do not allow them.
 		plain map[string][]gerrit.CommentInput
+		srcs  []ghComment // what it mirrors
 	}
 	var order []string
 	batches := map[string]*batch{}
@@ -827,6 +830,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			order = append(order, k)
 		}
 		b.comments[path] = append(b.comments[path], ci)
+		b.srcs = append(b.srcs, src)
 		if ci.FixSuggestions != nil && len(plain) > 0 {
 			ci.FixSuggestions, ci.Message = nil, plain[0]
 		}
@@ -986,12 +990,45 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			continue
 		}
 		err := c.postBatch(ctx, n, b.login, b.ps, b.comments, b.plain, b.labels)
+		var ge *gerrit.Error
+		if errors.As(err, &ge) && (ge.Status == http.StatusBadRequest || ge.Status == http.StatusConflict || ge.Status == http.StatusRequestEntityTooLarge) {
+			// Gerrit will never take it (a change's comment limits, say):
+			// recorded as refused so it is not retried, and the rest of
+			// the change still syncs. Otherwise anyone could stop a
+			// change's sync, /submit and votes with one bad comment.
+			c.Logger.Warn("Gerrit refused GitHub comments; not mirroring them", "change", n, "pr", pr, "batch", k, "err", err)
+			for _, src := range b.srcs {
+				m.add(state.Comment{GerritID: refusedID(src), GitHubID: src.id, Kind: src.kind, Origin: "github", BodyHash: hashString(src.body)})
+			}
+			continue
+		}
 		if err != nil {
 			return true, fmt.Errorf("posting %s to change %d: %w", k, n, err)
 		}
 		c.Logger.Info("mirrored GitHub comments to Gerrit", "change", n, "pr", pr, "batch", k, "patch_set", b.ps)
 	}
 	return len(order) > 0 && !c.DryRun, nil
+}
+
+// refusedID stands in for the Gerrit comment of a GitHub comment Gerrit
+// refused: no Gerrit comment has it, so nothing replies to or edits it.
+func refusedID(src ghComment) string { return "refused:" + ghKey(src.kind, src.id) }
+
+// maxGerritComment bounds what the bridge posts as one Gerrit comment,
+// under Gerrit's change.commentSizeLimit (16 KiB by default).
+const maxGerritComment = 12 << 10
+
+// limitComment shortens body to maxGerritComment bytes (on a UTF-8
+// boundary), saying where the rest is.
+func limitComment(body, url string) string {
+	if len(body) <= maxGerritComment {
+		return body
+	}
+	cut := maxGerritComment
+	for cut > 0 && !utf8.RuneStart(body[cut]) {
+		cut--
+	}
+	return body[:cut] + fmt.Sprintf("\n\n[… too long for Gerrit; the rest is on [GitHub](%s)]", url)
 }
 
 // ghComment identifies a GitHub comment being mirrored.
@@ -1460,7 +1497,7 @@ func (c *Comments) mirrorEdits(ctx context.Context, n, pr int, s *commentSnapsho
 			f := false
 			ci := gerrit.CommentInput{
 				InReplyTo: gc.ID, Line: gc.Line, Range: gc.Range, Side: gc.Side,
-				Message:    fmt.Sprintf("**@%s**'s comment was edited on GitHub ([GitHub](%s)):\n\n%s", login, prURL, strings.TrimSpace(body)),
+				Message:    fmt.Sprintf("**@%s**'s comment was edited on GitHub ([GitHub](%s)):\n\n%s", login, prURL, limitComment(strings.TrimSpace(body), url)),
 				Unresolved: &f,
 			}
 			if mc.Kind == kindReviewComment {
@@ -1575,7 +1612,7 @@ func (c *Comments) as(ctx context.Context, login string) (GerritAPI, string) {
 // bridge if Gerrit refuses to let the bridge act for them.
 func (c *Comments) setReviewAs(ctx context.Context, login string, n int, rev string, in gerrit.ReviewInput) error {
 	g, user := c.as(ctx, login)
-	if user == "" {
+	if user == "" || gerrit.AmbiguousUsername(user) {
 		in.Tag, in.Labels = commentTag, nil
 		return c.Gerrit.SetReview(ctx, n, rev, in)
 	}

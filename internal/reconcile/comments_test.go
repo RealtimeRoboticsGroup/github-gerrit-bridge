@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
@@ -28,15 +29,18 @@ type fakeGerrit struct {
 	votes       []string
 	labels      map[string]map[string]int
 	refuseRunAs bool
-	maxVote     int
-	messages    []gerrit.ChangeMessage
-	comments    []gerrit.CommentInfo
-	revs        map[string]int // sha -> ps
-	current     string
-	files       map[string]string
-	clock       int
-	nextID      int
-	reviews     int
+	// refuse makes SetReview refuse (400) comments containing it.
+	refuse   string
+	attempts int // SetReview calls, refused or not
+	maxVote  int
+	messages []gerrit.ChangeMessage
+	comments []gerrit.CommentInfo
+	revs     map[string]int // sha -> ps
+	current  string
+	files    map[string]string
+	clock    int
+	nextID   int
+	reviews  int
 }
 
 // vote sets user's vote on the current patch set, as Gerrit would.
@@ -80,8 +84,19 @@ func (a fakeAs) SetReview(ctx context.Context, n int, rev string, in gerrit.Revi
 }
 
 func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ int, rev string, in gerrit.ReviewInput) error {
+	f.attempts++
 	if f.noFixes && hasFixes(in.Comments) {
 		return &gerrit.Error{Status: 500, Body: "Internal server error"}
+	}
+	for _, cs := range in.Comments {
+		for _, c := range cs {
+			if len(c.Message) > 16384 {
+				return &gerrit.Error{Status: 400, Body: fmt.Sprintf("Comment size exceeds limit (%d > 16384)", len(c.Message))}
+			}
+			if f.refuse != "" && strings.Contains(c.Message, f.refuse) {
+				return &gerrit.Error{Status: 400, Body: "Exceeding maximum number of comments"}
+			}
+		}
 	}
 	f.reviews++
 	for l, v := range in.Labels {
@@ -1099,5 +1114,48 @@ func TestUnmappedGitHubTextDoesNotMentionInGerrit(t *testing.T) {
 	}
 	if got := gerritBody("bob", "u", "hey @admin", true); got != "hey @admin" {
 		t.Errorf("as the author: %q", got)
+	}
+}
+
+// A comment too long for Gerrit is shortened, with a link to the rest.
+func TestLongGitHubCommentIsShortened(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.h.ics = append(e.h.ics, github.IssueComment{ID: 30, Body: strings.Repeat("é", 15000), User: github.User{Login: "stranger"},
+		HTMLURL: "https://github.com/o/r/pull/1#issuecomment-30"})
+	e.sync(t)
+	found := false
+	for _, gc := range e.g.comments {
+		if strings.Contains(gc.Message, "too long for Gerrit") {
+			found = true
+			if len(gc.Message) > 16384 || !utf8.ValidString(gc.Message) || !strings.Contains(gc.Message, "issuecomment-30") {
+				t.Errorf("posted %d bytes, valid %v", len(gc.Message), utf8.ValidString(gc.Message))
+			}
+		}
+	}
+	if !found {
+		t.Error("not mirrored")
+	}
+}
+
+// A comment Gerrit will never take is recorded as refused, not retried
+// forever, and does not stop the rest of the change's sync.
+func TestRefusedGitHubCommentDoesNotStopTheSync(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.g.refuse = "poison"
+	e.h.ics = append(e.h.ics,
+		github.IssueComment{ID: 30, Body: "poison", User: github.User{Login: "stranger"}, HTMLURL: "https://github.com/o/r/pull/1#issuecomment-30"},
+		github.IssueComment{ID: 31, Body: "fine", User: github.User{Login: "stranger"}, HTMLURL: "https://github.com/o/r/pull/1#issuecomment-31"})
+	e.sync(t) // fails the test on an error
+	var fine bool
+	for _, gc := range e.g.comments {
+		fine = fine || strings.Contains(gc.Message, "fine")
+	}
+	if !fine {
+		t.Error("the other comment was not mirrored")
+	}
+	attempts := e.g.attempts
+	e.sync(t)
+	if e.g.attempts != attempts {
+		t.Errorf("the refused comment was tried again (%d more calls)", e.g.attempts-attempts)
 	}
 }
