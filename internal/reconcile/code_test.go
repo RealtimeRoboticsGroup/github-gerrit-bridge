@@ -988,6 +988,28 @@ func TestShortenedDescriptionIsNoEdit(t *testing.T) {
 	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 || len(s.comments[70]) != 0 {
 		t.Errorf("changed=%v err=%v calls=%v notices=%v", changed, err, s.calls, s.comments[70])
 	}
+	// Someone's edit of it is not mirrored, which would cut the commit
+	// message short, and the notice says why, not that Gerrit changed too.
+	s.pulls[70].Body = "Shorter. " + body
+	s.activity[70] = github.PRActivity{BodyEditor: "austin"}
+	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 {
+		t.Errorf("edited: changed=%v err=%v calls=%v", changed, err, s.calls)
+	}
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "shortened here") {
+		t.Errorf("notices = %v", s.comments[70])
+	}
+}
+
+// A cut inside quoted code closes its fence, so the rest is not code.
+func TestCutClosesItsCodeFence(t *testing.T) {
+	quote := "Look:\n````go\n" + strings.Repeat("x := 1\n", 1000) + "````\nAfter."
+	got := fitForGitHub(quote, 500)
+	if len(got) > 500 || !strings.HasSuffix(got, "\n````"+tooLongForGitHub) {
+		t.Errorf("%d bytes, ends %q", len(got), got[max(0, len(got)-80):])
+	}
+	if got := fitForGitHub("```\nclosed\n```\n"+strings.Repeat("y", 1000), 200); strings.Contains(got, "y\n```") {
+		t.Errorf("a closed fence was closed again: %q", got[len(got)-80:])
+	}
 }
 
 // A PR's GitHub side is mirrored at most once per reconcile: someone

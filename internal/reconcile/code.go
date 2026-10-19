@@ -938,9 +938,15 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 		}
 		var notes []string
 		if textEdited {
-			if gt != st.State.SyncedText {
+			switch {
+			case strings.Contains(pr.Body, strings.TrimSpace(tooLongForGitHub)):
+				// Mirrored, it would cut the commit message short; and
+				// Gerrit has not changed, whatever the hashes say (fourth
+				// audit).
+				notes = append(notes, fmt.Sprintf("This PR's description is shortened here (the commit message is longer than GitHub takes), so it cannot be edited on GitHub: edit [change %d](%s)'s commit message in Gerrit.", n, ch.URL))
+			case gt != st.State.SyncedText:
 				notes = append(notes, fmt.Sprintf("This PR's title or description was edited on GitHub while [change %d](%s)'s commit message changed in Gerrit; Gerrit's is kept.", n, ch.URL))
-			} else {
+			default:
 				title, body := strings.TrimSpace(pr.Title), prBodyForMessage(pr.Body)
 				msg := commitMessage(title, body, ch.Message)
 				// Each part edited is its editor's (fourth audit: whoever

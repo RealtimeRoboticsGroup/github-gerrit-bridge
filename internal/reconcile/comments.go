@@ -542,11 +542,41 @@ func fitForGitHub(s string, room int) string {
 	if len(s) <= room {
 		return s
 	}
-	cut := max(room-len(tooLongForGitHub), 0)
+	cut := max(room-len(tooLongForGitHub)-maxFence, 0)
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
-	return s[:cut] + tooLongForGitHub
+	return closeFence(s[:cut]) + tooLongForGitHub
+}
+
+// maxFence is the room fitForGitHub keeps for closing a code fence.
+const maxFence = 64
+
+// closeFence closes a code fence s leaves open, so a cut inside quoted
+// code does not make code of the rest.
+func closeFence(s string) string {
+	open := ""
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimLeft(line, " ")
+		run := len(t) - len(strings.TrimLeft(t, "`~"))
+		if run < 3 || len(line)-len(t) > 3 {
+			continue
+		}
+		fence := t[:run]
+		if strings.Trim(fence, fence[:1]) != "" {
+			continue // mixed: not a fence
+		}
+		switch {
+		case open == "":
+			open = fence
+		case fence[0] == open[0] && len(fence) >= len(open) && strings.TrimSpace(t[run:]) == "":
+			open = ""
+		}
+	}
+	if open == "" || len(open) > maxFence-1 {
+		return s
+	}
+	return s + "\n" + open
 }
 
 // refusedOnGitHub records Gerrit comment id as refused if err is GitHub
