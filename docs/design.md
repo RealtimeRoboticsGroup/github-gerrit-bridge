@@ -1153,14 +1153,22 @@ defenses, by threat:
   PR description short; the PR description is split at the *last* links
   marker. A marker edited into someone else's GitHub comment does not keep
   it out of Gerrit.
-- **Repository configuration from Gerrit.** A change whose code differs
-  from the target branch under `.github/` (itself, or through a change
-  below it) is not mirrored: no branch or PR for it, nothing more pushed
-  to its PR if it has one, and one notice per patch set in Gerrit. The
-  push itself also refuses anything that changes `.github/` (forks
-  excepted: their workflows run with their own secrets), whatever the plan
-  says. GitHub runs workflows from any branch pushed to the repository,
-  with its secrets (second audit, confirmed live).
+- **Repository configuration from Gerrit.** A change that has files
+  under `.github/`, `CODEOWNERS` or `docs/CODEOWNERS` that the target
+  branch's tip does not have as they are (so an old base that would bring
+  back what the branch has changed counts too), or one with any commit
+  not on the branch that changes them (a change below it, even one
+  changed back above), is not mirrored: no branch or PR for it, nothing
+  more pushed to its PR if it has one, and one notice per patch set in
+  Gerrit. The push itself, and the swap before `/submit`, also refuse
+  such commits (forks excepted: their workflows run with their own
+  secrets), whatever the plan says. GitHub runs workflows from any branch
+  pushed to the repository, with its secrets (second audit, confirmed
+  live), and reads code owners from a PR's base, which for a stacked PR
+  is a branch the bridge pushed (third audit, confirmed live: a Gerrit
+  user's CODEOWNERS requested reviews). A change that cannot be checked
+  (no merge base, say) is withheld too, and a notice Gerrit will not
+  take is dropped: neither stops the branch (third audit).
 - **CI status.** Comes from Buildkite's API (§6.5), so no comment can fake
   it. Without Buildkite, only messages by `ci.account` (and never ones
   mirrored from GitHub) drive `gerrit/Verified`'s link and text; with
@@ -1336,7 +1344,7 @@ instance (`internal/testgerrit`) is set up this way.
   organisation's) secrets and a token that may write. Turn Actions off on
   the bridged repository, or keep every workflow that has secrets or a
   write token to the default branch. The bridge withholds changes that
-  touch `.github/` (they would bring their own workflows), and its token
+  touch `.github/` (§7.1) (they would bring their own workflows), and its token
   should lack the `workflow` scope (a fine-grained token or App without
   Workflows), so GitHub refuses such a push even if the bridge tried
   (second audit).

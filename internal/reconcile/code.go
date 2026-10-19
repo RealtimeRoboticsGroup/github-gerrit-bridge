@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os/exec"
 	"regexp"
 	"slices"
 	"sort"
@@ -54,6 +55,11 @@ type Code struct {
 	// (known is false if that cannot be told). Only they, and a change's
 	// owner, have their Gerrit patch sets pushed to a PR author's branch.
 	Trusted func(ctx context.Context, account int) (trusted, known bool)
+
+	// configCache remembers changesConfig answers by branch tip and
+	// commit.
+	wmu         sync.Mutex
+	configCache map[string]bool
 
 	// locks serializes reconciles of one target branch. The queue already
 	// does for Branch keys; Change and PR keys resolve to a branch here.
@@ -177,29 +183,62 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 
 func (c *Code) changeURL(n int) string { return c.Gerrit.ChangeURL(c.Project, n) }
 
-// withheldPath is where GitHub reads workflows (and other repository
-// configuration) from any branch pushed to the repository.
-const withheldPath = ".github"
+// withheldPaths are where GitHub reads repository configuration from:
+// workflows (and the rest of .github/) on any branch pushed to the
+// repository, and CODEOWNERS (also at the root and in docs/) on a PR's
+// base branch, which for a stacked PR is a branch the bridge pushed.
+var withheldPaths = []string{".github", "CODEOWNERS", "docs/CODEOWNERS"}
 
-// changesWorkflows reports whether commit differs from branch under
-// .github/, counting everything not yet on branch (parent changes too).
-func (c *Code) changesWorkflows(ctx context.Context, branch, commit string) (bool, error) {
-	_, err := c.Mirror.Git(ctx, nil, "diff", "--quiet", "refs/remotes/gerrit/heads/"+branch+"..."+commit, "--", withheldPath)
-	var ge *gitmirror.Error
+// withheldWhat names withheldPaths in notices.
+const withheldWhat = ".github/ or CODEOWNERS"
+
+// changesConfig reports whether commit has files under withheldPaths
+// that branch's tip does not have as they are (an old base counts: it
+// would bring back what the branch has changed since), or any commit of
+// it not on branch changes them (a change below it, say, even if a later
+// one changes them back). Neither needs a merge base.
+func (c *Code) changesConfig(ctx context.Context, branch, commit string) (bool, error) {
+	tip, err := c.Mirror.Git(ctx, nil, "rev-parse", "--verify", "refs/remotes/gerrit/heads/"+branch+"^{commit}")
+	if err != nil {
+		return false, err
+	}
+	key := strings.TrimSpace(string(tip)) + " " + commit
+	c.wmu.Lock()
+	w, ok := c.configCache[key]
+	c.wmu.Unlock()
+	if ok {
+		return w, nil
+	}
+	// Only what it has there counts: lacking the branch's files is safe.
+	_, err = c.Mirror.Git(ctx, nil, append([]string{"diff", "--quiet", "--no-renames", "--diff-filter=d", strings.TrimSpace(string(tip)), commit, "--"}, withheldPaths...)...)
+	var xe *exec.ExitError
 	switch {
 	case err == nil:
-		return false, nil
-	case errors.As(err, &ge) && ge.Stderr == "":
-		return true, nil // exit 1: differs
+		out, err := c.Mirror.Git(ctx, nil, append([]string{"rev-list", "--full-history", "-1", commit, "^" + strings.TrimSpace(string(tip)), "--"}, withheldPaths...)...)
+		if err != nil {
+			return false, err
+		}
+		w = strings.TrimSpace(string(out)) != ""
+	case errors.As(err, &xe) && xe.ExitCode() == 1:
+		w = true // differs
 	default:
 		return false, err
 	}
+	c.wmu.Lock()
+	if c.configCache == nil || len(c.configCache) > 4096 {
+		c.configCache = map[string]bool{}
+	}
+	c.configCache[key] = w
+	c.wmu.Unlock()
+	return w, nil
 }
 
-// withhold marks the open changes that change .github/ (design §7.1):
+// withhold marks the open changes that change withheldPaths (design §7.1):
 // anyone registered on Gerrit can upload one, and GitHub would run it,
 // with the repository's secrets, from the branch the bridge pushes. Each
-// gets a notice in Gerrit, once per patch set.
+// gets a notice in Gerrit, once per patch set. Nothing here fails the
+// branch: a change that cannot be checked is withheld, and a notice Gerrit
+// will not take is not retried.
 func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string) error {
 	s.Withheld = map[int]bool{}
 	for _, n := range sortedKeys(s.Changes) {
@@ -207,9 +246,11 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string) error {
 		if ch.Status != "NEW" || ch.Private {
 			continue
 		}
-		w, err := c.changesWorkflows(ctx, branch, ch.Revision)
+		w, err := c.changesConfig(ctx, branch, ch.Revision)
 		if err != nil {
-			return err
+			c.Logger.Warn("cannot tell whether a change touches "+withheldWhat+"; withheld", "change", n, "err", err)
+			s.Withheld[n] = true
+			continue
 		}
 		if !w {
 			continue
@@ -218,17 +259,36 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string) error {
 		if st := s.State[n]; c.DryRun || (st != nil && st.State.WithheldNotice == ch.PatchSet) {
 			continue
 		}
-		msg := fmt.Sprintf("Patch set %d is not mirrored to GitHub: it changes %s/ (here or in a change below it), and GitHub would run that, "+
-			"with the repository's secrets, from the branch the bridge pushes. Review it here.", ch.PatchSet, withheldPath)
-		if err := c.Gerrit.SetReview(ctx, n, ch.Revision, gerrit.ReviewInput{Message: msg, Tag: commentTag}); err != nil {
-			return err
+		msg := fmt.Sprintf("Patch set %d is not mirrored to GitHub: it changes %s (here, in a change below it, or by being based on an "+
+			"older version of the branch), and GitHub would use that, with the repository's secrets, from the branch the bridge pushes. "+
+			"Review it here, or rebase it.", ch.PatchSet, withheldWhat)
+		if !c.notice(ctx, n, ch, msg) {
+			continue
 		}
 		if err := c.updateState(ctx, n, "withheld notice", func(st *state.Change) { st.State.WithheldNotice = ch.PatchSet }); err != nil {
 			return err
 		}
-		c.Logger.Info("withheld from GitHub: changes "+withheldPath, "change", n, "patch_set", ch.PatchSet)
+		c.Logger.Info("withheld from GitHub: changes "+withheldWhat, "change", n, "patch_set", ch.PatchSet)
 	}
 	return nil
+}
+
+// notice posts msg on change n's current patch set as the bridge, and
+// reports whether it is done with: posted, or refused for good (a 4xx,
+// such as the change's comment limit), which is logged.
+func (c *Code) notice(ctx context.Context, n int, ch *GerritChange, msg string) bool {
+	err := c.Gerrit.SetReview(ctx, n, ch.Revision, gerrit.ReviewInput{Message: msg, Tag: commentTag})
+	var ge *gerrit.Error
+	switch {
+	case err == nil:
+		return true
+	case errors.As(err, &ge) && ge.Status >= 400 && ge.Status < 500:
+		c.Logger.Warn("Gerrit refused a notice; not posting it", "change", n, "err", err)
+		return true
+	default:
+		c.Logger.Warn("posting a notice", "change", n, "err", err)
+		return false
+	}
 }
 
 // mayPushToAuthor reports whether a patch set uploaded in Gerrit by
@@ -273,8 +333,8 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 		}
 		msg := fmt.Sprintf("Patch set %d is not pushed to the GitHub PR's branch, which is its author's: only the change's owner, "+
 			"and members of CI's trusted group, have their patch sets pushed there.", ch.PatchSet)
-		if err := c.Gerrit.SetReview(ctx, n, ch.Revision, gerrit.ReviewInput{Message: msg, Tag: commentTag}); err != nil {
-			return err
+		if !c.notice(ctx, n, ch, msg) {
+			continue
 		}
 		if err := c.updateState(ctx, n, "foreign patch set notice", func(st *state.Change) { st.State.ForeignNotice = ch.PatchSet }); err != nil {
 			return err
@@ -891,8 +951,8 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			if _, _, fork := github.SplitHeadKey(name); fork || commit == "" {
 				return nil // runs in the fork, with its own secrets; or a deletion
 			}
-			if w, err := c.changesWorkflows(ctx, s.Branch, commit); err != nil || w {
-				return cmp.Or(err, fmt.Errorf("refusing to push %s to %s: it changes %s/", short(commit), name, withheldPath))
+			if w, err := c.changesConfig(ctx, s.Branch, commit); err != nil || w {
+				return cmp.Or(err, fmt.Errorf("refusing to push %s to %s: it changes %s", short(commit), name, withheldWhat))
 			}
 			return nil
 		}
@@ -1294,11 +1354,21 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 			// commits Gerrit squashed (GitHub-born): swap in Gerrit's
 			// commit, which has the same files.
 			url, branch := c.GitHubURL, st.State.HeadBranch
-			if fork, b, isFork := github.SplitHeadKey(st.State.HeadBranch); isFork {
+			fork, b, isFork := github.SplitHeadKey(st.State.HeadBranch)
+			if isFork {
 				if !pr.MaintainerCanModify {
 					continue // the author's fork: closed with a notice instead
 				}
 				url, branch = "https://github.com/"+fork+".git", b
+			} else if ch.Status != "MERGED" {
+				// Not yet on the branch: the push guard's rule applies.
+				if _, err := c.Mirror.Git(ctx, nil, "fetch", "--quiet", "origin", rev.Ref); err != nil {
+					return err
+				}
+				if w, err := c.changesConfig(ctx, ch.Branch, ch.CurrentRevision); err != nil || w {
+					c.Logger.Warn("not swapping in a commit that changes "+withheldWhat, "change", ch.Number, "pr", pr.Number, "err", err)
+					continue
+				}
 			}
 			ref := "refs/heads/" + branch
 			specs[url] = append(specs[url], "--force-with-lease="+ref+":"+pr.Head.SHA, ch.CurrentRevision+":"+ref)

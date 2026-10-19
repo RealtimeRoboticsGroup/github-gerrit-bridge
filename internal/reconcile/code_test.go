@@ -156,6 +156,7 @@ func TestPrepareSubmitSwapsInGerritsCommit(t *testing.T) {
 	c, store := s.code(ctx)
 	m0 := s.commit("", "a.txt", "a\n", "base")
 	s.push("gerrit.git", m0, "refs/heads/main")
+	s.git("m.git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/gerrit/heads/main")
 	g1 := s.commit(m0, "one.txt", "1\n", "One\n\nChange-Id: I1\n")
 	g2 := s.commit(g1, "two.txt", "2\n", "Two\n\nChange-Id: I2\n")
 	h2 := s.commit(g2, "two.txt", "2b\n", "Patch set 2 from Gerrit") // GitHub history of change 2
@@ -189,6 +190,31 @@ func TestPrepareSubmitSwapsInGerritsCommit(t *testing.T) {
 	}
 	if s.pulls[20].Base.Ref != "main" || s.pulls[10].Base.Ref != "main" {
 		t.Errorf("bases: #10 %s, #20 %s; want main", s.pulls[10].Base.Ref, s.pulls[20].Base.Ref)
+	}
+}
+
+// The swap never pushes what the push guard would refuse.
+func TestPrepareSubmitNeverSwapsInConfigChanges(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.git("m.git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/gerrit/heads/main")
+	g1 := s.commit(m0, "one.txt", "1\n", "One\n\nChange-Id: I1\n")
+	g1b := s.commit(m0, "CODEOWNERS", "* @me\n", "One\n\nChange-Id: I1\n")
+	ci := s.change(1, "I1", g1b, "One\n\nChange-Id: I1\n", "NEW")
+	ci.Revisions[g1b] = gerritRev(ci.Revisions[g1b], 2)
+	s.push("gerrit.git", g1b, ci.Revisions[g1b].Ref)
+	s.push("github.git", g1, "refs/heads/gerrit/I1")
+	s.pr(10, "gerrit/I1", g1, "main", "bot")
+	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, PR: 10, Branch: "main", Origin: "gerrit", HeadBranch: "gerrit/I1", Lifecycle: "NEW"},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: g1, GitHubSHA: g1}}})
+	if err := c.PrepareSubmit(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ref("github.git", "refs/heads/gerrit/I1"); got != g1 {
+		t.Errorf("gerrit/I1 = %s: a CODEOWNERS change was swapped in", got)
 	}
 }
 
@@ -512,6 +538,7 @@ func TestPrepareSubmitSwapsGitHubBornBranch(t *testing.T) {
 	c, store := s.code(ctx)
 	m0 := s.commit("", "a.txt", "a\n", "base")
 	s.push("gerrit.git", m0, "refs/heads/main")
+	s.git("m.git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/gerrit/heads/main")
 	h1 := s.commit(m0, "f.txt", "1\n", "wip")
 	h2 := s.commit(h1, "f.txt", "2\n", "done") // the author's two commits
 	sq := s.commit(m0, "f.txt", "2\n", "Feature\n\nChange-Id: "+cid(1)+"\n")
@@ -1334,6 +1361,68 @@ func TestChangesTouchingGitHubConfigAreWithheld(t *testing.T) {
 	}
 	if strings.Join(s.calls, ",") != "review 1,review 2" {
 		t.Errorf("notices = %v, want one each for 1 and 2", s.calls)
+	}
+
+	// CODEOWNERS too; a change below that adds config and a change that
+	// takes it out again; an old base that would bring back config the
+	// branch has since changed; and history unrelated to the branch.
+	os.MkdirAll(filepath.Join(s.dir, "work", "docs"), 0o755)
+	owners := s.commit(m0, "CODEOWNERS", "* @someone\n", "Owners")
+	docsOwners := s.commit(m0, "docs/CODEOWNERS", "* @someone\n", "Owners")
+	s.git("work", "checkout", "-q", "--detach", wf)
+	s.git("work", "rm", "-q", ".github/workflows/x.yml")
+	s.git("work", "commit", "-q", "-m", "Undo")
+	undo := s.git("work", "rev-parse", "HEAD")
+	s.git("work", "checkout", "-q", "--detach", m0)
+	os.MkdirAll(filepath.Join(s.dir, "work", ".github", "workflows"), 0o755)
+	m1 := s.commit(m0, ".github/workflows/y.yml", "on: [push]\n", "Main's own workflow")
+	oldBase := s.commit(m1, "e.txt", "e\n", "On main before its workflow changed")
+	m2 := s.commit(m1, ".github/workflows/y.yml", "on: {push: {branches: [main]}}\n", "Main's workflow only on main")
+	s.push("gerrit.git", m2, "refs/heads/main")
+	s.git("m.git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/gerrit/heads/main")
+	s.git("work", "checkout", "-q", "--orphan", "lonely")
+	s.git("work", "rm", "-rq", "--cached", ".")
+	s.git("work", "clean", "-fdq")
+	orphan := s.commit("", "z.txt", "z\n", "Unrelated")
+	onM2 := s.commit(m2, "d.txt", "d\n", "On the new main")
+	for _, ref := range []string{owners, docsOwners, undo, orphan, onM2, plain, oldBase} {
+		s.push("gerrit.git", ref, "refs/heads/tmp")
+		s.git("m.git", "fetch", "-q", "origin", "+refs/heads/tmp:refs/remotes/tmp/"+ref)
+	}
+	for _, tc := range []struct {
+		name, rev string
+		want      bool
+	}{
+		{"root CODEOWNERS", owners, true}, {"docs/CODEOWNERS", docsOwners, true}, {"added below, taken out", undo, true},
+		{"based on main before its workflow changed", oldBase, true}, {"based on main before it had one", plain, false},
+		{"on the new main", onM2, false}, {"unrelated history", orphan, false},
+	} {
+		if w, err := c.changesConfig(ctx, "main", tc.rev); err != nil || w != tc.want {
+			t.Errorf("%s: withheld %v, err %v; want %v", tc.name, w, err, tc.want)
+		}
+	}
+	// A change that cannot be checked is withheld; a notice Gerrit will
+	// not take is not retried, and fails nothing.
+	s.calls = nil
+	s.refuseReview = map[int]int{6: 400, 7: 503}
+	snap = &Snapshot{Changes: map[int]*GerritChange{
+		5: {Number: 5, Status: "NEW", Revision: strings.Repeat("0", 40), PatchSet: 1},
+		6: {Number: 6, Status: "NEW", Revision: owners, PatchSet: 1},
+		7: {Number: 7, Status: "NEW", Revision: docsOwners, PatchSet: 1},
+	}, State: map[int]*state.Change{}}
+	for range 2 {
+		if err := c.withhold(ctx, snap, "main"); err != nil {
+			t.Fatal(err)
+		}
+		for n := range snap.Changes {
+			snap.State[n], _ = store.Load(ctx, n)
+		}
+	}
+	if !snap.Withheld[5] || !snap.Withheld[6] || !snap.Withheld[7] {
+		t.Errorf("withheld = %v, want 5, 6 and 7", snap.Withheld)
+	}
+	if got := strings.Join(s.calls, ","); got != "review 6,review 7,review 7" {
+		t.Errorf("notices = %v: want 6's refusal taken as final, 7's retried", got)
 	}
 	// And whatever a plan says, the push is refused.
 	err := c.applyOne(ctx, &Snapshot{Branch: "main", DefaultBranch: "main"},

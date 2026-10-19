@@ -58,6 +58,8 @@ type sites struct {
 	nextID     int64
 	clock      time.Time
 	calls      []string // Gerrit edits made, as "<what> <change> as <user>"
+	// refuseReview makes reviews of a change fail with that status.
+	refuseReview map[int]int
 }
 
 func newSites(t *testing.T) *sites {
@@ -78,7 +80,12 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("POST /a/changes/{n}/revisions/{rev}/review", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.calls = append(s.calls, "review "+r.PathValue("n"))
+		status := s.refuseReview[num(r)]
 		s.mu.Unlock()
+		if status != 0 {
+			http.Error(w, "refused", status)
+			return
+		}
 		s.json(w, map[string]any{}, true)
 	})
 	mux.HandleFunc("PUT /a/changes/{n}/message", s.setMessage)

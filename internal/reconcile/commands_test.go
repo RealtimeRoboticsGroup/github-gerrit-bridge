@@ -207,7 +207,7 @@ func TestSubmitNeedsThePatchSetOnGitHub(t *testing.T) {
 	sub.rev, sub.uploaded = "sha4", posted.Add(-time.Minute) // uploaded in Gerrit, not exported yet
 	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: posted})
 	c.Run(context.Background(), 5)
-	if len(sub.calls) != 0 || !strings.Contains(h.ics[len(h.ics)-1].Body, "not on GitHub yet") {
+	if len(sub.calls) != 0 || !strings.Contains(h.ics[len(h.ics)-1].Body, "is not on GitHub (not yet, or not at all") {
 		t.Errorf("calls=%v reply=%q", sub.calls, h.ics[len(h.ics)-1].Body)
 	}
 }

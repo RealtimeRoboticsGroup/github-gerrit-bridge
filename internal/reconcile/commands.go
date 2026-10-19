@@ -197,7 +197,7 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) st
 		seen = seen || (r.GerritSHA == rev && r.GitHubSHA != "")
 	}
 	if !seen {
-		return fmt.Sprintf("@%s: `/submit` was not run: change %d's current patch set is not on GitHub yet. Post it again once it is.", ic.User.Login, n)
+		return fmt.Sprintf("@%s: `/submit` was not run: change %d's current patch set is not on GitHub (not yet, or not at all: see the change). Submit it in Gerrit, or post again once it is here.", ic.User.Login, n)
 	}
 	// Check first, so PRs are only reshaped for a submit that will happen.
 	if ok, why, err := c.Submitter.CanSubmitAs(ctx, user, n, rev); err != nil || !ok {
