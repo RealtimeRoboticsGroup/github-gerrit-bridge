@@ -25,6 +25,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -72,7 +73,10 @@ type server struct {
 	webhookURL string
 	token      string
 	gerritURL  string
-	duration   time.Duration
+	// gerritUser and gerritPassword, if set, read Gerrit as that account,
+	// as a real CI agent would: AOS lets no anonymous user read changes.
+	gerritUser, gerritPassword string
+	duration                   time.Duration
 
 	mu     sync.Mutex
 	builds []*build
@@ -85,7 +89,16 @@ func main() {
 	flag.StringVar(&s.token, "webhook_token", "test-webhook-token", "Sent as X-Buildkite-Token.")
 	flag.StringVar(&s.gerritURL, "gerrit_url", "http://127.0.0.1:18080", "Gerrit, for listing a patch set's files.")
 	flag.DurationVar(&s.duration, "duration", 20*time.Second, "How long a build takes.")
+	flag.StringVar(&s.gerritUser, "gerrit_user", "", "Gerrit account to read as (with --gerrit_password_file).")
+	passwordFile := flag.String("gerrit_password_file", "", "File holding --gerrit_user's HTTP password.")
 	flag.Parse()
+	if *passwordFile != "" {
+		b, err := os.ReadFile(*passwordFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		s.gerritPassword = strings.TrimSpace(string(b))
+	}
 
 	http.HandleFunc("POST /v2/organizations/{org}/pipelines/{pipeline}/builds", s.create)
 	http.HandleFunc("PUT /v2/organizations/{org}/pipelines/{pipeline}/builds/{n}/cancel", s.cancel)
@@ -236,7 +249,15 @@ func (s *server) verdict(b *build) (string, []string) {
 	if change == "" {
 		return "passed", []string{"Branch build of " + b.Branch + ": nothing to check, passed."}
 	}
-	resp, err := http.Get(fmt.Sprintf("%s/changes/%s/revisions/%s/files/", s.gerritURL, url.PathEscape(change), url.PathEscape(ps)))
+	base := s.gerritURL
+	if s.gerritUser != "" {
+		base += "/a"
+	}
+	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/changes/%s/revisions/%s/files/", base, url.PathEscape(change), url.PathEscape(ps)), nil)
+	if s.gerritUser != "" {
+		req.SetBasicAuth(s.gerritUser, s.gerritPassword)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "failed", []string{"Could not list files: " + err.Error()}
 	}

@@ -84,7 +84,7 @@ unit bridge-test-gerrit "Bridge test instance: Gerrit" \
   "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --github_deploy_key_file ${KEY} --github_known_hosts_file ${TE}/github-known-hosts --ci_user buildkite --buildkite_url http://127.0.0.1:18090 --github ${REPO} --github_bot ${BOT} --identity AustinSchuh=AustinSchuh --base_path /gerrit --github_login_jars ${HOME}/tmp/github-plugin --github_oauth_file ${TE}/github-oauth --github_webhook_user AustinSchuh --github_login_users AustinSchuh|trusted|admin|$(git -C "${WS}" config user.email),${SECOND}|${SECOND_EMAIL}" \
   "" "TimeoutStopSec=60"
 unit bridge-test-buildkite "Bridge test instance: fake Buildkite" \
-  "${TE}/bin/fakebuildkite --duration 20s --gerrit_url http://127.0.0.1:18080/gerrit" "" ""
+  "${TE}/bin/fakebuildkite --duration 20s --gerrit_url http://127.0.0.1:18080/gerrit --gerrit_user buildkite --gerrit_password_file ${SITE}/ci/http-password" "" ""
 unit bridge-test-ci "Bridge test instance: gerrit-buildkite" \
   "${GBK} -token fake -api_url http://127.0.0.1:18090/ -webhook_token test-webhook-token -user buildkite -key ${SITE}/ci/id_ed25519 -gerrit_url http://127.0.0.1:18080/gerrit -http_password_file ${SITE}/ci/http-password -server localhost -project bridge-scratch -buildkite_project ci -organization test -database ${TE}/buildkite.db" \
   "After=bridge-test-gerrit.service bridge-test-buildkite.service" \
