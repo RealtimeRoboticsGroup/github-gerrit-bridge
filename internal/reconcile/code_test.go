@@ -906,12 +906,21 @@ func TestImportFetchChecksObjects(t *testing.T) {
 	bad := s.git("work", "commit-tree", strings.TrimSpace(string(out)), "-p", m1, "-m", "Evil")
 	s.push("github.git", bad, "refs/heads/evil")
 	s.pr(50, "evil", bad, "main", "austin")
-	im.Import(context.Background(), "main")
-	if len(up.uploads) != 0 {
-		t.Errorf("uploaded %v", up.uploads)
+	good := s.commit(m1, "good.txt", "g\n", "Good")
+	s.push("github.git", good, "refs/heads/good")
+	s.pr(51, "good", good, "main", "austin")
+	// One PR's bad objects do not stop the others.
+	if err := im.Import(context.Background(), "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 {
+		t.Errorf("uploads %v, want the good PR's", up.uploads)
 	}
 	if _, err := im.Mirror.Git(context.Background(), nil, "cat-file", "-e", bad); err == nil {
 		t.Error("the malformed commit reached the mirror")
+	}
+	if sts := s.statuses[bad]; len(sts) != 1 || sts[0].State != "failure" || !strings.Contains(sts[0].Description, "object checks") {
+		t.Errorf("bad PR's gerrit/sync = %+v", sts)
 	}
 }
 

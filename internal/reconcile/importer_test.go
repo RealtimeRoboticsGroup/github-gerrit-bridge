@@ -288,3 +288,21 @@ func TestSignOffsCannotCarryOtherLines(t *testing.T) {
 		t.Errorf("sign-offs = %q", got)
 	}
 }
+
+// A stack's upper layer is sized on its own: the lower layer's objects,
+// counted in its own PR, are not counted again.
+func TestCheckSizeCountsOnlyTheLayer(t *testing.T) {
+	defer func(f, total int64) { maxImportFile, maxImportTotal = f, total }(maxImportFile, maxImportTotal)
+	maxImportFile, maxImportTotal = 3000, 3000
+	im, g := newImportEnv(t)
+	base := g.commit("a.txt", "base\n", "base")
+	lower := g.commit("big.bin", strings.Repeat("x", 2500), "lower")
+	upper := g.commit("small.bin", strings.Repeat("y", 600), "upper")
+	ctx := context.Background()
+	if err := im.checkSize(ctx, upper, base, lower); err != nil {
+		t.Errorf("upper layer: %v", err)
+	}
+	if err := im.checkSize(ctx, upper, base, ""); err == nil {
+		t.Error("the whole stack fit the bound")
+	}
+}

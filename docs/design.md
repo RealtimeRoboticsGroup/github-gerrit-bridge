@@ -1105,7 +1105,10 @@ defenses, by threat:
   (Gerrit keeps every patch set's objects for good; set its
   `receive.maxObjectSizeLimit` too). Everything fetched from GitHub is
   checked by git as it arrives (`fetch.fsckObjects`), so malformed trees
-  and `.gitmodules` tricks never reach the mirror or Gerrit. Closed PRs'
+  and `.gitmodules` tricks never reach the mirror or Gerrit; a PR that
+  fails is refused on its own (the others still import), and a head
+  refused for its objects or size is not fetched again. A stack's upper
+  layer is sized without its lower layers. Closed PRs'
   heads are pruned from the mirror, and fetched branches
   (`refs/remotes/github/heads/…`) and fork PR heads
   (`refs/remotes/github/pull/N`) cannot collide. A Change-Id that belongs to another change is refused (§5.2).

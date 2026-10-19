@@ -47,6 +47,9 @@ type Importer struct {
 
 	mu       sync.Mutex
 	lastSync map[int]string // PR -> last gerrit/sync status set
+	// refused are PR heads refused for good (too big, or failing git's
+	// object checks), by SHA: they are not fetched again.
+	refused map[string]string
 
 	// onImported runs after a patch set is imported (Code.OnExported).
 	onImported func(ctx context.Context, n int) error
@@ -128,6 +131,21 @@ func footerChangeID(msg string) (id string, ok bool) {
 		return "", false
 	}
 	return sm[1], true
+}
+
+func (im *Importer) refuse(sha, why string) {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	if im.refused == nil || len(im.refused) > 10000 {
+		im.refused = map[string]string{} // bounded: forgetting costs a refetch
+	}
+	im.refused[sha] = why
+}
+
+func (im *Importer) refusedWhy(sha string) string {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	return im.refused[sha]
 }
 
 // Import imports every GitHub-born PR whose chain targets branch.
@@ -252,17 +270,50 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 	if err != nil {
 		return err
 	}
-	specs := []string{}
+	specs := map[*layer]string{}
+	var all []string
+	failed := map[*layer]string{}
 	for _, l := range order {
-		if _, _, fork := github.SplitHeadKey(l.pr.HeadKey(repo)); fork {
-			// GitHub keeps every PR's head in the base repository.
-			specs = append(specs, fmt.Sprintf("+refs/pull/%d/head:refs/remotes/github/pull/%d", l.pr.Number, l.pr.Number))
+		if why := im.refusedWhy(l.pr.Head.SHA); why != "" {
+			failed[l] = why // not fetched again
 			continue
 		}
-		specs = append(specs, "+refs/heads/"+l.pr.Head.Ref+":refs/remotes/github/heads/"+l.pr.Head.Ref)
+		spec := "+refs/heads/" + l.pr.Head.Ref + ":refs/remotes/github/heads/" + l.pr.Head.Ref
+		if _, _, fork := github.SplitHeadKey(l.pr.HeadKey(repo)); fork {
+			// GitHub keeps every PR's head in the base repository.
+			spec = fmt.Sprintf("+refs/pull/%d/head:refs/remotes/github/pull/%d", l.pr.Number, l.pr.Number)
+		}
+		specs[l] = spec
+		all = append(all, spec)
 	}
-	if _, err := im.Mirror.GitEnv(ctx, env, nil, append([]string{"-c", fsckFetch, "fetch", "--quiet", im.GitHubURL}, specs...)...); err != nil {
+	fetch := func(specs ...string) error {
+		_, err := im.Mirror.GitEnv(ctx, env, nil, append([]string{"-c", fsckFetch, "fetch", "--quiet", im.GitHubURL}, specs...)...)
 		return err
+	}
+	if len(all) > 0 {
+		if err := fetch(all...); err != nil {
+			// One PR's bad objects must not stop the others: fetch each
+			// alone, and refuse only those that fail on their own. If
+			// none can be fetched, it is the network, not a PR.
+			ok := 0
+			for _, l := range order {
+				if specs[l] == "" {
+					continue
+				}
+				if ferr := fetch(specs[l]); ferr != nil {
+					failed[l] = "Its commits could not be fetched: they fail git's object checks (fsck), or GitHub would not serve them"
+					im.Logger.Warn("fetching PR head", "pr", l.pr.Number, "err", ferr)
+				} else {
+					ok++
+				}
+			}
+			if ok == 0 {
+				return err
+			}
+			for l, why := range failed {
+				im.refuse(l.pr.Head.SHA, why)
+			}
+		}
 	}
 	if _, err := im.Mirror.Git(ctx, nil, "fetch", "--quiet", "origin", "+refs/heads/"+branch+":refs/remotes/gerrit/heads/"+branch); err != nil {
 		return err
@@ -270,6 +321,10 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 
 	done := map[*layer]*imported{}
 	for _, l := range order {
+		if why := failed[l]; why != "" {
+			im.setSync(ctx, l.pr, "failure", why, "")
+			continue
+		}
 		if l.parent != nil && done[l.parent] == nil {
 			im.setSync(ctx, l.pr, "pending", fmt.Sprintf("Waiting for PR #%d to import", l.parent.pr.Number), "")
 			continue
@@ -422,7 +477,12 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	if len(own) == 0 {
 		return nil, &syncError{"pending", "No commits of its own yet"}
 	}
-	if err := im.checkSize(ctx, h, gerritParent); err != nil {
+	// A stack's lower layers are counted in their own PRs.
+	if err := im.checkSize(ctx, h, gerritParent, parentTip); err != nil {
+		var se *syncError
+		if errors.As(err, &se) {
+			im.refuse(h, se.msg) // not fetched again
+		}
 		return nil, err
 	}
 
@@ -669,8 +729,12 @@ var (
 
 // checkSize refuses a head whose new objects (those parent lacks) include
 // a blob over maxImportFile or add up to more than maxImportTotal.
-func (im *Importer) checkSize(ctx context.Context, h, parent string) error {
-	list, err := im.Mirror.Git(ctx, nil, "rev-list", "--objects", "--no-object-names", h, "--not", parent)
+func (im *Importer) checkSize(ctx context.Context, h, parent, parentTip string) error {
+	not := []string{"rev-list", "--objects", "--no-object-names", h, "--not", parent}
+	if parentTip != "" {
+		not = append(not, parentTip)
+	}
+	list, err := im.Mirror.Git(ctx, nil, not...)
 	if err != nil {
 		return err
 	}
