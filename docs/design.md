@@ -1305,6 +1305,10 @@ instance (`internal/testgerrit`) is set up this way.
   should lack the `workflow` scope (a fine-grained token or App without
   Workflows), so GitHub refuses such a push even if the bridge tried
   (second audit).
+- **Gerrit's github plugin**: its pull-request import stays off for the
+  bridged repository (§7), and its webhook (`/plugins/github-plugin/webhook`)
+  has a secret (`github.webhookSecret`); without one it accepts unsigned
+  deliveries (seen on the test site).
 - **The peer key** (`gerrit.ssh.peer_key_file`) can run any SSH command as
   any account, administrators included: a credential for the whole site.
   Keep it only on the bridge's host, mode 600, and rotate it if in doubt.

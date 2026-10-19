@@ -53,6 +53,9 @@ if [[ -n "${RID}" ]]; then
 else
   "${GH}" api "repos/${REPO}/rulesets" --input - --silent <<<"${RULESET}"
 fi
+# No GitHub Actions: the bridge pushes every Gerrit change, from anyone
+# registered there, to a branch of this repository (design §9.1).
+"${GH}" api -X PUT "repos/${REPO}/actions/permissions" -F enabled=false --silent
 SECOND_EMAIL="$("${GH}" api "users/${SECOND}" --jq '"\(.id)+\(.login)@users.noreply.github.com"')"
 # The second account's own address, if any (becomes its preferred email).
 [[ -n "${SECOND_EMAIL_PREFERRED:-}" ]] && SECOND_EMAIL="${SECOND_EMAIL}|${SECOND_EMAIL_PREFERRED}"
