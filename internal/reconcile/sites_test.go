@@ -52,6 +52,7 @@ type sites struct {
 	// oldest first.
 	pushLog  map[string][]pushEntry
 	unstacks []int
+	stacks   []*github.Stack // made with POST /stacks, as GitHub would
 	activity map[int]github.PRActivity // what Activity returns per PR
 	// onActivity, if set, runs (under s.mu) when Activity is asked.
 	onActivity func()
@@ -103,7 +104,12 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("POST /repos/o/r/issues/{n}/comments", s.createComment)
 	mux.HandleFunc("POST /repos/o/r/statuses/{sha}", s.createStatus)
 	mux.HandleFunc("POST /repos/o/r/stacks/{n}/unstack", s.unstack)
-	mux.HandleFunc("GET /repos/o/r/stacks", func(w http.ResponseWriter, r *http.Request) { s.json(w, []any{}, false) })
+	mux.HandleFunc("GET /repos/o/r/stacks", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.json(w, append([]*github.Stack{}, s.stacks...), false)
+	})
+	mux.HandleFunc("POST /repos/o/r/stacks", s.createStack)
 	mux.HandleFunc("POST /repos/o/r/pulls", func(w http.ResponseWriter, r *http.Request) {
 		var in github.NewPull
 		json.NewDecoder(r.Body).Decode(&in)
@@ -211,6 +217,27 @@ func (s *sites) pr(n int, head, sha, base, author string) *github.PullRequest {
 		Base: github.Ref{Ref: base}}
 	s.pulls[n] = pr
 	return pr
+}
+
+// createStack makes a stack of the PRs named, refusing a fork's PR as
+// GitHub does.
+func (s *sites) createStack(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		PullRequests []int `json:"pull_requests"`
+	}
+	json.NewDecoder(r.Body).Decode(&in)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := &github.Stack{Number: len(s.stacks) + 1, Open: true}
+	for _, n := range in.PullRequests {
+		if pr := s.pulls[n]; pr != nil && pr.Head.Repo != nil && pr.Head.Repo.FullName != "o/r" {
+			http.Error(w, `{"message":"Pull requests from forks cannot be added to stacks."}`, http.StatusUnprocessableEntity)
+			return
+		}
+		st.PullRequests = append(st.PullRequests, github.StackPR{Number: n, State: "open"})
+	}
+	s.stacks = append(s.stacks, st)
+	s.json(w, st, false)
 }
 
 // webhookPush records, as a webhook would, that login pushed PR n's head

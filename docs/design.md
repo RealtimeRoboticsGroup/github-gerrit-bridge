@@ -1193,8 +1193,15 @@ defenses, by threat:
   changed back above), is not mirrored: no branch or PR for it, nothing
   more pushed to its PR if it has one, and one notice per patch set in
   Gerrit. The push itself, and the swap before `/submit`, also refuse
-  such commits (forks excepted: their workflows run with their own
-  secrets), whatever the plan says. GitHub runs workflows from any branch
+  to put such files at a branch's tip (forks excepted: their workflows
+  run with their own secrets), whatever the plan says; a change whose
+  push is refused is withheld, the rest of the branch pushed. The push
+  checks only the files at its tips, which is what GitHub uses: the
+  history it brings is Gerrit's, which the first rule checks, or
+  GitHub's own (a PR's commits below a change on top of it, the
+  bridge's merge for a rebase onto a branch whose workflows changed
+  since), which used to make it refuse the branch's whole push, every
+  time (fourth audit). GitHub runs workflows from any branch
   pushed to the repository, with its secrets (second audit, confirmed
   live), and reads code owners from a PR's base, which for a stacked PR
   is a branch the bridge pushed (third audit, confirmed live: a Gerrit

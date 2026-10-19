@@ -222,15 +222,16 @@ const withheldWhat = ".github/ or CODEOWNERS"
 
 // changesConfig reports whether commit has files under withheldPaths
 // that branch's tip does not have as they are (an old base counts: it
-// would bring back what the branch has changed since), or any commit of
-// it not on branch changes them (a change below it, say, even if a later
-// one changes them back). Neither needs a merge base.
-func (c *Code) changesConfig(ctx context.Context, branch, commit string) (bool, error) {
+// would bring back what the branch has changed since), or, with history,
+// any commit of it not on branch changes them (a change below it, say,
+// even if a later one changes them back: it would be pushed too, as the
+// base of this one's PR). Neither needs a merge base.
+func (c *Code) changesConfig(ctx context.Context, branch, commit string, history bool) (bool, error) {
 	tip, err := c.Mirror.Git(ctx, nil, "rev-parse", "--verify", "refs/remotes/gerrit/heads/"+branch+"^{commit}")
 	if err != nil {
 		return false, err
 	}
-	key := strings.TrimSpace(string(tip)) + " " + commit
+	key := fmt.Sprint(strings.TrimSpace(string(tip)), " ", commit, " ", history)
 	c.wmu.Lock()
 	w, ok := c.configCache[key]
 	c.wmu.Unlock()
@@ -241,6 +242,8 @@ func (c *Code) changesConfig(ctx context.Context, branch, commit string) (bool, 
 	_, err = c.Mirror.Git(ctx, nil, append([]string{"diff", "--quiet", "--no-renames", "--diff-filter=d", strings.TrimSpace(string(tip)), commit, "--"}, withheldPaths...)...)
 	var xe *exec.ExitError
 	switch {
+	case err == nil && !history:
+		w = false
 	case err == nil:
 		out, err := c.Mirror.Git(ctx, nil, append([]string{"rev-list", "--full-history", "-1", commit, "^" + strings.TrimSpace(string(tip)), "--"}, withheldPaths...)...)
 		if err != nil {
@@ -277,7 +280,7 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 		}
 		w, err := refused[n], error(nil)
 		if !w {
-			w, err = c.changesConfig(ctx, branch, ch.Revision)
+			w, err = c.changesConfig(ctx, branch, ch.Revision, true)
 		}
 		if err != nil {
 			c.Logger.Warn("cannot tell whether a change touches "+withheldWhat+"; withheld", "change", n, "err", err)
@@ -1178,26 +1181,29 @@ func (c *Code) linkPR(ctx context.Context, n int, origin, branch, changeID strin
 // appendCommit makes a commit with a patch set's tree on top of a GitHub
 // head (design §5.2: a fast-forward, so `git pull` works), merging in the
 // new base of a rebased patch set.
-// pushGuard refuses to push commit to the repository's branch name if it
-// changes withheldPaths (GitHub would run it; withhold), whatever a plan
-// says.
+// pushGuard refuses to push commit to the repository's branch name if
+// its files under withheldPaths are not the branch's (GitHub would use
+// them; withhold), whatever a plan says. Only the files: what GitHub
+// uses is a branch's tip, and the history a push brings is Gerrit's,
+// which withhold checks, or GitHub's own (fourth audit: the bridge's
+// merge of a branch that changed .github/ since, or a PR's commits that
+// changed it and changed it back, would stop every push).
 func (c *Code) pushGuard(ctx context.Context, branch, name, commit string) error {
 	if _, _, fork := github.SplitHeadKey(name); fork || commit == "" {
 		return nil // runs in the fork, with its own secrets; or a deletion
 	}
-	if w, err := c.changesConfig(ctx, branch, commit); err != nil || w {
+	if w, err := c.changesConfig(ctx, branch, commit, false); err != nil || w {
 		return cmp.Or(err, fmt.Errorf("refusing to push %s to %s: it changes %s", short(commit), name, withheldWhat))
 	}
 	return nil
 }
 
-// refusedPushes is the changes whose pushes in p pushGuard refuses.
-// withhold checks a change's Gerrit commits, but a push can carry GitHub
-// commits Gerrit lacks: those a GitHub-born parent's PR was squashed
-// from, below a change exported onto them, which may have changed
-// .github/ and changed it back (fourth audit). Withheld instead, they do
-// not stop the branch's other pushes. A refused push that is no one
-// change's still fails in applyOne.
+// refusedPushes is the changes whose pushes in p pushGuard refuses,
+// though withhold let them through: it checks a change's Gerrit commits,
+// and a push can be of GitHub's (a frozen base at a parent's GitHub
+// commit, say). Withheld instead, they do not stop the branch's other
+// pushes (fourth audit). A refused push that is no one change's still
+// fails in applyOne.
 func (c *Code) refusedPushes(ctx context.Context, s *Snapshot, p *Plan) (map[int]bool, error) {
 	owner := map[string]int{}
 	for n, d := range p.Desired {
@@ -1495,7 +1501,7 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 				if _, err := c.Mirror.Git(ctx, nil, "fetch", "--quiet", "origin", rev.Ref); err != nil {
 					return err
 				}
-				if w, err := c.changesConfig(ctx, ch.Branch, ch.CurrentRevision); err != nil || w {
+				if err := c.pushGuard(ctx, ch.Branch, branch, ch.CurrentRevision); err != nil {
 					c.Logger.Warn("not swapping in a commit that changes "+withheldWhat, "change", ch.Number, "pr", pr.Number, "err", err)
 					continue
 				}

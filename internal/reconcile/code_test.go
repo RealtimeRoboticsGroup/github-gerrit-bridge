@@ -1690,8 +1690,12 @@ func TestChangesTouchingGitHubConfigAreWithheld(t *testing.T) {
 		{"based on main before its workflow changed", oldBase, true}, {"based on main before it had one", plain, false},
 		{"on the new main", onM2, false}, {"unrelated history", orphan, false},
 	} {
-		if w, err := c.changesConfig(ctx, "main", tc.rev); err != nil || w != tc.want {
+		if w, err := c.changesConfig(ctx, "main", tc.rev, true); err != nil || w != tc.want {
 			t.Errorf("%s: withheld %v, err %v; want %v", tc.name, w, err, tc.want)
+		}
+		// Without history, only the files count.
+		if w, err := c.changesConfig(ctx, "main", tc.rev, false); err != nil || w != (tc.want && tc.rev != undo) {
+			t.Errorf("%s, files only: withheld %v, err %v", tc.name, w, err)
 		}
 	}
 	// A change that cannot be checked is withheld; a notice Gerrit will
@@ -1702,6 +1706,7 @@ func TestChangesTouchingGitHubConfigAreWithheld(t *testing.T) {
 		5: {Number: 5, Status: "NEW", Revision: strings.Repeat("0", 40), PatchSet: 1},
 		6: {Number: 6, Status: "NEW", Revision: owners, PatchSet: 1},
 		7: {Number: 7, Status: "NEW", Revision: docsOwners, PatchSet: 1},
+		8: {Number: 8, Status: "NEW", Revision: undo, PatchSet: 1}, // its history, not its files
 	}, State: map[int]*state.Change{}}
 	for range 2 {
 		if err := c.withhold(ctx, snap, "main", nil); err != nil {
@@ -1711,10 +1716,10 @@ func TestChangesTouchingGitHubConfigAreWithheld(t *testing.T) {
 			snap.State[n], _ = store.Load(ctx, n)
 		}
 	}
-	if !snap.Withheld[5] || !snap.Withheld[6] || !snap.Withheld[7] {
-		t.Errorf("withheld = %v, want 5, 6 and 7", snap.Withheld)
+	if !snap.Withheld[5] || !snap.Withheld[6] || !snap.Withheld[7] || !snap.Withheld[8] {
+		t.Errorf("withheld = %v, want 5 to 8", snap.Withheld)
 	}
-	if got := strings.Join(s.calls, ","); got != "review 6,review 7,review 7" {
+	if got := strings.Join(s.calls, ","); got != "review 6,review 7,review 8,review 7" {
 		t.Errorf("notices = %v: want 6's refusal taken as final, 7's retried", got)
 	}
 	// And whatever a plan says, the push is refused.
@@ -1725,12 +1730,14 @@ func TestChangesTouchingGitHubConfigAreWithheld(t *testing.T) {
 	}
 }
 
-// A change whose push would carry GitHub history that changed .github/
-// (a PR's commits below it that added a workflow and took it out again,
-// which its Gerrit squash does not have) is withheld, not pushed; the
-// rest of the branch is exported (fourth audit: the guard used to stop
-// the whole branch, every reconcile).
-func TestRefusedPushWithholdsOnlyItsChange(t *testing.T) {
+// What GitHub uses is a pushed branch's files, so the push guard looks
+// only at those (fourth audit: it used to refuse, and so stop the whole
+// branch's push, every reconcile, for history GitHub has anyway): a
+// change on a GitHub-born parent whose PR's commits added a workflow and
+// took it out again is exported, and so is the bridge's merge for a
+// rebase onto a branch that has changed its workflow since. A push the
+// guard does refuse withholds only its change.
+func TestPushGuardLooksAtWhatGitHubUses(t *testing.T) {
 	s := newSites(t)
 	ctx := context.Background()
 	c, store := s.code(ctx)
@@ -1743,44 +1750,89 @@ func TestRefusedPushWithholdsOnlyItsChange(t *testing.T) {
 	h2 := s.commit(h1, "f.txt", "f\n", "Feature, workflow gone")
 	s.push("github.git", h2, "refs/heads/feature")
 	s.pr(10, "feature", h2, "main", "brt")
-	change := func(n int, parent, file, subject string) string {
+	change := func(n, ps int, parent, file, subject string) string {
 		msg := subject + "\n\nChange-Id: " + cid(n) + "\n"
 		rev := s.commit(parent, file, file+"\n", msg)
-		ci := s.change(n, cid(n), rev, msg, "NEW")
-		r := ci.Revisions[rev]
-		r.Commit.Parents = append(r.Commit.Parents, struct {
-			Commit string `json:"commit"`
-		}{parent})
-		r.Commit.Subject = subject
-		ci.Revisions[rev] = r
+		ci := s.changes[n]
+		if ci == nil {
+			ci = s.change(n, cid(n), rev, msg, "NEW")
+		}
+		ref := fmt.Sprintf("refs/changes/%02d/%d/%d", n%100, n, ps)
+		s.push("gerrit.git", rev, ref)
+		ci.Revisions[rev] = gerrit.RevisionInfo{Number: ps, Ref: ref, Commit: gerrit.CommitInfo{Message: msg, Subject: subject,
+			Parents: []struct {
+				Commit string `json:"commit"`
+			}{{parent}}}}
+		ci.CurrentRevision = rev
 		return rev
 	}
-	sq := change(1, m0, "f.txt", "Feature") // the PR's squash: no workflow
+	sq := change(1, 1, m0, "f.txt", "Feature") // the PR's squash
 	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "github",
 		HeadBranch: "feature", Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: sq, GitHubSHA: h2}}})
-	above := change(2, sq, "c.txt", "Above")
-	plain := change(3, m0, "p.txt", "Plain")
+	above := change(2, 1, sq, "c.txt", "Above")
+	plain := change(3, 1, m0, "p.txt", "Plain")
+	// Change 5 was exported, and has a rebase onto a main whose workflow
+	// changed since.
+	e1 := change(5, 1, m0, "e.txt", "Exported")
+	s.push("github.git", e1, "refs/heads/gerrit/"+cid(5))
+	s.pr(50, "gerrit/"+cid(5), e1, "main", "bot")
+	s.save(ctx, store, 5, &state.Change{State: state.ChangeState{Change: 5, ChangeID: cid(5), PR: 50, Branch: "main", Origin: "gerrit",
+		HeadBranch: "gerrit/" + cid(5), Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: e1, GitHubSHA: e1}}})
+	s.git("work", "checkout", "-q", "--detach", m0)
+	os.MkdirAll(filepath.Join(s.dir, "work", ".github", "workflows"), 0o755)
+	m1 := s.commit(m0, ".github/workflows/main.yml", "on: push\n", "Main's workflow")
+	s.push("gerrit.git", m1, "refs/heads/main")
+	s.push("github.git", m1, "refs/heads/main")
+	e2 := change(5, 2, m1, "e.txt", "Exported") // rebased
 	if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(s.gitOut("github.git", "rev-parse", "refs/heads/gerrit/"+cid(3))); got != plain {
-		t.Errorf("change 3 not exported (gerrit/%s = %q)", cid(3), got)
+	for n, want := range map[int]string{2: above, 3: plain} {
+		if got := strings.TrimSpace(s.gitOut("github.git", "rev-parse", "refs/heads/gerrit/"+cid(n)+"^{tree}")); got != s.git("work", "rev-parse", want+"^{tree}") {
+			t.Errorf("change %d not exported (gerrit/%s = %q)", n, cid(n), got)
+		}
 	}
-	if got := strings.TrimSpace(s.gitOut("github.git", "for-each-ref", "--format=%(refname)", "--contains", h1)); got != "refs/heads/feature" {
-		t.Errorf("the workflow's history is on %s, want only the PR's own branch", got)
+	got5 := s.ref("github.git", "refs/heads/gerrit/"+cid(5))
+	if s.git("github.git", "rev-parse", got5+"^{tree}") != s.git("work", "rev-parse", e2+"^{tree}") || s.git("github.git", "rev-parse", got5+"^1") != e1 {
+		t.Errorf("change 5's rebase not merged onto its PR (gerrit/%s = %s)", cid(5), short(got5))
 	}
-	if got := s.gitOut("github.git", "rev-parse", "--verify", "-q", "refs/heads/gerrit/"+cid(2)); got != "" {
-		t.Errorf("change 2 (%s) exported as %s", short(above), got)
+	withheld := func(n int) bool {
+		st, _ := store.Load(ctx, n)
+		return st.State.WithheldNotice != 0
 	}
-	if !slices.Contains(s.calls, "review 2") {
-		t.Errorf("calls = %v, want a withheld notice on change 2", s.calls)
+	if withheld(2) || withheld(5) {
+		t.Error("a change was withheld")
 	}
-	// The same for a frozen base; a refused push that is no one change's
-	// is left for applyOne to refuse.
-	p := &Plan{Desired: map[int]*Desired{4: {Change: 4, Head: "gerrit/" + cid(4), Frozen: "gerrit-base/" + cid(4)}},
-		Actions: []Action{{Kind: PushBranches, Refs: map[string]string{"gerrit-base/" + cid(4): h2, "gerrit/" + cid(4): plain, "elsewhere": h2}}}}
-	if got, err := c.refusedPushes(ctx, &Snapshot{Branch: "main"}, p); err != nil || !reflect.DeepEqual(got, map[int]bool{4: true}) {
-		t.Errorf("refused %v, err %v; want change 4", got, err)
+
+	// A push the guard refuses (here a frozen base at a parent's GitHub
+	// commit whose files are not its Gerrit commit's, which withhold
+	// cannot see) withholds only its change.
+	st, _ := store.Load(ctx, 5)
+	st.Revisions = append(st.Revisions, state.Revision{PatchSet: 2, GerritSHA: e2, GitHubSHA: h1})
+	s.save(ctx, store, 5, st)
+	s.push("github.git", h1, "refs/heads/gerrit/"+cid(5))
+	s.pulls[50].Head.SHA = h1
+	e3 := change(5, 3, m1, "e3.txt", "Exported")
+	onOld := change(4, 1, e2, "o.txt", "On patch set 2")
+	plain2 := change(6, 1, m1, "p2.txt", "Plain too")
+	if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.gitOut("github.git", "rev-parse", "--verify", "-q", "refs/heads/gerrit/"+cid(4)); got != "" {
+		t.Errorf("change 4 (%s) exported as %s", short(onOld), got)
+	}
+	if !withheld(4) {
+		t.Error("change 4 was not withheld, with a notice")
+	}
+	if got := strings.TrimSpace(s.gitOut("github.git", "rev-parse", "refs/heads/gerrit/"+cid(6))); got != plain2 {
+		t.Errorf("change 6 not exported (gerrit/%s = %q)", cid(6), got)
+	}
+	_ = e3
+	// A refused push that is no one change's is left for applyOne.
+	p := &Plan{Desired: map[int]*Desired{7: {Change: 7, Head: "gerrit/" + cid(7), Frozen: "gerrit-base/" + cid(7)}},
+		Actions: []Action{{Kind: PushBranches, Refs: map[string]string{"gerrit-base/" + cid(7): h1, "gerrit/" + cid(7): plain, "elsewhere": h1}}}}
+	if got, err := c.refusedPushes(ctx, &Snapshot{Branch: "main"}, p); err != nil || !reflect.DeepEqual(got, map[int]bool{7: true}) {
+		t.Errorf("refused %v, err %v; want change 7", got, err)
 	}
 }
 
