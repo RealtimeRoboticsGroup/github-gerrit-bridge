@@ -295,8 +295,14 @@ type Desired struct {
 	FrozenAt string
 	PR       int // existing PR, 0 if none yet
 	Title    string
+	Body     string // as the plan writes it
 	BodyHash string
 	Draft    bool
+}
+
+// drop removes the actions on the changes in skip.
+func (p *Plan) drop(skip map[int]bool) {
+	p.Actions = slices.DeleteFunc(p.Actions, func(a Action) bool { return a.Change != 0 && skip[a.Change] })
 }
 
 // Plan is the planner's output.
@@ -455,7 +461,7 @@ func MakePlan(s *Snapshot) *Plan {
 		// edits made on GitHub reach Gerrit first (Code.mirrorPREdits), so
 		// what is here is the newer of the two.
 		body, hash := composeBody(c.Message, block)
-		d.BodyHash = hash
+		d.Body, d.BodyHash = body, hash
 		p.Desired[n] = d
 
 		if pr == nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -633,6 +634,57 @@ func TestPREditBecomesCommitMessageAsTheEditor(t *testing.T) {
 		if len(s.calls) != 1 || s.calls[0] != "message 7 as austin" {
 			t.Errorf("%s: calls = %v", origin, s.calls)
 		}
+	}
+}
+
+// A PR GitHub will not take an edit for is that change's problem only.
+func TestOnePRGitHubRefusesDoesNotStopTheRest(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	s.pr(10, "a", "x", "main", "bot")
+	s.pr(20, "b", "y", "main", "bot")
+	s.refusePulls = map[int]bool{10: true}
+	skip := map[int]bool{}
+	p := &Plan{Actions: []Action{
+		{Kind: UpdatePR, Change: 1, PR: 10, Update: &github.PullUpdate{State: ptr("closed")}},
+		{Kind: UpdatePR, Change: 1, PR: 10, Update: &github.PullUpdate{Base: ptr("x")}},
+		{Kind: UpdatePR, Change: 2, PR: 20, Update: &github.PullUpdate{State: ptr("closed")}},
+	}}
+	if err := c.apply(ctx, &Snapshot{Branch: "main"}, p, skip); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(skip, map[int]bool{1: true}) || s.pulls[20].State != "closed" || strings.Join(s.calls, ",") != "update #10,update #20" {
+		t.Errorf("skip = %v, #20 %s, calls %v", skip, s.pulls[20].State, s.calls)
+	}
+	p.drop(skip)
+	if len(p.Actions) != 1 || p.Actions[0].Change != 2 {
+		t.Errorf("after drop: %v", p.Actions)
+	}
+	if !refusedByGitHub(&github.APIError{Status: 404}) || refusedByGitHub(&github.APIError{Status: 403}) || refusedByGitHub(&github.APIError{Status: 429}) ||
+		refusedByGitHub(&github.APIError{Status: 401}) || refusedByGitHub(&github.APIError{Status: 502}) || refusedByGitHub(errors.New("x")) {
+		t.Error("refusedByGitHub")
+	}
+}
+
+// A description the bridge shortened for GitHub is what the bridge wrote,
+// not someone's edit to mirror back into the commit message.
+func TestShortenedDescriptionIsNoEdit(t *testing.T) {
+	s, c, snap := editsWorld(t, "gerrit")
+	msg := "Seven\n\n" + strings.Repeat("long ", 20000) + "\n\nChange-Id: " + cid(7) + "\n"
+	snap.Changes[7].Message = msg
+	body, hash := composeBody(msg, "")
+	s.pulls[70].Body = body
+	snap.PRs[70] = s.pulls[70]
+	s.save(context.Background(), c.Store, 7, snap.State[7]) // synced before the message grew
+	p := &Plan{Desired: map[int]*Desired{7: {Change: 7, PR: 70, Head: "gerrit/" + cid(7), Base: "main", Title: "Seven", Body: body, BodyHash: hash}}}
+	if err := c.record(context.Background(), snap, p); err != nil {
+		t.Fatal(err)
+	}
+	snap.State[7], _ = c.Store.Load(context.Background(), 7)
+	s.activity[70] = github.PRActivity{TextEditor: "bot"}
+	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 || len(s.comments[70]) != 0 {
+		t.Errorf("changed=%v err=%v calls=%v notices=%v", changed, err, s.calls, s.comments[70])
 	}
 }
 

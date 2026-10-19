@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // The PR body is the commit message (minus its subject, which is the
@@ -79,7 +80,7 @@ func linksBlock(changeURL string, number, patchSet int, chain []chainEntry, note
 		if title == "" {
 			title = fmt.Sprintf("change %d", e.Change)
 		}
-		line := fmt.Sprintf("[%s, patch set %d](%s/%d)", forGitHub(escapeLinkText(title)), e.PatchSet, e.URL, e.PatchSet)
+		line := fmt.Sprintf("[%s, patch set %d](%s/%d)", inlineName(shorten(title, maxLinkTitle)), e.PatchSet, e.URL, e.PatchSet)
 		switch {
 		case e.PR != 0:
 			line += fmt.Sprintf(" (%s #%d)", githubLogo, e.PR)
@@ -109,11 +110,30 @@ func composeBody(message, block string) (body, hash string) {
 	if want == "" {
 		return block, hash
 	}
+	if room := maxPRBody - len(block) - len(tooLongForGitHub) - 2; len(want) > room {
+		cut := max(room, 0)
+		for cut > 0 && !utf8.RuneStart(want[cut]) {
+			cut--
+		}
+		want = want[:cut] + tooLongForGitHub
+	}
 	return want + "\n\n" + block, hash
 }
 
-// escapeLinkText keeps a commit subject from breaking out of a Markdown
-// link's text.
-func escapeLinkText(s string) string {
-	return strings.NewReplacer(`\`, `\\`, `[`, `\[`, `]`, `\]`).Replace(s)
+// maxPRBody bounds a PR description, in bytes: GitHub refuses one over
+// 65,536 characters, and a PR it refuses must not stop its branch. Each
+// chain link's title in the block is bounded too (maxLinkTitle runes).
+const (
+	maxPRBody    = 60000
+	maxLinkTitle = 200
+)
+
+const tooLongForGitHub = "\n\n[… too long for GitHub; the rest is in Gerrit]"
+
+// shorten cuts s to at most n runes, marking the cut.
+func shorten(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n]) + "…"
 }

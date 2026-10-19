@@ -1198,6 +1198,14 @@ defenses, by threat:
   them), and it warns at startup about secret files others can read. `gerrit.url` must be https unless it is a loopback
   address, since every request carries the bridge's password. Responses
   from Gerrit and GitHub are read only up to a bound.
+- **PRs GitHub will not take.** A description is cut to fit GitHub's
+  65,536-character limit (saying the rest is in Gerrit), chain titles in
+  the links block are bounded and have Markdown and HTML escaped, and an
+  action GitHub still refuses for one change's PR (a 4xx other than auth
+  and rate limits) leaves that change out of the rest of the reconcile
+  instead of stopping the branch: anyone registered on Gerrit could
+  otherwise stop every PR's updates with one long commit message (third
+  audit, confirmed live).
 - **Edits over and over.** A PR's edits, draft toggles, closes and
   reopens are mirrored to Gerrit at most once per reconcile; newer ones
   wait for the next, and the plan leaves that PR's text, draft and open

@@ -60,6 +60,8 @@ type sites struct {
 	calls      []string // Gerrit edits made, as "<what> <change> as <user>"
 	// refuseReview makes reviews of a change fail with that status.
 	refuseReview map[int]int
+	// refusePulls makes edits of these PRs fail as GitHub's validation.
+	refusePulls map[int]bool
 }
 
 func newSites(t *testing.T) *sites {
@@ -408,6 +410,11 @@ func (s *sites) updatePull(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pr := s.pulls[num(r)]
+	s.calls = append(s.calls, fmt.Sprintf("update #%d", num(r)))
+	if s.refusePulls[num(r)] {
+		http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
+		return
+	}
 	var u github.PullUpdate
 	json.NewDecoder(r.Body).Decode(&u)
 	if u.State != nil {

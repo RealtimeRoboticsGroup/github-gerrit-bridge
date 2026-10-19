@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
@@ -88,6 +89,28 @@ func TestPRBodyRoundTripsDefusedText(t *testing.T) {
 	// block, the last one.
 	if user, _ := splitBody("mine " + linksStart + " too\n\n" + linksBlock("u", 3, 1, nil, "")); user != "mine "+linksStart+" too" {
 		t.Errorf("split = %q", user)
+	}
+}
+
+// GitHub refuses a description over 65,536 characters, which would stop
+// the PR (and once, its branch): a long commit message is cut to fit,
+// whole characters only, and the block always stays. Chain titles are
+// bounded and cannot carry HTML or links.
+func TestPRBodyFitsGitHub(t *testing.T) {
+	long := strings.Repeat("é@x ", 30000)
+	msg := "Subject\n\n" + long + "\n\nChange-Id: " + cid(3) + "\n"
+	chain := []chainEntry{{Change: 2, PatchSet: 1, URL: "u2", Subject: `</a><a href="https://evil">Approved</a>` + strings.Repeat("x", 500)},
+		{Change: 3, PatchSet: 1, URL: "u3", This: true}}
+	block := linksBlock("u3", 3, 1, chain, "")
+	body, _ := composeBody(msg, block)
+	if len(body) > maxPRBody || !utf8.ValidString(body) || !strings.HasSuffix(body, block) || !strings.Contains(body, tooLongForGitHub) {
+		t.Errorf("body: %d bytes, valid %v, block kept %v", len(body), utf8.ValidString(body), strings.HasSuffix(body, block))
+	}
+	if strings.Contains(block, "<a href") || strings.Contains(block, strings.Repeat("x", maxLinkTitle+1)) {
+		t.Errorf("block = %q", block)
+	}
+	if short, _ := composeBody("Subject\n\nShort.\n", block); short != "Short.\n\n"+block {
+		t.Errorf("short body changed: %q", short)
 	}
 }
 

@@ -141,6 +141,7 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 		}
 	}
 	handled := map[int]bool{} // PRs whose GitHub side was mirrored this time
+	skip := map[int]bool{}    // changes whose PR GitHub refused an action on
 	for pass := 0; pass < maxPasses; pass++ {
 		snap, err := c.observe(ctx, branch)
 		if err != nil {
@@ -161,6 +162,7 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 			}
 		}
 		plan := MakePlan(snap)
+		plan.drop(skip)
 		if len(plan.Actions) == 0 {
 			if c.DryRun {
 				c.Logger.Info("in sync", "branch", branch, "changes", len(plan.Desired))
@@ -174,7 +176,7 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 		if c.DryRun {
 			return nil
 		}
-		if err := c.apply(ctx, snap, plan); err != nil {
+		if err := c.apply(ctx, snap, plan, skip); err != nil {
 			return err
 		}
 	}
@@ -912,15 +914,35 @@ func (c *Code) githubEnv(ctx context.Context) ([]string, error) {
 	return gitmirror.CredentialEnv("https://github.com", "x-access-token", tok), nil
 }
 
-// apply runs a plan's actions in order. It stops at the first error; the
-// next reconcile re-plans from whatever state that left.
-func (c *Code) apply(ctx context.Context, s *Snapshot, p *Plan) error {
+// apply runs a plan's actions in order. An action on one change's PR that
+// GitHub refuses as such (refusedByGitHub) is logged, and that change is
+// added to skip and left out for the rest of the reconcile: anyone can
+// make their own change's PR unacceptable to GitHub, and that must not
+// stop everyone else's. Any other error stops it; the next reconcile
+// re-plans from whatever state that left.
+func (c *Code) apply(ctx context.Context, s *Snapshot, p *Plan, skip map[int]bool) error {
 	for _, a := range p.Actions {
+		if a.Change != 0 && skip[a.Change] {
+			continue
+		}
 		if err := c.applyOne(ctx, s, a); err != nil {
+			if a.Change != 0 && refusedByGitHub(err) {
+				c.Logger.Warn("GitHub refused an action on one change's PR; leaving that change out", "change", a.Change, "action", a.String(), "err", err)
+				skip[a.Change] = true
+				continue
+			}
 			return fmt.Errorf("%s: %w", a, err)
 		}
 	}
 	return nil
+}
+
+// refusedByGitHub reports whether GitHub refused a request for what it
+// asked (a 4xx), not for who asked or how often (401, 403, 429).
+func refusedByGitHub(err error) bool {
+	var ae *github.APIError
+	return errors.As(err, &ae) && ae.Status >= 400 && ae.Status < 500 &&
+		ae.Status != http.StatusUnauthorized && ae.Status != http.StatusForbidden && ae.Status != http.StatusTooManyRequests
 }
 
 func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
@@ -1200,8 +1222,10 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan) error {
 			st.State.ClosedNoticePosted = false
 			// Where the PR and the change agree, neither side has news for
 			// the other (mirrorPREdits).
-			if pr != nil && githubText(pr) == gerritText(ch.Message) {
-				st.State.SyncedText = hashString(gerritText(ch.Message))
+			// So do they where the PR shows what the bridge wrote (a
+			// description shortened for GitHub, say).
+			if pr != nil && (githubText(pr) == gerritText(ch.Message) || (pr.Body == d.Body && strings.TrimSpace(pr.Title) == d.Title)) {
+				st.State.SyncedText = hashString(githubText(pr))
 			}
 			if pr != nil && pr.Draft == ch.WIP {
 				st.State.SyncedWIP = wipState(ch.WIP)
