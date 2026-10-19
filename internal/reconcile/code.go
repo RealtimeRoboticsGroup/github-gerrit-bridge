@@ -134,17 +134,19 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 			return fmt.Errorf("importing GitHub PRs for %s: %w", branch, err)
 		}
 	}
+	handled := map[int]bool{} // PRs whose GitHub side was mirrored this time
 	for pass := 0; pass < maxPasses; pass++ {
 		snap, err := c.observe(ctx, branch)
 		if err != nil {
 			return fmt.Errorf("observing %s: %w", branch, err)
 		}
+		snap.hold(handled)
 		if !c.DryRun {
-			changed, err := c.mirrorPRStates(ctx, snap)
+			changed, err := c.mirrorPRStates(ctx, snap, handled)
 			if err != nil {
 				return fmt.Errorf("mirroring PR closes on %s: %w", branch, err)
 			}
-			edited, err := c.mirrorPREdits(ctx, snap)
+			edited, err := c.mirrorPREdits(ctx, snap, handled)
 			if err != nil {
 				return fmt.Errorf("mirroring PR edits on %s: %w", branch, err)
 			}
@@ -554,11 +556,11 @@ func (c *Code) observeHistory(ctx context.Context, s *Snapshot, env []string) er
 // Gerrit refuses, or they have no Gerrit account, nothing changes there:
 // the plan then puts the PR back the way Gerrit says, and a notice says
 // why. It reports whether a change was abandoned or restored.
-func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot) (bool, error) {
+func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]bool) (bool, error) {
 	changed := false
 	for _, n := range sortedKeys(s.Changes) {
 		ch, st := s.Changes[n], s.State[n]
-		if st == nil || st.State.PR == 0 || s.PRs[st.State.PR] == nil {
+		if st == nil || st.State.PR == 0 || s.PRs[st.State.PR] == nil || handled[st.State.PR] {
 			continue
 		}
 		pr := s.PRs[st.State.PR]
@@ -599,7 +601,7 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot) (bool, error) {
 			err := c.Gerrit.As(user).Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/%s", n, action), map[string]string{"message": msg}, nil)
 			if err == nil {
 				c.Logger.Info("mirrored GitHub "+past+" to Gerrit", "change", n, "pr", pr.Number, "action", action, "as", user)
-				changed = true
+				changed, handled[pr.Number] = true, true
 				continue
 			}
 			var ge *gerrit.Error
@@ -654,11 +656,11 @@ func wipState(wip bool) string { return map[bool]string{true: "wip", false: "rea
 // asEditor for when the bridge will not); if Gerrit or the bridge refuses,
 // a notice says why and the plan puts Gerrit's version back. If both sides
 // changed, Gerrit's wins. It reports whether Gerrit changed.
-func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot) (bool, error) {
+func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]bool) (bool, error) {
 	changed := false
 	for _, n := range sortedKeys(s.Changes) {
 		ch, st := s.Changes[n], s.State[n]
-		if ch.Status != "NEW" || ch.Private || st == nil || st.State.PR == 0 || s.PRs[st.State.PR] == nil {
+		if ch.Status != "NEW" || ch.Private || st == nil || st.State.PR == 0 || s.PRs[st.State.PR] == nil || handled[st.State.PR] {
 			continue
 		}
 		pr := s.PRs[st.State.PR]
@@ -683,7 +685,7 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot) (bool, error) {
 			return changed, err
 		} else if now.Title != pr.Title || now.Body != pr.Body || now.Draft != pr.Draft {
 			c.Logger.Info("PR edited again while being mirrored; next round", "change", n, "pr", pr.Number)
-			changed = true // re-observe
+			changed, handled[pr.Number] = true, true // re-observe
 			continue
 		}
 		var notes []string
@@ -704,7 +706,7 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot) (bool, error) {
 					if err := c.updateState(ctx, n, "PR text mirrored", func(st *state.Change) { st.State.SyncedText = ht }); err != nil {
 						return changed, err
 					}
-					changed = true
+					changed, handled[pr.Number] = true, true
 				}
 			}
 		}
@@ -724,7 +726,7 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot) (bool, error) {
 					if err := c.updateState(ctx, n, "PR draft state mirrored", func(st *state.Change) { st.State.SyncedWIP = hw }); err != nil {
 						return changed, err
 					}
-					changed = true
+					changed, handled[pr.Number] = true, true
 				}
 			}
 		}

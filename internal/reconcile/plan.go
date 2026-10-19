@@ -79,6 +79,22 @@ type Snapshot struct {
 	// push to it. Nothing of it reaches the PR: not its code, nor its
 	// commit message.
 	Foreign map[int]bool
+	// Hold marks changes whose PR's edits, draft toggles, closes or
+	// reopens were mirrored to Gerrit once in this reconcile already:
+	// newer ones wait for the next, so someone editing their PR over and
+	// over cannot keep the branch from converging, and the plan leaves
+	// the PR's text, draft and open state as they are, not undoing them.
+	Hold map[int]bool
+}
+
+// hold sets Hold for the changes of PRs in handled.
+func (s *Snapshot) hold(handled map[int]bool) {
+	s.Hold = map[int]bool{}
+	for n, st := range s.State {
+		if st != nil && st.State.PR != 0 && handled[st.State.PR] {
+			s.Hold[n] = true
+		}
+	}
 }
 
 // githubBorn reports whether change n came from a GitHub PR.
@@ -451,7 +467,7 @@ func MakePlan(s *Snapshot) *Plan {
 		finalBase[pr.Number] = d.Base
 		u := &github.PullUpdate{}
 		changed := false
-		if pr.State != "open" {
+		if pr.State != "open" && !s.Hold[n] {
 			u.State = ptr("open")
 			changed = true
 		}
@@ -459,18 +475,18 @@ func MakePlan(s *Snapshot) *Plan {
 			u.Base = ptr(d.Base)
 			changed = true
 		}
-		if strings.TrimSpace(pr.Title) != c.Subject && !s.Foreign[n] {
+		if strings.TrimSpace(pr.Title) != c.Subject && !s.Foreign[n] && !s.Hold[n] {
 			u.Title = ptr(c.Subject)
 			changed = true
 		}
-		if pr.Body != body && !s.Foreign[n] {
+		if pr.Body != body && !s.Foreign[n] && !s.Hold[n] {
 			u.Body = ptr(body)
 			changed = true
 		}
 		if changed {
 			p.Actions = append(p.Actions, Action{Kind: UpdatePR, Change: n, PR: pr.Number, Update: u})
 		}
-		if pr.Draft != c.WIP && pr.State == "open" {
+		if pr.Draft != c.WIP && pr.State == "open" && !s.Hold[n] {
 			p.Actions = append(p.Actions, Action{Kind: SetDraft, Change: n, PR: pr.Number, NodeID: pr.NodeID, Draft: c.WIP})
 		}
 	}
@@ -528,6 +544,9 @@ func MakePlan(s *Snapshot) *Plan {
 		}
 		if st := s.State[n]; st != nil && st.State.ClosedNoticePosted {
 			msg = ""
+		}
+		if s.Hold[n] {
+			continue // reopened on GitHub again: the next reconcile restores or closes it
 		}
 		p.Actions = append(p.Actions, Action{Kind: ClosePR, Change: n, PR: pr.Number, Comment: msg})
 	}

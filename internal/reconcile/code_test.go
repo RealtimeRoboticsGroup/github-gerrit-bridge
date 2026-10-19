@@ -46,7 +46,7 @@ func prStatesWorld(t *testing.T, status, prState string) (*sites, *Code, *Snapsh
 func TestClosingOnGitHubAbandonsAsTheCloser(t *testing.T) {
 	s, c, snap := prStatesWorld(t, "NEW", "closed")
 	s.ghEvent(70, "closed", "austin")
-	changed, err := c.mirrorPRStates(context.Background(), snap)
+	changed, err := c.mirrorPRStates(context.Background(), snap, map[int]bool{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestReopeningOnGitHubRestores(t *testing.T) {
 	s, c, snap := prStatesWorld(t, "ABANDONED", "open")
 	s.gerritStatus(7, "ABANDONED", "austin")
 	s.ghEvent(70, "reopened", "austin")
-	if changed, err := c.mirrorPRStates(context.Background(), snap); err != nil || !changed || s.changes[7].Status != "NEW" {
+	if changed, err := c.mirrorPRStates(context.Background(), snap, map[int]bool{}); err != nil || !changed || s.changes[7].Status != "NEW" {
 		t.Errorf("changed=%v err=%v status=%s; want restored", changed, err, s.changes[7].Status)
 	}
 }
@@ -71,7 +71,7 @@ func TestReopeningOnGitHubRestores(t *testing.T) {
 func TestCloseGerritRefusesIsExplainedAndUndone(t *testing.T) {
 	s, c, snap := prStatesWorld(t, "NEW", "closed")
 	s.ghEvent(70, "closed", "brt") // brt may not abandon change 7
-	changed, err := c.mirrorPRStates(context.Background(), snap)
+	changed, err := c.mirrorPRStates(context.Background(), snap, map[int]bool{})
 	if err != nil || changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
@@ -90,7 +90,7 @@ func TestCloseGerritRefusesIsExplainedAndUndone(t *testing.T) {
 func TestCloseByUserWithoutGerritAccountIsUndone(t *testing.T) {
 	s, c, snap := prStatesWorld(t, "NEW", "closed")
 	s.ghEvent(70, "closed", "stranger")
-	if changed, err := c.mirrorPRStates(context.Background(), snap); err != nil || changed {
+	if changed, err := c.mirrorPRStates(context.Background(), snap, map[int]bool{}); err != nil || changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
 	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@stranger has no Gerrit account to abandon it with") {
@@ -101,7 +101,7 @@ func TestCloseByUserWithoutGerritAccountIsUndone(t *testing.T) {
 func TestBridgesOwnCloseIsLeftToThePlan(t *testing.T) {
 	s, c, snap := prStatesWorld(t, "NEW", "closed")
 	s.ghEvent(70, "closed", "bot")
-	if changed, err := c.mirrorPRStates(context.Background(), snap); err != nil || changed || s.changes[7].Status != "NEW" || len(s.comments[70]) != 0 {
+	if changed, err := c.mirrorPRStates(context.Background(), snap, map[int]bool{}); err != nil || changed || s.changes[7].Status != "NEW" || len(s.comments[70]) != 0 {
 		t.Errorf("changed=%v err=%v status=%s comments=%v; want nothing done", changed, err, s.changes[7].Status, s.comments[70])
 	}
 }
@@ -113,12 +113,12 @@ func TestRestoreInGerritBeatsAnOlderGitHubClose(t *testing.T) {
 	s.ghEvent(70, "closed", "austin")
 	s.gerritStatus(7, "ABANDONED", "austin") // the close, mirrored
 	s.gerritStatus(7, "NEW", "austin")       // then restored in Gerrit
-	if changed, err := c.mirrorPRStates(context.Background(), snap); err != nil || changed || s.changes[7].Status != "NEW" {
+	if changed, err := c.mirrorPRStates(context.Background(), snap, map[int]bool{}); err != nil || changed || s.changes[7].Status != "NEW" {
 		t.Errorf("changed=%v err=%v status=%s; want the restore kept", changed, err, s.changes[7].Status)
 	}
 	// ...and a close after the restore counts again.
 	s.ghEvent(70, "closed", "austin")
-	if changed, _ := c.mirrorPRStates(context.Background(), snap); !changed || s.changes[7].Status != "ABANDONED" {
+	if changed, _ := c.mirrorPRStates(context.Background(), snap, map[int]bool{}); !changed || s.changes[7].Status != "ABANDONED" {
 		t.Errorf("a new close was ignored: status %s", s.changes[7].Status)
 	}
 }
@@ -594,7 +594,7 @@ func TestPREditBecomesCommitMessageAsTheEditor(t *testing.T) {
 		s.pulls[70].Title = "Seven, better"
 		s.pulls[70].Body = "Does seven things well.\n\nBug: 7\n\n" + linksStart + "\nblock\n" + linksEnd
 		s.activity[70] = github.PRActivity{TextEditor: "austin"}
-		changed, err := c.mirrorPREdits(context.Background(), snap)
+		changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{})
 		if err != nil || !changed {
 			t.Fatalf("%s: changed=%v err=%v", origin, changed, err)
 		}
@@ -609,12 +609,39 @@ func TestPREditBecomesCommitMessageAsTheEditor(t *testing.T) {
 	}
 }
 
+// A PR's GitHub side is mirrored at most once per reconcile: someone
+// editing, toggling or closing their PR over and over cannot keep the
+// branch from converging.
+func TestPRMirroredOncePerReconcile(t *testing.T) {
+	s, c, snap := editsWorld(t, "gerrit")
+	s.pulls[70].Title = "Seven, better"
+	s.activity[70] = github.PRActivity{TextEditor: "austin"}
+	handled := map[int]bool{70: true}
+	if changed, err := c.mirrorPREdits(context.Background(), snap, handled); err != nil || changed || len(s.calls) != 0 {
+		t.Fatalf("handled PR mirrored again: changed=%v err=%v calls=%v", changed, err, s.calls)
+	}
+	handled = map[int]bool{}
+	if changed, err := c.mirrorPREdits(context.Background(), snap, handled); err != nil || !changed || !handled[70] {
+		t.Fatalf("changed=%v err=%v handled=%v", changed, err, handled)
+	}
+
+	s, c, snap = prStatesWorld(t, "NEW", "closed")
+	s.ghEvent(70, "closed", "austin")
+	if changed, err := c.mirrorPRStates(context.Background(), snap, map[int]bool{70: true}); err != nil || changed || s.changes[7].Status != "NEW" {
+		t.Fatalf("handled PR's close mirrored again: changed=%v err=%v", changed, err)
+	}
+	handled = map[int]bool{}
+	if changed, err := c.mirrorPRStates(context.Background(), snap, handled); err != nil || !changed || !handled[70] {
+		t.Fatalf("changed=%v err=%v handled=%v", changed, err, handled)
+	}
+}
+
 func TestPREditGerritRefusesIsExplained(t *testing.T) {
 	s, c, snap := editsWorld(t, "gerrit")
 	snap.Changes[7].Uploader = "brt"
 	s.pulls[70].Title = "Hijacked"
 	s.activity[70] = github.PRActivity{TextEditor: "brt"} // may not edit change 7
-	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || changed {
+	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
 	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@brt edited this PR's title or description, which would change the commit message of [change 7]") ||
@@ -636,7 +663,7 @@ func TestPREditByNonUploaderIsRefused(t *testing.T) {
 	s.may[7] = append(s.may[7], "brt")
 	s.pulls[70].Title = "Seven, retitled"
 	s.activity[70] = github.PRActivity{TextEditor: "brt"}
-	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || changed || len(s.calls) != 0 {
+	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 {
 		t.Fatalf("changed=%v err=%v calls=%v", changed, err, s.calls)
 	}
 	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "only the uploader of its current patch set") {
@@ -659,7 +686,7 @@ func TestPREditByUserWithoutGerritAccount(t *testing.T) {
 		s.pulls[70].User.Login = tc.author
 		s.pulls[70].Title = "Seven, by a stranger"
 		s.activity[70] = github.PRActivity{TextEditor: "stranger"}
-		changed, err := c.mirrorPREdits(context.Background(), snap)
+		changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{})
 		if err != nil || changed != tc.mirrored {
 			t.Fatalf("%s: changed=%v err=%v", tc.name, changed, err)
 		}
@@ -678,7 +705,7 @@ func TestDraftToggleByNobodyIsRefused(t *testing.T) {
 	s, c, snap := editsWorld(t, "gerrit")
 	s.may[7] = append(s.may[7], "bridge")
 	s.pulls[70].Draft = true
-	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || changed || len(s.calls) != 0 {
+	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 {
 		t.Fatalf("changed=%v err=%v calls=%v", changed, err, s.calls)
 	}
 	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "Someone marked this PR as a draft") || !strings.Contains(s.comments[70][0], "GitHub does not say who") {
@@ -691,7 +718,7 @@ func TestPREditAndGerritEditBothGerritWins(t *testing.T) {
 	s.pulls[70].Title = "GitHub's"
 	snap.Changes[7].Message, snap.Changes[7].Subject = "Gerrit's\n\nChange-Id: "+cid(7)+"\n", "Gerrit's"
 	s.activity[70] = github.PRActivity{TextEditor: "austin"}
-	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || changed || len(s.calls) != 0 {
+	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 {
 		t.Fatalf("changed=%v err=%v calls=%v", changed, err, s.calls)
 	}
 	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "Gerrit's is kept") {
@@ -704,7 +731,7 @@ func TestDraftToggleBecomesWIPAsTheToggler(t *testing.T) {
 		s, c, snap := editsWorld(t, origin)
 		s.pulls[70].Draft = true
 		s.activity[70] = github.PRActivity{DraftActor: "austin"}
-		if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || !changed {
+		if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || !changed {
 			t.Fatalf("%s: changed=%v err=%v", origin, changed, err)
 		}
 		if !s.changes[7].WorkInProgress || len(s.calls) != 1 || s.calls[0] != "wip 7 as austin" {
@@ -719,7 +746,7 @@ func TestPREditWithoutSyncedStateLeavesGerrit(t *testing.T) {
 	s, c, snap := editsWorld(t, "gerrit")
 	snap.State[7].State.SyncedText, snap.State[7].State.SyncedWIP = "", ""
 	s.pulls[70].Title, s.pulls[70].Draft = "Edited", true
-	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || changed || len(s.calls) != 0 {
+	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 {
 		t.Errorf("changed=%v err=%v calls=%v", changed, err, s.calls)
 	}
 }
@@ -1125,7 +1152,7 @@ func TestDraftThenReadyQuickly(t *testing.T) {
 	ctx := context.Background()
 	s.pulls[70].Draft = true
 	s.activity[70] = github.PRActivity{DraftActor: "austin"}
-	if changed, err := c.mirrorPREdits(ctx, snap); err != nil || !changed {
+	if changed, err := c.mirrorPREdits(ctx, snap, map[int]bool{}); err != nil || !changed {
 		t.Fatalf("draft: changed=%v err=%v", changed, err)
 	}
 	// Re-observed: Gerrit is WIP now, and the PR is ready again.
@@ -1135,7 +1162,7 @@ func TestDraftThenReadyQuickly(t *testing.T) {
 	}
 	snap.State[7], snap.Changes[7].WIP = st, true
 	s.pulls[70].Draft = false
-	if changed, err := c.mirrorPREdits(ctx, snap); err != nil || !changed {
+	if changed, err := c.mirrorPREdits(ctx, snap, map[int]bool{}); err != nil || !changed {
 		t.Fatalf("ready: changed=%v err=%v", changed, err)
 	}
 	if len(s.calls) != 2 || s.calls[1] != "ready 7 as austin" || s.changes[7].WorkInProgress {
@@ -1149,7 +1176,7 @@ func TestTwoQuickPREdits(t *testing.T) {
 	ctx := context.Background()
 	s.pulls[70].Title = "Seven, better"
 	s.activity[70] = github.PRActivity{TextEditor: "austin"}
-	if changed, err := c.mirrorPREdits(ctx, snap); err != nil || !changed {
+	if changed, err := c.mirrorPREdits(ctx, snap, map[int]bool{}); err != nil || !changed {
 		t.Fatalf("first: changed=%v err=%v", changed, err)
 	}
 	st, err := c.Store.Load(ctx, 7)
@@ -1160,7 +1187,7 @@ func TestTwoQuickPREdits(t *testing.T) {
 	snap.State[7] = st
 	snap.Changes[7].Message = ci.Revisions[ci.CurrentRevision].Commit.Message
 	s.pulls[70].Title = "Seven, best"
-	if changed, err := c.mirrorPREdits(ctx, snap); err != nil || !changed {
+	if changed, err := c.mirrorPREdits(ctx, snap, map[int]bool{}); err != nil || !changed {
 		t.Fatalf("second: changed=%v err=%v comments=%v", changed, err, s.comments[70])
 	}
 	if got := ci.Revisions[ci.CurrentRevision].Commit.Message; !strings.HasPrefix(got, "Seven, best\n") {
@@ -1380,7 +1407,7 @@ func TestPREditedAgainWhileMirroring(t *testing.T) {
 	snap.PRs[70] = &snapTitle // what observe saw
 	s.activity[70] = github.PRActivity{TextEditor: "austin"}
 	s.onActivity = func() { s.pulls[70].Title = "Seven, by austin" } // austin edits again
-	changed, err := c.mirrorPREdits(context.Background(), snap)
+	changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{})
 	if err != nil || !changed || len(s.calls) != 0 {
 		t.Errorf("changed=%v err=%v calls=%v; want nothing sent, and a re-observe", changed, err, s.calls)
 	}

@@ -1190,6 +1190,11 @@ defenses, by threat:
   them), and it warns at startup about secret files others can read. `gerrit.url` must be https unless it is a loopback
   address, since every request carries the bridge's password. Responses
   from Gerrit and GitHub are read only up to a bound.
+- **Edits over and over.** A PR's edits, draft toggles, closes and
+  reopens are mirrored to Gerrit at most once per reconcile; newer ones
+  wait for the next, and the plan leaves that PR's text, draft and open
+  state alone meanwhile, so someone editing their PR every few seconds
+  cannot keep the branch from converging (third audit).
 - **API budget.** One key (a PR, a change's comments, a branch) runs at
   most every 10 seconds however many events arrive for it, during or
   after a run, from either side (anyone can sign up on both); only a

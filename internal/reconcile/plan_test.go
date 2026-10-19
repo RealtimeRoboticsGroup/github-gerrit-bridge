@@ -32,6 +32,8 @@ type world struct {
 	// foreign changes' current patch sets are not the author's to push
 	// (Code.markForeign).
 	foreign map[int]bool
+	// hold changes' PRs had their GitHub side mirrored this reconcile.
+	hold map[int]bool
 }
 
 func newWorld(t *testing.T) *world {
@@ -64,7 +66,7 @@ func (w *world) snapshot() *Snapshot {
 		Branch: "main", DefaultBranch: "main",
 		Changes: map[int]*GerritChange{}, OnBranch: w.onMain,
 		GitHubBranches: map[string]string{}, PRs: map[int]*github.PullRequest{}, State: map[int]*state.Change{},
-		Repo: "o/r", NoPush: map[int]bool{}, Withheld: w.withheld, Foreign: w.foreign,
+		Repo: "o/r", NoPush: map[int]bool{}, Withheld: w.withheld, Foreign: w.foreign, Hold: w.hold,
 	}
 	// Like Code.observe: closed changes drop out once the bridge has
 	// recorded them closed, unless their PR is still open.
@@ -394,6 +396,45 @@ func TestChainBecomesStack(t *testing.T) {
 	// A converged world stays still.
 	if p := MakePlan(w.snapshot()); len(p.Actions) != 0 {
 		t.Errorf("not idempotent: %v", p.Actions)
+	}
+}
+
+// A PR whose GitHub side was mirrored once this reconcile keeps its
+// newer edits, draft state, close or reopen for the next one: the plan
+// does not undo them.
+func TestHeldPRIsLeftAsItIs(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.converge()
+	pr := w.pr(1)
+	pr.Title, pr.Draft = "Edited again", true
+	w.hold = map[int]bool{1: true}
+	w.converge()
+	if pr.Title != "Edited again" || !pr.Draft {
+		t.Errorf("held PR changed: %q draft=%v", pr.Title, pr.Draft)
+	}
+	pr.State = "closed"
+	w.converge()
+	if pr.State != "closed" {
+		t.Error("held PR reopened")
+	}
+	w.gerrit[1].Status, pr.State = "ABANDONED", "open"
+	w.converge()
+	if pr.State != "open" {
+		t.Error("held PR closed")
+	}
+	w.hold = nil
+	w.converge()
+	if pr.State != "closed" {
+		t.Error("PR of an abandoned change left open once no longer held")
+	}
+}
+
+func TestHoldIsForHandledPRs(t *testing.T) {
+	s := &Snapshot{State: map[int]*state.Change{1: {State: state.ChangeState{PR: 10}}, 2: {State: state.ChangeState{PR: 20}}, 3: {}, 4: nil}}
+	s.hold(map[int]bool{10: true, 0: true})
+	if !reflect.DeepEqual(s.Hold, map[int]bool{1: true}) {
+		t.Errorf("hold = %v", s.Hold)
 	}
 }
 
