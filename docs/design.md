@@ -1052,7 +1052,9 @@ defenses, by threat:
 - **Who uploaded.** CI trusts the uploader, so nobody is made the
   uploader of code they did not write or vouch for, however casually they
   clicked a GitHub button on someone else's PR (audit 2026-10-18). The
-  first upload is the PR author's. A later push builds on the patch set
+  first upload is the PR author's, if GitHub says they pushed its head
+  (anyone may open a PR from someone else's branch, and a branch may
+  move before the bridge sees the PR; third audit). A later push builds on the patch set
   GitHub last had (not a newer one only Gerrit has, such as someone
   else's that never reached the PR), and is uploaded as its pusher
   only if they uploaded that patch set too, and only as GitHub

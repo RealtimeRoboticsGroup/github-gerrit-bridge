@@ -1224,6 +1224,33 @@ func TestPusherFromGitHubsActivityLog(t *testing.T) {
 	}
 }
 
+// A PR's first upload is its author's only if they pushed its head: a
+// maintainer opening a PR from a stranger's branch, or a branch someone
+// else moved before the bridge saw the PR, is the bridge's to upload.
+func TestFirstUploadNeedsTheAuthorsPush(t *testing.T) {
+	for _, tc := range []struct{ name, pusher, want string }{
+		{"the author's push", "austin", "austin"},
+		{"someone else's branch", "brt", ""},
+		{"nobody says", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, im, up, m1, _, _ := gerritBornWorld(t, false)
+			h := s.commit(m1, "new.txt", "n\n", "New")
+			s.push("github.git", h, "refs/heads/topic")
+			s.pr(60, "topic", h, "main", "austin")
+			if tc.pusher != "" {
+				s.pushed("o/r", "refs/heads/topic", h, tc.pusher)
+			}
+			if err := im.Import(context.Background(), "main"); err != nil {
+				t.Fatal(err)
+			}
+			if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], tc.want+" ") {
+				t.Fatalf("uploads = %v, want one as %q", up.uploads, tc.want)
+			}
+		})
+	}
+}
+
 // Draft, then ready again before the bridge recorded the first toggle as
 // in sync: the second is a toggle too, not Gerrit's to undo.
 func TestDraftThenReadyQuickly(t *testing.T) {
@@ -1563,8 +1590,10 @@ func TestImportRetriesAHeadNotPublishedYet(t *testing.T) {
 	fork := s.commit(m1, "fork.txt", "f\n", "From a fork")
 	pr := s.pr(52, "main", fork, "main", "brt")
 	pr.Head.Repo.FullName = "brt/fork" // its head is only at refs/pull/52/head, not there yet
+	s.pushed("brt/fork", "refs/heads/main", fork, "brt")
 	good := s.commit(m1, "good.txt", "g\n", "Good")
 	s.push("github.git", good, "refs/heads/good")
+	s.pushed("o/r", "refs/heads/good", good, "austin")
 	s.pr(51, "good", good, "main", "austin")
 	if err := im.Import(ctx, "main"); err == nil {
 		t.Error("no retry asked for")

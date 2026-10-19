@@ -799,8 +799,10 @@ func (im *Importer) checkSize(ctx context.Context, h, parent, parentTip string) 
 // code they did not write or vouch for, however casually they clicked a
 // GitHub button (Update branch, Commit suggestion) on someone else's PR.
 //
-// The first upload decides the owner, so it is the PR's author's. A later
-// one is the pusher's (as GitHub says; never guessed) if they uploaded
+// The first upload decides the owner, so it is the PR's author's, if they
+// pushed its head too: anyone may open a PR from someone else's branch
+// (a maintainer from a stranger's fork, say), and a branch may move
+// before the bridge sees the PR. A later one is the pusher's (as GitHub says; never guessed) if they uploaded
 // base, the patch set GitHub last had, too. A pure rebase of base is
 // uploaded on behalf of its uploader, as Gerrit's own rebase is. Anything
 // else is the bridge's, and needs a trusted reviewer to start CI.
@@ -809,8 +811,18 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		return "", "", nil
 	}
 	if base == "" {
-		user, _ = im.Identity.GerritUser(ctx, pr.User.Login)
-		return user, pr.User.Login, nil
+		author, ok := im.Identity.GerritUser(ctx, pr.User.Login)
+		if !ok {
+			return "", pr.User.Login, nil
+		}
+		if login, err = im.pusher(ctx, pr, h); err != nil {
+			return "", "", err
+		}
+		if pusher, _ := im.Identity.GerritUser(ctx, login); !strings.EqualFold(pusher, author) {
+			im.Logger.Info("first push not the PR author's (as GitHub says): the bridge uploads it", "pr", pr.Number, "author", pr.User.Login, "pusher", login)
+			return "", login, nil
+		}
+		return author, pr.User.Login, nil
 	}
 	rev := cur.Revisions[base]
 	prev := rev.Uploader.Username
