@@ -1069,12 +1069,19 @@ defenses, by threat:
   same takeover may work there; the pin only protects the bridge.)
 - **Branches Gerrit owns.** The importer refuses a PR whose head is the
   default branch or any branch Gerrit has, and the applier refuses to push
-  to the target or default branch at all. Fork heads are keyed
+  to the target, the default or any branch Gerrit has. Fork heads are keyed
   `owner/repo:branch` and cannot collide with the repository's branches.
 - **What gets uploaded.** A GitHub-born PR's squash must sit on a commit
   already on Gerrit's branch (an unrelated history would bring all its
   ancestors along as changes), and PRs of more than 1000 commits are
-  refused. A Change-Id that belongs to another change is refused (§5.2).
+  refused, as are PRs bringing a file over 25 MB or over 100 MB in all
+  (Gerrit keeps every patch set's objects for good; set its
+  `receive.maxObjectSizeLimit` too). Everything fetched from GitHub is
+  checked by git as it arrives (`fetch.fsckObjects`), so malformed trees
+  and `.gitmodules` tricks never reach the mirror or Gerrit. Closed PRs'
+  heads are pruned from the mirror, and fetched branches
+  (`refs/remotes/github/heads/…`) and fork PR heads
+  (`refs/remotes/github/pull/N`) cannot collide. A Change-Id that belongs to another change is refused (§5.2).
   The bridge reads a commit's Change-Id as Gerrit does (the footer of the
   last paragraph, any case) and refuses commits with Change-Id lines
   anywhere else, so it never checks one Change-Id while Gerrit files the

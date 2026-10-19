@@ -71,7 +71,7 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("GET /a/changes/", s.queryChanges)
 	mux.HandleFunc("POST /a/changes/{n}/{action}", s.changeAction)
 	mux.HandleFunc("PUT /a/changes/{n}/message", s.setMessage)
-	mux.HandleFunc("GET /a/projects/{p}/branches/{b}", http.NotFound)
+	mux.HandleFunc("GET /a/projects/{p}/branches/{b}", s.branch)
 	mux.HandleFunc("POST /graphql", s.graphql)
 	mux.HandleFunc("GET /a/changes/{n}/submitted_together", s.submittedTogether)
 	mux.HandleFunc("GET /a/accounts/{user}", s.account)
@@ -184,6 +184,17 @@ func (s *sites) gerritStatus(n int, status, author string) {
 	ci.Status = status
 	ci.Messages = append(ci.Messages, gerrit.ChangeMessage{ID: fmt.Sprintf("m%d", len(ci.Messages)+1), Tag: tag,
 		Author: gerrit.AccountInfo{Username: author}, Date: s.clock.Format("2006-01-02 15:04:05.000000000")})
+}
+
+// branch answers whether gerrit.git has the branch.
+func (s *sites) branch(w http.ResponseWriter, r *http.Request) {
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", r.PathValue("b"))
+	cmd.Dir = filepath.Join(s.dir, "gerrit.git")
+	if cmd.Run() != nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.json(w, map[string]string{"ref": r.PathValue("b")}, true)
 }
 
 func (s *sites) json(w http.ResponseWriter, v any, xssi bool) {

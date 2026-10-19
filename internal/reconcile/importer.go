@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -117,6 +119,9 @@ var validChangeID = regexp.MustCompile(`^I[0-9a-f]{40}$`)
 // Import imports every GitHub-born PR whose chain targets branch.
 func (im *Importer) Import(ctx context.Context, branch string) error {
 	prs, err := im.GitHub.ListPulls(ctx, "open")
+	if err == nil {
+		err = im.prunePullRefs(ctx, prs)
+	}
 	if err != nil {
 		return err
 	}
@@ -240,9 +245,9 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 			specs = append(specs, fmt.Sprintf("+refs/pull/%d/head:refs/remotes/github/pull/%d", l.pr.Number, l.pr.Number))
 			continue
 		}
-		specs = append(specs, "+refs/heads/"+l.pr.Head.Ref+":refs/remotes/github/"+l.pr.Head.Ref)
+		specs = append(specs, "+refs/heads/"+l.pr.Head.Ref+":refs/remotes/github/heads/"+l.pr.Head.Ref)
 	}
-	if _, err := im.Mirror.GitEnv(ctx, env, nil, append([]string{"fetch", "--quiet", im.GitHubURL}, specs...)...); err != nil {
+	if _, err := im.Mirror.GitEnv(ctx, env, nil, append([]string{"-c", fsckFetch, "fetch", "--quiet", im.GitHubURL}, specs...)...); err != nil {
 		return err
 	}
 	if _, err := im.Mirror.Git(ctx, nil, "fetch", "--quiet", "origin", "+refs/heads/"+branch+":refs/remotes/gerrit/heads/"+branch); err != nil {
@@ -402,6 +407,9 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	}
 	if len(own) == 0 {
 		return nil, &syncError{"pending", "No commits of its own yet"}
+	}
+	if err := im.checkSize(ctx, h, gerritParent); err != nil {
+		return nil, err
 	}
 
 	// The change's identity.
@@ -606,6 +614,75 @@ func (im *Importer) realParent(ctx context.Context, branch, h string, parentHead
 		}
 	}
 	return nil, "", &syncError{"pending", "Restack needed: this PR is not on top of any version of the PR below it that Gerrit knows"}
+}
+
+// prunePullRefs drops the mirror's copies of closed PRs' heads, so forks'
+// objects do not pile up in it for good.
+func (im *Importer) prunePullRefs(ctx context.Context, open []github.PullRequest) error {
+	keep := map[string]bool{}
+	for _, pr := range open {
+		keep[fmt.Sprintf("refs/remotes/github/pull/%d", pr.Number)] = true
+	}
+	out, err := im.Mirror.Git(ctx, nil, "for-each-ref", "--format=%(refname)", "refs/remotes/github/pull/")
+	if err != nil {
+		return err
+	}
+	var del strings.Builder
+	for _, ref := range strings.Fields(string(out)) {
+		if !keep[ref] {
+			fmt.Fprintf(&del, "delete %s\n", ref)
+		}
+	}
+	if del.Len() == 0 {
+		return nil
+	}
+	_, err = im.Mirror.Git(ctx, []byte(del.String()), "update-ref", "--stdin")
+	return err
+}
+
+// fsckFetch makes git check every object fetched from GitHub (anyone's
+// fork) before keeping it: malformed trees, .gitmodules tricks and the
+// like are refused before they reach Gerrit and its users' clones.
+const fsckFetch = "fetch.fsckObjects=true"
+
+// Bounds on what one PR may bring (design §7.1): Gerrit keeps every patch
+// set's objects for good, so a stranger must not be able to fill it. Set
+// Gerrit's receive.maxObjectSizeLimit too.
+var (
+	maxImportFile  int64 = 25 << 20
+	maxImportTotal int64 = 100 << 20
+)
+
+// checkSize refuses a head whose new objects (those parent lacks) include
+// a blob over maxImportFile or add up to more than maxImportTotal.
+func (im *Importer) checkSize(ctx context.Context, h, parent string) error {
+	list, err := im.Mirror.Git(ctx, nil, "rev-list", "--objects", "--no-object-names", h, "--not", parent)
+	if err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(list)) == 0 {
+		return nil
+	}
+	sizes, err := im.Mirror.Git(ctx, list, "cat-file", "--batch-check=%(objecttype) %(objectsize)")
+	if err != nil {
+		return err
+	}
+	var total int64
+	for _, l := range strings.Split(strings.TrimSpace(string(sizes)), "\n") {
+		typ, n, _ := strings.Cut(l, " ")
+		size, err := strconv.ParseInt(n, 10, 64)
+		if err != nil {
+			return fmt.Errorf("sizing %s: %q", short(h), l)
+		}
+		if typ == "blob" && size > maxImportFile {
+			return &syncError{"failure", fmt.Sprintf("A file is larger than %d MB: too big to import", maxImportFile>>20)}
+		}
+		total += size
+	}
+	if total > maxImportTotal {
+		return &syncError{"failure", fmt.Sprintf("This PR adds more than %d MB: too big to import", maxImportTotal>>20)}
+	}
+	return nil
 }
 
 // uploader says who uploads h's squash onto parent (design §7.1): "" is

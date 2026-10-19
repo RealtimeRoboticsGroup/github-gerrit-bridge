@@ -1,9 +1,13 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -843,5 +847,112 @@ func TestUpdateBranchOnSomeoneElsesPRStaysTheirs(t *testing.T) {
 	}
 	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], "austin ") {
 		t.Fatalf("uploads = %v, want one on behalf of austin", up.uploads)
+	}
+}
+
+// A PR cannot bring more than the bounds into Gerrit, which keeps every
+// patch set's objects for good.
+func TestImportRefusesTooBigPRs(t *testing.T) {
+	defer func(f, total int64) { maxImportFile, maxImportTotal = f, total }(maxImportFile, maxImportTotal)
+	maxImportFile, maxImportTotal = 1000, 3000
+	for _, tc := range []struct {
+		name  string
+		files map[string]int
+		want  string
+	}{
+		{"small", map[string]int{"a.bin": 500}, ""},
+		{"a big file", map[string]int{"a.bin": 1500}, "A file is larger than"},
+		{"too much in all", map[string]int{"a.bin": 900, "b.bin": 900, "c.bin": 900, "d.bin": 900}, "This PR adds more than"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, im, up, m1, _, _ := gerritBornWorld(t, false)
+			h := m1
+			for name, n := range tc.files {
+				h = s.commit(h, name, strings.Repeat(name[:1], n), "Add "+name)
+			}
+			s.push("github.git", h, "refs/heads/big")
+			s.pr(50, "big", h, "main", "austin")
+			if err := im.Import(context.Background(), "main"); err != nil {
+				t.Fatal(err)
+			}
+			sts := s.statuses[h]
+			if tc.want == "" {
+				if len(up.uploads) != 1 {
+					t.Errorf("uploads = %v, statuses %+v", up.uploads, sts)
+				}
+				return
+			}
+			if len(up.uploads) != 0 || len(sts) != 1 || sts[0].State != "failure" || !strings.Contains(sts[0].Description, tc.want) {
+				t.Errorf("uploads = %v, statuses %+v", up.uploads, sts)
+			}
+		})
+	}
+}
+
+// Objects from GitHub are checked as they are fetched: a malformed tree
+// (here one with a ".." entry) never reaches the mirror, let alone Gerrit.
+func TestImportFetchChecksObjects(t *testing.T) {
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	empty := s.git("work", "hash-object", "-w", "-t", "blob", "/dev/null")
+	cmd := exec.Command("git", "hash-object", "-w", "-t", "tree", "--literally", "--stdin")
+	cmd.Dir = filepath.Join(s.dir, "work")
+	raw, _ := hex.DecodeString(empty)
+	cmd.Stdin = bytes.NewReader(append([]byte("100644 ..\x00"), raw...))
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := s.git("work", "commit-tree", strings.TrimSpace(string(out)), "-p", m1, "-m", "Evil")
+	s.push("github.git", bad, "refs/heads/evil")
+	s.pr(50, "evil", bad, "main", "austin")
+	im.Import(context.Background(), "main")
+	if len(up.uploads) != 0 {
+		t.Errorf("uploaded %v", up.uploads)
+	}
+	if _, err := im.Mirror.Git(context.Background(), nil, "cat-file", "-e", bad); err == nil {
+		t.Error("the malformed commit reached the mirror")
+	}
+}
+
+// Closed PRs' heads do not stay in the mirror, and a same-repo branch
+// named like a fork PR's ref does not collide with it.
+func TestImportRefsDoNotPileUpOrCollide(t *testing.T) {
+	s, im, _, m1, _, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	if _, err := im.Mirror.Git(ctx, nil, "fetch", "-q", "origin", "refs/heads/main"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := im.Mirror.Git(ctx, nil, "update-ref", "refs/remotes/github/pull/77", m1); err != nil {
+		t.Fatal(err)
+	}
+	h := s.commit(m1, "p.txt", "p\n", "Branch named pull/7")
+	s.push("github.git", h, "refs/heads/pull/7")
+	s.pr(8, "pull/7", h, "main", "austin")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := im.Mirror.Git(ctx, nil, "rev-parse", "--verify", "--quiet", "refs/remotes/github/pull/77"); err == nil {
+		t.Error("a closed PR's head is still in the mirror")
+	}
+	if got, _ := im.Mirror.Git(ctx, nil, "rev-parse", "refs/remotes/github/heads/pull/7"); strings.TrimSpace(string(got)) != h {
+		t.Errorf("branch pull/7 fetched to %q", got)
+	}
+}
+
+// The bridge never pushes to a branch Gerrit has, whatever the plan says:
+// replication owns those.
+func TestApplyRefusesBranchesGerritHas(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/release")
+	snap := &Snapshot{Branch: "main", DefaultBranch: "main"}
+	err := c.applyOne(ctx, snap, Action{Kind: PushBranches, Refs: map[string]string{"release": m0}, Leases: map[string]string{"release": ""}})
+	if err == nil || !strings.Contains(err.Error(), "which Gerrit owns") {
+		t.Errorf("err = %v", err)
+	}
+	if out, _ := exec.Command("git", "-C", filepath.Join(s.dir, "github.git"), "rev-parse", "--verify", "--quiet", "refs/heads/release").Output(); len(out) != 0 {
+		t.Error("pushed to release")
 	}
 }

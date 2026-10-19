@@ -228,7 +228,7 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 	}
 	// Which merged revisions has replication brought to GitHub yet?
 	s.OnGitHubBranch = map[string]bool{}
-	if _, err := c.Mirror.GitEnv(ctx, env, nil, "fetch", "--quiet", c.GitHubURL,
+	if _, err := c.Mirror.GitEnv(ctx, env, nil, "-c", fsckFetch, "fetch", "--quiet", c.GitHubURL,
 		"+refs/heads/"+branch+":refs/remotes/github/heads/"+branch); err == nil {
 		for _, ch := range s.Changes {
 			if ch.Status != "MERGED" {
@@ -355,7 +355,7 @@ func (c *Code) observeHistory(ctx context.Context, s *Snapshot, env []string) er
 		}
 		specs = append(specs, "+refs/heads/"+head+":refs/remotes/github/heads/"+head)
 	}
-	if _, err := c.Mirror.GitEnv(ctx, env, nil, append([]string{"fetch", "--quiet", c.GitHubURL}, specs...)...); err != nil {
+	if _, err := c.Mirror.GitEnv(ctx, env, nil, append([]string{"-c", fsckFetch, "fetch", "--quiet", c.GitHubURL}, specs...)...); err != nil {
 		return err
 	}
 	for _, n := range todo {
@@ -684,6 +684,14 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		for _, name := range append(sortedStringKeys(a.Refs), sortedStringKeys(a.Appends)...) {
 			if name == s.Branch || name == c.DefaultBranch {
 				return fmt.Errorf("refusing to push to %s, which Gerrit owns", name)
+			}
+			if _, _, fork := github.SplitHeadKey(name); !fork {
+				// Any branch Gerrit has is replication's, not the bridge's.
+				if owned, err := c.Gerrit.BranchExists(ctx, c.Project, name); err != nil {
+					return err
+				} else if owned {
+					return fmt.Errorf("refusing to push to %s, which Gerrit owns", name)
+				}
 			}
 		}
 		urls := []string{c.GitHubURL}
