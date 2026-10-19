@@ -544,6 +544,15 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	var cur *gerrit.ChangeInfo
 	if len(existing) > 0 {
 		cur = &existing[0]
+		if st == nil && im.ownUpload(ctx, cur, pr) {
+			// Uploaded for this PR, but the link was never saved (a crash,
+			// a refused state push): link it, and import next time.
+			if err := im.link(ctx, cur.Number, "github", branch, changeID, pr); err != nil {
+				return nil, err
+			}
+			im.Logger.Warn("adopted a change uploaded for a PR whose link was lost", "pr", pr.Number, "change", cur.Number)
+			return nil, &syncError{state: "pending", msg: fmt.Sprintf("Linked to Gerrit change %d", cur.Number), retry: true}
+		}
 		if st == nil || st.State.Change != cur.Number {
 			// Never let two PRs fight over one change.
 			return nil, &syncError{state: "failure", msg: fmt.Sprintf("Change-Id %s already belongs to Gerrit change %d; give this PR's commits a new Change-Id", changeID, cur.Number)}
@@ -615,8 +624,18 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		return nil, err
 	}
 	if cur != nil && cur.CurrentRevision == s {
+		// Uploaded already (the state was not saved after): record it.
+		ps := cur.Revisions[s].Number
+		if !im.DryRun && st != nil && knownHeads(st)[h] == "" {
+			tree, parentTree := revisionTrees(ctx, im.Mirror, s)
+			if err := updateStateFn(ctx, im.Store, cur.Number, fmt.Sprintf("Import PR #%d head %s as patch set %d", pr.Number, short(h), ps), func(st *state.Change) {
+				st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: s, GitHubSHA: h, Tree: tree, ParentTree: parentTree, At: time.Now()})
+			}); err != nil {
+				return nil, err
+			}
+		}
 		res.heads[h] = s
-		res.change, res.patchSet = cur.Number, cur.Revisions[s].Number
+		res.change, res.patchSet = cur.Number, ps
 		return res, nil
 	}
 	if im.DryRun {
@@ -1118,6 +1137,25 @@ func (im *Importer) restoreGerrit(ctx context.Context, n int, branch string, cur
 	_, err = im.GitHub.CreateIssueComment(ctx, pr.Number, note+"\n\n"+noticeMarker)
 	im.Logger.Warn("both sides changed; Gerrit wins", "change", n, "pr", pr.Number)
 	return err
+}
+
+// ownUpload reports whether change cur is one the bridge uploaded for pr
+// whose link was never saved: no PR is linked to it, its first patch set
+// carries pr's GitHub-PR footer, and the bridge or pr's author uploaded
+// it (nobody else can be made the owner of a PR's change this way).
+func (im *Importer) ownUpload(ctx context.Context, cur *gerrit.ChangeInfo, pr *github.PullRequest) bool {
+	if st, err := im.Store.Load(ctx, cur.Number); err != nil || st.State.PR != 0 {
+		return false
+	}
+	author, _ := im.Identity.GerritUser(ctx, pr.User.Login)
+	for _, r := range cur.Revisions {
+		if r.Number != 1 {
+			continue
+		}
+		byUs := r.Uploader.AccountID == im.Bridge.AccountID || (author != "" && strings.EqualFold(r.Uploader.Username, author))
+		return byUs && r.RealUploader == nil && strings.Contains(r.Commit.Message, "\nGitHub-PR: "+pr.HTMLURL+"\n")
+	}
+	return false
 }
 
 // recordGerritHead records that GitHub has patch set ps of change n as

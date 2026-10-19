@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -255,6 +257,9 @@ type fakeUploader struct {
 	s       *sites
 	m       *gitmirror.Repo
 	uploads []string // "user commit opts"
+	// create makes an upload with a new Change-Id a new change, as
+	// Gerrit would.
+	create bool
 }
 
 func (u *fakeUploader) CanActAs() bool { return true }
@@ -278,6 +283,20 @@ func (u *fakeUploader) Upload(ctx context.Context, user, commit, target string, 
 	}
 	u.s.mu.Lock()
 	defer u.s.mu.Unlock()
+	if u.create && !slices.ContainsFunc(slices.Collect(maps.Values(u.s.changes)), func(ci *gerrit.ChangeInfo) bool { return ci.ChangeID == cid }) {
+		n := 100 + len(u.s.changes)
+		owner, ok := u.s.accounts[user]
+		if !ok {
+			owner = gerrit.AccountInfo{AccountID: 1, Username: "bridge"}
+		}
+		ref := fmt.Sprintf("refs/changes/%02d/%d/1", n%100, n)
+		if _, err := u.m.Git(ctx, nil, "push", "-q", filepath.Join(u.s.dir, "gerrit.git"), commit+":"+ref); err != nil {
+			return err
+		}
+		u.s.changes[n] = &gerrit.ChangeInfo{Number: n, ChangeID: cid, Project: "p", Branch: "main", Status: "NEW", Owner: owner, CurrentRevision: commit,
+			Revisions: map[string]gerrit.RevisionInfo{commit: {Number: 1, Ref: ref, Uploader: owner, Commit: gerrit.CommitInfo{Message: string(msg)}}}}
+		return nil
+	}
 	for _, ci := range u.s.changes {
 		if ci.ChangeID == cid {
 			uploader, ok := u.s.accounts[user]
@@ -1362,6 +1381,55 @@ func TestExportDespiteAnImportRetry(t *testing.T) {
 	}
 	if got := s.gitOut("github.git", "rev-parse", "refs/heads/gerrit/"+cid(1)); strings.TrimSpace(got) != g {
 		t.Errorf("change 1 not exported (gerrit/%s = %q)", cid(1), got)
+	}
+}
+
+// A change uploaded for a PR whose link was never saved (a refused state
+// push, a crash) is adopted and its upload recorded, not refused forever
+// as another PR's; one uploaded by someone else, or for another PR, is not.
+func TestLostLinkIsAdopted(t *testing.T) {
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	up.create = true
+	h := s.commit(m1, "new.txt", "n\n", "New")
+	s.push("github.git", h, "refs/heads/topic")
+	pr := s.pr(60, "topic", h, "main", "austin")
+	s.pushed("o/r", "refs/heads/topic", h, "austin")
+	fail := true
+	im.link = func(ctx context.Context, n int, origin, branch, changeID string, pr *github.PullRequest) error {
+		if fail {
+			fail = false
+			return errors.New("state push refused")
+		}
+		return updateStateFn(ctx, im.Store, n, "Link", func(st *state.Change) {
+			st.State.Change, st.State.ChangeID, st.State.Branch, st.State.Origin, st.State.PR = n, changeID, branch, origin, pr.Number
+			st.State.HeadBranch = pr.HeadKey("o/r")
+		})
+	}
+	for range 3 {
+		im.Import(ctx, "main")
+	}
+	n := im.Store.ChangeForPR(60)
+	st, _ := im.Store.Load(ctx, n)
+	if len(up.uploads) != 1 || n == 0 || len(st.Revisions) != 1 || st.Revisions[0].GitHubSHA != h {
+		t.Fatalf("uploads %v, change %d, revisions %+v: want the one upload adopted and recorded", up.uploads, n, st.Revisions)
+	}
+
+	// Someone else's change with the PR's Change-Id, or one made for
+	// another PR, is not adopted.
+	for _, tc := range []struct{ uploader, url string }{{"brt", pr.HTMLURL}, {"austin", "https://github.com/o/r/pull/61"}} {
+		ci := &gerrit.ChangeInfo{Number: 9, Revisions: map[string]gerrit.RevisionInfo{"x": {Number: 1, Uploader: s.accounts[tc.uploader],
+			Commit: gerrit.CommitInfo{Message: "T\n\nGitHub-PR: " + tc.url + "\nChange-Id: I1\n"}}}}
+		if im.ownUpload(ctx, ci, pr) {
+			t.Errorf("adopted a change uploaded by %s for %s", tc.uploader, tc.url)
+		}
+	}
+	// Nor one another PR is linked to.
+	s.save(ctx, im.Store, 9, &state.Change{State: state.ChangeState{Change: 9, PR: 61}})
+	ci := &gerrit.ChangeInfo{Number: 9, Revisions: map[string]gerrit.RevisionInfo{"x": {Number: 1, Uploader: s.accounts["austin"],
+		Commit: gerrit.CommitInfo{Message: "T\n\nGitHub-PR: " + pr.HTMLURL + "\nChange-Id: I1\n"}}}}
+	if im.ownUpload(ctx, ci, pr) {
+		t.Error("adopted a change another PR is linked to")
 	}
 }
 

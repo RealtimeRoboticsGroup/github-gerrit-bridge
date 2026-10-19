@@ -1154,7 +1154,11 @@ defenses, by threat:
   layer is sized without its lower layers. Closed PRs'
   heads are pruned from the mirror, and fetched branches
   (`refs/remotes/github/heads/…`) and fork PR heads
-  (`refs/remotes/github/pull/N`) cannot collide. A Change-Id that belongs to another change is refused (§5.2).
+  (`refs/remotes/github/pull/N`) cannot collide. A Change-Id that belongs to another change is refused (§5.2),
+  unless that change is this PR's own upload whose link was never saved
+  (a crash, a refused state push): nobody linked to it, its first patch
+  set carries this PR's `GitHub-PR:` footer, and the bridge or the PR's
+  author uploaded it. Then it is linked, and the upload recorded.
   The bridge reads a PR commit's Change-Id only in its canonical form (one
   `Change-Id: I<40 hex>` footer in the last paragraph) and refuses commits
   with any other line that might name a change (other spellings or
