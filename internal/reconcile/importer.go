@@ -691,8 +691,8 @@ func (im *Importer) checkSize(ctx context.Context, h, parent string) error {
 // GitHub button (Update branch, Commit suggestion) on someone else's PR.
 //
 // The first upload decides the owner, so it is the PR's author's. A later
-// one is the pusher's (as a webhook said; never guessed) if they uploaded
-// the current patch set too. A pure rebase of the current patch set is
+// one is the pusher's (as GitHub says; never guessed) if they uploaded the
+// current patch set too. A pure rebase of the current patch set is
 // uploaded on behalf of its uploader, as Gerrit's own rebase is. Anything
 // else is the bridge's, and needs a trusted reviewer to start CI.
 func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *gerrit.ChangeInfo, later bool, h, parent string) (user, login string, err error) {
@@ -708,14 +708,14 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 	if rev.Uploader.AccountID == im.Bridge.AccountID || gerrit.AmbiguousUsername(prev) {
 		prev = ""
 	}
-	if im.Pushers != nil {
-		login = im.Pushers.Lookup(h)
-	}
-	if pusher, _ := im.Identity.GerritUser(ctx, login); prev != "" && strings.EqualFold(pusher, prev) {
-		return pusher, login, nil
-	}
 	if prev == "" {
-		return "", login, nil
+		return "", "", nil // the bridge's already: nothing to lose
+	}
+	if login, err = im.pusher(ctx, pr, h); err != nil {
+		return "", "", err
+	}
+	if pusher, _ := im.Identity.GerritUser(ctx, login); strings.EqualFold(pusher, prev) {
+		return pusher, login, nil
 	}
 	pure, err := im.pureRebase(ctx, cur.CurrentRevision, rev.Ref, parent, h)
 	if err != nil {
@@ -727,6 +727,25 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 	}
 	im.Logger.Info("someone else's push: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
 	return "", login, nil
+}
+
+// pusher says who pushed h to pr's branch: GitHub's activity log for that
+// branch (in the fork, for a fork's PR), which outlives the bridge's
+// restarts and covers webhooks it missed; or, if the log does not list it
+// yet, the push webhook. "" if neither says.
+func (im *Importer) pusher(ctx context.Context, pr *github.PullRequest, h string) (string, error) {
+	repo := im.GitHub.Owner + "/" + im.GitHub.Repo
+	if pr.Head.Repo != nil && pr.Head.Repo.FullName != "" {
+		repo = pr.Head.Repo.FullName
+	}
+	login, err := im.GitHub.Pusher(ctx, repo, "refs/heads/"+pr.Head.Ref, h)
+	if err != nil {
+		return "", fmt.Errorf("who pushed %s to #%d: %w", short(h), pr.Number, err)
+	}
+	if login == "" && im.Pushers != nil {
+		login = im.Pushers.Lookup(h)
+	}
+	return login, nil
 }
 
 // pureRebase reports whether h's tree is exactly what rebasing commit

@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -141,4 +142,31 @@ func (pr *PullRequest) HeadKey(repo string) string {
 // ok is false for a branch of the base repository itself.
 func SplitHeadKey(key string) (repo, branch string, ok bool) {
 	return strings.Cut(key, ":")
+}
+
+// Pusher returns who most recently moved branch ref (refs/heads/...) of
+// repo (owner/name) to sha, from GitHub's activity log: pushes, force
+// pushes and branch creations, by whoever did them, kept by GitHub across
+// the bridge's restarts. It returns "" if the log does not say (too old,
+// or not listed yet). Only the newest few hundred entries are searched.
+func (c *Client) Pusher(ctx context.Context, repo, ref, sha string) (string, error) {
+	next := "/repos/" + repo + "/activity?per_page=100&ref=" + url.QueryEscape(ref)
+	for page := 0; page < 3 && next != ""; page++ {
+		var acts []struct {
+			After string `json:"after"`
+			Ref   string `json:"ref"`
+			Actor *User  `json:"actor"`
+		}
+		resp, err := c.Do(ctx, http.MethodGet, next, nil, &acts)
+		if err != nil {
+			return "", err
+		}
+		for _, a := range acts { // newest first
+			if a.After == sha && a.Ref == ref && a.Actor != nil { // deletions have after 000…
+				return a.Actor.Login, nil
+			}
+		}
+		next = nextLink(resp.Header.Get("Link"))
+	}
+	return "", nil
 }

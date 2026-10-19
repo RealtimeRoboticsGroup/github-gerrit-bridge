@@ -265,3 +265,24 @@ func TestGraphQLAndDraft(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestPusher(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/brt/fork/activity" || r.URL.Query().Get("ref") != "refs/heads/main" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `[
+ {"ref":"refs/heads/main","after":"0000000000000000000000000000000000000000","activity_type":"branch_deletion","actor":{"login":"x"}},
+ {"ref":"refs/heads/main","after":"bbb","activity_type":"force_push","actor":{"login":"maintainer"}},
+ {"ref":"refs/heads/main","after":"aaa","activity_type":"push","actor":{"login":"brt"}}]`)
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	ctx := context.Background()
+	for sha, want := range map[string]string{"aaa": "brt", "bbb": "maintainer", "ccc": ""} {
+		if got, err := c.Pusher(ctx, "brt/fork", "refs/heads/main", sha); err != nil || got != want {
+			t.Errorf("Pusher(%s) = %q, %v; want %q", sha, got, err, want)
+		}
+	}
+}

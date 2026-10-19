@@ -48,6 +48,9 @@ type sites struct {
 	events   map[int][]github.IssueEvent
 	comments map[int][]string
 	statuses map[string][]github.Status // sha -> statuses
+	// pushLog is GitHub's activity log per "owner/repo refs/heads/x",
+	// oldest first.
+	pushLog  map[string][]pushEntry
 	unstacks []int
 	activity map[int]github.PRActivity // what Activity returns per PR
 	nextID   int64
@@ -76,6 +79,7 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("GET /a/changes/{n}/submitted_together", s.submittedTogether)
 	mux.HandleFunc("GET /a/accounts/{user}", s.account)
 	mux.HandleFunc("GET /repos/o/r/pulls", s.listPulls)
+	mux.HandleFunc("GET /repos/{owner}/{repo}/activity", s.activityLog)
 	mux.HandleFunc("GET /repos/o/r/pulls/{n}", s.getPull)
 	mux.HandleFunc("PATCH /repos/o/r/pulls/{n}", s.updatePull)
 	mux.HandleFunc("GET /repos/o/r/issues/{n}/events", s.issueEvents)
@@ -330,6 +334,30 @@ func (s *sites) account(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, a, true)
+}
+
+type pushEntry struct{ sha, actor, kind string }
+
+// pushed logs that actor pushed sha to ref of repo, as GitHub's activity
+// log would.
+func (s *sites) pushed(repo, ref, sha, actor string) {
+	if s.pushLog == nil {
+		s.pushLog = map[string][]pushEntry{}
+	}
+	s.pushLog[repo+" "+ref] = append(s.pushLog[repo+" "+ref], pushEntry{sha, actor, "push"})
+}
+
+func (s *sites) activityLog(w http.ResponseWriter, r *http.Request) {
+	repo, ref := r.PathValue("owner")+"/"+r.PathValue("repo"), r.URL.Query().Get("ref")
+	s.mu.Lock()
+	log := s.pushLog[repo+" "+ref]
+	var out []map[string]any
+	for i := len(log) - 1; i >= 0; i-- { // newest first
+		out = append(out, map[string]any{"ref": ref, "after": log[i].sha, "activity_type": log[i].kind,
+			"actor": map[string]string{"login": log[i].actor}})
+	}
+	s.mu.Unlock()
+	s.json(w, out, false)
 }
 
 func (s *sites) listPulls(w http.ResponseWriter, r *http.Request) {

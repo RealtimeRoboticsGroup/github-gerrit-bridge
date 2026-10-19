@@ -1027,14 +1027,18 @@ defenses, by threat:
   uploader of code they did not write or vouch for, however casually they
   clicked a GitHub button on someone else's PR (audit 2026-10-18). The
   first upload is the PR author's. A later push is uploaded as its pusher
-  only if they uploaded the current patch set too, and only as a webhook
-  says (`synchronize` or `push` senders; the first push of a commit wins;
-  reopening is not pushing). A pure rebase of the current patch set
+  only if they uploaded the current patch set too, and only as GitHub
+  says: the activity log of the PR's branch (`GET /repos/{repo}/activity`,
+  the fork's for a fork PR), which outlives the bridge's restarts and
+  covers webhooks it missed; or, for a push the log does not list yet, the
+  webhook (`synchronize` or `push` senders; the first push of a commit
+  wins; reopening is not pushing). A pure rebase of the current patch set
   (GitHub's Rebase or Update branch: `git merge-tree` of it onto the new
   parent gives the pushed tree, without conflicts) is uploaded on behalf
   of its uploader, as Gerrit's own rebase is. Anything else, and anything
   no webhook explains, is uploaded by the bridge, which CI does not trust;
-  a trusted reviewer starts CI. The commit's committer email is never
+  a trusted reviewer starts CI. The log is only searched back a few
+  hundred entries per branch. The commit's committer email is never
   used, since anyone can write any email.
 - **PR edits.** A title or description edit makes a new patch set in
   Gerrit, so it is made only as the current patch set's uploader; anyone

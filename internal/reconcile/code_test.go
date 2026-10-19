@@ -956,3 +956,33 @@ func TestApplyRefusesBranchesGerritHas(t *testing.T) {
 		t.Error("pushed to release")
 	}
 }
+
+// Who pushed comes from GitHub's activity log for the PR's branch, so a
+// restart (no webhook remembered) loses nothing, and the log wins over a
+// webhook remembered for the same commit elsewhere.
+func TestPusherFromGitHubsActivityLog(t *testing.T) {
+	for _, tc := range []struct {
+		name, logged, webhook, want string
+	}{
+		{"after a restart", "austin", "", "austin"},
+		{"the log wins", "brt", "austin", ""},
+		{"not listed yet: the webhook", "", "austin", "austin"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, im, up, m1, g, ids := gerritBornWorld(t, false)
+			h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
+			s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
+			s.pulls[10].Head.SHA = h
+			if tc.logged != "" {
+				s.pushed("o/r", "refs/heads/gerrit/"+ids[0], h, tc.logged)
+			}
+			im.Pushers.Record(h, tc.webhook)
+			if err := im.Import(context.Background(), "main"); err != nil {
+				t.Fatal(err)
+			}
+			if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], tc.want+" ") {
+				t.Fatalf("uploads = %v, want one as %q", up.uploads, tc.want)
+			}
+		})
+	}
+}
