@@ -1206,7 +1206,8 @@ defenses, by threat:
   mirrored from GitHub) drive `gerrit/Verified`'s link and text; with
   `ci.account` unset, no message does.
 - **The public `/checks` endpoint** reads changes as the bridge, since
-  AOS lets no anonymous user read them, and answers only for the
+  AOS lets no anonymous user read them (to cut crawler egress, not to
+  keep changes private: the bridge publishes them as PRs anyway), and answers only for the
   project's changes that are not private: those the bridge publishes as
   GitHub PRs anyway (the bridge could be made a private change's
   reviewer). Answers are cached briefly,
@@ -1424,10 +1425,10 @@ and Abandon and Toggle Work In Progress for Administrators.
   author. The bridge keeps such patch sets off GitHub-born PRs (§7.1),
   but a Gerrit-born change's PR shows them, and GitHub credits a forged
   author's commits to whoever owns that email on GitHub. AOS already
-  limits Forge Author (to Forge Author and Sudo); Add Patch Set is still
-  Registered Users'. Consider granting it to maintainers (and the bridge)
-  only: owners may always add patch sets to their own changes (third
-  audit).
+  limits Forge Author (to Forge Author and Sudo); Add Patch Set stays
+  Registered Users', the owner's choice (2026-10-19: everyone has been
+  good so far). Granting it to maintainers (and the bridge) only remains
+  an option: owners may always add patch sets to their own changes.
 - **GitHub Actions.** The bridge pushes every open change, from anyone
   registered on Gerrit, to a branch of the repository and opens a PR from
   it, so any workflow that runs on pushes to non-default branches or on
