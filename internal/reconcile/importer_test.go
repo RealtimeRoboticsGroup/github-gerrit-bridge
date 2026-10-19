@@ -230,3 +230,45 @@ func TestSquashUsesGerritMessage(t *testing.T) {
 		t.Errorf("message:\n%s\nwant Gerrit's:\n%s", got, msg)
 	}
 }
+
+func TestFooterChangeID(t *testing.T) {
+	a, b := "I"+strings.Repeat("a", 40), "I"+strings.Repeat("b", 40)
+	for _, tc := range []struct {
+		msg, id string
+		ok      bool
+	}{
+		{"Subject\n\nBody", "", true},
+		{"Subject\n\nChange-Id: " + a + "\n", a, true},
+		{"Subject\n\nSigned-off-by: X <x@example.com>\r\nChange-Id: " + a + "\r\n", a, true},
+		// Gerrit reads the last paragraph; the bridge must not read a
+		// different one, or refuse.
+		{"Subject\n\nChange-Id: " + a + "\n\nChange-Id: " + b, "", false},
+		{"Subject\n\nChange-Id: " + a + "\n\nSigned-off-by: X <x@example.com>", "", false},
+		{"Subject\n\nchange-id: " + b, b, true},
+		{"Subject\n\nChange-Id: " + a + "\nChange-Id: " + b, "", false},
+		{"Subject\n\nChange-Id: Inot-hex", "", false},
+	} {
+		id, ok := footerChangeID(tc.msg)
+		if id != tc.id || ok != tc.ok {
+			t.Errorf("footerChangeID(%q) = %q %v, want %q %v", tc.msg, id, ok, tc.id, tc.ok)
+		}
+	}
+}
+
+func TestNoOpSquashNeedsTheFooterChangeID(t *testing.T) {
+	im, g := newImportEnv(t)
+	base := g.commit("a.txt", "base\n", "base")
+	cid, victim := "I"+strings.Repeat("b", 40), "I"+strings.Repeat("c", 40)
+	h := g.commit("a.txt", "x\n", "Do it\n\nChange-Id: "+cid+"\n\nChange-Id: "+victim)
+	who := gerrit.AccountInfo{Name: "Austin", Email: "austin@example.com"}
+	s, err := im.squash(context.Background(), &github.PullRequest{Title: "Do it"}, []string{h}, h, base, cid, "", who)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s == h {
+		t.Fatal("uploaded unchanged, so Gerrit would read the footer's Change-Id")
+	}
+	if id, ok := footerChangeID(g.run("log", "-1", "--format=%B", s)); !ok || id != cid {
+		t.Errorf("squash's Change-Id = %q %v, want %s", id, ok, cid)
+	}
+}

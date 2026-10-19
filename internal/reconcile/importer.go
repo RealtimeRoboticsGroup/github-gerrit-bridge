@@ -86,6 +86,34 @@ func (e *syncError) Error() string { return e.msg }
 
 var changeIDTrailer = regexp.MustCompile(`(?m)^Change-Id: (I[0-9a-f]{40})\s*$`)
 
+// changeIDLine matches any line Gerrit might read as a Change-Id footer
+// (its keys are case-insensitive).
+var changeIDLine = regexp.MustCompile(`(?im)^[ \t]*change-id[ \t]*:[ \t]*(\S*)[ \t\r]*$`)
+
+// footerChangeID returns the Change-Id Gerrit reads from msg: the
+// Change-Id footer of its last paragraph. ok is false when that is not
+// exactly one valid Change-Id, or when Change-Id lines appear anywhere
+// else: the bridge must never read a different Change-Id than Gerrit
+// will, or a PR could add patch sets to someone else's change.
+func footerChangeID(msg string) (id string, ok bool) {
+	msg = strings.TrimSpace(strings.ReplaceAll(msg, "\r\n", "\n"))
+	all := changeIDLine.FindAllStringSubmatch(msg, -1)
+	if len(all) == 0 {
+		return "", true
+	}
+	last := msg
+	if i := strings.LastIndex(msg, "\n\n"); i >= 0 {
+		last = msg[i+2:]
+	}
+	footer := changeIDLine.FindAllStringSubmatch(last, -1)
+	if len(footer) != 1 || len(all) != 1 || !validChangeID.MatchString(footer[0][1]) {
+		return "", false
+	}
+	return footer[0][1], true
+}
+
+var validChangeID = regexp.MustCompile(`^I[0-9a-f]{40}$`)
+
 // Import imports every GitHub-born PR whose chain targets branch.
 func (im *Importer) Import(ctx context.Context, branch string) error {
 	prs, err := im.GitHub.ListPulls(ctx, "open")
@@ -387,9 +415,11 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			if err != nil {
 				return nil, err
 			}
-			if sm := changeIDTrailer.FindStringSubmatch(string(msg)); sm != nil {
-				changeID = sm[1]
+			id, ok := footerChangeID(string(msg))
+			if !ok {
+				return nil, &syncError{"pending", fmt.Sprintf("Commit %s has Change-Id lines Gerrit could read differently; keep at most one, in the last paragraph", own[i])}
 			}
+			changeID = id
 		}
 	}
 	if changeID == "" {
@@ -590,7 +620,7 @@ func (im *Importer) realParent(ctx context.Context, branch, h string, parentHead
 // without Change-Id lines (the bridge adds its own).
 func prBodyForMessage(body string) string {
 	user, _ := splitBody(body)
-	user = changeIDTrailer.ReplaceAllString(user, "")
+	user = changeIDLine.ReplaceAllString(user, "")
 	user = signedOffBy.ReplaceAllString(user, "")
 	return strings.TrimSpace(user)
 }
@@ -631,7 +661,7 @@ func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []st
 	}
 	hParents, an, ae, ad, ce, cd, hMsg := f[0], f[1], f[2], f[3], f[4], f[5], f[6]
 	if len(own) == 1 && strings.TrimSpace(hParents) == parent && strings.EqualFold(ce, committer.Email) {
-		if sm := changeIDTrailer.FindStringSubmatch(hMsg); sm != nil && sm[1] == changeID {
+		if id, ok := footerChangeID(hMsg); ok && id == changeID {
 			return h, nil // no-op squash: identical SHAs on both sides
 		}
 	}

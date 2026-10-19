@@ -1059,6 +1059,10 @@ defenses, by threat:
   already on Gerrit's branch (an unrelated history would bring all its
   ancestors along as changes), and PRs of more than 1000 commits are
   refused. A Change-Id that belongs to another change is refused (§5.2).
+  The bridge reads a commit's Change-Id as Gerrit does (the footer of the
+  last paragraph, any case) and refuses commits with Change-Id lines
+  anywhere else, so it never checks one Change-Id while Gerrit files the
+  upload under another.
 - **Bridge markers.** `<!-- bridge:… -->` markers mark state (handled
   commands, comment mappings) only in comments by the bridge's own GitHub
   login.
