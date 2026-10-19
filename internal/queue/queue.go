@@ -81,7 +81,7 @@ func (q *Queue[K]) Add(k K) {
 		return
 	}
 	q.order = append(q.order, k)
-	q.cond.Signal()
+	q.cond.Broadcast() // GetUrgent waiters may not take it
 }
 
 // wait is how long throttled k must still wait since its last start, if
@@ -146,23 +146,52 @@ func (q *Queue[K]) Get() (k K, ok bool) {
 	if q.shutdown {
 		return k, false
 	}
-	i := 0
+	i := q.urgent()
+	if i < 0 {
+		i = 0
+	}
+	return q.take(i), true
+}
+
+// GetUrgent is Get for Urgent keys only: it waits until one is queued. A
+// worker that only takes these is never busy with something else when
+// one comes.
+func (q *Queue[K]) GetUrgent() (k K, ok bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for {
+		if q.shutdown {
+			return k, false
+		}
+		if i := q.urgent(); i >= 0 {
+			return q.take(i), true
+		}
+		q.cond.Wait()
+	}
+}
+
+// urgent is the index of the first Urgent key queued, or -1. q.mu is held.
+func (q *Queue[K]) urgent() int {
 	if q.Urgent != nil {
-		for j, o := range q.order {
+		for i, o := range q.order {
 			if q.Urgent(o) {
-				i = j
-				break
+				return i
 			}
 		}
 	}
-	k = q.order[i]
+	return -1
+}
+
+// take hands out the key at index i. q.mu is held.
+func (q *Queue[K]) take(i int) K {
+	k := q.order[i]
 	q.order = append(q.order[:i:i], q.order[i+1:]...)
 	delete(q.dirty, k)
 	q.processing[k] = struct{}{}
 	q.started[k] = time.Now()
 	q.waited[k] = q.started[k].Sub(q.queuedAt[k])
 	delete(q.queuedAt, k)
-	return k, true
+	return k
 }
 
 // Waited is how long the key a worker holds waited to be handed out,
@@ -197,7 +226,7 @@ func (q *Queue[K]) Done(k K) {
 			return
 		}
 		q.order = append(q.order, k)
-		q.cond.Signal()
+		q.cond.Broadcast() // GetUrgent waiters may not take it
 	}
 }
 
@@ -206,7 +235,7 @@ func (q *Queue[K]) requeue(k K) {
 	defer q.mu.Unlock()
 	if _, ok := q.dirty[k]; ok && !q.shutdown {
 		q.order = append(q.order, k)
-		q.cond.Signal()
+		q.cond.Broadcast() // GetUrgent waiters may not take it
 	}
 }
 

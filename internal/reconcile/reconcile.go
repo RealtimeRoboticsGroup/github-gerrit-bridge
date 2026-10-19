@@ -184,22 +184,26 @@ func (r *Router) RunResync(ctx context.Context, l Lister) error {
 	}
 }
 
-// Work runs n workers reconciling keys from q until q is shut down.
+// Work runs n workers reconciling keys from q until q is shut down, plus
+// one that takes only urgent keys (a merge racing replication), so they
+// never wait for a worker to come free.
 func Work(ctx context.Context, q *queue.Queue[Key], rec Reconciler, n int, logger *slog.Logger) {
 	done := make(chan struct{})
-	for range n {
-		go func() {
-			defer func() { done <- struct{}{} }()
-			for {
-				k, ok := q.Get()
-				if !ok {
-					return
-				}
-				reconcileOne(ctx, q, rec, k, logger)
+	worker := func(get func() (Key, bool)) {
+		defer func() { done <- struct{}{} }()
+		for {
+			k, ok := get()
+			if !ok {
+				return
 			}
-		}()
+			reconcileOne(ctx, q, rec, k, logger)
+		}
 	}
 	for range n {
+		go worker(q.Get)
+	}
+	go worker(q.GetUrgent)
+	for range n + 1 {
 		<-done
 	}
 }

@@ -151,6 +151,45 @@ func (f *flaky) Reconcile(_ context.Context, k Key) error {
 	return nil
 }
 
+// blocker holds every non-urgent key until released.
+type blocker struct {
+	release chan struct{}
+	merged  chan struct{}
+}
+
+func (b *blocker) Reconcile(_ context.Context, k Key) error {
+	if k.Merged != 0 {
+		close(b.merged)
+		return nil
+	}
+	<-b.release
+	return nil
+}
+
+// A merge does not wait for a worker to come free: one worker takes only
+// urgent keys.
+func TestUrgentKeysHaveAWorker(t *testing.T) {
+	q := queue.New[Key]()
+	q.Urgent = Urgent
+	b := &blocker{release: make(chan struct{}), merged: make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		Work(context.Background(), q, b, 1, slog.Default())
+		close(done)
+	}()
+	q.Add(Key{Comments: 1}) // keeps the one ordinary worker busy
+	time.Sleep(20 * time.Millisecond)
+	q.Add(Key{Merged: 2})
+	select {
+	case <-b.merged:
+	case <-time.After(5 * time.Second):
+		t.Error("the merge waited for the busy worker")
+	}
+	close(b.release)
+	q.ShutDown()
+	<-done
+}
+
 func TestWorkRetries(t *testing.T) {
 	q := queue.New[Key]()
 	q.MinRetry, q.MaxRetry = time.Millisecond, time.Millisecond

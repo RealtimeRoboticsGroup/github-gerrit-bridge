@@ -196,6 +196,61 @@ func TestWaited(t *testing.T) {
 	q.Done(k)
 }
 
+// GetUrgent hands out only urgent keys, waiting for one, and wakes for
+// one queued behind others.
+func TestGetUrgent(t *testing.T) {
+	q := New[string]()
+	q.Urgent = func(k string) bool { return strings.HasPrefix(k, "!") }
+	got := make(chan string)
+	go func() {
+		for {
+			k, ok := q.GetUrgent()
+			if !ok {
+				close(got)
+				return
+			}
+			got <- k
+			q.Done(k)
+		}
+	}()
+	time.Sleep(20 * time.Millisecond) // GetUrgent waits first
+	plain := make(chan string)
+	go func() {
+		k, _ := q.Get()
+		q.Done(k)
+		plain <- k
+	}()
+	time.Sleep(20 * time.Millisecond)
+	q.Add("a") // wakes the plain Get, not just GetUrgent
+	select {
+	case k := <-got:
+		t.Fatalf("GetUrgent took %q", k)
+	case k := <-plain:
+		if k != "a" {
+			t.Fatalf("Get = %q", k)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Get did not wake")
+	}
+	q.Add("a")
+	q.Add("!m")
+	select {
+	case k := <-got:
+		if k != "!m" {
+			t.Fatalf("got %q", k)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("GetUrgent did not wake for an urgent key")
+	}
+	if k, _ := q.Get(); k != "a" {
+		t.Errorf("Get = %q", k)
+	}
+	q.ShutDown()
+	if _, ok := <-got; ok {
+		t.Error("GetUrgent handed out a key after shutdown")
+	}
+}
+
 func TestUrgentKeysFirst(t *testing.T) {
 	q := New[string]()
 	q.Urgent = func(k string) bool { return strings.HasPrefix(k, "!") }
