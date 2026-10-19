@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha1"
 	"errors"
@@ -290,28 +291,29 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		_, err := im.Mirror.GitEnv(ctx, env, nil, append([]string{"-c", fsckFetch, "fetch", "--quiet", im.GitHubURL}, specs...)...)
 		return err
 	}
+	var retry error // a PR head that could not be fetched for now
 	if len(all) > 0 {
 		if err := fetch(all...); err != nil {
 			// One PR's bad objects must not stop the others: fetch each
-			// alone, and refuse only those that fail on their own. If
-			// none can be fetched, it is the network, not a PR.
-			ok := 0
+			// alone. A head that fails git's object checks is refused for
+			// good; one that fails otherwise (a new PR's head GitHub has
+			// not published yet, the network) waits for a retry.
 			for _, l := range order {
 				if specs[l] == "" {
 					continue
 				}
-				if ferr := fetch(specs[l]); ferr != nil {
-					failed[l] = "Its commits could not be fetched: they fail git's object checks (fsck), or GitHub would not serve them"
-					im.Logger.Warn("fetching PR head", "pr", l.pr.Number, "err", ferr)
-				} else {
-					ok++
+				ferr := fetch(specs[l])
+				var ge *gitmirror.Error
+				switch {
+				case ferr == nil:
+				case errors.As(ferr, &ge) && strings.Contains(ge.Stderr, "fsck error"):
+					failed[l] = "Its commits fail git's object checks (fsck), so they are not imported"
+					im.refuse(l.pr.Head.SHA, failed[l])
+					im.Logger.Warn("PR head fails git's object checks", "pr", l.pr.Number, "err", ferr)
+				default:
+					failed[l] = "" // skipped this time
+					retry = cmp.Or(retry, fmt.Errorf("fetching PR #%d: %w", l.pr.Number, ferr))
 				}
-			}
-			if ok == 0 {
-				return err
-			}
-			for l, why := range failed {
-				im.refuse(l.pr.Head.SHA, why)
 			}
 		}
 	}
@@ -321,8 +323,10 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 
 	done := map[*layer]*imported{}
 	for _, l := range order {
-		if why := failed[l]; why != "" {
-			im.setSync(ctx, l.pr, "failure", why, "")
+		if why, ok := failed[l]; ok {
+			if why != "" {
+				im.setSync(ctx, l.pr, "failure", why, "")
+			}
 			continue
 		}
 		if l.parent != nil && done[l.parent] == nil {
@@ -359,7 +363,8 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		}
 		im.setSync(ctx, l.pr, "success", desc, im.Gerrit.ChangeURL(im.Project, res.change))
 	}
-	return nil
+	// The others are imported; a retry fetches what could not be.
+	return retry
 }
 
 // SyncStatus is the commit status context reporting a GitHub-born PR's

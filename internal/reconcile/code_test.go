@@ -1181,3 +1181,39 @@ func TestPREditedAgainWhileMirroring(t *testing.T) {
 		t.Errorf("changed=%v err=%v calls=%v; want nothing sent, and a re-observe", changed, err, s.calls)
 	}
 }
+
+// GitHub publishes a new PR's refs/pull/N/head moments after the PR. A
+// head that cannot be fetched for such a reason is not refused: the
+// others import, and a retry imports it.
+func TestImportRetriesAHeadNotPublishedYet(t *testing.T) {
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	fork := s.commit(m1, "fork.txt", "f\n", "From a fork")
+	pr := s.pr(52, "main", fork, "main", "brt")
+	pr.Head.Repo.FullName = "brt/fork" // its head is only at refs/pull/52/head, not there yet
+	good := s.commit(m1, "good.txt", "g\n", "Good")
+	s.push("github.git", good, "refs/heads/good")
+	s.pr(51, "good", good, "main", "austin")
+	if err := im.Import(ctx, "main"); err == nil {
+		t.Error("no retry asked for")
+	}
+	if len(up.uploads) != 1 {
+		t.Errorf("uploads %v, want the good PR's", up.uploads)
+	}
+	if sts := s.statuses[fork]; len(sts) != 0 {
+		t.Errorf("fork PR refused: %+v", sts)
+	}
+	s.push("github.git", fork, "refs/pull/52/head")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	byBRT := 0
+	for _, u := range up.uploads {
+		if strings.HasPrefix(u, "brt ") {
+			byBRT++
+		}
+	}
+	if byBRT != 1 {
+		t.Errorf("uploads %v, want the fork PR's (as brt) once", up.uploads)
+	}
+}
