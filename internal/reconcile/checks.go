@@ -58,6 +58,10 @@ type Checks struct {
 	CIAccount string
 	// Builds, if set, is read for CI runs instead of CI's messages.
 	Builds gerritchecks.Builds
+	// StatusBudget, if set, bounds the statuses each account's votes and
+	// uploads make the bridge write (fourth audit: anyone registered can
+	// vote on every open change, over and over). CI's own are not.
+	StatusBudget *Budget
 	DryRun bool
 	Logger *slog.Logger
 
@@ -141,6 +145,12 @@ func (c *Checks) Sync(ctx context.Context, n int) error {
 			c.Logger.Info("dry run: would set status", "change", n, "sha", short(sha), "context", s.Context, "state", s.State, "description", s.Description)
 			continue
 		}
+		if who := statusCause(ch, rev, s.Context); who.AccountID != 0 && (c.CIAccount == "" || who.Username != c.CIAccount) &&
+			!c.StatusBudget.Take(ctx, who.AccountID) {
+			// The next sync, or resync, brings it up to date.
+			c.Logger.Info("status waits: whoever changed it changed too many lately", "change", n, "context", s.Context, "account", who.AccountID)
+			continue
+		}
 		if err := c.GitHub.CreateStatus(ctx, sha, s); err != nil {
 			return err
 		}
@@ -149,6 +159,28 @@ func (c *Checks) Sync(ctx context.Context, n int) error {
 	// Votes show in gerrit/<label> statuses, and on the mirrored Gerrit
 	// message they came with (Comments): no separate votes comment.
 	return nil
+}
+
+// statusCause is who last did what status context reflects: the newest
+// vote on its label (on any, for submittability), or the current patch
+// set's upload if that is newer (it resets votes) or there are none.
+func statusCause(ch *gerrit.ChangeInfo, rev gerrit.RevisionInfo, context string) gerrit.AccountInfo {
+	var who gerrit.AccountInfo
+	newest := ""
+	for name, l := range ch.Labels {
+		if context != submittableStatus && context != statusPrefix+name {
+			continue
+		}
+		for _, a := range l.All {
+			if a.Date != "" && a.Date > newest {
+				newest, who = a.Date, a.AccountInfo
+			}
+		}
+	}
+	if newest == "" || rev.Created > newest {
+		who = rev.Uploader
+	}
+	return who
 }
 
 // ChangeURL is the Gerrit web URL of change n.

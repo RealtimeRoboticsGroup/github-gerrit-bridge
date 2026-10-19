@@ -1268,7 +1268,14 @@ defenses, by threat:
   owner outside CI's trusted group gets at most 20 new PRs an hour (the
   rest wait, `Snapshot.Deferred`), and an author outside it at most 120
   comments and messages mirrored an hour (the rest wait for a later
-  sync). Set `receive.maxBatchChanges` too (third audit).
+  sync). Set `receive.maxBatchChanges` too (third audit). Outside the
+  group, an account's votes and uploads change at most 120 statuses an
+  hour (charged to the newest vote on the status's label, or the upload
+  if newer; CI's are free), its commit messages at most 60 PR titles
+  and descriptions, and each PR's relation chain is rewritten at most
+  12 times an hour, since anyone's upload in a chain rewrites it; the
+  rest wait for a later sync or resync (fourth audit). `/submit` is
+  answered at most 20 times an hour per commenter.
 - **API budget.** One key (a PR, a change's comments, a branch) runs at
   most every 10 seconds however many events arrive for it, during or
   after a run, from either side (anyone can sign up on both); only a

@@ -55,6 +55,12 @@ type Code struct {
 	// (known is false if that cannot be told). Only they, and a change's
 	// owner, have their Gerrit patch sets pushed to a PR author's branch.
 	Trusted func(ctx context.Context, account int) (trusted, known bool)
+	// TextBudget, if set, bounds the PR title and description updates
+	// each account's commit messages make the bridge write, and
+	// LinksBudget the updates of each PR's relation chain alone, which
+	// anyone's upload in the chain changes (fourth audit: anyone
+	// registered can add patch sets to every open change).
+	TextBudget, LinksBudget *Budget
 	// PRBudget, if set, bounds the new PRs each change owner's changes
 	// get (Snapshot.Deferred).
 	PRBudget *Budget
@@ -1030,6 +1036,10 @@ func (c *Code) apply(ctx context.Context, s *Snapshot, p *Plan, skip *skips) err
 					skip.changes[n] = true
 				}
 				continue
+			case errors.Is(err, errTooMany) && a.Change != 0:
+				c.Logger.Info("leaving a change out: its update waits", "change", a.Change, "action", a.String())
+				skip.changes[a.Change] = true
+				continue
 			case a.Change != 0 && refusedByGitHub(err):
 				c.Logger.Warn("GitHub refused an action on one change's PR; leaving that change out", "change", a.Change, "action", a.String(), "err", err)
 				skip.changes[a.Change] = true
@@ -1044,6 +1054,12 @@ func (c *Code) apply(ctx context.Context, s *Snapshot, p *Plan, skip *skips) err
 	}
 	return nil
 }
+
+// errTooMany is an action that waits: whoever caused it caused too many
+// lately (a Budget).
+var errTooMany = errors.New("over budget; waits")
+
+func userPart(body string) string { user, _ := splitBody(body); return user }
 
 // forkRefused is a push the repository took, but forks did not, for
 // changes.
@@ -1169,6 +1185,16 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		c.Logger.Info("created PR", "change", a.Change, "pr", pr.Number, "url", pr.HTMLURL)
 		return c.link(ctx, s, a.Change, pr)
 	case UpdatePR:
+		if u := a.Update; u.State == nil && u.Base == nil {
+			// Text only: wait if whoever changed it changed too many.
+			ch, pr := s.Changes[a.Change], s.PRs[a.PR]
+			linksOnly := u.Title == nil && u.Body != nil && pr != nil && userPart(*u.Body) == userPart(pr.Body)
+			switch {
+			case ch == nil:
+			case linksOnly && !c.LinksBudget.Take(ctx, a.PR), !linksOnly && !c.TextBudget.Take(ctx, ch.UploaderID):
+				return errTooMany
+			}
+		}
 		_, err := gh.UpdatePull(ctx, a.PR, *a.Update)
 		return err
 	case SetDraft:

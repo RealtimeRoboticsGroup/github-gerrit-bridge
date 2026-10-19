@@ -1,11 +1,16 @@
 package reconcile
 
 import (
+	"context"
+	"log/slog"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/buildkite"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
 var (
@@ -123,5 +128,77 @@ func TestLatestBuild(t *testing.T) {
 	}
 	if run := latestBuild(nil); run != (ciRun{}) {
 		t.Errorf("latestBuild(nil) = %+v", run)
+	}
+}
+
+// checksFakes are what Checks.Sync reads and writes.
+type checksFakes struct {
+	ch    *gerrit.ChangeInfo
+	set   []string // contexts written
+	have  []github.Status
+	group []gerrit.AccountInfo
+}
+
+func (f *checksFakes) GetChange(context.Context, int, ...string) (*gerrit.ChangeInfo, error) {
+	return f.ch, nil
+}
+func (f *checksFakes) GroupMembers(context.Context, string) ([]gerrit.AccountInfo, error) {
+	return f.group, nil
+}
+func (f *checksFakes) ChangeURL(string, int) string { return "https://g/c/5" }
+func (f *checksFakes) Statuses(context.Context, string) ([]github.Status, error) {
+	return f.have, nil
+}
+func (f *checksFakes) CreateStatus(_ context.Context, _ string, st github.Status) error {
+	f.set = append(f.set, st.Context)
+	f.have = append(f.have, st)
+	return nil
+}
+func (f *checksFakes) CreateIssueComment(context.Context, int, string) (*github.IssueComment, error) {
+	return &github.IssueComment{}, nil
+}
+
+// The statuses someone's votes and uploads change count against their
+// budget (fourth audit: anyone registered can vote on every open change,
+// over and over); CI's, and the trusted group's, do not.
+func TestStatusesWithinTheirCausesBudget(t *testing.T) {
+	ctx := context.Background()
+	s := newSites(t)
+	store := &state.Store{Repo: s.mirror(ctx)}
+	s.save(ctx, store, 5, &state.Change{State: state.ChangeState{Change: 5, PR: 50},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: "g1", GitHubSHA: "h1"}}})
+	mallory := gerrit.AccountInfo{AccountID: 9, Name: "Mallory", Username: "mallory"}
+	bk := gerrit.AccountInfo{AccountID: 3, Name: "Buildkite", Username: "buildkite"}
+	f := &checksFakes{ch: &gerrit.ChangeInfo{Status: "NEW", CurrentRevision: "g1",
+		Revisions: map[string]gerrit.RevisionInfo{"g1": {Number: 1, Created: "2026-10-19 10:00:00.000000000", Uploader: alice}},
+		Labels: map[string]gerrit.LabelInfo{
+			"Code-Review": {Values: crValues, All: []gerrit.ApprovalInfo{{AccountInfo: mallory, Value: -1, Date: "2026-10-19 11:45:00.000000000"}}},
+			"Verified":    {Values: vValues, All: []gerrit.ApprovalInfo{{AccountInfo: bk, Value: 1, Date: "2026-10-19 11:30:00.000000000"}}},
+		}}}
+	c := &Checks{Project: "p", Gerrit: f, GitHub: f, Store: store, CILabels: []string{"Verified"}, CIAccount: "buildkite",
+		StatusBudget: &Budget{N: 1, Per: time.Hour}, Logger: slog.Default()}
+	c.StatusBudget.Take(ctx, bk.AccountID) // CI's would be spent, if it had one
+	if err := c.Sync(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	// Mallory's vote is the newest on Code-Review and on the change.
+	if !slices.Equal(f.set, []string{"gerrit/Code-Review", "gerrit/Verified"}) {
+		t.Errorf("set %v, want Code-Review (mallory's 1) and Verified (CI's, free), not submittability", f.set)
+	}
+	// An hour on, it is written too; and a trusted voter's are free.
+	c.StatusBudget.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	f.ch.Labels["Code-Review"] = gerrit.LabelInfo{Values: crValues, All: []gerrit.ApprovalInfo{{AccountInfo: mallory, Value: -1, Date: "2026-10-19 11:45:00.000000000"},
+		{AccountInfo: bob, Value: 2, Date: "2026-10-19 12:00:00.000000000"}}}
+	c.StatusBudget.Trusted = func(_ context.Context, a int) (bool, bool) { return a == bob.AccountID, true }
+	f.set = nil
+	if err := c.Sync(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.set, []string{"gerrit/Code-Review", "gerrit/submittable"}) {
+		t.Errorf("set %v, want Code-Review and submittability, bob's", f.set)
+	}
+	// A newer upload is its uploader's doing.
+	if who := statusCause(f.ch, gerrit.RevisionInfo{Created: "2026-10-19 13:00:00.000000000", Uploader: mallory}, "gerrit/Code-Review"); who.AccountID != 9 {
+		t.Errorf("upload's status caused by %+v", who)
 	}
 }

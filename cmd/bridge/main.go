@@ -372,6 +372,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	// and GitHub stalls a token past ~80 a minute or ~500 an hour.
 	code.PRBudget = &reconcile.Budget{N: 20, Per: time.Hour, Trusted: checks.IsTrusted}
 	comments.PostBudget = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: checks.IsTrusted}
+	checks.StatusBudget = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: checks.IsTrusted}
+	code.TextBudget = &reconcile.Budget{N: 60, Per: time.Hour, Trusted: checks.IsTrusted}
+	code.LinksBudget = &reconcile.Budget{N: 12, Per: time.Hour} // per PR
 	commands := &reconcile.Commands{
 		GitHub:       gh,
 		Submitter:    reconcile.RunAsSubmitter{Gerrit: rest},

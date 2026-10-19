@@ -130,6 +130,8 @@ func (l LabelInfo) Range() (lo, hi int) {
 type ApprovalInfo struct {
 	AccountInfo
 	Value int `json:"value"`
+	// Date is when it was given, as Gerrit writes times.
+	Date string `json:"date"`
 	// Tag is the tag of the review that set the vote.
 	Tag string `json:"tag"`
 }

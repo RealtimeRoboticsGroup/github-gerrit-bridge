@@ -800,6 +800,39 @@ func TestRefusedForkPushLeavesOutItsChanges(t *testing.T) {
 	}
 }
 
+// PR title and description updates count against the budget of whoever
+// uploaded the commit message, and relation-chain updates, which anyone's
+// upload in the chain causes, against the PR's (fourth audit). One that
+// waits leaves its change out, unrecorded.
+func TestPRUpdatesWithinBudget(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	c.TextBudget, c.LinksBudget = &Budget{N: 1, Per: time.Hour}, &Budget{N: 1, Per: time.Hour}
+	for _, n := range []int{10, 20, 30} {
+		s.pr(n, fmt.Sprint("b", n), "x", "main", "bot").Body = "Desc.\n\n" + linksStart + "\nold\n" + linksEnd
+	}
+	snap := &Snapshot{Branch: "main", PRs: s.pulls, Changes: map[int]*GerritChange{1: {Number: 1, UploaderID: 9}, 2: {Number: 2, UploaderID: 9}, 3: {Number: 3, UploaderID: 9}}}
+	links := "Desc.\n\n" + linksStart + "\nnew\n" + linksEnd
+	skip := newSkips()
+	p := &Plan{Actions: []Action{
+		{Kind: UpdatePR, Change: 1, PR: 10, Update: &github.PullUpdate{Title: ptr("New title")}},
+		{Kind: UpdatePR, Change: 2, PR: 20, Update: &github.PullUpdate{Body: ptr("Other.\n\n" + linksStart + "\nold\n" + linksEnd)}}, // 9's second
+		{Kind: UpdatePR, Change: 3, PR: 30, Update: &github.PullUpdate{Body: ptr(links)}},                                             // #30's first
+		{Kind: UpdatePR, Change: 3, PR: 30, Update: &github.PullUpdate{Base: ptr("main"), Body: ptr(links)}},                          // not text only
+	}}
+	if err := c.apply(ctx, snap, p, skip); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(skip.changes, map[int]bool{2: true}) || strings.Join(s.calls, ",") != "update #10,update #30,update #30" {
+		t.Errorf("skip %v, calls %v", skip.changes, s.calls)
+	}
+	s.calls = nil
+	if err := c.apply(ctx, snap, &Plan{Actions: []Action{{Kind: UpdatePR, Change: 3, PR: 30, Update: &github.PullUpdate{Body: ptr(links + " ")}}}}, skip); err != nil || !skip.changes[3] || len(s.calls) != 0 {
+		t.Errorf("err %v, skip %v, calls %v: #30's second chain update was made", err, skip.changes, s.calls)
+	}
+}
+
 // A description the bridge shortened for GitHub is what the bridge wrote,
 // not someone's edit to mirror back into the commit message.
 func TestShortenedDescriptionIsNoEdit(t *testing.T) {
