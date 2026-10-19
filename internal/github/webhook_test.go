@@ -153,3 +153,49 @@ func TestWebhookAllowedNetworks(t *testing.T) {
 		t.Errorf("from GitHub: %d, %d deliveries", w.Code, len(r.got))
 	}
 }
+
+// Behind a trusted proxy, the sender is the nearest untrusted hop of
+// X-Forwarded-For; from anyone else, the header is ignored.
+func TestWebhookClientAddrBehindProxy(t *testing.T) {
+	_, proxy, _ := net.ParseCIDR("10.0.0.0/8")
+	h := &WebhookHandler{TrustedProxies: []*net.IPNet{proxy}}
+	for _, tc := range []struct{ remote, xff, want string }{
+		{"10.0.0.5:443", "140.82.115.1", "140.82.115.1"},
+		{"10.0.0.5:443", "1.2.3.4, 140.82.115.1", "140.82.115.1"}, // the client wrote 1.2.3.4
+		{"10.0.0.5:443", "140.82.115.1, 10.0.0.9", "140.82.115.1"},
+		{"10.0.0.5:443", "", "10.0.0.5"},
+		{"203.0.113.9:443", "140.82.115.1", "203.0.113.9"}, // not a proxy: ignored
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/webhook", nil)
+		r.RemoteAddr = tc.remote
+		if tc.xff != "" {
+			r.Header.Set("X-Forwarded-For", tc.xff)
+		}
+		if got := h.clientAddr(r); got != tc.want {
+			t.Errorf("%s via %q = %s, want %s", tc.remote, tc.xff, got, tc.want)
+		}
+	}
+}
+
+// The allowlist judges the sender, not the proxy in front of the bridge.
+func TestWebhookAllowlistBehindProxy(t *testing.T) {
+	r := &deliveryRecorder{}
+	h := r.handler()
+	_, gh, _ := net.ParseCIDR("140.82.112.0/20")
+	_, proxy, _ := net.ParseCIDR("10.0.0.0/8")
+	h.Allowed, h.TrustedProxies = []*net.IPNet{gh}, []*net.IPNet{proxy}
+	body := `{"action":"opened","repository":{"full_name":"AustinSchuh/bridge-scratch"},"pull_request":{"number":1}}`
+	for xff, want := range map[string]int{"140.82.115.1": http.StatusAccepted, "203.0.113.9": http.StatusForbidden} {
+		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+		req.RemoteAddr = "10.0.0.5:443"
+		req.Header.Set("X-Forwarded-For", xff)
+		req.Header.Set("X-GitHub-Event", "pull_request")
+		req.Header.Set("X-GitHub-Delivery", xff)
+		req.Header.Set("X-Hub-Signature-256", sign(body))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != want {
+			t.Errorf("forwarded for %s: %d, want %d", xff, w.Code, want)
+		}
+	}
+}

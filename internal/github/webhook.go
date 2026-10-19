@@ -52,6 +52,11 @@ type WebhookHandler struct {
 	// hook ranges, from api.github.com/meta); others are refused before
 	// anything is read.
 	Allowed []*net.IPNet
+	// TrustedProxies are the reverse proxies in front of the bridge, whose
+	// X-Forwarded-For says who sent a request. Without them, everything
+	// behind a proxy is one address: the allowlist cannot tell GitHub
+	// from anyone, and the per-address limit is shared by all.
+	TrustedProxies []*net.IPNet
 
 	// busy bounds the payloads read at once (each up to 25 MB), so
 	// unauthenticated senders cannot exhaust memory.
@@ -82,10 +87,7 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	addr, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		addr = r.RemoteAddr
-	}
+	addr := h.clientAddr(r)
 	if !h.allowed(addr) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -162,6 +164,40 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Deliver(d)
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// clientAddr is who sent r: its peer, or, from a trusted proxy, the
+// nearest address in X-Forwarded-For that is not a trusted proxy (the
+// ones further left are the client's to write).
+func (h *WebhookHandler) clientAddr(r *http.Request) string {
+	addr, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		addr = r.RemoteAddr
+	}
+	trusted := func(a string) bool {
+		ip := net.ParseIP(a)
+		for _, n := range h.TrustedProxies {
+			if ip != nil && n.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	if !trusted(addr) {
+		return addr
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := strings.TrimSpace(hops[i])
+		if hop == "" {
+			continue
+		}
+		if !trusted(hop) {
+			return hop
+		}
+		addr = hop
+	}
+	return addr
 }
 
 func (h *WebhookHandler) allowed(addr string) bool {

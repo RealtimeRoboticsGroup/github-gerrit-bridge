@@ -40,6 +40,9 @@ github:
   # Optional: accept deliveries only from GitHub's "hooks" ranges
   # (https://api.github.com/meta), if the bridge sees GitHub's addresses.
   # webhook_allowed_networks: [192.30.252.0/22, 185.199.108.0/22, 140.82.112.0/20, 143.55.64.0/20]
+  # The reverse proxy in front of the bridge, whose X-Forwarded-For names
+  # the sender (for the allowlist and per-address limits).
+  # webhook_trusted_proxies: [127.0.0.1/32]
   # API token: either a file, or a command that prints one.
   token_command: [gh, auth, token]
   # token_file: /etc/github-gerrit-bridge/github-token

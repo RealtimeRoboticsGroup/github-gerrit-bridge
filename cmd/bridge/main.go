@@ -203,17 +203,21 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	repo := cfg.GitHub.Owner + "/" + cfg.GitHub.Repo
 
 	mux := http.NewServeMux()
-	var allowed []*net.IPNet
-	for _, n := range cfg.GitHub.WebhookAllowedNetworks {
-		_, ipn, _ := net.ParseCIDR(n) // validated by config
-		allowed = append(allowed, ipn)
+	cidrs := func(ns []string) []*net.IPNet {
+		var out []*net.IPNet
+		for _, n := range ns {
+			_, ipn, _ := net.ParseCIDR(n) // validated by config
+			out = append(out, ipn)
+		}
+		return out
 	}
 	mux.Handle("POST /webhook", &github.WebhookHandler{
-		Secret:  []byte(webhookSecret),
-		Repo:    repo,
-		Deliver: router.Delivery,
-		Logger:  logger,
-		Allowed: allowed,
+		Secret:         []byte(webhookSecret),
+		Repo:           repo,
+		Deliver:        router.Delivery,
+		Logger:         logger,
+		Allowed:        cidrs(cfg.GitHub.WebhookAllowedNetworks),
+		TrustedProxies: cidrs(cfg.GitHub.WebhookTrustedProxies),
 	})
 	if builds != nil {
 		// Public, for the bridge-checks plugin in Gerrit users' browsers.

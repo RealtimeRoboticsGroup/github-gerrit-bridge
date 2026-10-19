@@ -81,6 +81,11 @@ type GitHub struct {
 	// https://api.github.com/meta. Only useful if the bridge sees GitHub's
 	// addresses, not a proxy's.
 	WebhookAllowedNetworks []string `yaml:"webhook_allowed_networks"`
+	// WebhookTrustedProxies are the reverse proxies (CIDR) in front of the
+	// bridge: their X-Forwarded-For says who sent a delivery, for the
+	// allowlist and the per-address limits. Have them buffer request
+	// bodies, so slow senders tie up the proxy, not the bridge.
+	WebhookTrustedProxies []string `yaml:"webhook_trusted_proxies"`
 	// The API token comes from exactly one of these. TokenCommand is run
 	// (e.g. [gh, auth, token]) and its output cached for a few minutes.
 	TokenFile    string   `yaml:"token_file"`
@@ -225,6 +230,11 @@ func (c *Config) validate() error {
 	for _, n := range c.GitHub.WebhookAllowedNetworks {
 		if _, _, err := net.ParseCIDR(n); err != nil {
 			errs = append(errs, fmt.Errorf("github.webhook_allowed_networks: %w", err))
+		}
+	}
+	for _, n := range c.GitHub.WebhookTrustedProxies {
+		if _, _, err := net.ParseCIDR(n); err != nil {
+			errs = append(errs, fmt.Errorf("github.webhook_trusted_proxies: %w", err))
 		}
 	}
 	// Basic auth goes with every request.

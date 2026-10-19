@@ -1151,7 +1151,11 @@ defenses, by threat:
 - **Webhooks.** HMAC-checked; at most 32 read at once and 4 from any one
   address, each body within 10 seconds, so a few slow senders cannot
   refuse GitHub's deliveries; `github.webhook_allowed_networks` can limit
-  them to GitHub's hook ranges. Anything refused heals at the next resync
+  them to GitHub's hook ranges. Behind a reverse proxy, list it in
+  `github.webhook_trusted_proxies`: its `X-Forwarded-For` then names the
+  sender (the nearest hop that is not a trusted proxy), so the allowlist
+  and the per-address limits see who sent a delivery, not the proxy; and
+  have the proxy buffer request bodies. Anything refused heals at the next resync
   (`resync_interval`, default 30m). Payloads are only hints: actors and
   content are re-read from the API.
 - **The server.** Listens on `127.0.0.1:8080` by default, plain HTTP: a
@@ -1311,7 +1315,9 @@ instance (`internal/testgerrit`) is set up this way.
   "Make group visible to all registered users"); the bridge refuses to
   start otherwise.
 - **The bridge behind a TLS proxy** that forwards only `/webhook` and
-  `/checks/`; `listen` stays on loopback. `gerrit.url` is https.
+  `/checks/`, buffers request bodies, and is listed in
+  `github.webhook_trusted_proxies`; `listen` stays on loopback.
+  `gerrit.url` is https.
 - **A dedicated GitHub bot account** for the token, not a person's: the
   bridge's own login never maps to a Gerrit account, and a person's
   comments under it would never be mirrored.
