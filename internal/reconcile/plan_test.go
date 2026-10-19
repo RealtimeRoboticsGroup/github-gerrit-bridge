@@ -956,6 +956,26 @@ func TestForkPR(t *testing.T) {
 	}
 }
 
+// A fork's PR based on the bridge's branch of the change below it keeps
+// that base, but is not stacked: GitHub refuses forks' PRs in stacks
+// (fourth audit, seen live).
+func TestForkPRAboveIsNotStacked(t *testing.T) {
+	w := bornWorld(t)
+	w.upload(2, "t1", "s1")
+	w.branch["alice/r:topic"] = "h2"
+	w.prs[2] = &github.PullRequest{Number: 2, State: "open", Base: github.Ref{Ref: "feature"}, Head: github.Ref{Ref: "topic", Repo: &struct {
+		FullName string `json:"full_name"`
+	}{"alice/r"}}}
+	w.nextNum = 3
+	w.state[2] = &state.Change{State: state.ChangeState{PR: 2, Origin: "github", HeadBranch: "alice/r:topic"},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: "t1", GitHubSHA: "h2"}}}
+	w.converge()
+	w.checkBase(t, 2, "feature")
+	if got := w.stacksAsChanges(); len(got) != 0 {
+		t.Errorf("stacks = %v", got)
+	}
+}
+
 func TestForkPRWithoutMaintainerEdits(t *testing.T) {
 	w := forkWorld(t, false)
 	w.converge()

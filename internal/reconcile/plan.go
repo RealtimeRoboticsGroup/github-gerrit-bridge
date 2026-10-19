@@ -304,9 +304,23 @@ type Desired struct {
 }
 
 // drop removes the actions on the changes in skip.
-func (p *Plan) drop(skip map[int]bool) {
-	p.Actions = slices.DeleteFunc(p.Actions, func(a Action) bool { return a.Change != 0 && skip[a.Change] })
+func (p *Plan) drop(skip *skips) {
+	p.Actions = slices.DeleteFunc(p.Actions, func(a Action) bool {
+		return (a.Change != 0 && skip.changes[a.Change]) || (isStackAction(a.Kind) && skip.stacks[a.String()])
+	})
 }
+
+// skips are what one reconcile leaves out, GitHub having refused it as
+// such (refusedByGitHub): changes whose PR it refused an action on, and
+// stack actions, which are no one change's.
+type skips struct {
+	changes map[int]bool
+	stacks  map[string]bool // Action.String()
+}
+
+func newSkips() *skips { return &skips{changes: map[int]bool{}, stacks: map[string]bool{}} }
+
+func isStackAction(k ActionKind) bool { return k == CreateStack || k == AddToStack || k == Unstack }
 
 // Plan is the planner's output.
 type Plan struct {
@@ -585,6 +599,12 @@ func MakePlan(s *Snapshot) *Plan {
 	// not exist yet is 0 and holds back stack edits that need it.
 	var paths [][]int
 	for _, path := range p.Paths {
+		// GitHub keeps a fork's PR out of stacks (fourth audit: asked, it
+		// refused, every time). Nothing stacks on a fork's branch, so one
+		// can only be on top.
+		if len(path) > 0 && isForkHead(s.head(path[len(path)-1], mirrored[path[len(path)-1]].ChangeID)) {
+			path = path[:len(path)-1]
+		}
 		if len(path) < 2 {
 			continue
 		}

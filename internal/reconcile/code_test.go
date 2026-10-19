@@ -659,7 +659,8 @@ func TestPREditBecomesCommitMessageAsTheEditor(t *testing.T) {
 	}
 }
 
-// A PR GitHub will not take an edit for is that change's problem only.
+// A PR GitHub will not take an edit for is that change's problem only,
+// and a stack it will not make is nobody's.
 func TestOnePRGitHubRefusesDoesNotStopTheRest(t *testing.T) {
 	s := newSites(t)
 	ctx := context.Background()
@@ -667,17 +668,21 @@ func TestOnePRGitHubRefusesDoesNotStopTheRest(t *testing.T) {
 	s.pr(10, "a", "x", "main", "bot")
 	s.pr(20, "b", "y", "main", "bot")
 	s.refusePulls = map[int]bool{10: true}
-	skip := map[int]bool{}
+	s.pulls[30] = &github.PullRequest{Number: 30, State: "open", Head: github.Ref{Ref: "main", Repo: &struct {
+		FullName string `json:"full_name"`
+	}{"alice/r"}}}
+	skip := newSkips()
 	p := &Plan{Actions: []Action{
 		{Kind: UpdatePR, Change: 1, PR: 10, Update: &github.PullUpdate{State: ptr("closed")}},
 		{Kind: UpdatePR, Change: 1, PR: 10, Update: &github.PullUpdate{Base: ptr("x")}},
+		{Kind: CreateStack, PRs: []int{20, 30}}, // a fork's PR: refused
 		{Kind: UpdatePR, Change: 2, PR: 20, Update: &github.PullUpdate{State: ptr("closed")}},
 	}}
 	if err := c.apply(ctx, &Snapshot{Branch: "main"}, p, skip); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(skip, map[int]bool{1: true}) || s.pulls[20].State != "closed" || strings.Join(s.calls, ",") != "update #10,update #20" {
-		t.Errorf("skip = %v, #20 %s, calls %v", skip, s.pulls[20].State, s.calls)
+	if !reflect.DeepEqual(skip.changes, map[int]bool{1: true}) || s.pulls[20].State != "closed" || strings.Join(s.calls, ",") != "update #10,update #20" {
+		t.Errorf("skip = %v, #20 %s, calls %v", skip.changes, s.pulls[20].State, s.calls)
 	}
 	p.drop(skip)
 	if len(p.Actions) != 1 || p.Actions[0].Change != 2 {

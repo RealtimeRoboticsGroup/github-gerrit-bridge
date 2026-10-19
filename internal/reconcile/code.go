@@ -154,7 +154,7 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 // export mirrors the target branch's changes to GitHub.
 func (c *Code) export(ctx context.Context, branch string) error {
 	handled := map[int]bool{} // PRs whose GitHub side was mirrored this time
-	skip := map[int]bool{}    // changes whose PR GitHub refused an action on
+	skip := newSkips()        // what GitHub refused
 	refused := map[int]bool{} // changes whose push the guard refuses
 	for pass := 0; pass < maxPasses; pass++ {
 		snap, err := c.observe(ctx, branch, refused)
@@ -980,17 +980,23 @@ func (c *Code) githubEnv(ctx context.Context) ([]string, error) {
 // GitHub refuses as such (refusedByGitHub) is logged, and that change is
 // added to skip and left out for the rest of the reconcile: anyone can
 // make their own change's PR unacceptable to GitHub, and that must not
-// stop everyone else's. Any other error stops it; the next reconcile
-// re-plans from whatever state that left.
-func (c *Code) apply(ctx context.Context, s *Snapshot, p *Plan, skip map[int]bool) error {
+// stop everyone else's. So is a stack action GitHub refuses: stacks only
+// arrange PRs. Any other error stops it; the next reconcile re-plans from
+// whatever state that left.
+func (c *Code) apply(ctx context.Context, s *Snapshot, p *Plan, skip *skips) error {
 	for _, a := range p.Actions {
-		if a.Change != 0 && skip[a.Change] {
+		if a.Change != 0 && skip.changes[a.Change] {
 			continue
 		}
 		if err := c.applyOne(ctx, s, a); err != nil {
-			if a.Change != 0 && refusedByGitHub(err) {
+			switch {
+			case a.Change != 0 && refusedByGitHub(err):
 				c.Logger.Warn("GitHub refused an action on one change's PR; leaving that change out", "change", a.Change, "action", a.String(), "err", err)
-				skip[a.Change] = true
+				skip.changes[a.Change] = true
+				continue
+			case isStackAction(a.Kind) && refusedByGitHub(err):
+				c.Logger.Warn("GitHub refused a stack action; leaving it out", "action", a.String(), "err", err)
+				skip.stacks[a.String()] = true
 				continue
 			}
 			return fmt.Errorf("%s: %w", a, err)
