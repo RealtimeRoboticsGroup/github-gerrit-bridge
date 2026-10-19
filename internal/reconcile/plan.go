@@ -64,6 +64,11 @@ type Snapshot struct {
 	// NoPush marks GitHub-born changes from forks whose authors do not
 	// allow maintainers to push: Gerrit edits stay in Gerrit.
 	NoPush map[int]bool
+	// Withheld marks changes whose code differs from the target branch
+	// under .github/ (design §7.1): GitHub runs workflows from any branch
+	// pushed to the repository, with its secrets, so nothing is pushed for
+	// them, and a change without a PR yet gets none.
+	Withheld map[int]bool
 }
 
 // githubBorn reports whether change n came from a GitHub PR.
@@ -286,6 +291,9 @@ func MakePlan(s *Snapshot) *Plan {
 	mirrored := map[int]*GerritChange{}
 	byRev := map[string]int{}
 	for n, c := range s.Changes {
+		if _, onGitHub := s.GitHubBranches[s.head(n, c.ChangeID)]; s.Withheld[n] && !onGitHub {
+			continue // never exported: no branch, no PR
+		}
 		if c.Status == "NEW" && !c.Private {
 			mirrored[n] = c
 			byRev[c.Revision] = n
@@ -350,6 +358,8 @@ func MakePlan(s *Snapshot) *Plan {
 			// Someone pushed to the PR's branch: the importer turns that
 			// into a patch set, or says on gerrit/sync why it cannot.
 			// Never overwrite their work.
+		case s.Withheld[n]:
+			// Changes .github/: the PR keeps what it has.
 		case !onGitHub && born:
 			// The author's branch is gone (or not listed): nothing to add to.
 		case !onGitHub && ghParent == c.Parent:
@@ -392,6 +402,15 @@ func MakePlan(s *Snapshot) *Plan {
 		pr := prFor[n]
 		if pr != nil {
 			d.PR = pr.Number
+		}
+		if s.Withheld[n] {
+			// Nothing pushed for it, frozen bases included; the PR keeps
+			// its base, so it points at nothing that was not pushed.
+			delete(refs, d.Frozen)
+			d.Frozen, d.FrozenAt = "", ""
+			if pr != nil {
+				d.Base = pr.Base.Ref
+			}
 		}
 		var chain []chainEntry
 		if path := pathOf[n]; len(path) > 0 {

@@ -1126,6 +1126,14 @@ defenses, by threat:
   PR description short; the PR description is split at the *last* links
   marker. A marker edited into someone else's GitHub comment does not keep
   it out of Gerrit.
+- **Repository configuration from Gerrit.** A change whose code differs
+  from the target branch under `.github/` (itself, or through a change
+  below it) is not mirrored: no branch or PR for it, nothing more pushed
+  to its PR if it has one, and one notice per patch set in Gerrit. The
+  push itself also refuses anything that changes `.github/` (forks
+  excepted: their workflows run with their own secrets), whatever the plan
+  says. GitHub runs workflows from any branch pushed to the repository,
+  with its secrets (second audit, confirmed live).
 - **CI status.** Comes from Buildkite's API (§6.5), so no comment can fake
   it. Without Buildkite, only messages by `ci.account` (and never ones
   mirrored from GitHub) drive `gerrit/Verified`'s link and text; with
@@ -1276,6 +1284,17 @@ instance (`internal/testgerrit`) is set up this way.
   `refs/bridge/*` with exclusive Read plus Push and Create. Whatever the
   bridge's account may do, a GitHub user without a Gerrit account
   effectively may too.
+- **GitHub Actions.** The bridge pushes every open change, from anyone
+  registered on Gerrit, to a branch of the repository and opens a PR from
+  it, so any workflow that runs on pushes to non-default branches or on
+  pull requests runs their code with the repository's (and
+  organisation's) secrets and a token that may write. Turn Actions off on
+  the bridged repository, or keep every workflow that has secrets or a
+  write token to the default branch. The bridge withholds changes that
+  touch `.github/` (they would bring their own workflows), and its token
+  should lack the `workflow` scope (a fine-grained token or App without
+  Workflows), so GitHub refuses such a push even if the bridge tried
+  (second audit).
 - **The peer key** (`gerrit.ssh.peer_key_file`) can run any SSH command as
   any account, administrators included: a credential for the whole site.
   Keep it only on the bridge's host, mode 600, and rotate it if in doubt.

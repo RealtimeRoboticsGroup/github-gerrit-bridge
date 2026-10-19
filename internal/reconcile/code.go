@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -169,6 +170,60 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 
 func (c *Code) changeURL(n int) string { return c.Gerrit.ChangeURL(c.Project, n) }
 
+// withheldPath is where GitHub reads workflows (and other repository
+// configuration) from any branch pushed to the repository.
+const withheldPath = ".github"
+
+// changesWorkflows reports whether commit differs from branch under
+// .github/, counting everything not yet on branch (parent changes too).
+func (c *Code) changesWorkflows(ctx context.Context, branch, commit string) (bool, error) {
+	_, err := c.Mirror.Git(ctx, nil, "diff", "--quiet", "refs/remotes/gerrit/heads/"+branch+"..."+commit, "--", withheldPath)
+	var ge *gitmirror.Error
+	switch {
+	case err == nil:
+		return false, nil
+	case errors.As(err, &ge) && ge.Stderr == "":
+		return true, nil // exit 1: differs
+	default:
+		return false, err
+	}
+}
+
+// withhold marks the open changes that change .github/ (design §7.1):
+// anyone registered on Gerrit can upload one, and GitHub would run it,
+// with the repository's secrets, from the branch the bridge pushes. Each
+// gets a notice in Gerrit, once per patch set.
+func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string) error {
+	s.Withheld = map[int]bool{}
+	for _, n := range sortedKeys(s.Changes) {
+		ch := s.Changes[n]
+		if ch.Status != "NEW" || ch.Private {
+			continue
+		}
+		w, err := c.changesWorkflows(ctx, branch, ch.Revision)
+		if err != nil {
+			return err
+		}
+		if !w {
+			continue
+		}
+		s.Withheld[n] = true
+		if st := s.State[n]; c.DryRun || (st != nil && st.State.WithheldNotice == ch.PatchSet) {
+			continue
+		}
+		msg := fmt.Sprintf("Patch set %d is not mirrored to GitHub: it changes %s/ (here or in a change below it), and GitHub would run that, "+
+			"with the repository's secrets, from the branch the bridge pushes. Review it here.", ch.PatchSet, withheldPath)
+		if err := c.Gerrit.SetReview(ctx, n, ch.Revision, gerrit.ReviewInput{Message: msg, Tag: commentTag}); err != nil {
+			return err
+		}
+		if err := c.updateState(ctx, n, "withheld notice", func(st *state.Change) { st.State.WithheldNotice = ch.PatchSet }); err != nil {
+			return err
+		}
+		c.Logger.Info("withheld from GitHub: changes "+withheldPath, "change", n, "patch_set", ch.PatchSet)
+	}
+	return nil
+}
+
 // observe gathers a Snapshot for branch from Gerrit, the mirror, GitHub
 // and refs/bridge.
 func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
@@ -242,6 +297,9 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 		}
 	}
 	if _, err := c.Mirror.Git(ctx, nil, append([]string{"fetch", "--quiet", "origin"}, refspecs...)...); err != nil {
+		return nil, err
+	}
+	if err := c.withhold(ctx, s, branch); err != nil {
 		return nil, err
 	}
 	revs := map[string]bool{}
@@ -749,7 +807,21 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		}
 		urls := []string{c.GitHubURL}
 		specs := map[string][]string{}
+		// Whatever the plan says, nothing goes to the repository that
+		// changes .github/ (GitHub would run it; withhold).
+		guard := func(name, commit string) error {
+			if _, _, fork := github.SplitHeadKey(name); fork || commit == "" {
+				return nil // runs in the fork, with its own secrets; or a deletion
+			}
+			if w, err := c.changesWorkflows(ctx, s.Branch, commit); err != nil || w {
+				return cmp.Or(err, fmt.Errorf("refusing to push %s to %s: it changes %s/", short(commit), name, withheldPath))
+			}
+			return nil
+		}
 		for _, name := range sortedStringKeys(a.Refs) {
+			if err := guard(name, a.Refs[name]); err != nil {
+				return err
+			}
 			ref := "refs/heads/" + name
 			specs[c.GitHubURL] = append(specs[c.GitHubURL], "--force-with-lease="+ref+":"+a.Leases[name], a.Refs[name]+":"+ref)
 		}
@@ -761,6 +833,9 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 				if commit, err = c.appendCommit(ctx, a.Appends[name]); err != nil {
 					return err
 				}
+			}
+			if err := guard(name, commit); err != nil {
+				return err
 			}
 			appended[name] = commit
 			url, branch := c.GitHubURL, name

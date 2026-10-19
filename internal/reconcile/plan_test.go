@@ -27,6 +27,8 @@ type world struct {
 	parents map[string][]string
 	nextNum int
 	log     []string
+	// withheld changes touch .github/ (Code.withhold).
+	withheld map[int]bool
 }
 
 func newWorld(t *testing.T) *world {
@@ -59,7 +61,7 @@ func (w *world) snapshot() *Snapshot {
 		Branch: "main", DefaultBranch: "main",
 		Changes: map[int]*GerritChange{}, OnBranch: w.onMain,
 		GitHubBranches: map[string]string{}, PRs: map[int]*github.PullRequest{}, State: map[int]*state.Change{},
-		Repo: "o/r", NoPush: map[int]bool{},
+		Repo: "o/r", NoPush: map[int]bool{}, Withheld: w.withheld,
 	}
 	// Like Code.observe: closed changes drop out once the bridge has
 	// recorded them closed, unless their PR is still open.
@@ -1196,4 +1198,35 @@ func TestParentOnBranchIsItselfOnGitHub(t *testing.T) {
 		t.Errorf("gerrit/2 = %s, want Gerrit's own commit b1", got)
 	}
 	w.checkBase(t, 2, "main")
+}
+
+// A change touching .github/ is never exported; one that comes to touch
+// it keeps its PR as it was: nothing is pushed for it, frozen bases
+// included, and its base stays.
+func TestWithheldChanges(t *testing.T) {
+	w := newWorld(t)
+	w.withheld = map[int]bool{1: true}
+	w.upload(1, "a1", "m0")
+	w.converge()
+	if len(w.prs) != 0 || len(w.branch) != 1 {
+		t.Errorf("withheld change exported: prs=%v branches=%v", w.prs, w.branch)
+	}
+
+	w.upload(2, "b1", "m0")
+	w.upload(3, "c1", "b1")
+	w.converge()
+	w.upload(2, "b2", "m0") // 3 now sits on an outdated patch set
+	w.withheld[3] = true
+	w.withheld[2] = true
+	w.converge()
+	if w.branch["gerrit/"+cid(2)] != "b1" || w.branch["gerrit/"+cid(3)] != "c1" {
+		t.Errorf("pushed for withheld changes: %v", w.branch)
+	}
+	if _, ok := w.branch["gerrit-base/"+cid(3)]; ok {
+		t.Error("froze a base for a withheld change")
+	}
+	w.checkBase(t, 3, "gerrit/"+cid(2))
+	if w.pr(2).State != "open" || w.pr(3).State != "open" {
+		t.Error("closed a withheld change's PR")
+	}
 }

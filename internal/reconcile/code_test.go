@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -1107,5 +1108,50 @@ func TestPureRebaseOntoSomeoneElsesParentIsTheBridges(t *testing.T) {
 	}
 	if len(up.uploads) != 2 || !strings.HasPrefix(up.uploads[0], "brt ") || !strings.HasPrefix(up.uploads[1], " ") {
 		t.Errorf("uploads = %v, want brt's own layer as brt and austin's as the bridge", up.uploads)
+	}
+}
+
+// A change touching .github/ (itself or through a parent change) is
+// withheld from GitHub, with one notice in Gerrit per patch set.
+func TestChangesTouchingGitHubConfigAreWithheld(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	os.MkdirAll(filepath.Join(s.dir, "work", ".github", "workflows"), 0o755)
+	wf := s.commit(m0, ".github/workflows/x.yml", "on: push\n", "Workflow\n\nChange-Id: "+cid(1)+"\n")
+	above := s.commit(wf, "b.txt", "b\n", "Above\n\nChange-Id: "+cid(2)+"\n")
+	plain := s.commit(m0, "c.txt", "c\n", "Plain\n\nChange-Id: "+cid(3)+"\n")
+	s.change(1, cid(1), wf, "Workflow", "NEW")
+	s.change(2, cid(2), above, "Above", "NEW")
+	s.change(3, cid(3), plain, "Plain", "NEW")
+	for _, ref := range []string{"refs/changes/01/1/1", "refs/changes/02/2/1", "refs/changes/03/3/1", "refs/heads/main"} {
+		s.git("m.git", "fetch", "-q", "origin", "+"+ref+":"+strings.Replace(ref, "refs/", "refs/remotes/gerrit/", 1))
+	}
+	snap := &Snapshot{Changes: map[int]*GerritChange{
+		1: {Number: 1, Status: "NEW", Revision: wf, PatchSet: 1},
+		2: {Number: 2, Status: "NEW", Revision: above, PatchSet: 1},
+		3: {Number: 3, Status: "NEW", Revision: plain, PatchSet: 1},
+	}, State: map[int]*state.Change{}}
+	for range 2 {
+		if err := c.withhold(ctx, snap, "main"); err != nil {
+			t.Fatal(err)
+		}
+		for n := range snap.Changes {
+			snap.State[n], _ = store.Load(ctx, n)
+		}
+	}
+	if !snap.Withheld[1] || !snap.Withheld[2] || snap.Withheld[3] {
+		t.Errorf("withheld = %v, want 1 and 2", snap.Withheld)
+	}
+	if strings.Join(s.calls, ",") != "review 1,review 2" {
+		t.Errorf("notices = %v, want one each for 1 and 2", s.calls)
+	}
+	// And whatever a plan says, the push is refused.
+	err := c.applyOne(ctx, &Snapshot{Branch: "main", DefaultBranch: "main"},
+		Action{Kind: PushBranches, Refs: map[string]string{"gerrit/" + cid(1): wf}, Leases: map[string]string{"gerrit/" + cid(1): ""}})
+	if err == nil || !strings.Contains(err.Error(), ".github/") {
+		t.Errorf("push: %v", err)
 	}
 }

@@ -73,6 +73,12 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("GET /a/changes/{n}", s.getChange)
 	mux.HandleFunc("GET /a/changes/", s.queryChanges)
 	mux.HandleFunc("POST /a/changes/{n}/{action}", s.changeAction)
+	mux.HandleFunc("POST /a/changes/{n}/revisions/{rev}/review", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.calls = append(s.calls, "review "+r.PathValue("n"))
+		s.mu.Unlock()
+		s.json(w, map[string]any{}, true)
+	})
 	mux.HandleFunc("PUT /a/changes/{n}/message", s.setMessage)
 	mux.HandleFunc("GET /a/projects/{p}/branches/{b}", s.branch)
 	mux.HandleFunc("POST /graphql", s.graphql)
