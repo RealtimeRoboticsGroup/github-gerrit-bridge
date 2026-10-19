@@ -46,6 +46,8 @@ type Code struct {
 	// abandons or restores its change as whoever did it.
 	Identity    Identity
 	BridgeLogin string
+	// BridgeUser is the bridge's Gerrit username.
+	BridgeUser string
 
 	// locks serializes reconciles of one target branch. The queue already
 	// does for Branch keys; Change and PR keys resolve to a branch here.
@@ -136,7 +138,7 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 	}
 	infos, err := c.Gerrit.QueryChanges(ctx,
 		"project:"+gerrit.QueryString(c.Project)+" branch:"+gerrit.QueryString(branch)+" status:open",
-		"CURRENT_REVISION", "CURRENT_COMMIT")
+		"CURRENT_REVISION", "CURRENT_COMMIT", "DETAILED_ACCOUNTS")
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +167,7 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 		if open[n] || (st.State.Lifecycle != "NEW" && !prOpen[st.State.PR]) {
 			continue
 		}
-		ci, err := c.Gerrit.GetChange(ctx, n, "CURRENT_REVISION", "CURRENT_COMMIT")
+		ci, err := c.Gerrit.GetChange(ctx, n, "CURRENT_REVISION", "CURRENT_COMMIT", "DETAILED_ACCOUNTS")
 		if err != nil {
 			return nil, err
 		}
@@ -183,7 +185,7 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 			WIP: ci.WorkInProgress, Private: ci.IsPrivate,
 			Subject: rev.Commit.Subject, Message: rev.Commit.Message,
 			PatchSet: rev.Number, Revision: ci.CurrentRevision, Parent: rev.Commit.Parent(),
-			URL: c.changeURL(ci.Number),
+			URL: c.changeURL(ci.Number), Owner: ci.Owner.Username, Uploader: rev.Uploader.Username,
 		}
 		if ci.Status == "NEW" && !ci.IsPrivate {
 			refspecs = append(refspecs, "+"+rev.Ref+":refs/remotes/gerrit/"+strings.TrimPrefix(rev.Ref, "refs/"))
@@ -481,10 +483,10 @@ func wipState(wip bool) string { return map[bool]string{true: "wip", false: "rea
 // mirrorPREdits carries PR edits made on GitHub over to Gerrit (design
 // §6.0): a new title or description becomes the change's commit message,
 // and a draft toggle its work-in-progress state, whichever side changed
-// last. They are made as whoever made them on GitHub (Run-As), or as the
-// bridge for someone without a Gerrit account, as pushes are; if Gerrit
-// refuses, a notice says why and the plan puts Gerrit's version back. If
-// both sides changed, Gerrit's wins. It reports whether Gerrit changed.
+// last. They are made as whoever made them on GitHub (Run-As; see
+// asEditor for when the bridge will not); if Gerrit or the bridge refuses,
+// a notice says why and the plan puts Gerrit's version back. If both sides
+// changed, Gerrit's wins. It reports whether Gerrit changed.
 func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot) (bool, error) {
 	changed := false
 	for _, n := range sortedKeys(s.Changes) {
@@ -514,7 +516,7 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot) (bool, error) {
 			} else {
 				title, body := strings.TrimSpace(pr.Title), prBodyForMessage(pr.Body)
 				msg := commitMessage(title, body, ch.Message)
-				if note, err := c.asEditor(ctx, n, act.TextEditor, http.MethodPut, "message", map[string]string{"message": msg},
+				if note, err := c.asEditor(ctx, ch, pr, act.TextEditor, true, http.MethodPut, "message", map[string]string{"message": msg},
 					"edited this PR's title or description", "change the commit message of"); err != nil {
 					return changed, err
 				} else if note != "" {
@@ -529,7 +531,7 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot) (bool, error) {
 				notes = append(notes, fmt.Sprintf("This PR's draft state changed on GitHub while [change %d](%s)'s work-in-progress state changed in Gerrit; Gerrit's is kept.", n, ch.URL))
 			} else {
 				past := map[bool]string{true: "marked this PR as a draft", false: "marked this PR ready for review"}[pr.Draft]
-				if note, err := c.asEditor(ctx, n, act.DraftActor, http.MethodPost, hw, map[string]string{"message": fmt.Sprintf("PR #%d %s on GitHub.", pr.Number, map[bool]string{true: "marked draft", false: "marked ready for review"}[pr.Draft])},
+				if note, err := c.asEditor(ctx, ch, pr, act.DraftActor, false, http.MethodPost, hw, map[string]string{"message": fmt.Sprintf("PR #%d %s on GitHub.", pr.Number, map[bool]string{true: "marked draft", false: "marked ready for review"}[pr.Draft])},
 					past, "change the work-in-progress state of"); err != nil {
 					return changed, err
 				} else if note != "" {
@@ -550,15 +552,42 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot) (bool, error) {
 }
 
 // asEditor calls changes/n/<endpoint> as GitHub user login's Gerrit
-// account, or as the bridge if they have none (or the bridge's own
-// account made the edit). If Gerrit refuses, it returns a notice saying
-// so ("@login <did>, which would <would> change N in Gerrit, but ...").
-func (c *Code) asEditor(ctx context.Context, n int, login, method, endpoint string, in any, did, would string) (string, error) {
-	g, as := c.Gerrit, "the bridge"
+// account. It returns a notice instead ("@login <did>, which would <would>
+// change N in Gerrit, but ...") when Gerrit refuses, or when the bridge
+// will not act for login:
+//   - Someone without a Gerrit account acts only on their own PR's
+//     bridge-owned change, and then as the bridge (as their pushes are):
+//     the bridge's account must not lend anyone rights in Gerrit.
+//   - An edit that makes a new patch set (newPatchSet, a commit message
+//     edit) is made only by the current patch set's uploader: CI trusts
+//     the uploader, and retitling someone else's PR on GitHub must not
+//     make the editor vouch for its code.
+func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRequest, login string, newPatchSet bool, method, endpoint string, in any, did, would string) (string, error) {
+	n := ch.Number
+	who := "@" + login
+	if login == "" {
+		who = "Someone"
+	}
+	refuse := func(why string) string {
+		return fmt.Sprintf("%s %s, which would %s [change %d](%s) in Gerrit, but %s. Putting Gerrit's back.", who, did, would, n, c.changeURL(n), why)
+	}
+	user, ok := "", false
 	if c.Identity != nil && login != "" {
-		if user, ok := c.Identity.GerritUser(ctx, login); ok {
-			g, as = c.Gerrit.As(user), user
-		}
+		user, ok = c.Identity.GerritUser(ctx, login)
+	}
+	g, as := c.Gerrit, "the bridge"
+	switch {
+	case ok && newPatchSet && !strings.EqualFold(user, ch.Uploader):
+		return refuse("only the uploader of its current patch set can make a new one from GitHub, since CI trusts the uploader; edit it in Gerrit"), nil
+	case ok:
+		g, as = c.Gerrit.As(user), user
+	case login != "" && strings.EqualFold(login, pr.User.Login) && c.BridgeUser != "" && strings.EqualFold(ch.Owner, c.BridgeUser) &&
+		(!newPatchSet || strings.EqualFold(ch.Uploader, c.BridgeUser)):
+		// Their own PR, which the bridge owns for them.
+	case login == "":
+		return refuse("GitHub does not say who, so there is no Gerrit account to do it as"), nil
+	default:
+		return refuse(fmt.Sprintf("%s has no Gerrit account to do that with", who)), nil
 	}
 	err := g.Do(ctx, method, fmt.Sprintf("changes/%d/%s", n, endpoint), in, nil)
 	var ge *gerrit.Error
@@ -567,12 +596,7 @@ func (c *Code) asEditor(ctx context.Context, n int, login, method, endpoint stri
 		c.Logger.Info("mirrored GitHub PR edit to Gerrit", "change", n, "endpoint", endpoint, "as", as)
 		return "", nil
 	case errors.As(err, &ge) && ge.Status < 500:
-		who := "@" + login
-		if login == "" {
-			who = "Someone"
-		}
-		return fmt.Sprintf("%s %s, which would %s [change %d](%s) in Gerrit, but Gerrit would not let %s (%s). Putting Gerrit's back.",
-			who, did, would, n, c.changeURL(n), as, strings.TrimSpace(ge.Body)), nil
+		return refuse(fmt.Sprintf("Gerrit would not let %s (%s)", as, strings.TrimSpace(ge.Body))), nil
 	default:
 		return "", fmt.Errorf("%s %s change %d as %s: %w", method, endpoint, n, as, err)
 	}

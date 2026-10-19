@@ -426,7 +426,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		changeID = fmt.Sprintf("I%x", sha1.Sum([]byte(im.GitHub.Owner+"/"+im.GitHub.Repo+"\x00"+pr.NodeID)))
 	}
 	existing, err := im.Gerrit.QueryChanges(ctx, fmt.Sprintf("project:%s branch:%s change:%s",
-		gerrit.QueryString(im.Project), gerrit.QueryString(branch), changeID), "CURRENT_REVISION", "CURRENT_COMMIT")
+		gerrit.QueryString(im.Project), gerrit.QueryString(branch), changeID), "CURRENT_REVISION", "CURRENT_COMMIT", "DETAILED_ACCOUNTS")
 	if err != nil {
 		return nil, err
 	}
@@ -457,17 +457,9 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		}
 	}
 
-	// Who uploads. The first upload decides the owner, so it is the PR's
-	// author; later patch sets are uploaded as whoever pushed them, as a
-	// webhook said. If no webhook said (missed, or the bridge restarted),
-	// the bridge uploads: never guess, since CI trusts the uploader.
-	login := pr.User.Login
-	if st != nil && im.Pushers != nil {
-		login = im.Pushers.Lookup(h)
-	}
-	user, _ := im.Identity.GerritUser(ctx, login)
-	if user != "" && !im.Uploader.CanActAs() {
-		user = ""
+	user, login, err := im.uploader(ctx, pr, cur, later, h, gerritParent)
+	if err != nil {
+		return nil, err
 	}
 	committer := im.Bridge
 	if user != "" {
@@ -614,6 +606,76 @@ func (im *Importer) realParent(ctx context.Context, branch, h string, parentHead
 		}
 	}
 	return nil, "", &syncError{"pending", "Restack needed: this PR is not on top of any version of the PR below it that Gerrit knows"}
+}
+
+// uploader says who uploads h's squash onto parent (design §7.1): "" is
+// the bridge. CI trusts the uploader, so nobody is made the uploader of
+// code they did not write or vouch for, however casually they clicked a
+// GitHub button (Update branch, Commit suggestion) on someone else's PR.
+//
+// The first upload decides the owner, so it is the PR's author's. A later
+// one is the pusher's (as a webhook said; never guessed) if they uploaded
+// the current patch set too. A pure rebase of the current patch set is
+// uploaded on behalf of its uploader, as Gerrit's own rebase is. Anything
+// else is the bridge's, and needs a trusted reviewer to start CI.
+func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *gerrit.ChangeInfo, later bool, h, parent string) (user, login string, err error) {
+	if !im.Uploader.CanActAs() {
+		return "", "", nil
+	}
+	if !later {
+		user, _ = im.Identity.GerritUser(ctx, pr.User.Login)
+		return user, pr.User.Login, nil
+	}
+	rev, _ := cur.Current()
+	prev := rev.Uploader.Username
+	if rev.Uploader.AccountID == im.Bridge.AccountID || gerrit.AmbiguousUsername(prev) {
+		prev = ""
+	}
+	if im.Pushers != nil {
+		login = im.Pushers.Lookup(h)
+	}
+	if pusher, _ := im.Identity.GerritUser(ctx, login); prev != "" && strings.EqualFold(pusher, prev) {
+		return pusher, login, nil
+	}
+	if prev == "" {
+		return "", login, nil
+	}
+	pure, err := im.pureRebase(ctx, cur.CurrentRevision, rev.Ref, parent, h)
+	if err != nil {
+		return "", "", err
+	}
+	if pure {
+		im.Logger.Info("pure rebase: uploading on behalf of the current patch set's uploader", "pr", pr.Number, "pusher", login, "uploader", prev)
+		return prev, login, nil
+	}
+	im.Logger.Info("someone else's push: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
+	return "", login, nil
+}
+
+// pureRebase reports whether h's tree is exactly what rebasing commit
+// (Gerrit's ref) onto parent gives, with no conflicts: nothing in it is
+// the pusher's own.
+func (im *Importer) pureRebase(ctx context.Context, commit, ref, parent, h string) (bool, error) {
+	if _, err := im.Mirror.Git(ctx, nil, "cat-file", "-e", commit+"^{commit}"); err != nil {
+		if _, err := im.Mirror.Git(ctx, nil, "fetch", "--quiet", "origin", ref); err != nil {
+			return false, err
+		}
+	}
+	base, err := im.Mirror.Git(ctx, nil, "rev-parse", commit+"^")
+	if err != nil {
+		return false, err
+	}
+	// Exit status 1 is a conflict: not a pure rebase.
+	merged, err := im.Mirror.Git(ctx, nil, "merge-tree", "--write-tree", "--merge-base="+strings.TrimSpace(string(base)), parent, commit)
+	if err != nil {
+		return false, nil
+	}
+	tree, err := im.Mirror.Git(ctx, nil, "rev-parse", h+"^{tree}")
+	if err != nil {
+		return false, err
+	}
+	first, _, _ := strings.Cut(string(merged), "\n")
+	return strings.TrimSpace(first) == strings.TrimSpace(string(tree)), nil
 }
 
 // prBodyForMessage is the PR body without the bridge's links block and

@@ -179,8 +179,10 @@ checks "${D1}" | jq -e '[.runs[].checkName] | sort == ["Build","Test"]' >/dev/nu
 step "7. AustinSchuh pushes to BRT's branch"
 (cd "${ME_CLONE}" && git fetch -q github && git checkout -q -B "${B2}" "github/${B2}" && echo "from AustinSchuh" >> "brt-${RUN}-2.txt" &&
   git commit -qas -m "More" && git push -q github "${B2}" 2>/dev/null)
-pusher() { gerrit "changes/${D2}?o=CURRENT_REVISION&o=DETAILED_ACCOUNTS" | jq -e '.revisions[.current_revision] | select(._number == 2 and .uploader.username == "AustinSchuh")'; }
-wait_for "the new patch set is uploaded as AustinSchuh (the pusher)" pusher
+# CI trusts the uploader: AustinSchuh's push adds to BRT's code, so the
+# bridge uploads it (design §7.1), and only a trusted retest starts CI.
+pusher() { gerrit "changes/${D2}?o=CURRENT_REVISION&o=DETAILED_ACCOUNTS" | jq -e '.revisions[.current_revision] | select(._number == 2 and .uploader.username == "github-bridge")'; }
+wait_for "the new patch set is uploaded by the bridge (someone else's push onto BRT's code)" pusher
 [[ "$(gerrit "changes/${D2}?o=DETAILED_ACCOUNTS" | jq -r .owner.username)" == AustinSchuhBRT ]] && pass "the change stays owned by AustinSchuhBRT" || fail "owner changed"
 
 step "8. Draft toggles"
@@ -301,12 +303,12 @@ CID1=$(gerrit "changes/${H1}" | jq -r .change_id); CID2=$(gerrit "changes/${H2}"
 RB1=$(cd "${BRT_CLONE}" && git rev-parse HEAD~1); RB2=$(cd "${BRT_CLONE}" && git rev-parse HEAD)
 restacked() {
   local a b; a=$(gerrit "changes/${H1}?o=CURRENT_REVISION&o=DETAILED_ACCOUNTS&o=CURRENT_COMMIT"); b=$(gerrit "changes/${H2}?o=CURRENT_REVISION&o=DETAILED_ACCOUNTS&o=CURRENT_COMMIT")
-  jq -e '.revisions[.current_revision] | select(._number == 2 and .uploader.username == "AustinSchuhBRT")' <<<"$a" &&
-    jq -e '.revisions[.current_revision] | select(._number == 2 and .uploader.username == "AustinSchuhBRT")' <<<"$b" &&
+  jq -e '.revisions[.current_revision] | select(._number == 2 and .uploader.username == "AustinSchuh")' <<<"$a" &&
+    jq -e '.revisions[.current_revision] | select(._number == 2 and .uploader.username == "AustinSchuh")' <<<"$b" &&
     [[ "$(jq -r '.revisions[.current_revision].commit.parents[0].commit' <<<"$b")" == "$(jq -r .current_revision <<<"$a")" ]] &&
     [[ "$(jq -r '.revisions[.current_revision].commit.parents[0].commit' <<<"$a")" == "$(gerrit "projects/bridge-scratch/branches/main" | jq -r .revision)" ]]
 }
-wait_for "both layers become patch set 2, uploaded by the pusher, chained on the current main" restacked
+wait_for "both layers become patch set 2, a pure rebase uploaded on behalf of AustinSchuh, chained on the current main" restacked
 [[ "$(gerrit "changes/${H1}?o=DETAILED_ACCOUNTS" | jq -r .owner.username)" == AustinSchuh ]] && pass "the change stays AustinSchuh's" || fail "owner changed"
 kept() { [[ "$(me api "repos/${R}/pulls/${V1}" --jq .head.sha)" == "${RB1}" && "$(me api "repos/${R}/pulls/${V2}" --jq .head.sha)" == "${RB2}" ]]; }
 sleep 10 # give the bridge a chance to (wrongly) push over the rebase

@@ -115,8 +115,9 @@ PRs built by CI; comments, replies, suggestions and resolution both ways
 rebase rejoining; GitHub approvals becoming Code-Review +2 and `/submit`
 merging the chain, with replication marking the PRs merged; a GitHub stack
 by the untrusted contributor imported as theirs without CI; `retest` from
-GitHub by a trusted reviewer; a push by someone else uploaded as the
-pusher; draft toggles; and a chain submitted in Gerrit itself, where the
+GitHub by a trusted reviewer; a push by someone else uploaded by the
+bridge, and a rebase by someone else on behalf of the uploader; draft
+toggles; and a chain submitted in Gerrit itself, where the
 bridge must retarget the PRs to `main` within replication's 15 seconds for
 GitHub to show them merged; and a PR from AustinSchuhBRT's fork
 (`AustinSchuhBRT/bridge-scratch-fork`, branch `main`; the first fork,

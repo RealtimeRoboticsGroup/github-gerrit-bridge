@@ -265,6 +265,51 @@ func escapePath(p string) string {
 	return strings.Join(parts, "/")
 }
 
+// ReviewEdits is Edits for PR n's review bodies, by review database id
+// (kept apart: reviews and comments are numbered separately).
+func (c *Client) ReviewEdits(ctx context.Context, n int) (map[int64]string, error) {
+	const q = `query($o: String!, $r: String!, $n: Int!, $after: String) {
+  repository(owner: $o, name: $r) { pullRequest(number: $n) {
+    reviews(first: 100, after: $after) { pageInfo { hasNextPage endCursor }
+      nodes { databaseId lastEditedAt editor { login } } } } } }`
+	out := map[int64]string{}
+	for after := any(nil); ; {
+		var data struct {
+			Repository struct {
+				PullRequest struct {
+					Reviews struct {
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
+						Nodes []struct {
+							DatabaseID   int64      `json:"databaseId"`
+							LastEditedAt *time.Time `json:"lastEditedAt"`
+							Editor       *User      `json:"editor"`
+						} `json:"nodes"`
+					} `json:"reviews"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		}
+		if err := c.GraphQL(ctx, q, map[string]any{"o": c.Owner, "r": c.Repo, "n": n, "after": after}, &data); err != nil {
+			return nil, err
+		}
+		rs := data.Repository.PullRequest.Reviews
+		for _, r := range rs.Nodes {
+			if r.LastEditedAt != nil {
+				out[r.DatabaseID] = ""
+				if r.Editor != nil {
+					out[r.DatabaseID] = r.Editor.Login
+				}
+			}
+		}
+		if !rs.PageInfo.HasNextPage {
+			return out, nil
+		}
+		after = rs.PageInfo.EndCursor
+	}
+}
+
 // Edits returns who last edited each edited comment on PR n, issue and
 // review comments alike, by database id; comments never edited are
 // absent. The login is "" if GitHub does not say (a deleted account).

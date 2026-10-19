@@ -273,7 +273,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	if cfg.Identity.MatchesUsernames() {
 		users.Gerrit = rest
 	}
-	code.Identity, code.BridgeLogin = users, login
+	code.Identity, code.BridgeLogin, code.BridgeUser = users, login, self.Username
 	var uploader reconcile.Uploader = reconcile.HTTPUploader{Mirror: mirror}
 	if cfg.Gerrit.SSH.PeerKeyFile != "" {
 		uploader = reconcile.SuexecUploader{

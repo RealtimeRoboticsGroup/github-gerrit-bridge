@@ -24,6 +24,8 @@ type GerritChange struct {
 	Revision string // current patch set
 	Parent   string // its first parent
 	URL      string
+	// Owner and Uploader (of the current patch set) are Gerrit usernames.
+	Owner, Uploader string
 }
 
 // Snapshot is everything the planner needs about one target branch.

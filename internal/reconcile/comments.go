@@ -35,6 +35,7 @@ type GitHubAPI interface {
 	ListIssueComments(ctx context.Context, n int) ([]github.IssueComment, error)
 	ReviewThreads(ctx context.Context, n int) ([]github.ReviewThread, error)
 	Edits(ctx context.Context, n int) (map[int64]string, error)
+	ReviewEdits(ctx context.Context, n int) (map[int64]string, error)
 	CreateReview(ctx context.Context, n int, r github.NewReview) (*github.Review, error)
 	ListReviewCommentsOf(ctx context.Context, n int, review int64) ([]github.ReviewComment, error)
 	CreateReviewComment(ctx context.Context, n int, rc github.NewReviewComment) (*github.ReviewComment, error)
@@ -131,16 +132,17 @@ type commentSnapshot struct {
 	gerrit    []gerrit.CommentInfo
 	byID      map[string]*gerrit.CommentInfo
 	rcs       []github.ReviewComment
-	// edits maps edited GitHub comments to their last editor.
-	edits    map[int64]string
-	rcByID   map[int64]*github.ReviewComment
-	ics      []github.IssueComment
-	reviews  []github.Review
-	threads  []github.ReviewThread
-	psToSHA  map[int]string
-	shaToPS  map[string]int
-	current  int
-	revision string
+	// edits maps edited GitHub comments to their last editor, and
+	// reviewEdits edited review bodies.
+	edits, reviewEdits map[int64]string
+	rcByID             map[int64]*github.ReviewComment
+	ics                []github.IssueComment
+	reviews            []github.Review
+	threads            []github.ReviewThread
+	psToSHA            map[int]string
+	shaToPS            map[string]int
+	current            int
+	revision           string
 	// labels are the current patch set's votes.
 	labels map[string]gerrit.LabelInfo
 }
@@ -307,6 +309,9 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 		return nil, err
 	}
 	if s.edits, err = c.GitHub.Edits(ctx, pr); err != nil {
+		return nil, err
+	}
+	if s.reviewEdits, err = c.GitHub.ReviewEdits(ctx, pr); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -934,11 +939,19 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			// imported yet): a vote would land on code nobody reviewed.
 			body = "Not counted as a vote: it was made on a commit that is not a patch set in Gerrit.\n\n" + body
 		}
+		login := rv.User.Login
+		if editedByOther(s.reviewEdits, rv.ID, login) {
+			// Edited by someone else: not as the author, and no vote.
+			login = ""
+			if vote {
+				body = "Not counted as a vote: someone other than its author edited it.\n\n" + body
+			}
+		}
 		f := false
 		key := "review/" + strconv.FormatInt(rv.ID, 10)
-		add(key, rv.User.Login, ghComment{kindReviewBody, rv.ID, rv.Body}, ps, gerrit.PatchSetLevel,
-			gerrit.CommentInput{Message: gerritBody(rv.User.Login, rv.HTMLURL, body, asAuthor(rv.User.Login)), Unresolved: &f})
-		if vote && known && reviewed == s.current {
+		add(key, login, ghComment{kindReviewBody, rv.ID, rv.Body}, ps, gerrit.PatchSetLevel,
+			gerrit.CommentInput{Message: gerritBody(rv.User.Login, rv.HTMLURL, body, asAuthor(login)), Unresolved: &f})
+		if vote && known && reviewed == s.current && login != "" {
 			// Design §6.4: approve = Code-Review +2 (or the most the user
 			// may give), request changes = -1. Only as the user (Run-As);
 			// the bridge never votes on someone's behalf as itself.

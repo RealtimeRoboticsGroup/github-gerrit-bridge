@@ -421,8 +421,9 @@ It should not matter where a change started. Anyone may push to a
 Gerrit-born PR's `gerrit/<Change-Id>` branch, by hand or with GitHub's
 buttons ("Rebase stack", "Update branch", committed suggestions). The bridge
 imports the push like one to a GitHub-born PR (§5.2): one squashed patch set
-of the existing change, uploaded as whoever pushed it (the bridge if no
-webhook said, or the pusher has no Gerrit account). The change keeps its
+of the existing change, uploaded as §7.1 says (the pusher if they
+uploaded the current patch set, its uploader for a pure rebase, otherwise
+the bridge). The change keeps its
 owner, Change-Id, commit message and WIP state, which belong to Gerrit. A
 layer that merged its base ("Update branch") is squashed onto what it
 merged, so its diff stays its own. A stack rebase imports each layer in
@@ -1014,18 +1015,33 @@ defenses, by threat:
   edited by someone other than its author is posted by the bridge account
   when first mirrored (so a `retest` edited into a maintainer's comment
   does not start CI), and `/submit` does not run from it; later edits are
-  always mirrored by the bridge account.
+  always mirrored by the bridge account. The same goes for review bodies,
+  and such a review never votes.
 - **Edits to the bridge's own GitHub comments.** A Gerrit comment's GitHub
   copy can be edited by anyone with write access, which would put words in
   a Gerrit reviewer's mouth or change its `bridge:gerrit/…` marker. Gerrit
   comments only change in Gerrit, so when a copy was last edited by anyone
   but the bridge, the bridge rewrites it (saying so), and its marker is not
   trusted meanwhile.
-- **Who uploaded.** Later patch sets are uploaded as whoever pushed them,
-  but only as a webhook says (`synchronize` or `push` senders; the first
-  push of a commit wins; reopening is not pushing). If no webhook said, the
-  bridge uploads, which CI does not trust; the commit's committer email is
-  never used, since anyone can write any email.
+- **Who uploaded.** CI trusts the uploader, so nobody is made the
+  uploader of code they did not write or vouch for, however casually they
+  clicked a GitHub button on someone else's PR (audit 2026-10-18). The
+  first upload is the PR author's. A later push is uploaded as its pusher
+  only if they uploaded the current patch set too, and only as a webhook
+  says (`synchronize` or `push` senders; the first push of a commit wins;
+  reopening is not pushing). A pure rebase of the current patch set
+  (GitHub's Rebase or Update branch: `git merge-tree` of it onto the new
+  parent gives the pushed tree, without conflicts) is uploaded on behalf
+  of its uploader, as Gerrit's own rebase is. Anything else, and anything
+  no webhook explains, is uploaded by the bridge, which CI does not trust;
+  a trusted reviewer starts CI. The commit's committer email is never
+  used, since anyone can write any email.
+- **PR edits.** A title or description edit makes a new patch set in
+  Gerrit, so it is made only as the current patch set's uploader; anyone
+  else is told to edit in Gerrit. Draft toggles and close/reopen run as
+  whoever did them. Someone without a Gerrit account (or an edit GitHub
+  does not attribute) changes nothing, except on their own PR's
+  bridge-owned change, which the bridge edits for them.
 - **Accounts the bridge never acts as by matching usernames.** Its own,
   and members of `identity.never_groups` (default Service Users,
   Non-Interactive Users and Administrators), whatever GitHub login matches
@@ -1098,8 +1114,7 @@ Known gaps:
   `github-bridge:mirror` and so keep it from being mirrored to GitHub.
 - **Sign-offs.** `Signed-off-by` lines in a PR description are kept as
   written; AOS's requirement only checks that the words appear.
-- A dismissed GitHub review leaves its Gerrit vote; a draft toggle by
-  anyone with write access flips WIP as the owner.
+- A dismissed GitHub review leaves its Gerrit vote.
 
 ## 8. Content conversion (`internal/markup`)
 

@@ -245,7 +245,11 @@ func (u *fakeUploader) Upload(ctx context.Context, user, commit, target string, 
 	defer u.s.mu.Unlock()
 	for _, ci := range u.s.changes {
 		if ci.ChangeID == cid {
-			ci.Revisions[commit] = gerrit.RevisionInfo{Number: len(ci.Revisions) + 1, Commit: gerrit.CommitInfo{Message: string(msg)}}
+			uploader, ok := u.s.accounts[user]
+			if !ok {
+				uploader = gerrit.AccountInfo{AccountID: 1, Username: "bridge"}
+			}
+			ci.Revisions[commit] = gerrit.RevisionInfo{Number: len(ci.Revisions) + 1, Uploader: uploader, Commit: gerrit.CommitInfo{Message: string(msg)}}
 			ci.CurrentRevision = commit
 		}
 	}
@@ -269,9 +273,13 @@ func gerritBornWorld(t *testing.T, stacked bool) (s *sites, im *Importer, up *fa
 	if stacked {
 		g = append(g, s.commit(g[0], "two.txt", "2\n", "Two\n\nChange-Id: "+ids[1]+"\n"))
 	}
+	s.accounts["austin"] = gerrit.AccountInfo{AccountID: 5, Username: "austin", Name: "Austin", Email: "austin@example.com"}
 	for i, rev := range g {
 		n, id := i+1, ids[i]
-		s.change(n, id, rev, map[int]string{1: "One\n\nChange-Id: " + ids[0] + "\n", 2: "Two\n\nChange-Id: " + ids[1] + "\n"}[n], "NEW")
+		ci := s.change(n, id, rev, map[int]string{1: "One\n\nChange-Id: " + ids[0] + "\n", 2: "Two\n\nChange-Id: " + ids[1] + "\n"}[n], "NEW")
+		r := ci.Revisions[rev]
+		r.Uploader = s.accounts["austin"]
+		ci.Revisions[rev] = r
 		s.push("github.git", rev, "refs/heads/gerrit/"+id)
 		base := "main"
 		if i > 0 {
@@ -299,8 +307,10 @@ func (s *sites) rebase(commit, onto string) string {
 }
 
 // Design §5.2.2: a push to a Gerrit-born PR's branch is a new patch set of
-// its change, uploaded as the pusher, with Gerrit's commit message.
-func TestPushToGerritBornPRBecomesPatchSetByPusher(t *testing.T) {
+// its change, with Gerrit's commit message. A pure rebase (GitHub's Rebase
+// button, here by brt) is uploaded on behalf of the current patch set's
+// uploader, as Gerrit's own rebase is.
+func TestPushToGerritBornPRBecomesPatchSet(t *testing.T) {
 	s, im, up, m1, g, ids := gerritBornWorld(t, false)
 	ctx := context.Background()
 	r1 := s.rebase(g[0], m1)
@@ -310,8 +320,8 @@ func TestPushToGerritBornPRBecomesPatchSetByPusher(t *testing.T) {
 	if err := im.Import(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
-	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], "brt ") || !strings.HasSuffix(up.uploads[0], " []") {
-		t.Fatalf("uploads = %v, want one by brt without options (Gerrit's WIP state stays)", up.uploads)
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], "austin ") || !strings.HasSuffix(up.uploads[0], " []") {
+		t.Fatalf("uploads = %v, want one on behalf of austin without options (Gerrit's WIP state stays)", up.uploads)
 	}
 	ps2 := s.changes[1].CurrentRevision
 	if got := s.git("m.git", "log", "-1", "--format=%P%n%B", ps2); got != m1+"\nOne\n\nChange-Id: "+ids[0] {
@@ -320,8 +330,8 @@ func TestPushToGerritBornPRBecomesPatchSetByPusher(t *testing.T) {
 	if s.git("m.git", "rev-parse", ps2+"^{tree}") != s.git("work", "rev-parse", r1+"^{tree}") {
 		t.Error("patch set 2 does not have the pushed tree")
 	}
-	if ce := s.git("m.git", "log", "-1", "--format=%ce", ps2); ce != "brt@example.com" {
-		t.Errorf("committer %s, want the pusher's Gerrit account", ce)
+	if ce := s.git("m.git", "log", "-1", "--format=%ce", ps2); ce != "austin@example.com" {
+		t.Errorf("committer %s, want the uploader's Gerrit account", ce)
 	}
 	st, _ := im.Store.Load(ctx, 1)
 	if last := st.Revisions[len(st.Revisions)-1]; last.GerritSHA != ps2 || last.GitHubSHA != r1 || last.PatchSet != 2 {
@@ -537,6 +547,7 @@ func editsWorld(t *testing.T, origin string) (*sites, *Code, *Snapshot) {
 	s, c, snap := prStatesWorld(t, "NEW", "open")
 	msg := "Seven\n\nDoes seven things.\n\nChange-Id: " + cid(7) + "\nSigned-off-by: Austin <austin@example.com>\n"
 	snap.Changes[7].Message, snap.Changes[7].Subject = msg, "Seven"
+	snap.Changes[7].Owner, snap.Changes[7].Uploader = "austin", "austin"
 	s.changes[7].Revisions[s.changes[7].CurrentRevision] = gerrit.RevisionInfo{Number: 1, Commit: gerrit.CommitInfo{Message: msg}}
 	pr := s.pulls[70]
 	pr.Title, pr.Body = "Seven", "Does seven things.\n\n"+linksStart+"\nblock\n"+linksEnd
@@ -569,6 +580,7 @@ func TestPREditBecomesCommitMessageAsTheEditor(t *testing.T) {
 
 func TestPREditGerritRefusesIsExplained(t *testing.T) {
 	s, c, snap := editsWorld(t, "gerrit")
+	snap.Changes[7].Uploader = "brt"
 	s.pulls[70].Title = "Hijacked"
 	s.activity[70] = github.PRActivity{TextEditor: "brt"} // may not edit change 7
 	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || changed {
@@ -585,16 +597,61 @@ func TestPREditGerritRefusesIsExplained(t *testing.T) {
 	}
 }
 
-func TestPREditByUserWithoutGerritAccountIsTheBridges(t *testing.T) {
-	s, c, snap := editsWorld(t, "github")
-	s.may[7] = append(s.may[7], "bridge")
-	s.pulls[70].Title = "Seven, by a stranger"
-	s.activity[70] = github.PRActivity{TextEditor: "stranger"}
-	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || !changed {
-		t.Fatalf("changed=%v err=%v", changed, err)
+// A commit message edit makes a new patch set, and CI trusts its
+// uploader: retitling someone else's PR on GitHub must not make the editor
+// the uploader of their code.
+func TestPREditByNonUploaderIsRefused(t *testing.T) {
+	s, c, snap := editsWorld(t, "gerrit")
+	s.may[7] = append(s.may[7], "brt")
+	s.pulls[70].Title = "Seven, retitled"
+	s.activity[70] = github.PRActivity{TextEditor: "brt"}
+	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || changed || len(s.calls) != 0 {
+		t.Fatalf("changed=%v err=%v calls=%v", changed, err, s.calls)
 	}
-	if len(s.calls) != 1 || s.calls[0] != "message 7 as bridge" {
-		t.Errorf("calls = %v, want the bridge (as for pushes by people without a Gerrit account)", s.calls)
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "only the uploader of its current patch set") {
+		t.Errorf("notice = %v", s.comments[70])
+	}
+}
+
+// Someone without a Gerrit account edits only their own PR's change, which
+// the bridge owns for them, as the bridge (as their pushes are). Anyone
+// else would borrow the bridge's rights in Gerrit.
+func TestPREditByUserWithoutGerritAccount(t *testing.T) {
+	for _, tc := range []struct {
+		name, author string
+		mirrored     bool
+	}{{"their own PR", "stranger", true}, {"someone else's PR", "austin", false}} {
+		s, c, snap := editsWorld(t, "github")
+		c.BridgeUser = "bridge"
+		snap.Changes[7].Owner, snap.Changes[7].Uploader = "bridge", "bridge"
+		s.may[7] = append(s.may[7], "bridge")
+		s.pulls[70].User.Login = tc.author
+		s.pulls[70].Title = "Seven, by a stranger"
+		s.activity[70] = github.PRActivity{TextEditor: "stranger"}
+		changed, err := c.mirrorPREdits(context.Background(), snap)
+		if err != nil || changed != tc.mirrored {
+			t.Fatalf("%s: changed=%v err=%v", tc.name, changed, err)
+		}
+		if tc.mirrored && (len(s.calls) != 1 || s.calls[0] != "message 7 as bridge") {
+			t.Errorf("%s: calls = %v, want the bridge", tc.name, s.calls)
+		}
+		if !tc.mirrored && (len(s.calls) != 0 || len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@stranger has no Gerrit account")) {
+			t.Errorf("%s: calls = %v, notice = %v", tc.name, s.calls, s.comments[70])
+		}
+	}
+}
+
+// Nobody known (a deleted account, or an edit GitHub's timeline does not
+// show): nothing is done as the bridge.
+func TestDraftToggleByNobodyIsRefused(t *testing.T) {
+	s, c, snap := editsWorld(t, "gerrit")
+	s.may[7] = append(s.may[7], "bridge")
+	s.pulls[70].Draft = true
+	if changed, err := c.mirrorPREdits(context.Background(), snap); err != nil || changed || len(s.calls) != 0 {
+		t.Fatalf("changed=%v err=%v calls=%v", changed, err, s.calls)
+	}
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "Someone marked this PR as a draft") || !strings.Contains(s.comments[70][0], "GitHub does not say who") {
+		t.Errorf("notice = %v", s.comments[70])
 	}
 }
 
@@ -707,5 +764,59 @@ func TestImportRefusesChangeIDsGerritReadsDifferently(t *testing.T) {
 	}
 	if sts := s.statuses[evil]; len(sts) != 1 || sts[0].State != "pending" || !strings.Contains(sts[0].Description, "Change-Id") {
 		t.Errorf("gerrit/sync = %+v, want pending about the Change-Id", sts)
+	}
+}
+
+// CI trusts the uploader, so a push is uploaded as its pusher only if they
+// uploaded the current patch set too; anyone else's push that is more
+// than a rebase (Commit suggestion, a fix-up, Update branch with
+// conflicts resolved) is uploaded by the bridge, which CI does not trust.
+func TestWhoUploadsAPush(t *testing.T) {
+	for _, tc := range []struct {
+		name, pusher, want string
+		edit               bool
+	}{
+		{"uploader pushes", "austin", "austin", true},
+		{"someone else adds code", "brt", "", true},
+		{"unknown pusher adds code", "", "", true},
+		{"unknown pusher rebases", "", "austin", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, im, up, m1, g, ids := gerritBornWorld(t, false)
+			ctx := context.Background()
+			h := s.rebase(g[0], m1)
+			if tc.edit {
+				h = s.commit(h, "one.txt", "1 fixed\n", "Fix")
+			}
+			s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
+			s.pulls[10].Head.SHA = h
+			im.Pushers.Record(h, tc.pusher)
+			if err := im.Import(ctx, "main"); err != nil {
+				t.Fatal(err)
+			}
+			if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], tc.want+" ") {
+				t.Fatalf("uploads = %v, want one as %q", up.uploads, tc.want)
+			}
+		})
+	}
+}
+
+// A maintainer's "Update branch" on a stranger's PR (a merge of main the
+// maintainer pushed) leaves the stranger's code uploaded as the stranger:
+// it is a pure rebase.
+func TestUpdateBranchOnSomeoneElsesPRStaysTheirs(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	s.git("work", "checkout", "-q", "--detach", g[0])
+	s.git("work", "merge", "-q", "--no-edit", m1)
+	h := s.git("work", "rev-parse", "HEAD")
+	s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = h
+	im.Pushers.Record(h, "brt")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], "austin ") {
+		t.Fatalf("uploads = %v, want one on behalf of austin", up.uploads)
 	}
 }

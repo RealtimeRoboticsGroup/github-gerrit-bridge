@@ -150,6 +150,8 @@ func (f *fakeGerrit) user(id, path string, ps, line int, msg, inReplyTo string, 
 
 type fakeGitHub struct {
 	edits map[int64]string // edited comment id -> editor
+	// reviewEdits is edits for review bodies.
+	reviewEdits map[int64]string
 	// dismissed records DismissReview calls, as "id: message".
 	dismissed []string
 	// afterReview runs once, when the bridge reads back a review it posted.
@@ -229,6 +231,13 @@ func (f *fakeGitHub) ListIssueComments(context.Context, int) ([]github.IssueComm
 func (f *fakeGitHub) Edits(context.Context, int) (map[int64]string, error) {
 	out := map[int64]string{}
 	for id, by := range f.edits {
+		out[id] = by
+	}
+	return out, nil
+}
+func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error) {
+	out := map[int64]string{}
+	for id, by := range f.reviewEdits {
 		out[id] = by
 	}
 	return out, nil
@@ -862,6 +871,32 @@ func TestRunAsRefusedFallsBackToBridge(t *testing.T) {
 	}
 	if len(e.g.votes) != 0 {
 		t.Errorf("votes cast without Run-As: %v", e.g.votes)
+	}
+}
+
+// Anyone with write access can edit anyone's review: one last edited by
+// someone else is posted by the bridge, and never votes.
+func TestReviewEditedByOtherIsNotTheAuthors(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 50, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		Body: "retest", HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-50"})
+	e.h.reviewEdits = map[int64]string{50: "mallory"}
+	e.sync(t)
+	if len(e.g.votes) != 0 {
+		t.Errorf("votes = %v", e.g.votes)
+	}
+	var found bool
+	for _, gc := range e.g.comments {
+		if strings.Contains(gc.Message, "retest") {
+			found = true
+			if gc.Author.AccountID != bridgeID || !strings.Contains(gc.Message, "Not counted as a vote: someone other than its author edited it.") {
+				t.Errorf("posted by %+v: %q", gc.Author, gc.Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("review not mirrored: %+v", e.g.comments)
 	}
 }
 
