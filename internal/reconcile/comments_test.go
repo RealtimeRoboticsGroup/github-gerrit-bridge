@@ -166,7 +166,9 @@ func (f *fakeGerrit) user(id, path string, ps, line int, msg, inReplyTo string, 
 }
 
 type fakeGitHub struct {
-	edits map[int64]string // edited comment id -> editor
+	// refuse makes CreateIssueComment refuse (422) bodies containing it.
+	refuse string
+	edits  map[int64]string // edited comment id -> editor
 	// reviewEdits is edits for review bodies.
 	reviewEdits map[int64]string
 	// dismissed records DismissReview calls, as "id: message".
@@ -348,6 +350,9 @@ func (f *fakeGitHub) ReplyToReviewComment(_ context.Context, _ int, id int64, bo
 }
 
 func (f *fakeGitHub) CreateIssueComment(_ context.Context, _ int, body string) (*github.IssueComment, error) {
+	if len(body) > 65536 || (f.refuse != "" && strings.Contains(body, f.refuse)) {
+		return nil, errUnprocessable
+	}
 	f.posts++
 	c := github.IssueComment{ID: f.id(), Body: body, User: github.User{Login: "bridge"}}
 	f.ics = append(f.ics, c)
@@ -1062,6 +1067,50 @@ func TestCommentsGoOnThePatchSetTheirAuthorCouldSee(t *testing.T) {
 	e.sync(t)
 	if gc := e.g.comments[len(e.g.comments)-1]; gc.PatchSet != 1 || gc.Author.Username != "bobg" {
 		t.Errorf("posted on patch set %d as %q, want 1 as bobg", gc.PatchSet, gc.Author.Username)
+	}
+}
+
+// Gerrit comments as long as Gerrit allows, made longer by defusing, fit
+// GitHub; one GitHub refuses anyway is recorded as refused, not retried,
+// and does not stop the rest of the change's sync.
+func TestGerritCommentsGitHubWouldRefuse(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.g.user("c1", gerrit.PatchSetLevel, 2, 0, strings.Repeat("@", 16000), "", false)
+	e.g.user("c2", gerrit.PatchSetLevel, 2, 0, "refuse me", "", false)
+	e.g.user("c3", gerrit.PatchSetLevel, 2, 0, "Fine.", "", false)
+	e.g.user("c4", "nowhere.txt", 2, 3, "refuse me too", "", false) // ends up a PR comment
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.messages = append(e.g.messages,
+		gerrit.ChangeMessage{ID: "m1", Author: alice, RevisionNumber: 2, Message: "Patch Set 2:\n\n" + strings.Repeat("@", 16000)},
+		gerrit.ChangeMessage{ID: "m2", Author: alice, RevisionNumber: 2, Message: "Patch Set 2:\n\nrefuse me, a message"})
+	e.h.refuse = "refuse me"
+	e.sync(t)
+	var long, fine bool
+	for _, ic := range e.h.ics {
+		long = long || (strings.HasPrefix(ic.Body, "**Alice Trusted (alice)**") && strings.Contains(ic.Body, tooLongForGitHub) &&
+			strings.HasSuffix(ic.Body, gerritFooter(5, "c1")) && len(ic.Body) <= maxGitHubComment)
+		if strings.HasSuffix(ic.Body, gerritFooter(5, "m1")) && (len(ic.Body) > maxGitHubComment || !strings.Contains(ic.Body, tooLongForGitHub)) {
+			t.Errorf("long message: %d bytes", len(ic.Body))
+		}
+		fine = fine || strings.Contains(ic.Body, "Fine.")
+	}
+	if !long || !fine {
+		t.Errorf("long posted %v, fine posted %v", long, fine)
+	}
+	st, _ := e.st.Load(context.Background(), 5)
+	for _, id := range []string{"c2", "c4", "m2"} {
+		if !slices.ContainsFunc(st.Comments, func(c state.Comment) bool { return c.GerritID == id && c.Kind == kindRefused }) {
+			t.Errorf("refusal of %s not recorded: %+v", id, st.Comments)
+		}
+	}
+	if !slices.ContainsFunc(e.h.ics, func(ic github.IssueComment) bool { return strings.HasSuffix(ic.Body, gerritFooter(5, "m1")) }) {
+		t.Error("long message not posted")
+	}
+	e.settled(t)
+	// A quote of a huge line is bounded too.
+	e.g.files["big.txt"] = strings.Repeat("x", 100000) + "\n"
+	if q := e.c.quote(context.Background(), 5, &gerrit.CommentInfo{Path: "big.txt", PatchSet: 2, Line: 1}, "big.txt"); len(q) > 1000 {
+		t.Errorf("quote is %d bytes", len(q))
 	}
 }
 

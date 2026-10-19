@@ -110,14 +110,7 @@ func composeBody(message, block string) (body, hash string) {
 	if want == "" {
 		return block, hash
 	}
-	if room := maxPRBody - len(block) - len(tooLongForGitHub) - 2; len(want) > room {
-		cut := max(room, 0)
-		for cut > 0 && !utf8.RuneStart(want[cut]) {
-			cut--
-		}
-		want = want[:cut] + tooLongForGitHub
-	}
-	return want + "\n\n" + block, hash
+	return fitForGitHub(want, maxPRBody-len(block)-2) + "\n\n" + block, hash
 }
 
 // maxPRBody bounds a PR description, in bytes: GitHub refuses one over

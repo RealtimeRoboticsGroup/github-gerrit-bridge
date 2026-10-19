@@ -1219,6 +1219,11 @@ defenses, by threat:
 - **Submit swaps.** Before `/submit`, a PR's head is swapped for Gerrit's
   commit only if it is the bridge's record of the patch set being
   submitted; a push not imported yet is never overwritten.
+- **Comments GitHub will not take.** Gerrit comments and messages are
+  cut to fit GitHub's 65,536 characters (defusing makes them longer),
+  quoted lines are bounded, and one GitHub refuses anyway is recorded as
+  refused and not retried, so a Gerrit user cannot stop a change's sync
+  either (third audit).
 - **Comments Gerrit will not take.** A GitHub comment over 12 KiB is
   shortened, with a link to the rest (Gerrit's limit is 16 KiB). One Gerrit
   still refuses (a change's comment-count or total-size limit) is recorded

@@ -88,6 +88,9 @@ const (
 	kindReviewComment = "review_comment"
 	kindIssueComment  = "issue_comment"
 	kindReviewBody    = "review_body"
+	// kindRefused maps a Gerrit comment GitHub would not take: no GitHub
+	// comment has it, and it is not retried.
+	kindRefused = "refused"
 )
 
 // Tags on what the bridge posts in Gerrit. Bridge notices are
@@ -433,20 +436,61 @@ func gerritFooter(n int, id string) string { return fmt.Sprintf("<!-- bridge:ger
 // (quoted code, the true anchor) above the message and an optional
 // suggestion block below it.
 func (c *Comments) ghBody(n int, gc *gerrit.CommentInfo, current int, note, suggestion string) string {
-	var b strings.Builder
-	b.WriteString(c.gerritHeader(n, gc, current))
-	b.WriteString("\n\n")
+	head, foot := c.gerritHeader(n, gc, current)+"\n\n", "\n\n"+gerritFooter(n, gc.ID)
 	if note != "" {
-		b.WriteString(forGitHub(note) + "\n\n")
+		note = fitForGitHub(forGitHub(note), maxGitHubNote) + "\n\n"
 	}
-	b.WriteString(forGitHub(strings.TrimSpace(gc.Message)))
+	if len(suggestion) > maxGitHubComment/2 {
+		suggestion = "" // too big to suggest; the comment is still there
+	}
+	// Bounded as a whole: GitHub refuses a comment over 65,536 characters
+	// (defusing makes text longer), and one it refuses must not stop the
+	// change's sync.
+	room := maxGitHubComment - len(head) - len(note) - len(suggestion) - len(foot) - 2
+	var b strings.Builder
+	b.WriteString(head + note)
+	b.WriteString(fitForGitHub(forGitHub(strings.TrimSpace(gc.Message)), room))
 	if suggestion != "" {
 		// Exact: it may be committed. Its fence keeps it code, where
 		// nothing in it mentions anyone.
 		b.WriteString("\n\n" + suggestion)
 	}
-	b.WriteString("\n\n" + gerritFooter(n, gc.ID))
+	b.WriteString(foot)
 	return b.String()
+}
+
+// maxGitHubComment bounds what the bridge posts as one GitHub comment, in
+// bytes, under GitHub's 65,536 characters; maxGitHubNote bounds the note
+// (quoted lines, say) above a mirrored comment.
+const (
+	maxGitHubComment = 60000
+	maxGitHubNote    = 4000
+)
+
+// fitForGitHub cuts s to at most room bytes, at a character boundary,
+// saying the rest is in Gerrit. Cutting only removes text, so nothing
+// defused becomes live again.
+func fitForGitHub(s string, room int) string {
+	if len(s) <= room {
+		return s
+	}
+	cut := max(room-len(tooLongForGitHub), 0)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + tooLongForGitHub
+}
+
+// refusedOnGitHub records Gerrit comment id as refused if err is GitHub
+// refusing it for good (422), and reports whether it did: one comment
+// GitHub will not take must not stop the change's sync.
+func (c *Comments) refusedOnGitHub(n int, m *commentMap, id string, err error) bool {
+	if !isUnprocessable(err) {
+		return false
+	}
+	c.Logger.Warn("GitHub refused a Gerrit comment; not mirroring it", "change", n, "id", id, "err", err)
+	m.add(state.Comment{GerritID: id, Kind: kindRefused, Origin: "gerrit"})
+	return true
 }
 
 // githubParent finds the GitHub comment a Gerrit reply belongs under, by
@@ -492,6 +536,9 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 				root = rc.InReplyTo
 			}
 			out, err := c.GitHub.ReplyToReviewComment(ctx, pr, root, c.ghBody(n, gc, s.current, "", ""))
+			if c.refusedOnGitHub(n, m, gc.ID, err) {
+				continue
+			}
 			if err != nil {
 				return posted, err
 			}
@@ -503,6 +550,9 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 				ctxLine = c.quote(ctx, n, gc, "commit message")
 			}
 			out, err := c.GitHub.CreateIssueComment(ctx, pr, c.ghBody(n, gc, s.current, ctxLine, ""))
+			if c.refusedOnGitHub(n, m, gc.ID, err) {
+				continue
+			}
 			if err != nil {
 				return posted, err
 			}
@@ -535,9 +585,13 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 		if v := messageVotes(msg.Message); v != "" {
 			votes = ", **" + v + "**"
 		}
-		body := fmt.Sprintf("**%s** ([Gerrit](%s)) on patch set %d%s:\n\n%s\n\n%s",
-			whoMD(msg.Author), c.messageURL(n, msg), msg.RevisionNumber, votes, forGitHub(text), gerritFooter(n, msg.ID))
+		head := fmt.Sprintf("**%s** ([Gerrit](%s)) on patch set %d%s:\n\n", whoMD(msg.Author), c.messageURL(n, msg), msg.RevisionNumber, votes)
+		foot := "\n\n" + gerritFooter(n, msg.ID)
+		body := head + fitForGitHub(forGitHub(text), maxGitHubComment-len(head)-len(foot)) + foot
 		out, err := c.GitHub.CreateIssueComment(ctx, pr, body)
+		if c.refusedOnGitHub(n, m, msg.ID, err) {
+			continue
+		}
 		if err != nil {
 			return posted, err
 		}
@@ -705,6 +759,9 @@ func (c *Comments) postSingle(ctx context.Context, n, pr int, s *commentSnapshot
 		quote = fmt.Sprintf("`%s`", gc.Path)
 	}
 	ic, err := c.GitHub.CreateIssueComment(ctx, pr, c.ghBody(n, gc, s.current, quote, ""))
+	if c.refusedOnGitHub(n, m, gc.ID, err) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -758,7 +815,7 @@ func (c *Comments) quote(ctx context.Context, n int, gc *gerrit.CommentInfo, lab
 	var b strings.Builder
 	b.WriteString(where + ":\n")
 	for i := first; i <= last && i <= len(lines) && i-first < 10; i++ {
-		b.WriteString("> " + lines[i-1] + "\n")
+		b.WriteString("> " + shorten(lines[i-1], 300) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
