@@ -96,10 +96,12 @@ func TestHandler(t *testing.T) {
 	changes := fakeChanges{
 		5: {Project: "p", Revisions: map[string]gerrit.RevisionInfo{"aaa": {Number: 1}, "bbb": {Number: 2}}},
 		6: {Project: "other", Revisions: map[string]gerrit.RevisionInfo{"ccc": {Number: 1}}},
+		8: {Project: "p", IsPrivate: true, Revisions: map[string]gerrit.RevisionInfo{"ddd": {Number: 1}}},
 	}
 	fb := &fakeBuilds{builds: map[string][]buildkite.Build{
 		"bbb": {{ID: "b", Number: 1, State: "passed", Pipeline: buildkite.Pipeline{Name: "ci", WebURL: "pipe"}}},
 		"ccc": {{ID: "secret", Number: 1, State: "passed"}},
+		"ddd": {{ID: "secret", Number: 1, State: "passed"}},
 	}}
 	h := &Handler{Project: "p", Gerrit: changes, Builds: fb, Label: "Verified", AllowOrigin: "http://gerrit"}
 	mux := http.NewServeMux()
@@ -122,7 +124,9 @@ func TestHandler(t *testing.T) {
 	if fb.calls != 1 {
 		t.Errorf("Buildkite called %d times; want the second answer cached", fb.calls)
 	}
-	for _, path := range []string{"/checks/6/1", "/checks/7/1", "/checks/5/3", "/checks/5/x", "/checks/-1/1"} {
+	// Another project's change, a private one (Gerrit is read as the
+	// bridge, which could be its reviewer), none, no such patch set.
+	for _, path := range []string{"/checks/6/1", "/checks/8/1", "/checks/7/1", "/checks/5/3", "/checks/5/x", "/checks/-1/1"} {
 		if w, _ := get(path); w.Code == 200 || strings.Contains(w.Body.String(), "secret") {
 			t.Errorf("GET %s = %d %s", path, w.Code, w.Body)
 		}

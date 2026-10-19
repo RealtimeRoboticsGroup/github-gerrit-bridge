@@ -1198,8 +1198,11 @@ defenses, by threat:
   it. Without Buildkite, only messages by `ci.account` (and never ones
   mirrored from GitHub) drive `gerrit/Verified`'s link and text; with
   `ci.account` unset, no message does.
-- **The public `/checks` endpoint** reads changes anonymously, so it shows
-  nothing anonymous users cannot already see. Answers are cached briefly,
+- **The public `/checks` endpoint** reads changes as the bridge, since
+  AOS lets no anonymous user read them, and answers only for the
+  project's changes that are not private: those the bridge publishes as
+  GitHub PRs anyway (the bridge could be made a private change's
+  reviewer). Answers are cached briefly,
   failures are not (and a client hanging up does not cause one), at most 4
   are computed at once, and anonymous requests cause at most 300 Gerrit
   reads and 60 Buildkite calls a minute, so they cannot exhaust the rate limit the bridge needs

@@ -166,12 +166,12 @@ func result(id, state string, exit *int, url string) Result {
 }
 
 // Handler serves GET /checks/{change}/{patchset} for the Checks plugin.
-// It is public: it shows only changes anonymous users can see, in
-// Project, and caches answers briefly so page loads cannot hammer Gerrit
-// or Buildkite.
+// It is public: it shows only Project's changes that are not private,
+// which the bridge publishes as GitHub PRs anyway, and caches answers
+// briefly so page loads cannot hammer Gerrit or Buildkite.
 type Handler struct {
 	Project string
-	Gerrit  Changes // anonymous
+	Gerrit  Changes // as the bridge: AOS lets no anonymous user read changes
 	Builds  Builds
 	// Label is the label CI votes, shown next to the runs.
 	Label string
@@ -351,7 +351,10 @@ func (h *Handler) compute(ctx context.Context, change, ps int) entry {
 		h.Logger.Warn("checks: reading change", "change", change, "err", err)
 		return fail(http.StatusBadGateway, "cannot read the change from Gerrit")
 	}
-	if ch.Project != h.Project {
+	if ch.Project != h.Project || ch.IsPrivate {
+		// Gerrit is read as the bridge (AOS lets no anonymous user read
+		// changes), which could be made a private change's reviewer:
+		// only what the bridge publishes on GitHub anyway is answered.
 		return fail(http.StatusNotFound, "not a change the bridge serves")
 	}
 	sha := ""

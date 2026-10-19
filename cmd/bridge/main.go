@@ -235,7 +235,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			label = cfg.CI.Labels[0]
 		}
 		mux.Handle("GET /checks/{change}/{patchset}", &gerritchecks.Handler{
-			Project: cfg.Gerrit.Project, Gerrit: rest.Anon(), Builds: builds, Label: label,
+			// As the bridge: AOS lets no anonymous user read changes. The
+			// handler answers only for what the bridge publishes anyway.
+			Project: cfg.Gerrit.Project, Gerrit: rest, Builds: builds, Label: label,
 			AllowOrigin: origin, Logger: logger,
 			ClientAddr: func(r *http.Request) string { return github.ClientAddr(r, cidrs(cfg.GitHub.WebhookTrustedProxies)) },
 		})
