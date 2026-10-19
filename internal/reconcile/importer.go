@@ -43,6 +43,9 @@ type Importer struct {
 	CreatedAfter time.Time
 	// Pushers says who pushed which commit (from webhooks).
 	Pushers *Pushers
+	// Trusted reports whether a Gerrit account is in CI's trusted group
+	// (see Code.Trusted).
+	Trusted func(ctx context.Context, account int) (trusted, known bool)
 	DryRun  bool
 	Logger  *slog.Logger
 
@@ -513,7 +516,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		changeID = fmt.Sprintf("I%x", sha1.Sum([]byte(im.GitHub.Owner+"/"+im.GitHub.Repo+"\x00"+pr.NodeID)))
 	}
 	existing, err := im.Gerrit.QueryChanges(ctx, fmt.Sprintf("project:%s branch:%s change:%s",
-		gerrit.QueryString(im.Project), gerrit.QueryString(branch), changeID), "CURRENT_REVISION", "CURRENT_COMMIT", "DETAILED_ACCOUNTS")
+		gerrit.QueryString(im.Project), gerrit.QueryString(branch), changeID), "ALL_REVISIONS", "ALL_COMMITS", "DETAILED_ACCOUNTS")
 	if err != nil {
 		return nil, err
 	}
@@ -526,25 +529,48 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		}
 	}
 	message := "" // the commit message, if not built from the PR
+	base := ""    // the patch set GitHub last had: the push builds on it
+	foreign := false
 	if later {
 		if cur == nil {
 			return nil, fmt.Errorf("change %d (%s) not found", st.State.Change, changeID)
 		}
-		rev, _ := cur.Current()
-		if rev.Commit.Message == "" {
-			return nil, fmt.Errorf("change %d: no current commit", cur.Number)
-		}
-		message = rev.Commit.Message
-		if h == cur.CurrentRevision {
+		if rev, ok := cur.Revisions[h]; ok {
 			// Gerrit's own commit (an export the bridge did not get to
-			// record): nothing to import.
+			// record, a patch set uploaded meanwhile being current now):
+			// nothing to import, and nobody's push. Recorded, so the code
+			// mirror adds Gerrit's newer patch set on top.
+			if err := im.recordGerritHead(ctx, cur.Number, rev.Number, h); err != nil {
+				return nil, err
+			}
 			res.heads[h] = h
 			res.change, res.patchSet = cur.Number, rev.Number
 			return res, nil
 		}
+		base = cur.CurrentRevision
+		for _, r := range st.Revisions {
+			if _, ok := cur.Revisions[r.GerritSHA]; ok && r.GitHubSHA != "" {
+				base = r.GerritSHA
+			}
+		}
+		if st.State.Origin == "github" {
+			// A patch set someone else uploaded in Gerrit never reached
+			// the PR (Code.markForeign): the push is not racing it.
+			rev, _ := cur.Current()
+			real := 0
+			if rev.RealUploader != nil {
+				real = rev.RealUploader.AccountID
+			}
+			ok, _ := mayPushToAuthor(ctx, im.Trusted, im.Bridge.AccountID, cur.Owner.AccountID, rev.Uploader.AccountID, real)
+			foreign = !ok
+		}
+		message = cur.Revisions[base].Commit.Message
+		if message == "" {
+			return nil, fmt.Errorf("change %d: no commit message for %s", cur.Number, short(base))
+		}
 	}
 
-	user, login, err := im.uploader(ctx, pr, cur, later, h, gerritParent, branch)
+	user, login, err := im.uploader(ctx, pr, cur, base, h, gerritParent, branch)
 	if err != nil {
 		return nil, err
 	}
@@ -559,7 +585,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 
 	// Both moved since the last sync? Gerrit wins (design §5.3).
 	gerritMoved := false
-	if st != nil && cur != nil && len(st.Revisions) > 0 && cur.CurrentRevision != st.Revisions[len(st.Revisions)-1].GerritSHA && res.heads[h] == "" {
+	if st != nil && cur != nil && !foreign && len(st.Revisions) > 0 && cur.CurrentRevision != st.Revisions[len(st.Revisions)-1].GerritSHA && res.heads[h] == "" {
 		gerritMoved = true
 	}
 
@@ -774,19 +800,19 @@ func (im *Importer) checkSize(ctx context.Context, h, parent, parentTip string) 
 // GitHub button (Update branch, Commit suggestion) on someone else's PR.
 //
 // The first upload decides the owner, so it is the PR's author's. A later
-// one is the pusher's (as GitHub says; never guessed) if they uploaded the
-// current patch set too. A pure rebase of the current patch set is
+// one is the pusher's (as GitHub says; never guessed) if they uploaded
+// base, the patch set GitHub last had, too. A pure rebase of base is
 // uploaded on behalf of its uploader, as Gerrit's own rebase is. Anything
 // else is the bridge's, and needs a trusted reviewer to start CI.
-func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *gerrit.ChangeInfo, later bool, h, parent, branch string) (user, login string, err error) {
+func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *gerrit.ChangeInfo, base, h, parent, branch string) (user, login string, err error) {
 	if !im.Uploader.CanActAs() {
 		return "", "", nil
 	}
-	if !later {
+	if base == "" {
 		user, _ = im.Identity.GerritUser(ctx, pr.User.Login)
 		return user, pr.User.Login, nil
 	}
-	rev, _ := cur.Current()
+	rev := cur.Revisions[base]
 	prev := rev.Uploader.Username
 	if rev.Uploader.AccountID == im.Bridge.AccountID || gerrit.AmbiguousUsername(prev) {
 		prev = ""
@@ -800,7 +826,7 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 	if pusher, _ := im.Identity.GerritUser(ctx, login); strings.EqualFold(pusher, prev) {
 		return pusher, login, nil
 	}
-	pure, err := im.pureRebase(ctx, cur.CurrentRevision, rev.Ref, parent, h)
+	pure, err := im.pureRebase(ctx, base, rev.Ref, parent, h)
 	if err != nil {
 		return "", "", err
 	}
@@ -834,7 +860,9 @@ func (im *Importer) parentTrusted(ctx context.Context, parent, branch, user stri
 		return false, err
 	}
 	for _, c := range cs {
-		if rev, ok := c.Revisions[parent]; ok && strings.EqualFold(rev.Uploader.Username, user) && rev.Uploader.AccountID != im.Bridge.AccountID {
+		// Uploaded on user's behalf by someone else is not theirs.
+		if rev, ok := c.Revisions[parent]; ok && strings.EqualFold(rev.Uploader.Username, user) && rev.Uploader.AccountID != im.Bridge.AccountID &&
+			(rev.RealUploader == nil || rev.RealUploader.AccountID == rev.Uploader.AccountID) {
 			return true, nil
 		}
 	}
@@ -1018,6 +1046,22 @@ func (im *Importer) restoreGerrit(ctx context.Context, n int, branch string, cur
 	_, err = im.GitHub.CreateIssueComment(ctx, pr.Number, note+"\n\n"+noticeMarker)
 	im.Logger.Warn("both sides changed; Gerrit wins", "change", n, "pr", pr.Number)
 	return err
+}
+
+// recordGerritHead records that GitHub has patch set ps of change n as
+// Gerrit's own commit.
+func (im *Importer) recordGerritHead(ctx context.Context, n, ps int, sha string) error {
+	st, err := im.Store.Load(ctx, n)
+	if err != nil {
+		return err
+	}
+	if knownHeads(st)[sha] != "" || im.DryRun {
+		return nil
+	}
+	tree, parentTree := revisionTrees(ctx, im.Mirror, sha)
+	return updateStateFn(ctx, im.Store, n, fmt.Sprintf("Gerrit's patch set %d is on GitHub", ps), func(st *state.Change) {
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: sha, GitHubSHA: sha, Tree: tree, ParentTree: parentTree})
+	})
 }
 
 // revisionTrees returns tree(rev) and tree(rev^).

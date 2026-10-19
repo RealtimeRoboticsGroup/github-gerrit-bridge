@@ -363,7 +363,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	// Statuses need the patch set on GitHub; refresh them as soon as the
 	// code mirror puts it there.
 	code.OnExported = checks.Sync
-	code.Trusted = checks.IsTrusted
+	code.Trusted, code.Importer.Trusted = checks.IsTrusted, checks.IsTrusted
 	commands := &reconcile.Commands{
 		GitHub:       gh,
 		Submitter:    reconcile.RunAsSubmitter{Gerrit: rest},

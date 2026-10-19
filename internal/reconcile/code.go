@@ -229,6 +229,27 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string) error {
 	return nil
 }
 
+// mayPushToAuthor reports whether a patch set uploaded in Gerrit by
+// uploader (on their behalf by real, if not 0) may go to a GitHub-born
+// PR's branch, which is its author's: only if each is the change's owner,
+// the bridge, or in CI's trusted group. known is false if the group could
+// not be read (then only the owner and the bridge count).
+func mayPushToAuthor(ctx context.Context, trusted func(context.Context, int) (bool, bool), bridge, owner, uploader, real int) (ok, known bool) {
+	known = true
+	allowed := func(account int) bool {
+		if account != 0 && (account == owner || account == bridge) {
+			return true
+		}
+		if trusted == nil || account == 0 {
+			return false
+		}
+		t, k := trusted(ctx, account)
+		known = known && k
+		return t && k
+	}
+	return allowed(uploader) && (real == 0 || allowed(real)), known
+}
+
 // markForeign marks the GitHub-born changes whose current patch set was
 // uploaded, or uploaded on someone's behalf, in Gerrit by someone other
 // than the change's owner, the bridge or a member of CI's trusted group
@@ -240,19 +261,8 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 		if ch.Status != "NEW" || !s.githubBorn(n) {
 			continue
 		}
-		known := true
-		ok := func(account int) bool {
-			if account != 0 && (account == ch.OwnerID || account == c.BridgeAccount) {
-				return true
-			}
-			if c.Trusted == nil || account == 0 {
-				return false
-			}
-			t, k := c.Trusted(ctx, account)
-			known = known && k
-			return t && k
-		}
-		if ok(ch.UploaderID) && (ch.RealUploaderID == 0 || ok(ch.RealUploaderID)) {
+		ok, known := mayPushToAuthor(ctx, c.Trusted, c.BridgeAccount, ch.OwnerID, ch.UploaderID, ch.RealUploaderID)
+		if ok {
 			continue
 		}
 		s.Foreign[n] = true
@@ -1136,7 +1146,9 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan) error {
 			}
 			// Commits the bridge built (imports, appends, re-parented
 			// exports) are recorded where they are made, with both SHAs.
-			if gh := s.bridgeHead(n, d.Head); gh != "" &&
+			// A foreign patch set is not on GitHub even where its tree is
+			// (a commit-message edit, say).
+			if gh := s.bridgeHead(n, d.Head); gh != "" && !s.Foreign[n] &&
 				!slices.ContainsFunc(st.Revisions, func(r state.Revision) bool { return r.GerritSHA == ch.Revision && r.GitHubSHA == gh }) {
 				newRevision[n] = true
 				st.Revisions = append(st.Revisions, state.Revision{

@@ -771,6 +771,126 @@ func TestLaterImportKeepsMessageAddsSignOffs(t *testing.T) {
 	}
 }
 
+// A patch set someone else uploaded in Gerrit to a GitHub-born change
+// never reached the PR (markForeign): the author's next push builds on
+// the patch set GitHub had, so it is theirs, with that patch set's
+// message, and does not race Gerrit.
+func TestPushAfterForeignPatchSetIsTheAuthors(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	st, _ := im.Store.Load(ctx, 1)
+	st.State.Origin, st.State.HeadBranch = "github", "feature"
+	if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+		t.Fatal(err)
+	}
+	ci := s.changes[1]
+	ci.Owner = s.accounts["austin"]
+	mal := s.commit(g[0], "one.txt", "mallory\n", "Mallory's message\n\nChange-Id: "+ids[0]+"\n")
+	s.push("gerrit.git", mal, "refs/changes/01/1/2")
+	ci.Revisions[mal] = gerrit.RevisionInfo{Number: 2, Ref: "refs/changes/01/1/2", Uploader: gerrit.AccountInfo{AccountID: 9, Username: "mallory"},
+		Commit: gerrit.CommitInfo{Message: "Mallory's message\n\nChange-Id: " + ids[0] + "\n"}}
+	ci.CurrentRevision = mal
+	s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
+	h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
+	s.push("github.git", h, "refs/heads/feature")
+	s.pulls[10].Head.SHA = h
+	im.Pushers.Record(h, "austin")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], "austin ") {
+		t.Fatalf("uploads = %v, want one as austin (and no restore of mallory's)", up.uploads)
+	}
+	if msg := s.git("m.git", "log", "-1", "--format=%B", ci.CurrentRevision); strings.Contains(msg, "Mallory") {
+		t.Errorf("the author's patch set took mallory's message: %q", msg)
+	}
+
+	// Someone else's pure rebase of what GitHub had is the author's too.
+	s2, im2, up2, m1b, g2, ids2 := gerritBornWorld(t, false)
+	st2, _ := im2.Store.Load(ctx, 1)
+	st2.State.Origin, st2.State.HeadBranch = "github", "feature"
+	if err := im2.Store.Save(ctx, 1, st2, "GitHub-born"); err != nil {
+		t.Fatal(err)
+	}
+	ci2 := s2.changes[1]
+	mal2 := s2.commit(g2[0], "one.txt", "mallory\n", "Mallory's message\n\nChange-Id: "+ids2[0]+"\n")
+	s2.push("gerrit.git", mal2, "refs/changes/01/1/2")
+	ci2.Revisions[mal2] = gerrit.RevisionInfo{Number: 2, Ref: "refs/changes/01/1/2", Uploader: gerrit.AccountInfo{AccountID: 9, Username: "mallory"},
+		Commit: gerrit.CommitInfo{Message: "Mallory's message\n\nChange-Id: " + ids2[0] + "\n"}}
+	ci2.CurrentRevision, ci2.Owner = mal2, s2.accounts["austin"]
+	s2.pulls[10].Head.Ref, s2.pulls[10].User.Login = "feature", "austin"
+	r := s2.rebase(g2[0], m1b)
+	s2.push("github.git", r, "refs/heads/feature")
+	s2.pulls[10].Head.SHA = r
+	im2.Pushers.Record(r, "brt")
+	if err := im2.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up2.uploads) != 1 || !strings.HasPrefix(up2.uploads[0], "austin ") {
+		t.Errorf("rebase by brt: uploads = %v, want one on behalf of austin", up2.uploads)
+	}
+}
+
+// A foreign patch set is never recorded as on GitHub, even where GitHub's
+// head has its tree (a commit-message edit): /submit and the importer
+// take recorded patch sets for ones GitHub had.
+func TestForeignPatchSetIsNotRecorded(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	h1 := s.commit(m0, "b.txt", "b\n", "Mine")
+	ps1 := s.commit(m0, "b.txt", "b\n", "Mine\n\nChange-Id: "+cid(1)+"\n")
+	ps2 := s.commit(m0, "b.txt", "b\n", "Mallory's\n\nChange-Id: "+cid(1)+"\n")
+	st := &state.Change{State: state.ChangeState{Change: 1, PR: 10, Branch: "main", Origin: "github", HeadBranch: "feature", Lifecycle: "NEW"},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: ps1, GitHubSHA: h1}}}
+	s.save(ctx, store, 1, st)
+	st, _ = store.Load(ctx, 1)
+	pr := s.pr(10, "feature", h1, "main", "brt")
+	for _, foreign := range []bool{true, false} {
+		snap := &Snapshot{Branch: "main", Changes: map[int]*GerritChange{1: {Number: 1, Status: "NEW", PatchSet: 2, Revision: ps2, Subject: "Mallory's"}},
+			State: map[int]*state.Change{1: st}, PRs: map[int]*github.PullRequest{10: pr}, GitHubBranches: map[string]string{"feature": h1},
+			SameTree: map[int]string{1: h1}, Foreign: map[int]bool{1: foreign}}
+		p := &Plan{Desired: map[int]*Desired{1: {Change: 1, Head: "feature", PR: 10, Base: "main"}}}
+		if err := c.record(ctx, snap, p); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := store.Load(ctx, 1)
+		if recorded := len(got.Revisions) == 2; recorded == foreign {
+			t.Errorf("foreign %v: revisions %+v", foreign, got.Revisions)
+		}
+	}
+}
+
+// The bridge's own export of an older patch set (pushed before a newer
+// one was uploaded, and not recorded yet) is Gerrit's commit, not anyone's
+// push: it is recorded, never uploaded again over the newer one.
+func TestOwnExportOfOlderPatchSetIsNotImported(t *testing.T) {
+	s, im, up, _, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	st, _ := im.Store.Load(ctx, 1)
+	st.Revisions = nil
+	if err := im.Store.Save(ctx, 1, st, "export not recorded"); err != nil {
+		t.Fatal(err)
+	}
+	ci := s.changes[1]
+	ps2 := s.commit(g[0], "one.txt", "2\n", "One\n\nChange-Id: "+ids[0]+"\n")
+	s.push("gerrit.git", ps2, "refs/changes/01/1/2")
+	ci.Revisions[ps2] = gerrit.RevisionInfo{Number: 2, Ref: "refs/changes/01/1/2", Uploader: s.accounts["austin"], Commit: gerrit.CommitInfo{Message: "One\n\nChange-Id: " + ids[0] + "\n"}}
+	ci.CurrentRevision = ps2
+	im.Pushers.Record(g[0], "bot")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 0 || ci.CurrentRevision != ps2 {
+		t.Fatalf("uploads = %v: the bridge's own export was uploaded over patch set 2", up.uploads)
+	}
+	st, _ = im.Store.Load(ctx, 1)
+	if len(st.Revisions) != 1 || st.Revisions[0].PatchSet != 1 || st.Revisions[0].GitHubSHA != g[0] {
+		t.Errorf("revisions = %+v, want patch set 1 recorded as on GitHub", st.Revisions)
+	}
+}
+
 // Gerrit reads the Change-Id footer of the last paragraph. A commit with
 // another Change-Id higher up must not get past the "belongs to another
 // change" check on that one and land as a patch set of the footer's.
@@ -1118,6 +1238,36 @@ func TestPureRebaseOntoSomeoneElsesParentIsTheBridges(t *testing.T) {
 	}
 	if len(up.uploads) != 2 || !strings.HasPrefix(up.uploads[0], "brt ") || !strings.HasPrefix(up.uploads[1], " ") {
 		t.Errorf("uploads = %v, want brt's own layer as brt and austin's as the bridge", up.uploads)
+	}
+}
+
+// A parent someone else uploaded on the uploader's behalf (Gerrit's
+// rebase) is not the uploader's to vouch for.
+func TestPureRebaseOntoParentUploadedOnBehalfIsTheBridges(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, true)
+	ctx := context.Background()
+	r1 := s.rebase(g[0], m1)
+	s.push("gerrit.git", r1, "refs/changes/01/1/2")
+	brt := s.accounts["brt"]
+	s.changes[1].Revisions[r1] = gerrit.RevisionInfo{Number: 2, Ref: "refs/changes/01/1/2", Uploader: s.accounts["austin"], RealUploader: &brt,
+		Commit: gerrit.CommitInfo{Message: "One\n\nChange-Id: " + ids[0] + "\n"}}
+	s.changes[1].CurrentRevision = r1
+	st, _ := im.Store.Load(ctx, 1)
+	st.Revisions = append(st.Revisions, state.Revision{PatchSet: 2, GerritSHA: r1, GitHubSHA: r1})
+	if err := im.Store.Save(ctx, 1, st, "exported"); err != nil {
+		t.Fatal(err)
+	}
+	s.push("github.git", r1, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = r1
+	r2 := s.rebase(g[1], r1)
+	s.push("github.git", r2, "refs/heads/gerrit/"+ids[1])
+	s.pulls[20].Head.SHA = r2
+	im.Pushers.Record(r2, "brt")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], " ") {
+		t.Errorf("uploads = %v, want austin's layer rebased onto brt's rebase uploaded by the bridge", up.uploads)
 	}
 }
 
