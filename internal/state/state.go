@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
 )
@@ -88,6 +89,9 @@ type Revision struct {
 	// Tree and ParentTree identify the diff (design §5.4, rule 1).
 	Tree       string `json:"tree"`
 	ParentTree string `json:"parent_tree"`
+	// At is when the bridge recorded it on both sides: GitHub had it by
+	// then (zero in state written before this was kept).
+	At time.Time `json:"at,omitzero"`
 }
 
 // Thread links a Gerrit comment thread to a GitHub review thread

@@ -634,7 +634,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	tree, parentTree := revisionTrees(ctx, im.Mirror, s)
 	err = updateStateFn(ctx, im.Store, ch.Number, fmt.Sprintf("Import PR #%d head %s as patch set %d", pr.Number, short(h), ps), func(st *state.Change) {
 		st.State.HeadBranch = pr.HeadKey(im.GitHub.Owner + "/" + im.GitHub.Repo)
-		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: s, GitHubSHA: h, Tree: tree, ParentTree: parentTree})
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: s, GitHubSHA: h, Tree: tree, ParentTree: parentTree, At: time.Now()})
 	})
 	if err != nil {
 		return nil, err
@@ -1060,7 +1060,7 @@ func (im *Importer) recordGerritHead(ctx context.Context, n, ps int, sha string)
 	}
 	tree, parentTree := revisionTrees(ctx, im.Mirror, sha)
 	return updateStateFn(ctx, im.Store, n, fmt.Sprintf("Gerrit's patch set %d is on GitHub", ps), func(st *state.Change) {
-		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: sha, GitHubSHA: sha, Tree: tree, ParentTree: parentTree})
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: sha, GitHubSHA: sha, Tree: tree, ParentTree: parentTree, At: time.Now()})
 	})
 }
 

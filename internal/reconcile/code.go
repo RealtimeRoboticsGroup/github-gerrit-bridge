@@ -942,7 +942,7 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			tree, parentTree := c.trees(ctx, ap.Revision)
 			err := c.updateState(ctx, ap.Change, fmt.Sprintf("Export patch set %d to %s", ap.PatchSet, name), func(st *state.Change) {
 				st.Revisions = append(st.Revisions, state.Revision{PatchSet: ap.PatchSet, GerritSHA: ap.Revision,
-					GitHubSHA: commit, Tree: tree, ParentTree: parentTree})
+					GitHubSHA: commit, Tree: tree, ParentTree: parentTree, At: time.Now()})
 			})
 			if err != nil {
 				return err
@@ -1153,7 +1153,7 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan) error {
 				newRevision[n] = true
 				st.Revisions = append(st.Revisions, state.Revision{
 					PatchSet: ch.PatchSet, GerritSHA: ch.Revision, GitHubSHA: gh,
-					Tree: tree, ParentTree: parentTree,
+					Tree: tree, ParentTree: parentTree, At: time.Now(),
 				})
 			}
 		})

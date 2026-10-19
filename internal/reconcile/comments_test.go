@@ -36,7 +36,9 @@ type fakeGerrit struct {
 	messages []gerrit.ChangeMessage
 	comments []gerrit.CommentInfo
 	revs     map[string]int // sha -> ps
-	current  string
+	// created is when each patch set was uploaded ("" if not said).
+	created map[int]string
+	current string
 	files    map[string]string
 	clock    int
 	nextID   int
@@ -135,7 +137,7 @@ func (f *fakeGerrit) GetChange(context.Context, int, ...string) (*gerrit.ChangeI
 		ci.Labels[label] = l
 	}
 	for sha, ps := range f.revs {
-		ci.Revisions[sha] = gerrit.RevisionInfo{Number: ps}
+		ci.Revisions[sha] = gerrit.RevisionInfo{Number: ps, Created: f.created[ps]}
 	}
 	return ci, nil
 }
@@ -998,6 +1000,68 @@ func TestGitHubApprovalBecomesVote(t *testing.T) {
 	e.sync(t)
 	if len(e.g.votes) != 3 {
 		t.Errorf("approval of an unknown commit voted: %v", e.g.votes)
+	}
+}
+
+// A comment on no commit (an issue comment, a review of a commit Gerrit
+// never had) goes on the patch set GitHub had when it was written, as its
+// author; one written before GitHub had any is the bridge's. So a
+// trusted reviewer's "retest" never starts CI on a patch set uploaded
+// after it.
+func TestCommentsGoOnThePatchSetTheirAuthorCouldSee(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	t0 := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+	updateStateFn(ctx, e.st, 5, "revisions", func(s *state.Change) {
+		s.Revisions = []state.Revision{{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "sha1", At: t0}, {PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "sha2", At: t0.Add(time.Hour)},
+			{PatchSet: 3, GerritSHA: "sha3", At: t0.Add(90 * time.Minute)}} // not on GitHub
+	})
+	e.g.revs["sha3"], e.g.current = 3, "sha3"
+	ic := func(id int64, body string, at time.Time) github.IssueComment {
+		return github.IssueComment{ID: id, Body: body, User: github.User{Login: "bob"}, CreatedAt: at,
+			HTMLURL: fmt.Sprintf("https://github.com/o/r/pull/1#issuecomment-%d", id)}
+	}
+	e.h.ics = append(e.h.ics, ic(1, "retest one", t0.Add(time.Minute)), ic(2, "retest two", t0.Add(2*time.Hour)), ic(3, "too early", t0.Add(-time.Minute)))
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "COMMENTED", CommitID: "unimported", User: github.User{Login: "bob"},
+		Body: "review of a push", SubmittedAt: t0.Add(time.Minute), HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+	e.h.rcs = append(e.h.rcs, github.ReviewComment{ID: 80, ReviewID: 81, Path: "a.txt", CommitID: "unimported", OriginalCommitID: "unimported",
+		Body: "on a file of a push", SubjectType: "file", CreatedAt: t0.Add(time.Minute), User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#discussion_r80"})
+	e.h.rcs = append(e.h.rcs, github.ReviewComment{ID: 82, ReviewID: 83, Path: "a.txt", CommitID: "unimported", OriginalCommitID: "unimported",
+		Body: "early file comment", SubjectType: "file", CreatedAt: t0.Add(-time.Minute), User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#discussion_r82"})
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 71, State: "COMMENTED", CommitID: "unimported", User: github.User{Login: "bob"},
+		Body: "early review", SubmittedAt: t0.Add(-time.Minute), HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-71"})
+	e.sync(t)
+	want := map[string]string{"retest one": "1 bobg", "retest two": "2 bobg", "too early": "3 ", "review of a push": "1 bobg", "on a file of a push": "1 bobg",
+		"early file comment": "3 ", "early review": "3 "}
+	for _, gc := range e.g.comments {
+		for text, w := range want {
+			if strings.Contains(gc.Message, text) {
+				if got := fmt.Sprintf("%d %s", gc.PatchSet, gc.Author.Username); got != w {
+					t.Errorf("%q posted on patch set and as %q, want %q", text, got, w)
+				}
+				delete(want, text)
+			}
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("not mirrored: %v", want)
+	}
+	e.settled(t)
+
+	// Recorded before the time was kept: Gerrit's upload time stands in.
+	e = newCommentsEnv(t)
+	e.runAs()
+	e.g.created = map[int]string{1: "2026-10-19 12:00:00.000000000", 2: "2026-10-19 13:00:00.000000000"}
+	updateStateFn(ctx, e.st, 5, "revisions", func(s *state.Change) {
+		s.Revisions = []state.Revision{{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "sha1"}, {PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "sha2"}}
+	})
+	e.h.ics = append(e.h.ics, ic(1, "retest one", t0.Add(time.Minute)))
+	e.sync(t)
+	if gc := e.g.comments[len(e.g.comments)-1]; gc.PatchSet != 1 || gc.Author.Username != "bobg" {
+		t.Errorf("posted on patch set %d as %q, want 1 as bobg", gc.PatchSet, gc.Author.Username)
 	}
 }
 

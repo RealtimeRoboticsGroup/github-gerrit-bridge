@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/anchor"
@@ -144,10 +145,32 @@ type commentSnapshot struct {
 	threads            []github.ReviewThread
 	psToSHA            map[int]string
 	shaToPS            map[string]int
-	current            int
+	// psCreated is when each patch set was uploaded to Gerrit.
+	psCreated map[int]time.Time
+	current   int
 	revision           string
 	// labels are the current patch set's votes.
 	labels map[string]gerrit.LabelInfo
+}
+
+// seen is the newest patch set GitHub had at t, so the one someone
+// commenting then could have seen; 0 if none. A comment that names no
+// commit (an issue comment, a review of a commit Gerrit never had) goes
+// on it, not on whatever is current when the bridge gets to it: a
+// trusted reviewer's "retest" must not start CI on a patch set uploaded
+// after it.
+func (s *commentSnapshot) seen(t time.Time) int {
+	ps := 0
+	for _, r := range s.revisions {
+		at := r.At
+		if at.IsZero() {
+			at = s.psCreated[r.PatchSet] // recorded before At was kept
+		}
+		if _, ok := s.psToSHA[r.PatchSet]; ok && r.GitHubSHA != "" && !at.IsZero() && !at.After(t) && r.PatchSet > ps {
+			ps = r.PatchSet
+		}
+	}
+	return ps
 }
 
 // ghSHA is the GitHub commit standing for patch set ps.
@@ -261,7 +284,7 @@ func (c *Comments) Sync(ctx context.Context, n int) error {
 
 func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*commentSnapshot, error) {
 	s := &commentSnapshot{byID: map[string]*gerrit.CommentInfo{}, rcByID: map[int64]*github.ReviewComment{},
-		psToSHA: map[int]string{}, shaToPS: map[string]int{}}
+		psToSHA: map[int]string{}, shaToPS: map[string]int{}, psCreated: map[int]time.Time{}}
 	var err error
 	if s.gerrit, err = c.Gerrit.ListComments(ctx, n); err != nil {
 		return nil, err
@@ -282,6 +305,9 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	for sha, r := range ch.Revisions {
 		s.psToSHA[r.Number] = sha
 		s.shaToPS[sha] = r.Number
+		if t, err := time.Parse("2006-01-02 15:04:05.999999999", r.Created); err == nil {
+			s.psCreated[r.Number] = t
+		}
 	}
 	s.revision = ch.CurrentRevision
 	s.messages = ch.Messages
@@ -897,9 +923,13 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			}
 		}
 		if !ok {
-			// Nowhere to anchor it: keep the comment, on the current
-			// patch set at file level, saying where it was.
-			ps = s.current
+			// Nowhere to anchor it: keep the comment, at file level on
+			// the patch set its author could have seen, saying where it
+			// was.
+			if ps = s.seen(rc.CreatedAt); ps == 0 {
+				ps, login, key = s.current, "", key+"/unseen"
+				body = gerritBody(rc.User.Login, rc.HTMLURL, rc.Body, asAuthor(login))
+			}
 			ci.Message = fmt.Sprintf("%s\n\n<sub>(on GitHub commit %s, line %d)</sub>", body, short(commit), rc.OriginalLine)
 			add(key, login, src, ps, rc.Path, ci)
 			continue
@@ -933,10 +963,10 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		if rv.State != "COMMENTED" && !vote {
 			continue
 		}
-		ps := s.current
 		reviewed, known := s.shaToPS[rv.CommitID]
-		if known {
-			ps = reviewed
+		ps := reviewed
+		if !known {
+			ps = s.seen(rv.SubmittedAt)
 		}
 		body := rv.Body
 		switch rv.State {
@@ -951,6 +981,9 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			body = "Not counted as a vote: it was made on a commit that is not a patch set in Gerrit.\n\n" + body
 		}
 		login := rv.User.Login
+		if ps == 0 {
+			ps, login = s.current, "" // nothing it could have seen: not as its author
+		}
 		if editedByOther(s.reviewEdits, rv.ID, login) {
 			// Edited by someone else: not as the author, and no vote.
 			login = ""
@@ -984,7 +1017,11 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		if editedByOther(s.edits, ic.ID, ic.User.Login) {
 			login = "" // edited by someone else: not as the author
 		}
-		add("issue/"+strconv.FormatInt(ic.ID, 10), login, ghComment{kindIssueComment, ic.ID, ic.Body}, s.current, gerrit.PatchSetLevel,
+		ps := s.seen(ic.CreatedAt)
+		if ps == 0 {
+			ps, login = s.current, "" // nothing it could have seen: not as its author
+		}
+		add("issue/"+strconv.FormatInt(ic.ID, 10), login, ghComment{kindIssueComment, ic.ID, ic.Body}, ps, gerrit.PatchSetLevel,
 			gerrit.CommentInput{Message: gerritBody(ic.User.Login, ic.HTMLURL, ic.Body, asAuthor(login)), Unresolved: &f})
 	}
 	for _, k := range order {

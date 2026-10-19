@@ -809,8 +809,9 @@ mirrored are checked, and only for reviewers with a Gerrit account.
     user has no Gerrit mapping, the bridge uploads as itself. Leaving it
     out of the group means unrecognized pushes never start CI.
   - A recognized user can start or retry CI from GitHub by commenting
-    `retest`. The comment is mirrored with Run-As (§7), so Gerrit sees
-    them as the author and gerrit-buildkite triggers. Posted as its author,
+    `retest`. The comment is mirrored with Run-As (§7), on the patch set
+    GitHub had when they wrote it (§7.1), so Gerrit sees them as the
+    author and gerrit-buildkite builds that patch set. Posted as its author,
     the comment is just their text, so `retest` stays a line of its own.
   - The bridge reads the same group (REST
     `GET /groups/{id}/members?recursive`, cached briefly) so GitHub can
@@ -1027,6 +1028,13 @@ defenses, by threat:
   the commit of Gerrit's current patch set. A review of a commit Gerrit
   does not have (a push not imported yet, or one that cannot be imported)
   is mirrored as text, saying it was not counted.
+- **Comments on no commit.** An issue comment, or a review (comment) of a
+  commit Gerrit never had, goes on the patch set GitHub had when it was
+  written (the newest the bridge had recorded on both sides by then),
+  not on whatever is current when the bridge gets to it: otherwise a
+  trusted reviewer's `retest`, followed at once by someone's new patch
+  set, started CI on code nobody had seen (third audit, confirmed live).
+  One written before GitHub had any patch set is posted by the bridge.
 - **Edited comments.** Anyone with write access can edit anyone's GitHub
   comment. GraphQL's `lastEditedAt` and `editor` say whether and by whom
   (`updated_at` does not: GitHub moves it without an edit). A comment last
