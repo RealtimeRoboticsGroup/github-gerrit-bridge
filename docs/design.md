@@ -1199,12 +1199,15 @@ defenses, by threat:
   failures are not (and a client hanging up does not cause one), at most 4
   are computed at once, and anonymous requests cause at most 300 Gerrit
   reads and 60 Buildkite calls a minute, so they cannot exhaust the rate limit the bridge needs
-  for `gerrit/Verified`. Its plugin's Rerun posts as the user, so it
+  for `gerrit/Verified`; one client (by the address a trusted proxy
+  names) gets at most 30 uncached answers a minute, so it alone cannot
+  spend those for everyone (third audit). Its plugin's Rerun posts as the user, so it
   grants nothing.
 - **Webhooks.** HMAC-checked; at most 32 read at once and 4 from any one
   address, each body within 10 seconds, so a few slow senders cannot
-  refuse GitHub's deliveries; `github.webhook_allowed_networks` can limit
-  them to GitHub's hook ranges. Behind a reverse proxy, list it in
+  refuse GitHub's deliveries; `github.webhook_allowed_networks` limits
+  them to GitHub's hook ranges, and should be set on the internet (§9.1):
+  bodies are read, up to 25 MB, before their signature can be checked. Behind a reverse proxy, list it in
   `github.webhook_trusted_proxies`: its `X-Forwarded-For` then names the
   sender (the nearest hop that is not a trusted proxy), so the allowlist
   and the per-address limits see who sent a delivery, not the proxy; and
@@ -1439,6 +1442,9 @@ instance (`internal/testgerrit`) is set up this way.
 - **The bridge behind a TLS proxy** that forwards only `/webhook` and
   `/checks/`, buffers request bodies, and is listed in
   `github.webhook_trusted_proxies`; `listen` stays on loopback.
+  **`github.webhook_allowed_networks`** set to GitHub's hook ranges
+  (`GET /meta`, `hooks`): otherwise anyone can make the bridge read
+  unsigned bodies (third audit).
   `gerrit.url` is https.
 - **A dedicated GitHub bot account** for the token, not a person's: the
   bridge's own login never maps to a Gerrit account, and a person's

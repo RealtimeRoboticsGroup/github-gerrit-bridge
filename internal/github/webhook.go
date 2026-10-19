@@ -166,17 +166,20 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// clientAddr is who sent r: its peer, or, from a trusted proxy, the
-// nearest address in X-Forwarded-For that is not a trusted proxy (the
-// ones further left are the client's to write).
-func (h *WebhookHandler) clientAddr(r *http.Request) string {
+// clientAddr is who sent r (ClientAddr).
+func (h *WebhookHandler) clientAddr(r *http.Request) string { return ClientAddr(r, h.TrustedProxies) }
+
+// ClientAddr is who sent r: its peer, or, from a proxy in proxies, the
+// nearest address in X-Forwarded-For that is not one of them (the ones
+// further left are the client's to write).
+func ClientAddr(r *http.Request, proxies []*net.IPNet) string {
 	addr, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		addr = r.RemoteAddr
 	}
 	trusted := func(a string) bool {
 		ip := net.ParseIP(a)
-		for _, n := range h.TrustedProxies {
+		for _, n := range proxies {
 			if ip != nil && n.Contains(ip) {
 				return true
 			}

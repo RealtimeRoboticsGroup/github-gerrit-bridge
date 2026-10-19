@@ -193,6 +193,7 @@ func TestHandlerBoundsBuildkiteCalls(t *testing.T) {
 	for i := 1; i <= maxBuildkitePerMinute+5; i++ {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = fmt.Sprintf("192.0.2.%d:1", i) // many clients
 		r.SetPathValue("change", "5")
 		r.SetPathValue("patchset", strconv.Itoa(i))
 		h.ServeHTTP(w, r)
@@ -226,6 +227,7 @@ func TestHandlerBoundsGerritReads(t *testing.T) {
 	for i := 1; i <= maxGerritPerMinute+5; i++ {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = fmt.Sprintf("198.51.100.%d:1", i%250) // many clients
 		r.SetPathValue("change", strconv.Itoa(i))
 		r.SetPathValue("patchset", "1")
 		h.ServeHTTP(w, r)
@@ -235,6 +237,40 @@ func TestHandlerBoundsGerritReads(t *testing.T) {
 	}
 	if reads != maxGerritPerMinute || busy != 5 {
 		t.Errorf("Gerrit reads %d, busy answers %d", reads, busy)
+	}
+}
+
+// One client cannot spend everyone's budget: its uncached requests are
+// bounded on their own, by the address its proxy names.
+func TestHandlerBoundsEachClient(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	reads := 0
+	h := &Handler{Project: "p", Gerrit: countingChanges{&reads}, Builds: &fakeBuilds{}, Logger: slog.Default(),
+		now: func() time.Time { return now }, ClientAddr: func(r *http.Request) string { return r.Header.Get("X-Client") }}
+	get := func(client string, change int) int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set("X-Client", client)
+		r.SetPathValue("change", strconv.Itoa(change))
+		r.SetPathValue("patchset", "1")
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	refused := 0
+	for i := 1; i <= maxMissesPerClient+10; i++ {
+		if get("203.0.113.9", i) == http.StatusTooManyRequests {
+			refused++
+		}
+	}
+	if refused != 10 || reads != maxMissesPerClient {
+		t.Errorf("refused %d, reads %d", refused, reads)
+	}
+	if code := get("203.0.113.10", 1000); code == http.StatusTooManyRequests {
+		t.Error("another client refused")
+	}
+	now = now.Add(time.Minute)
+	if code := get("203.0.113.9", 2000); code == http.StatusTooManyRequests {
+		t.Error("still refused the next minute")
 	}
 }
 

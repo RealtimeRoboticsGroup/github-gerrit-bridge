@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -178,6 +179,9 @@ type Handler struct {
 	// not served from Gerrit's host.
 	AllowOrigin string
 	Logger      *slog.Logger
+	// ClientAddr, if set, says who sent a request (behind a proxy, from
+	// X-Forwarded-For), so one client cannot use up everyone's budget.
+	ClientAddr func(*http.Request) string
 
 	mu    sync.Mutex
 	cache map[[2]int]entry
@@ -188,6 +192,8 @@ type Handler struct {
 	window time.Time
 	calls  int
 	reads  int
+	// misses counts each client's uncached requests this minute.
+	misses map[string]int
 	now    func() time.Time // tests
 }
 
@@ -207,6 +213,9 @@ const (
 	maxBuildkitePerMinute = 60
 	// maxGerritPerMinute bounds the Gerrit reads anonymous requests cause.
 	maxGerritPerMinute = 300
+	// maxMissesPerClient bounds one client's uncached requests a minute,
+	// so it alone cannot spend the budgets above.
+	maxMissesPerClient = 30
 )
 
 func (h *Handler) clock() time.Time {
@@ -222,12 +231,32 @@ func (h *Handler) spend() bool { return h.take(&h.calls, maxBuildkitePerMinute) 
 // read takes one Gerrit read from this minute's budget.
 func (h *Handler) read() bool { return h.take(&h.reads, maxGerritPerMinute) }
 
+// miss takes one uncached request from client's budget this minute.
+func (h *Handler) miss(client string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.roll()
+	if h.misses == nil || len(h.misses) > 10000 {
+		h.misses = map[string]int{} // bounded; the shared budgets still hold
+	}
+	if h.misses[client] >= maxMissesPerClient {
+		return false
+	}
+	h.misses[client]++
+	return true
+}
+
+// roll starts a new minute's budgets if one has passed. h.mu is held.
+func (h *Handler) roll() {
+	if now := h.clock(); now.Sub(h.window) >= time.Minute {
+		h.window, h.calls, h.reads, h.misses = now, 0, 0, nil
+	}
+}
+
 func (h *Handler) take(n *int, limit int) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if now := h.clock(); now.Sub(h.window) >= time.Minute {
-		h.window, h.calls, h.reads = now, 0, 0
-	}
+	h.roll()
 	if *n >= limit {
 		return false
 	}
@@ -255,6 +284,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	e, ok := h.cache[key]
 	h.mu.Unlock()
 	if !ok || time.Since(e.at) > cacheTTL {
+		client := r.RemoteAddr
+		if h.ClientAddr != nil {
+			client = h.ClientAddr(r)
+		}
+		if host, _, err := net.SplitHostPort(client); err == nil {
+			client = host
+		}
+		if !h.miss(client) {
+			http.Error(w, "busy", http.StatusTooManyRequests)
+			return
+		}
 		select {
 		case h.busy <- struct{}{}:
 		default:

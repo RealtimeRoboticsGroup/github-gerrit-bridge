@@ -237,6 +237,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		mux.Handle("GET /checks/{change}/{patchset}", &gerritchecks.Handler{
 			Project: cfg.Gerrit.Project, Gerrit: rest.Anon(), Builds: builds, Label: label,
 			AllowOrigin: origin, Logger: logger,
+			ClientAddr: func(r *http.Request) string { return github.ClientAddr(r, cidrs(cfg.GitHub.WebhookTrustedProxies)) },
 		})
 	}
 	// Internal: the deployment exposes only /webhook and /checks/ (the
