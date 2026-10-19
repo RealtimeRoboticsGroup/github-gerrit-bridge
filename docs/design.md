@@ -1101,7 +1101,11 @@ defenses, by threat:
   Administrators), which the bridge must be able to see (it refuses to
   start otherwise, and any error looking one up excludes the user: Gerrit
   answers 404 for a group the caller may not see, e.g. Administrators
-  unless it is visible to all, audit 2026-10-19), whatever GitHub login matches
+  unless it is visible to all, audit 2026-10-19), with every group they
+  include (Gerrit's member list leaves out the members of included groups
+  the caller may not see, and of external groups such as LDAP's or the
+  github plugin's teams, which it cannot list: the bridge refuses to
+  start with those too; third audit), whatever GitHub login matches
   them; an administrator's login must be listed in
   `identity.github_to_gerrit`. The bridge's own GitHub login never maps to
   anyone. A login matching several accounts (by case) matches none.

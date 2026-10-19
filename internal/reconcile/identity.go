@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -70,7 +71,12 @@ type GitHubUsers interface {
 // groupLister lists a Gerrit group's members.
 type groupLister interface {
 	GroupMembers(ctx context.Context, group string) ([]gerrit.AccountInfo, error)
+	IncludedGroups(ctx context.Context, group string) ([]gerrit.GroupInfo, error)
 }
+
+// internalGroup is an internal group's UUID: only such groups' members
+// Gerrit lists.
+var internalGroup = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // excluded reports whether username may not be matched to a GitHub login.
 func (u *Users) excluded(ctx context.Context, username string) bool {
@@ -128,15 +134,42 @@ func (u *Users) CheckGroups(ctx context.Context) error {
 	}
 	var errs []error
 	for _, g := range u.NeverGroups {
-		if _, err := gl.GroupMembers(ctx, g); err != nil {
-			var ge *gerrit.Error
-			if errors.As(err, &ge) && ge.Status == http.StatusNotFound {
-				err = errors.New("not found: it does not exist, or the bridge may not see it (make it visible to all registered users, or remove it from identity.never_groups)")
-			}
+		if err := checkGroup(ctx, gl, g, map[string]bool{}); err != nil {
 			errs = append(errs, fmt.Errorf("identity.never_groups %q: %w", g, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// checkGroup checks that the bridge sees every member of group: Gerrit's
+// recursive member list leaves out the members of included groups the
+// caller may not see, and of external groups (LDAP, the github plugin's
+// teams), whose members it cannot list at all.
+func checkGroup(ctx context.Context, gl groupLister, group string, seen map[string]bool) error {
+	if seen[group] {
+		return nil
+	}
+	seen[group] = true
+	if _, err := gl.GroupMembers(ctx, group); err != nil {
+		var ge *gerrit.Error
+		if errors.As(err, &ge) && ge.Status == http.StatusNotFound {
+			err = errors.New("not found: it does not exist, or the bridge may not see it (make it visible to all registered users, or remove it from identity.never_groups)")
+		}
+		return err
+	}
+	inc, err := gl.IncludedGroups(ctx, group)
+	if err != nil {
+		return fmt.Errorf("listing its included groups: %w", err)
+	}
+	for _, g := range inc {
+		if !internalGroup.MatchString(g.ID) {
+			return fmt.Errorf("it includes %q (%s), whose members Gerrit does not list, so the bridge cannot keep them from being matched: add them by hand, or remove it", g.Name, g.ID)
+		}
+		if err := checkGroup(ctx, gl, g.ID, seen); err != nil {
+			return fmt.Errorf("its included group %q: %w", g.Name, err)
+		}
+	}
+	return nil
 }
 
 // GerritUser implements Identity.

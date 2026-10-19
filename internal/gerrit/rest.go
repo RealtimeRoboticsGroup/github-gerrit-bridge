@@ -455,6 +455,19 @@ func (c *Client) GroupMembers(ctx context.Context, group string) ([]AccountInfo,
 	return out, err
 }
 
+// GroupInfo is a group as Gerrit lists it.
+type GroupInfo struct {
+	ID   string `json:"id"` // its UUID: 40 hex digits for an internal group
+	Name string `json:"name"`
+}
+
+// IncludedGroups lists the groups directly included in group.
+func (c *Client) IncludedGroups(ctx context.Context, group string) ([]GroupInfo, error) {
+	var out []GroupInfo
+	err := c.Do(ctx, http.MethodGet, "groups/"+url.PathEscape(group)+"/groups/", nil, &out)
+	return out, err
+}
+
 // Submit submits revision rev of a change (with its unsubmitted
 // ancestors). Gerrit refuses if rev is no longer current.
 func (c *Client) Submit(ctx context.Context, change int, rev string) (*ChangeInfo, error) {

@@ -14,6 +14,8 @@ import (
 type fakeAccounts struct {
 	users  []string
 	groups map[string][]string
+	// includes lists each group's included groups, by id.
+	includes map[string][]string
 	// registered is when each account (by index+1 in users) was
 	// registered; unset means 2020.
 	registered map[int]time.Time
@@ -34,6 +36,14 @@ func (f fakeAccounts) Registered(_ context.Context, account int) (time.Time, err
 		return t, nil
 	}
 	return time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), nil
+}
+
+func (f fakeAccounts) IncludedGroups(_ context.Context, group string) ([]gerrit.GroupInfo, error) {
+	var out []gerrit.GroupInfo
+	for _, g := range f.includes[group] {
+		out = append(out, gerrit.GroupInfo{ID: g, Name: g})
+	}
+	return out, nil
 }
 
 func (f fakeAccounts) GroupMembers(_ context.Context, group string) ([]gerrit.AccountInfo, error) {
@@ -204,5 +214,16 @@ func TestUsersNeverGroupsFailClosed(t *testing.T) {
 	u.NeverGroups = []string{"Service Users"}
 	if err := u.CheckGroups(ctx); err != nil {
 		t.Errorf("visible groups: %v", err)
+	}
+	// Members the bridge cannot list: an external group's, or a hidden
+	// included group's.
+	internal, hidden := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	for inc, ok := range map[string]bool{internal: true, "github:org/admins": false, "ldap:cn=admins": false, hidden: false} {
+		// (Even were Gerrit to answer for an external group: with nobody.)
+		u.Gerrit = fakeAccounts{groups: map[string][]string{"Service Users": nil, internal: nil, "github:org/admins": nil, "ldap:cn=admins": nil},
+			includes: map[string][]string{"Service Users": {inc}}}
+		if err := u.CheckGroups(ctx); (err == nil) != ok {
+			t.Errorf("including %s: %v", inc, err)
+		}
 	}
 }
