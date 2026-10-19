@@ -398,23 +398,57 @@ func TestGraphQLAnswersVouchedByREST(t *testing.T) {
 			t.Errorf("queries = %v, want edits %d, review-edits %d, threads %d", f.queries, edits, reviewEdits, threads)
 		}
 	}
+	// Each answer is asked twice before it is reused: GraphQL can lag.
 	call()
-	want(1, 1, 1)
+	call()
+	want(2, 2, 2)
 	call() // nothing changed: only the threads are asked again
-	want(1, 1, 2)
+	want(2, 2, 3)
 	f.version["issues/1/comments"]++ // an issue comment edited
 	call()
-	want(2, 1, 3)
+	call()
+	want(4, 2, 5)
 	f.version["pulls/1/comments"]++ // a review comment edited
 	call()
-	want(3, 1, 4)
+	call()
+	want(6, 2, 7)
 	f.version["pulls/1/reviews"]++ // a review body edited
 	call()
-	want(3, 2, 5)
+	call()
+	want(6, 4, 9)
 	f.items["pulls/1/comments"] = 0 // no review comments: no threads
 	f.version["pulls/1/comments"]++
 	call()
-	want(4, 2, 5)
+	call()
+	call()
+	want(8, 4, 9)
+}
+
+// An answer is reused only once it came twice alike for the same lists:
+// the first after an edit may be GraphQL not showing it yet (fourth
+// audit).
+func TestVouchedAnswersConfirmedBeforeReuse(t *testing.T) {
+	f := &fakeLists{version: map[string]int{}, items: map[string]int{}, queries: map[string]int{}}
+	srv := httptest.NewServer(http.HandlerFunc(f.handler))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	lagging := []map[int64]string{{}, {7: "mallory"}}
+	computed := 0
+	compute := func() (map[int64]string, error) {
+		v := lagging[min(computed, len(lagging)-1)]
+		computed++
+		return v, nil
+	}
+	var got map[int64]string
+	for range 4 {
+		var err error
+		if got, err = c.vouched(context.Background(), "k", []string{c.RepoPath("issues/1/comments")}, compute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if computed != 3 || got[7] != "mallory" {
+		t.Errorf("computed %d times, last answer %v", computed, got)
+	}
 }
 
 // The answers kept are bounded: PRs anyone can open each leave some.

@@ -1337,7 +1337,11 @@ Known gaps:
   defused either: GitHub does not render them as mentions, and the
   third audit saw no notification from one (not confirmed either way).
 - **Gerrit-side tags.** A Gerrit user can tag their own message
-  `github-bridge:mirror` and so keep it from being mirrored to GitHub.
+  `github-bridge:mirror` and so keep it from being mirrored to GitHub;
+  likewise a GitHub user who writes `<!-- bridge:` in their own comment
+  keeps it (and any `/submit` in it) out of Gerrit. Nobody can do either
+  to someone else's: a marker edited into another's comment does not
+  count (fourth audit).
 - **Sign-offs.** `Signed-off-by` lines in a PR description are kept as
   written; AOS's requirement only checks that the words appear.
 - A dismissed GitHub review leaves its Gerrit vote.
@@ -1400,7 +1404,9 @@ Known gaps:
   hundred open PRs every 30 minutes would spend most of the hourly
   GraphQL budget; GraphQL has no conditional requests. So GraphQL answers
   that REST can vouch for are reused while every page of the REST lists
-  behind them comes back 304: who edited comments (the issue and review
+  behind them comes back 304, once asked twice alike (GraphQL can lag
+  REST a little, and the first answer after an edit would otherwise
+  stand; fourth audit): who edited comments (the issue and review
   comment lists; an edit changes the comment's body and `updated_at`) and
   review bodies (the review list). Checked live on 2026-10-19: editing an
   issue comment, a review comment or a review body changes its list's

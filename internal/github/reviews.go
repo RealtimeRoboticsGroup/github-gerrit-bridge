@@ -525,13 +525,17 @@ func (c *Client) ReviewThreads(ctx context.Context, n int) ([]ReviewThread, erro
 type vouchedAnswer struct {
 	print string
 	value map[int64]string
+	// confirmed is set once the same answer came twice for print.
+	confirmed bool
 }
 
 // vouched returns the answer cached under key if the lists at paths are
 // unchanged since it was computed, and computes (and caches) it if not.
 // An answer is cached only if the lists were the same before and after
-// computing it, so one that raced a change (or a GraphQL view lagging
-// behind REST) is not kept.
+// computing it, so one that raced a change is not kept; and reused only
+// once computed twice alike for them: GraphQL can lag REST a little, and
+// the first answer after an edit, not showing it yet, would otherwise
+// stand until the lists next changed (fourth audit).
 // maxAnswers bounds the GraphQL answers kept (a var for tests).
 var maxAnswers = 4096
 
@@ -543,7 +547,7 @@ func (c *Client) vouched(ctx context.Context, key string, paths []string, comput
 	c.mu.Lock()
 	cached, ok := c.answers[key]
 	c.mu.Unlock()
-	if ok && before != "" && cached.print == before {
+	if ok && before != "" && cached.print == before && cached.confirmed {
 		return maps.Clone(cached.value), nil
 	}
 	v, err := compute()
@@ -561,7 +565,8 @@ func (c *Client) vouched(ctx context.Context, key string, paths []string, comput
 		c.answers = map[string]vouchedAnswer{}
 	}
 	if before != "" && after == before {
-		c.answers[key] = vouchedAnswer{print: before, value: maps.Clone(v)}
+		same := ok && cached.print == before && maps.Equal(cached.value, v)
+		c.answers[key] = vouchedAnswer{print: before, value: maps.Clone(v), confirmed: same}
 	} else {
 		delete(c.answers, key)
 	}
