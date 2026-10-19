@@ -12,9 +12,12 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -470,5 +473,74 @@ func TestRunAsAndUsernameMatching(t *testing.T) {
 	}
 	if !voted {
 		t.Errorf("Code-Review votes = %+v, want alice +1 tagged as a mirror", ch.Labels["Code-Review"].All)
+	}
+}
+
+// The audit's premise (design §7.1), on a real Gerrit: X-Gerrit-RunAs
+// reads a numeric name as an account id, so a user whose username is
+// another account's id would be acted as that account. The bridge never
+// matches or acts as such names.
+func TestNumericUsernamesAreAccountIDs(t *testing.T) {
+	ctx := context.Background()
+	// Gerrit will not create a user named after an existing account's id,
+	// but nothing stops one named after an account that comes later (or
+	// a GitHub login, through the github plugin).
+	first, err := srv.CreateUser(ctx, "numeric-probe", "Probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var probe gerrit.AccountInfo
+	if err := srv.Admin.Do(ctx, "GET", "accounts/"+first.Username, nil, &probe); err != nil {
+		t.Fatal(err)
+	}
+	victimID := probe.AccountID + 2
+	name := strconv.Itoa(victimID)
+	if _, err := srv.CreateUser(ctx, name, "Numeric Name"); err != nil { // id probe+1
+		t.Fatal(err)
+	}
+	if _, err := srv.CreateUser(ctx, "numeric-victim", "Victim"); err != nil { // id probe+2
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("GET", srv.URL+"/a/accounts/self", nil)
+	req.SetBasicAuth(env.Bridge.Username, env.Bridge.HTTPPassword)
+	req.Header.Set("X-Gerrit-RunAs", name)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), `"username":"numeric-victim"`) {
+		t.Errorf("Run-As %q gave %s; the premise (it means account %d) does not hold", name, body, victimID)
+	}
+	bridge := &gerrit.Client{BaseURL: srv.URL, User: env.Bridge.Username, Password: env.Bridge.HTTPPassword}
+	users := &reconcile.Users{Gerrit: bridge}
+	if u, ok := users.GerritUser(ctx, name); ok {
+		t.Errorf("GitHub login %s acts as %q", name, u)
+	}
+	if err := bridge.As(name).Do(ctx, "GET", "accounts/self", nil, nil); err == nil {
+		t.Errorf("the client ran as %s", name)
+	}
+	if _, err := bridge.Registered(ctx, probe.AccountID); err != nil {
+		t.Errorf("registered_on: %v", err)
+	}
+}
+
+// The bridge's grants are idempotent and least-privilege: it is not in
+// Service Users (whose members vote Verified), yet still streams events
+// (TestStreamEvents) and runs as users.
+func TestBridgeGrants(t *testing.T) {
+	ctx := context.Background()
+	if err := srv.GrantRunAs(ctx, project); err != nil {
+		t.Fatalf("second GrantRunAs: %v", err)
+	}
+	var members []gerrit.AccountInfo
+	if err := srv.Admin.Do(ctx, "GET", "groups/Service%20Users/members/", nil, &members); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range members {
+		if m.Username == env.Bridge.Username {
+			t.Error("the bridge is in Service Users")
+		}
 	}
 }

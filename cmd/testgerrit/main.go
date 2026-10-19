@@ -210,7 +210,7 @@ func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project
 		// Submit requirement results are stored in the index.
 		return "", err
 	}
-	if err := s.GrantRunAs(ctx); err != nil {
+	if err := s.GrantRunAs(ctx, project); err != nil {
 		return "", err
 	}
 	path := filepath.Join(bridgeDir, project+".yaml")

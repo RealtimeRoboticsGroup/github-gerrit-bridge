@@ -1201,6 +1201,39 @@ Known gaps:
   mode that only logs the actions it would take. The dry-run mode is essential
   for bringing the bridge up against a real repo.
 
+### 9.1 Deploying on the internet (audit 2026-10-18)
+
+What the site must have before the bridge faces strangers; the test
+instance (`internal/testgerrit`) is set up this way.
+
+- **The bridge's Gerrit account:** global Run As and Stream Events through
+  its own group. Not in Administrators, Service Users (which vote
+  Verified on AOS), the CI trusted group, or any group with label, Submit,
+  View Private Changes or Access Database rights. On the bridged project:
+  Read on its branches, Push and Create on `refs/for/refs/heads/*` (and Add
+  Patch Set, which Registered Users have by default), Forge Author, and
+  `refs/bridge/*` with exclusive Read plus Push and Create. Whatever the
+  bridge's account may do, a GitHub user without a Gerrit account
+  effectively may too.
+- **The peer key** (`gerrit.ssh.peer_key_file`) can run any SSH command as
+  any account, administrators included: a credential for the whole site.
+  Keep it only on the bridge's host, mode 600, and rotate it if in doubt.
+- **Administrators' `abandon` and `toggleWipState`** on the bridged
+  project's `refs/heads/*` (Administrate Server is not applied through
+  Run-As), not on All-Projects.
+- **`receive.maxObjectSizeLimit`** (say 25m) in gerrit.config.
+- **Administrators' GitHub logins** in `identity.github_to_gerrit`: they
+  are not matched by username (`identity.never_groups`).
+- **The bridge behind a TLS proxy** that forwards only `/webhook` and
+  `/checks/`; `listen` stays on loopback. `gerrit.url` is https.
+- **A dedicated GitHub bot account** for the token, not a person's: the
+  bridge's own login never maps to a Gerrit account, and a person's
+  comments under it would never be mirrored.
+- **GitHub's ruleset** lets only replication's deploy key update the
+  default branch (§6.7), so nobody merges on GitHub behind Gerrit's back.
+- `resync_interval` on (default 30m), and `import_created_after` set when
+  the bridge is first turned on.
+
 ## 10. Testing
 
 - `internal/reconcile` is tested against in-memory fakes of the Gerrit and

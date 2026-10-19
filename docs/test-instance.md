@@ -70,8 +70,11 @@ ruleset.
 | `AustinSchuhBRT` | newer contributor | `AustinSchuhBRT` |
 
 As on AOS (Gerrit's github plugin), Gerrit accounts are named after GitHub
-logins, and the bridge matches them by username (`identity.match_usernames`);
-there is no hand-written map. A GitHub user's comments, replies, edits,
+logins, and the bridge matches them by username (`identity.match_usernames`).
+The one hand-written entry is `AustinSchuh`, an administrator:
+administrators are never matched by username (design §9.1), so
+`install.sh` passes `--identity AustinSchuh=AustinSchuh` (written into the
+bridge config only when testgerrit first creates it). A GitHub user's comments, replies, edits,
 resolutions, approvals (Code-Review +2, or +1 if that is all they may give;
 request changes = -1), uploads and `/submit` all happen in Gerrit **as their
 account** through Run-As, so `retest` from GitHub starts CI for trusted
@@ -99,7 +102,7 @@ them: Gerrit votes stay statuses there.
 |---|---|---|
 | `AustinSchuh`, `AustinSchuhBRT` | the people | created by the github plugin at their first GitHub login (username = GitHub login, an `external:github_oauth` token stored). testgerrit then adds AustinSchuh to Verified Users and Administrators, sets each one's email as a user would under Settings, and writes HTTP passwords to `~/tmp/gerrit-test/bridge/<login>.http-password` for the clones |
 | `admin` | bootstrap administrator | HTTP password only (no GitHub login) |
-| `github-bridge` | the bridge | Service Users, Run As, owns `refs/bridge/*` |
+| `github-bridge` | the bridge | its own group: Run As, Stream Events, owns `refs/bridge/*` (not Service Users, design §9.1) |
 | `buildkite` | CI | Service Users (votes Verified) |
 | `alice`, `bob` | Gerrit-only test users | from the first boot; not used by the GitHub flows |
 

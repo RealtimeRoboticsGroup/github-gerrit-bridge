@@ -47,8 +47,9 @@ func (s *Server) SetupBridge(ctx context.Context, project string) (*Env, error) 
 	}
 	var err error
 	e := &Env{Project: project}
-	// "Service Users" carries the Stream Events capability.
-	if e.Bridge, err = s.CreateUser(ctx, "github-bridge", "GitHub Bridge", BridgeGroup, "Service Users"); err != nil {
+	// Not in Service Users, whose members may vote Verified: the bridge's
+	// own group gets just the capabilities it needs (GrantRunAs).
+	if e.Bridge, err = s.CreateUser(ctx, "github-bridge", "GitHub Bridge", BridgeGroup); err != nil {
 		return nil, err
 	}
 	if e.Alice, err = s.CreateUser(ctx, "alice", "Alice Trusted", TrustedGroup); err != nil {
@@ -63,7 +64,7 @@ func (s *Server) SetupBridge(ctx context.Context, project string) (*Env, error) 
 	if err := s.ConfigureProject(ctx, project); err != nil {
 		return nil, err
 	}
-	if err := s.GrantRunAs(ctx); err != nil {
+	if err := s.GrantRunAs(ctx, project); err != nil {
 		return nil, err
 	}
 	return e, nil
@@ -298,9 +299,13 @@ func (s *Server) ConfigureProject(ctx context.Context, project string) error {
 	return nil
 }
 
-// GrantRunAs gives the bridge group the global Run As capability, which
-// /submit and draft mirroring use (design §6.7).
-func (s *Server) GrantRunAs(ctx context.Context) error {
+// GrantRunAs gives the bridge group the global capabilities the bridge
+// needs, and no more (design §7.1): Run As, which /submit, votes and
+// mirrored edits use, and Stream Events. It is idempotent, and brings an
+// older site in line: the bridge leaves Service Users, and the
+// administrators' abandon and WIP grants move from All-Projects to
+// project.
+func (s *Server) GrantRunAs(ctx context.Context, project string) error {
 	bridge, err := s.groupID(ctx, BridgeGroup)
 	if err != nil {
 		return err
@@ -309,21 +314,34 @@ func (s *Server) GrantRunAs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	access := map[string]any{"add": map[string]any{
-		"GLOBAL_CAPABILITIES": map[string]any{"permissions": map[string]any{
-			"runAs": map[string]any{"rules": map[string]any{bridge: map[string]any{"action": "ALLOW"}}},
-		}},
-		// Administrators may abandon anyone's change through Administrate
-		// Server, which Gerrit does not apply to a user the bridge acts as
-		// (Run-As): closing a PR on GitHub, which abandons its change as
-		// the closer, needs the explicit grant. AOS needs it too.
-		// The same for toggling work in progress (a PR's draft state).
-		"refs/*": map[string]any{"permissions": map[string]any{
+	allow := map[string]any{"rules": map[string]any{bridge: map[string]any{"action": "ALLOW"}}}
+	if err := s.Admin.Do(ctx, http.MethodPost, "projects/All-Projects/access", map[string]any{
+		"add": map[string]any{"GLOBAL_CAPABILITIES": map[string]any{"permissions": map[string]any{
+			"runAs": allow, "streamEvents": allow,
+		}}},
+		"remove": map[string]any{"refs/*": map[string]any{"permissions": map[string]any{
+			"abandon":        map[string]any{"rules": map[string]any{admins: map[string]any{}}},
+			"toggleWipState": map[string]any{"rules": map[string]any{admins: map[string]any{}}},
+		}}},
+	}, nil); err != nil {
+		return err
+	}
+	err = s.Admin.Do(ctx, http.MethodDelete, "groups/"+url.PathEscape("Service Users")+"/members/github-bridge", nil, nil)
+	if ge := (*gerrit.Error)(nil); err != nil && !(errors.As(err, &ge) && ge.Status == http.StatusNotFound) {
+		return fmt.Errorf("leaving Service Users: %w", err)
+	}
+	// Administrators may abandon anyone's change through Administrate
+	// Server, which Gerrit does not apply to a user the bridge acts as
+	// (Run-As): closing a PR on GitHub, which abandons its change as the
+	// closer, needs the explicit grant. AOS needs it too. The same for
+	// toggling work in progress (a PR's draft state). Only on the bridged
+	// project's branches: whoever the bridge acts as has them.
+	return s.Admin.Do(ctx, http.MethodPost, "projects/"+url.PathEscape(project)+"/access", map[string]any{
+		"add": map[string]any{"refs/heads/*": map[string]any{"permissions": map[string]any{
 			"abandon":        map[string]any{"rules": map[string]any{admins: map[string]any{"action": "ALLOW"}}},
 			"toggleWipState": map[string]any{"rules": map[string]any{admins: map[string]any{"action": "ALLOW"}}},
-		}},
-	}}
-	return s.Admin.Do(ctx, http.MethodPost, "projects/All-Projects/access", access, nil)
+		}}},
+	}, nil)
 }
 
 // ProjectExists reports whether project exists.

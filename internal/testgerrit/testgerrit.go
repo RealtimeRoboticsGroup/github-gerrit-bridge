@@ -158,6 +158,9 @@ func Start(ctx context.Context, o Options) (*Server, error) {
 		{"sendemail.enable", "false"},
 		{"container.javaHome", filepath.Dir(filepath.Dir(o.Java))},
 		{"index.batchThreads", "1"},
+		// What anyone's PR may bring (the bridge also refuses PRs over
+		// its own bounds, design §7.1).
+		{"receive.maxObjectSizeLimit", "25m"},
 		// Let people attach "Apply fix" suggestions to comments, which
 		// the bridge maps to GitHub suggestions.
 		{"experiments.enabled", "GerritBackendFeature__allow_fix_suggestions_in_comments"},
