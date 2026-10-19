@@ -678,3 +678,33 @@ func TestGroupsAreAOSsPlusTheBridges(t *testing.T) {
 		t.Error("the bridge can read Sudo, which AOS hides")
 	}
 }
+
+// The bridge relies on Gerrit 3.14 saying an account is inactive in what
+// it reads with DETAILED_ACCOUNTS (an inactive uploader's name is not
+// acted as), and on is:active in account queries (fourth audit: only
+// fakes said so).
+func TestInactiveAccountsAreSaid(t *testing.T) {
+	ctx := context.Background()
+	u, err := srv.CreateUser(ctx, "inactive-probe", "Inactive Probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pushChange(t, u, "inactive.txt")
+	if err := srv.Admin.Do(ctx, http.MethodDelete, "accounts/"+u.Username+"/active", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	bridge := &gerrit.Client{BaseURL: srv.URL, User: env.Bridge.Username, Password: env.Bridge.HTTPPassword}
+	id := fmt.Sprintf("I%x", sha1.Sum([]byte("inactive.txt")))
+	cs, err := bridge.QueryChanges(ctx, "change:"+id, "CURRENT_REVISION", "DETAILED_ACCOUNTS")
+	if err != nil || len(cs) != 1 {
+		t.Fatalf("query: %v %d", err, len(cs))
+	}
+	rev, _ := cs[0].Current()
+	if !cs[0].Owner.Inactive || !rev.Uploader.Inactive {
+		t.Errorf("owner %+v, uploader %+v: want both inactive", cs[0].Owner, rev.Uploader)
+	}
+	users := &reconcile.Users{Gerrit: bridge}
+	if user, ok := users.GerritUser(ctx, u.Username); ok {
+		t.Errorf("an inactive account matched, as %q", user)
+	}
+}
