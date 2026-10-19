@@ -1164,3 +1164,20 @@ func TestChangesTouchingGitHubConfigAreWithheld(t *testing.T) {
 		t.Errorf("push: %v", err)
 	}
 }
+
+// Who edited is asked after the edit was seen. If the PR was edited again
+// in between, the editor named may not be this edit's: nothing is done
+// this round.
+func TestPREditedAgainWhileMirroring(t *testing.T) {
+	s, c, snap := editsWorld(t, "gerrit")
+	s.may[7] = append(s.may[7], "austin")
+	s.pulls[70].Title = "Seven, by someone"
+	snapTitle := *s.pulls[70]
+	snap.PRs[70] = &snapTitle // what observe saw
+	s.activity[70] = github.PRActivity{TextEditor: "austin"}
+	s.onActivity = func() { s.pulls[70].Title = "Seven, by austin" } // austin edits again
+	changed, err := c.mirrorPREdits(context.Background(), snap)
+	if err != nil || !changed || len(s.calls) != 0 {
+		t.Errorf("changed=%v err=%v calls=%v; want nothing sent, and a re-observe", changed, err, s.calls)
+	}
+}

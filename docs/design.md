@@ -1161,7 +1161,9 @@ defenses, by threat:
 - **The server.** Listens on `127.0.0.1:8080` by default, plain HTTP: a
   TLS proxy in front should expose only `/webhook` and `/checks/`.
   `/healthz` (rate budget, queue depth) is for probes and monitoring
-  inside the deployment, not for the proxy to expose. `gerrit.url` must be https unless it is a loopback
+  inside the deployment, not for the proxy to expose. The bridge's HTTP
+  clients never follow redirects (credentials go only where it sent
+  them), and it warns at startup about secret files others can read. `gerrit.url` must be https unless it is a loopback
   address, since every request carries the bridge's password. Responses
   from Gerrit and GitHub are read only up to a bound.
 - **API budget.** One key (a PR, a change's comments, a branch) runs at

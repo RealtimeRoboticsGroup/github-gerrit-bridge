@@ -83,6 +83,12 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		return err
 	}
 
+	for _, f := range []string{cfg.Gerrit.HTTPPasswordFile, cfg.GitHub.WebhookSecretFile, cfg.GitHub.TokenFile,
+		cfg.Gerrit.SSH.KeyFile, cfg.Gerrit.SSH.PeerKeyFile} {
+		if f != "" && config.LooseSecret(f) {
+			logger.Warn("secret file is readable by others; make it 0600 (the peer key can act as anyone in Gerrit)", "file", f)
+		}
+	}
 	gerritPassword, err := config.ReadSecret(cfg.Gerrit.HTTPPasswordFile)
 	if err != nil {
 		return err
@@ -113,7 +119,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		BaseURL:  cfg.Gerrit.URL,
 		User:     cfg.Gerrit.HTTPUser,
 		Password: gerritPassword,
-		HTTP:     &http.Client{Timeout: time.Minute, Transport: &httplog.Transport{Name: "gerrit", Logger: logger}},
+		HTTP:     &http.Client{Timeout: time.Minute, Transport: &httplog.Transport{Name: "gerrit", Logger: logger}, CheckRedirect: noRedirects},
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -156,7 +162,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Owner:  cfg.GitHub.Owner,
 		Repo:   cfg.GitHub.Repo,
 		Tokens: tokens,
-		HTTP:   &http.Client{Timeout: time.Minute, Transport: &httplog.Transport{Name: "github", Logger: logger}},
+		HTTP:   &http.Client{Timeout: time.Minute, Transport: &httplog.Transport{Name: "github", Logger: logger}, CheckRedirect: noRedirects},
 	}
 	ghRepo, err := gh.GetRepo(ctx)
 	if err != nil {
@@ -176,7 +182,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			return err
 		}
 		builds = &buildkite.Client{BaseURL: b.APIURL, Org: b.Organization, Pipeline: b.Pipeline, Token: tok,
-			HTTP: &http.Client{Timeout: 30 * time.Second}}
+			HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: noRedirects}}
 	}
 
 	store := &state.Store{Repo: mirror}
@@ -389,3 +395,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	wg.Wait()
 	return err
 }
+
+// noRedirects keeps the bridge's credentials going only where it sent
+// them: a redirect is answered as it is, and fails as a non-2xx.
+func noRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

@@ -261,6 +261,14 @@ func loopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// LooseSecret reports whether the file at path (a secret or key) can be
+// read by users other than its owner. The bridge warns rather than
+// refuses: Kubernetes mounts secrets 0644 unless told otherwise.
+func LooseSecret(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().Perm()&0o077 != 0
+}
+
 // ReadSecret reads a secret from path, trimming surrounding whitespace.
 func ReadSecret(path string) (string, error) {
 	b, err := os.ReadFile(path)

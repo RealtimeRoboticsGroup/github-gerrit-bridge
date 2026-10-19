@@ -610,6 +610,16 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot) (bool, error) {
 		if err != nil {
 			return changed, err
 		}
+		// Who edited is asked after the edit was seen: if the PR moved on
+		// meanwhile, the editor named may have made a later edit, not this
+		// one. Leave it to the next reconcile, which sees both together.
+		if now, err := c.GitHub.GetPull(ctx, pr.Number); err != nil {
+			return changed, err
+		} else if now.Title != pr.Title || now.Body != pr.Body || now.Draft != pr.Draft {
+			c.Logger.Info("PR edited again while being mirrored; next round", "change", n, "pr", pr.Number)
+			changed = true // re-observe
+			continue
+		}
 		var notes []string
 		if textEdited {
 			if gt != st.State.SyncedText {

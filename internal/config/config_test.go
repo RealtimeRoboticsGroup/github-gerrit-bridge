@@ -140,3 +140,14 @@ func TestWebhookAllowedNetworks(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestLooseSecret(t *testing.T) {
+	dir := t.TempDir()
+	tight, loose := filepath.Join(dir, "tight"), filepath.Join(dir, "loose")
+	os.WriteFile(tight, []byte("s"), 0o600)
+	os.WriteFile(loose, []byte("s"), 0o644)
+	os.Chmod(loose, 0o644)
+	if LooseSecret(tight) || !LooseSecret(loose) {
+		t.Errorf("tight %v, loose %v", LooseSecret(tight), LooseSecret(loose))
+	}
+}

@@ -53,9 +53,11 @@ type sites struct {
 	pushLog  map[string][]pushEntry
 	unstacks []int
 	activity map[int]github.PRActivity // what Activity returns per PR
-	nextID   int64
-	clock    time.Time
-	calls    []string // Gerrit edits made, as "<what> <change> as <user>"
+	// onActivity, if set, runs (under s.mu) when Activity is asked.
+	onActivity func()
+	nextID     int64
+	clock      time.Time
+	calls      []string // Gerrit edits made, as "<what> <change> as <user>"
 }
 
 func newSites(t *testing.T) *sites {
@@ -309,6 +311,9 @@ func (s *sites) graphql(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&in)
 	a := s.activity[in.Variables.N]
+	if s.onActivity != nil {
+		s.onActivity()
+	}
 	type actor struct {
 		Login string `json:"login"`
 	}
