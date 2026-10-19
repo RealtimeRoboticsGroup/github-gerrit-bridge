@@ -17,6 +17,20 @@ type Dispatcher struct {
 	Checks   *Checks
 	Store    *state.Store
 	Logger   *slog.Logger
+	// Enqueue, if set, queues a key. A PR's event queues its branch's key
+	// rather than reconciling the branch there and then: the queue merges
+	// keys, so many PRs' events cost one branch reconcile, not one each
+	// (fourth audit).
+	Enqueue func(Key)
+}
+
+// branch reconciles branch, or queues it.
+func (d *Dispatcher) branch(ctx context.Context, branch string) error {
+	if d.Enqueue != nil {
+		d.Enqueue(Key{Branch: branch})
+		return nil
+	}
+	return d.Code.Reconcile(ctx, Key{Branch: branch})
 }
 
 // Reconcile implements Reconciler.
@@ -56,7 +70,7 @@ func (d *Dispatcher) Reconcile(ctx context.Context, k Key) error {
 				}
 				return err
 			}
-			return d.Code.Reconcile(ctx, Key{Branch: branch})
+			return d.branch(ctx, branch)
 		}
 		if k.PRComments != 0 {
 			return d.syncComments(ctx, n)
@@ -65,7 +79,7 @@ func (d *Dispatcher) Reconcile(ctx context.Context, k Key) error {
 		if err != nil {
 			return err
 		}
-		return d.Code.Reconcile(ctx, Key{Branch: st.State.Branch})
+		return d.branch(ctx, st.State.Branch)
 	}
 	return nil
 }
