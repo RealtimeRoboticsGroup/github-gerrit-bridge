@@ -113,6 +113,10 @@ func (r *Router) Resync(reason string) {
 	}
 }
 
+// FromGitHub reports whether k is one GitHub webhooks queue (anyone can
+// cause those), rather than Gerrit's events or a resync.
+func FromGitHub(k Key) bool { return k.PR != 0 || k.PRComments != 0 }
+
 // Delivery queues the key a GitHub webhook is about.
 func (r *Router) Delivery(d *github.Delivery) {
 	if r.Pushers != nil {

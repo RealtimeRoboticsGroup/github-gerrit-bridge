@@ -32,6 +32,9 @@ type Queue[K comparable] struct {
 	// non-stop) runs at most this often, so it cannot spend the whole API
 	// budget. Others are not delayed.
 	MinInterval time.Duration
+	// Throttled, if set, says which keys MinInterval applies to (say,
+	// those strangers can cause); nil means all.
+	Throttled func(K) bool
 }
 
 // New returns an empty queue with a 1s..5m retry backoff.
@@ -133,7 +136,7 @@ func (q *Queue[K]) Done(k K) {
 	delete(q.started, k)
 	if _, ok := q.dirty[k]; ok && !q.shutdown {
 		// Still dirty while it waits, so Add does not queue it sooner.
-		if wait := q.MinInterval - time.Since(started); wait > 0 {
+		if wait := q.MinInterval - time.Since(started); wait > 0 && (q.Throttled == nil || q.Throttled(k)) {
 			time.AfterFunc(wait, func() { q.requeue(k) })
 			return
 		}

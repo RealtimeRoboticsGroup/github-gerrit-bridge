@@ -208,3 +208,13 @@ func TestPushersFromWebhooks(t *testing.T) {
 		t.Error("pusher log not bounded")
 	}
 }
+
+// Only keys GitHub webhooks queue are throttled; a Gerrit merge's branch
+// reconcile must not wait (it races replication).
+func TestFromGitHub(t *testing.T) {
+	for k, want := range map[Key]bool{{PR: 5}: true, {PRComments: 5}: true, {Branch: "main"}: false, {Comments: 7}: false} {
+		if FromGitHub(k) != want {
+			t.Errorf("FromGitHub(%+v) = %v", k, !want)
+		}
+	}
+}

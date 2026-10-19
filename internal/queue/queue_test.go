@@ -169,3 +169,16 @@ func TestMinInterval(t *testing.T) {
 		t.Errorf("queued %d more", q.Len())
 	}
 }
+
+func TestMinIntervalOnlyForThrottledKeys(t *testing.T) {
+	q := New[string]()
+	q.MinInterval = time.Hour
+	q.Throttled = func(k string) bool { return k == "spam" }
+	q.Add("urgent")
+	k, _ := q.Get()
+	q.Add("urgent")
+	q.Done(k)
+	if q.Len() != 1 {
+		t.Errorf("an unthrottled key waited: %d queued", q.Len())
+	}
+}
