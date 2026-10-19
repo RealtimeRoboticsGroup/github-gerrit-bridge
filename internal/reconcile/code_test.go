@@ -1059,6 +1059,25 @@ func TestWhoUploadsAPush(t *testing.T) {
 	}
 }
 
+// Nothing is uploaded as an inactive account, whose name Gerrit may read
+// as someone else's.
+func TestNoUploadAsAnInactiveAccount(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	r := s.changes[1].Revisions[g[0]]
+	r.Uploader.Inactive = true
+	s.changes[1].Revisions[g[0]] = r
+	h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
+	s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = h
+	im.Pushers.Record(h, "austin")
+	if err := im.Import(context.Background(), "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], " ") {
+		t.Errorf("uploads = %v, want the bridge's", up.uploads)
+	}
+}
+
 // A maintainer's "Update branch" on a stranger's PR (a merge of main the
 // maintainer pushed) leaves the stranger's code uploaded as the stranger:
 // it is a pure rebase.

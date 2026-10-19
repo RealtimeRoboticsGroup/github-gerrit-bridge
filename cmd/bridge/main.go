@@ -302,6 +302,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	if cfg.Identity.MatchesUsernames() {
 		users.Gerrit = rest
 	}
+	users.Active = rest
 	if err := users.CheckGroups(ctx); err != nil {
 		return err
 	}

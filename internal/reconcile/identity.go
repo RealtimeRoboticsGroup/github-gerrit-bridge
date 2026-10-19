@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"slices"
 	"context"
 	"errors"
 	"fmt"
@@ -32,6 +33,10 @@ type UserQuerier interface {
 type Users struct {
 	Overrides map[string]string
 	Gerrit    UserQuerier // nil: overrides only
+	// Active, if set, checks that an override names an active account:
+	// Gerrit may read the name of an inactive one as someone else's
+	// (falling back to full names, say).
+	Active UserQuerier
 	// Never are Gerrit usernames no GitHub login is matched to (the
 	// bridge's own account, say): a GitHub user who registers that login
 	// must not act as it.
@@ -221,6 +226,20 @@ func (u *Users) lookup(ctx context.Context, login string) (user string, account 
 			if gerrit.AmbiguousUsername(user) {
 				u.warn("override names a Gerrit username Gerrit would read as another account; not acting as it", login, user)
 				return "", 0, false, nil
+			}
+			q := u.Active
+			if q == nil {
+				q = u.Gerrit
+			}
+			if q != nil {
+				accts, err := q.QueryAccounts(ctx, "username:"+gerrit.QueryString(user)+" is:active")
+				if err != nil {
+					return "", 0, false, err
+				}
+				if !slices.ContainsFunc(accts, func(a gerrit.AccountInfo) bool { return a.Username == user }) {
+					u.warn("override names no active Gerrit account; not acting as it", login, user)
+					return "", 0, false, nil
+				}
 			}
 			return user, 0, true, nil
 		}

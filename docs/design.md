@@ -1114,6 +1114,10 @@ defenses, by threat:
   `self`/`me` and numeric account ids before usernames, so a user named
   `1000000` stands for account 1000000. Such usernames are never matched or
   acted as (audit 2026-10-18); the REST client and suexec refuse them too.
+  Nor is an inactive account, which Gerrit may resolve by other means
+  (full names, say): username matches and `identity.github_to_gerrit`
+  overrides must name an active account, and a patch set's inactive
+  uploader is never uploaded on behalf of (third audit).
 - **Logins that change hands.** GitHub frees a login when its owner
   renames, and anyone may take it. Each Gerrit account is pinned to the
   numeric GitHub id it was first matched to (`refs/bridge/identities`,
@@ -1300,6 +1304,13 @@ Known gaps:
 - **Visibility.** The bridge mirrors whatever its account can see on the
   target branches except private changes; it must not be able to read
   restricted branches or changes.
+- **References to other repositories.** Text copied to GitHub can name
+  other repositories' issues (`owner/repo#12`, or their URLs), which then
+  show the bot's PR or comment in their timelines. GitHub links URLs
+  either way, so this is not defused; the budgets above bound how much
+  one account can do (third audit). Mentions in PR titles are not
+  defused either: GitHub does not render them as mentions, and the
+  third audit saw no notification from one (not confirmed either way).
 - **Gerrit-side tags.** A Gerrit user can tag their own message
   `github-bridge:mirror` and so keep it from being mirrored to GitHub.
 - **Sign-offs.** `Signed-off-by` lines in a PR description are kept as

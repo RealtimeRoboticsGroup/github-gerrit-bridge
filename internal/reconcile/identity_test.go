@@ -16,6 +16,8 @@ type fakeAccounts struct {
 	groups map[string][]string
 	// includes lists each group's included groups, by id.
 	includes map[string][]string
+	// inactive accounts, by username.
+	inactive map[string]bool
 	// registered is when each account (by index+1 in users) was
 	// registered; unset means 2020.
 	registered map[int]time.Time
@@ -24,6 +26,9 @@ type fakeAccounts struct {
 func (f fakeAccounts) QueryAccounts(_ context.Context, q string) ([]gerrit.AccountInfo, error) {
 	var out []gerrit.AccountInfo
 	for i, u := range f.users {
+		if f.inactive[u] && strings.Contains(q, "is:active") {
+			continue
+		}
 		if strings.Contains(strings.ToLower(q), `"`+strings.ToLower(u)+`"`) || strings.Contains(strings.ToLower(q), ":"+strings.ToLower(u)+" ") {
 			out = append(out, gerrit.AccountInfo{AccountID: i + 1, Username: u})
 		}
@@ -56,6 +61,20 @@ func (f fakeAccounts) GroupMembers(_ context.Context, group string) ([]gerrit.Ac
 		out = append(out, gerrit.AccountInfo{Username: u})
 	}
 	return out, nil
+}
+
+// Gerrit may read an inactive account's name as someone else's: an
+// override naming one is not acted on.
+func TestOverrideNeedsAnActiveAccount(t *testing.T) {
+	u := &Users{Overrides: map[string]string{"carol-gh": "carol", "alice-gh": "alice"},
+		Active: fakeAccounts{users: []string{"alice", "carol"}, inactive: map[string]bool{"carol": true}}}
+	ctx := context.Background()
+	if user, ok := u.GerritUser(ctx, "carol-gh"); ok {
+		t.Errorf("acts as inactive %q", user)
+	}
+	if user, ok := u.GerritUser(ctx, "alice-gh"); !ok || user != "alice" {
+		t.Errorf("alice-gh = %q %v", user, ok)
+	}
 }
 
 func TestUsersNeverMatchesServiceAccounts(t *testing.T) {

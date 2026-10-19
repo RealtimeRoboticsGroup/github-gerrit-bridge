@@ -853,7 +853,9 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 	}
 	rev := cur.Revisions[base]
 	prev := rev.Uploader.Username
-	if rev.Uploader.AccountID == im.Bridge.AccountID || gerrit.AmbiguousUsername(prev) {
+	// Nobody acts as an inactive account: Gerrit may read its name as
+	// someone else's.
+	if rev.Uploader.AccountID == im.Bridge.AccountID || gerrit.AmbiguousUsername(prev) || rev.Uploader.Inactive {
 		prev = ""
 	}
 	if prev == "" {

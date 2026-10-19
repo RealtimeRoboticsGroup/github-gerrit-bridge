@@ -163,6 +163,7 @@ type AccountInfo struct {
 	Name      string `json:"name"`
 	Email     string `json:"email"`
 	Username  string `json:"username"`
+	Inactive  bool   `json:"inactive,omitempty"`
 }
 
 // RevisionInfo is a patch set.
