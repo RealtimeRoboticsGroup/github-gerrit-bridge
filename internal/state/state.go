@@ -142,7 +142,9 @@ type Store struct {
 	// store moves it with every write, so Load needs no git command to
 	// find it. Nil before Fetch: Load asks git.
 	refs map[int]string
-	// files caches state files by commit, which never change.
+	// files caches the state files of each change's current state commit
+	// (commits never change); a commit's entry goes when its change moves
+	// on, so the cache holds one version per change.
 	files map[string]map[string][]byte
 }
 
@@ -167,6 +169,9 @@ func (s *Store) setHead(n int, commit string) {
 	defer s.mu.Unlock()
 	if s.refs == nil || n < 0 {
 		return
+	}
+	if old, ok := s.refs[n]; ok && old != commit {
+		delete(s.files, old)
 	}
 	if commit == "" {
 		delete(s.refs, n)
@@ -193,6 +198,10 @@ func (s *Store) file(ctx context.Context, ver, name string) ([]byte, bool, error
 		b = nil
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.isHead(ver) {
+		return b, b != nil, nil // only current state is cached
+	}
 	if s.files == nil {
 		s.files = map[string]map[string][]byte{}
 	}
@@ -200,8 +209,21 @@ func (s *Store) file(ctx context.Context, ver, name string) ([]byte, bool, error
 		s.files[ver] = map[string][]byte{}
 	}
 	s.files[ver][name] = b
-	s.mu.Unlock()
 	return b, b != nil, nil
+}
+
+// isHead reports whether ver is some change's current state commit, as
+// far as the index knows (never, before it is built). s.mu is held.
+func (s *Store) isHead(ver string) bool {
+	if s.refs == nil {
+		return false
+	}
+	for _, h := range s.refs {
+		if h == ver {
+			return true
+		}
+	}
+	return false
 }
 
 // Fetch updates the mirror's refs/bridge/* from Gerrit and rebuilds the
@@ -291,17 +313,6 @@ func (s *Store) ChangeForPR(pr int) int {
 }
 
 // files maps each file in the state tree to its field.
-// Mirrors reports whether GitHub commit gh is the bridge's record of
-// Gerrit revision gerrit (exported, or imported from).
-func (c *Change) Mirrors(gerrit, gh string) bool {
-	for _, r := range c.Revisions {
-		if r.GerritSHA == gerrit && r.GitHubSHA == gh {
-			return true
-		}
-	}
-	return false
-}
-
 func (c *Change) files() map[string]any {
 	return map[string]any{
 		"state.json":     &c.State,
@@ -428,6 +439,12 @@ func (s *Store) pushRef(ctx context.Context, ref, old, commit string) error {
 		// Someone else wrote it. Refresh our copy so the retry sees theirs.
 		if _, err := s.Repo.Git(ctx, nil, "fetch", "--quiet", "origin", "+"+ref+":"+ref); err != nil {
 			// Fetching a ref that was deleted fails; drop ours to match.
+			// Any other failure leaves ours alone: an empty state would
+			// look like nothing was ever mirrored.
+			out, lerr := s.Repo.Git(ctx, nil, "ls-remote", "origin", ref)
+			if lerr != nil || len(bytes.TrimSpace(out)) != 0 {
+				return fmt.Errorf("refreshing %s after a conflict: %w", ref, err)
+			}
 			s.Repo.Git(ctx, nil, "update-ref", "-d", ref)
 		}
 		theirs, _ := s.Repo.RevParse(ctx, ref+"^{commit}")

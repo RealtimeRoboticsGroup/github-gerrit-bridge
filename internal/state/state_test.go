@@ -305,3 +305,61 @@ func TestLoadIsCachedOnceIndexed(t *testing.T) {
 		t.Errorf("unknown change: %+v %v", none, err)
 	}
 }
+
+// The cache keeps one version per change, however often it is saved.
+func TestFileCacheKeepsOnlyCurrentState(t *testing.T) {
+	ctx := context.Background()
+	_, s := newStores(t, 1)
+	st := s[0]
+	if err := st.Fetch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c := sample()
+	for i := range 20 {
+		c.State.Stack = i + 1
+		if err := st.Save(ctx, 5, c, "save"); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := st.Load(ctx, 5); err != nil || got.State.Stack != i+1 {
+			t.Fatalf("load %d: %+v %v", i, got.State, err)
+		}
+	}
+	if len(st.files) != 1 {
+		t.Errorf("cache holds %d versions, want 1", len(st.files))
+	}
+}
+
+// A failed refresh after a conflict (Gerrit unreachable, say) must not
+// make the change look as if it had no state.
+func TestConflictRefreshFailureKeepsState(t *testing.T) {
+	ctx := context.Background()
+	origin, s := newStores(t, 2)
+	a, b := s[0], s[1]
+	c := sample()
+	if err := a.Save(ctx, 5, c, "one"); err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range s {
+		if err := st.Fetch(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale, _ := b.Load(ctx, 5)
+	c.State.Stack = 2
+	if err := a.Save(ctx, 5, c, "two"); err != nil {
+		t.Fatal(err)
+	}
+	// b can still push (and be refused) but not fetch.
+	for _, kv := range [][]string{{"remote.origin.url", "/nonexistent"}, {"remote.origin.pushurl", origin.Dir}} {
+		if _, err := b.Repo.Git(ctx, nil, "config", kv[0], kv[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale.State.Stack = 3
+	if err := b.Save(ctx, 5, stale, "three"); err == nil {
+		t.Fatal("saved over a's write")
+	}
+	if got, _ := b.Load(ctx, 5); got.Version == "" {
+		t.Error("a failed refresh made the state look empty")
+	}
+}
