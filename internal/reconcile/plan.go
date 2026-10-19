@@ -1,11 +1,11 @@
 package reconcile
 
 import (
-	"strconv"
 	"fmt"
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"

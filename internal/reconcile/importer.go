@@ -50,8 +50,8 @@ type Importer struct {
 	// ChangeIDKey keys the Change-Ids derived for PRs (derivedChangeID):
 	// a secret, so they cannot be worked out in advance.
 	ChangeIDKey []byte
-	DryRun  bool
-	Logger  *slog.Logger
+	DryRun      bool
+	Logger      *slog.Logger
 
 	mu       sync.Mutex
 	lastSync map[int]string // PR -> last gerrit/sync status set

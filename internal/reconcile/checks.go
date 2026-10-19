@@ -8,9 +8,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"unicode/utf8"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/buildkite"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
@@ -62,8 +62,8 @@ type Checks struct {
 	// uploads make the bridge write (fourth audit: anyone registered can
 	// vote on every open change, over and over). CI's own are not.
 	StatusBudget *Budget
-	DryRun bool
-	Logger *slog.Logger
+	DryRun       bool
+	Logger       *slog.Logger
 
 	mu        sync.Mutex
 	trusted   map[int]bool

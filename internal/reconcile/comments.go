@@ -154,7 +154,7 @@ type commentSnapshot struct {
 	// psCreated is when each patch set was uploaded to Gerrit.
 	psCreated map[int]time.Time
 	current   int
-	revision           string
+	revision  string
 	// labels are the current patch set's votes.
 	labels map[string]gerrit.LabelInfo
 }
@@ -336,7 +336,9 @@ func (c *Comments) settle(s, first *commentSnapshot) {
 		was, ok := reviews[r.ID]
 		return !c.byBridge(r.User.Login) && (!ok || was.Body != r.Body || was.State != r.State)
 	})
-	ours := func(a gerrit.AccountInfo, tag string) bool { return isBridgeTag(tag) || (a.AccountID != 0 && a.AccountID == c.BridgeAccount) }
+	ours := func(a gerrit.AccountInfo, tag string) bool {
+		return isBridgeTag(tag) || (a.AccountID != 0 && a.AccountID == c.BridgeAccount)
+	}
 	gerritIDs := map[string]bool{}
 	for _, gc := range first.gerrit {
 		gerritIDs[gc.ID] = true

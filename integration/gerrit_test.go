@@ -7,17 +7,17 @@ package integration
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/base64"
 	"crypto/rand"
 	"crypto/sha1"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
-	"net/url"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -636,7 +636,7 @@ func TestAccessIsAOSsPlusTheBridges(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		project, aos string
-		edits         [][][]string
+		edits        [][][]string
 	}{
 		{"All-Projects", testgerrit.AOSAllProjects, [][][]string{testgerrit.AllProjectsFor314, testgerrit.BridgeAllProjects}},
 		{project, testgerrit.AOSProject, [][][]string{testgerrit.ProjectFor314, testgerrit.BridgeProject}},

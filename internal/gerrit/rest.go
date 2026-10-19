@@ -178,9 +178,9 @@ type RevisionInfo struct {
 	RealUploader *AccountInfo `json:"real_uploader,omitempty"`
 	// Kind is how it differs from the patch set before: REWORK,
 	// TRIVIAL_REBASE, NO_CODE_CHANGE (a commit-message edit), ...
-	Kind   string     `json:"kind"`
-	Commit CommitInfo `json:"commit"`
-	Created      string       `json:"created"` // "2006-01-02 15:04:05.000000000", UTC
+	Kind    string     `json:"kind"`
+	Commit  CommitInfo `json:"commit"`
+	Created string     `json:"created"` // "2006-01-02 15:04:05.000000000", UTC
 }
 
 // CommitInfo is a commit's metadata (CURRENT_COMMIT / ALL_COMMITS).

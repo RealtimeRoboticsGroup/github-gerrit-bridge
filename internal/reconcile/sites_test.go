@@ -52,7 +52,7 @@ type sites struct {
 	// oldest first.
 	pushLog  map[string][]pushEntry
 	unstacks []int
-	stacks   []*github.Stack // made with POST /stacks, as GitHub would
+	stacks   []*github.Stack           // made with POST /stacks, as GitHub would
 	activity map[int]github.PRActivity // what Activity returns per PR
 	// onActivity, if set, runs (under s.mu) when Activity is asked.
 	onActivity func()

@@ -1,8 +1,8 @@
 package config
 
 import (
-	"fmt"
 	_ "embed"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"

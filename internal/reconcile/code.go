@@ -1169,7 +1169,9 @@ func userPart(body string) string { user, _ := splitBody(body); return user }
 // changes.
 type forkRefused struct{ changes []int }
 
-func (e *forkRefused) Error() string { return fmt.Sprintf("forks refused the push for changes %v", e.changes) }
+func (e *forkRefused) Error() string {
+	return fmt.Sprintf("forks refused the push for changes %v", e.changes)
+}
 
 // refusedByGitHub reports whether GitHub refused a request for what it
 // asked (a 4xx), not for who asked or how often (401, 403, 429).

@@ -43,10 +43,10 @@ type fakeGerrit struct {
 	// created is when each patch set was uploaded ("" if not said).
 	created map[int]string
 	current string
-	files    map[string]string
-	clock    int
-	nextID   int
-	reviews  int
+	files   map[string]string
+	clock   int
+	nextID  int
+	reviews int
 }
 
 // vote sets user's vote on the current patch set, as Gerrit would.

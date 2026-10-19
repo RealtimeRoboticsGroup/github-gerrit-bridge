@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"maps"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -857,11 +857,11 @@ func TestUnlinkedImportNeedsItsOwner(t *testing.T) {
 	s := &Snapshot{State: map[int]*state.Change{5: {State: state.ChangeState{PR: 70}}}, Changes: map[int]*GerritChange{
 		1: {Message: trailer, OwnerID: 1, Owner: "bridge"},
 		2: {Message: trailer, OwnerID: 5, Owner: "austin"},
-		3: {Message: trailer, OwnerID: 6, Owner: "brt"},                                                         // someone's own change
-		4: {Message: "T\n\nGitHub-PR: https://github.com/o/r/pull/7\n\nChange-Id: I1\n", OwnerID: 1, Owner: "bridge"}, // not the trailer
-		5: {Message: trailer, OwnerID: 1, Owner: "bridge"},                                                          // linked
-		6: {Message: strings.Replace(trailer, "/7", "/8", 1), OwnerID: 5, Owner: "austin"},                          // no such open PR
-		7: {Message: strings.Replace(trailer, "o/r", "x/y", 1), OwnerID: 1, Owner: "bridge"},                        // another repository's
+		3: {Message: trailer, OwnerID: 6, Owner: "brt"},                                                                                            // someone's own change
+		4: {Message: "T\n\nGitHub-PR: https://github.com/o/r/pull/7\n\nChange-Id: I1\n", OwnerID: 1, Owner: "bridge"},                              // not the trailer
+		5: {Message: trailer, OwnerID: 1, Owner: "bridge"},                                                                                         // linked
+		6: {Message: strings.Replace(trailer, "/7", "/8", 1), OwnerID: 5, Owner: "austin"},                                                         // no such open PR
+		7: {Message: strings.Replace(trailer, "o/r", "x/y", 1), OwnerID: 1, Owner: "bridge"},                                                       // another repository's
 		8: {Message: strings.Replace(trailer, "Change-Id", "GitHub-PR: https://github.com/o/r/pull/7\nChange-Id", 1), OwnerID: 1, Owner: "bridge"}, // two
 	}}
 	c.markUnlinked(ctx, s, "o/r", open)
@@ -912,7 +912,7 @@ func TestRefusedForkPushLeavesOutItsChanges(t *testing.T) {
 	p := &Plan{Actions: []Action{{Kind: PushBranches, Refs: map[string]string{},
 		Leases: map[string]string{"alice/r:main": h1, "gerrit/" + cid(2): e1},
 		Appends: map[string]Append{
-			"alice/r:main":    {Change: 1, PatchSet: 2, Revision: g1, Onto: h1, Lease: h1},
+			"alice/r:main":     {Change: 1, PatchSet: 2, Revision: g1, Onto: h1, Lease: h1},
 			"gerrit/" + cid(2): {Change: 2, PatchSet: 2, Revision: g2, Onto: e1, Lease: e1},
 		}}}}
 	if err := c.apply(ctx, &Snapshot{Branch: "main", DefaultBranch: "main"}, p, skip); err != nil {
@@ -954,8 +954,8 @@ func TestPRUpdatesWithinBudget(t *testing.T) {
 	p := &Plan{Actions: []Action{
 		{Kind: UpdatePR, Change: 1, PR: 10, Update: &github.PullUpdate{Title: ptr("New title")}},
 		{Kind: UpdatePR, Change: 2, PR: 20, Update: &github.PullUpdate{Body: ptr("Other.\n\n" + linksStart + "\nold\n" + linksEnd)}}, // 9's second
-		{Kind: UpdatePR, Change: 3, PR: 30, Update: &github.PullUpdate{Body: ptr(links)}},                                             // #30's first
-		{Kind: UpdatePR, Change: 3, PR: 30, Update: &github.PullUpdate{Base: ptr("main"), Body: ptr(links)}},                          // not text only
+		{Kind: UpdatePR, Change: 3, PR: 30, Update: &github.PullUpdate{Body: ptr(links)}},                                            // #30's first
+		{Kind: UpdatePR, Change: 3, PR: 30, Update: &github.PullUpdate{Base: ptr("main"), Body: ptr(links)}},                         // not text only
 	}}
 	if err := c.apply(ctx, snap, p, skip); err != nil {
 		t.Fatal(err)
