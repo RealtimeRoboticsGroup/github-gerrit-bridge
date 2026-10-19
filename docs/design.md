@@ -1308,6 +1308,12 @@ instance (`internal/testgerrit`) is set up this way.
 - **The peer key** (`gerrit.ssh.peer_key_file`) can run any SSH command as
   any account, administrators included: a credential for the whole site.
   Keep it only on the bridge's host, mode 600, and rotate it if in doubt.
+- **Submit for a submitter group**, not Registered Users (AOS already
+  does). Submit also lets one rebase anyone's change on behalf of its
+  uploader: with it, anyone could put their code under a trusted
+  uploader's name. CI (gerrit-buildkite) must also check a patch set's
+  *real* uploader, which Gerrit records for such rebases, not only the
+  one it names (second audit, confirmed live).
 - **Administrators' `abandon` and `toggleWipState`** on the bridged
   project's `refs/heads/*` (Administrate Server is not applied through
   Run-As), not on All-Projects.

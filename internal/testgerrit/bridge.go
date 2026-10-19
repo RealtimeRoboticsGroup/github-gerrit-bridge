@@ -29,6 +29,11 @@ const BridgeGroup = "GitHub Bridge"
 // TrustedGroup is the CI group from design §6.5. The bridge is not in it.
 const TrustedGroup = "Verified Users"
 
+// SubmitGroup may submit, as on AOS: not every registered user. Submit
+// also lets one rebase anyone's change on behalf of its uploader, which
+// CI must not take for the uploader's own work.
+const SubmitGroup = "Submitters"
+
 // Env is a project set up the way the bridge expects a real one to be.
 type Env struct {
 	Project string
@@ -40,7 +45,7 @@ type Env struct {
 // SetupBridge creates project with the bridge's accounts, groups, ACLs and
 // labels. It is not idempotent: call it once, on a fresh site.
 func (s *Server) SetupBridge(ctx context.Context, project string) (*Env, error) {
-	for _, g := range []string{BridgeGroup, TrustedGroup} {
+	for _, g := range []string{BridgeGroup, TrustedGroup, SubmitGroup} {
 		if err := s.CreateGroup(ctx, g); err != nil {
 			return nil, fmt.Errorf("group %s: %w", g, err)
 		}
@@ -52,7 +57,7 @@ func (s *Server) SetupBridge(ctx context.Context, project string) (*Env, error) 
 	if e.Bridge, err = s.CreateUser(ctx, "github-bridge", "GitHub Bridge", BridgeGroup); err != nil {
 		return nil, err
 	}
-	if e.Alice, err = s.CreateUser(ctx, "alice", "Alice Trusted", TrustedGroup); err != nil {
+	if e.Alice, err = s.CreateUser(ctx, "alice", "Alice Trusted", TrustedGroup, SubmitGroup); err != nil {
 		return nil, err
 	}
 	if e.Bob, err = s.CreateUser(ctx, "bob", "Bob Newcomer"); err != nil {
@@ -236,10 +241,26 @@ func (s *Server) ConfigureProject(ctx context.Context, project string) error {
 	if err != nil {
 		return err
 	}
+	// Sites made before the Submitters group get it here.
+	if err := s.CreateGroup(ctx, SubmitGroup); err != nil {
+		var ge *gerrit.Error
+		if !errors.As(err, &ge) || ge.Status != http.StatusConflict {
+			return fmt.Errorf("group %s: %w", SubmitGroup, err)
+		}
+	}
+	submitters, err := s.groupID(ctx, SubmitGroup)
+	if err != nil {
+		return err
+	}
 	allow := func(id string) map[string]any {
 		return map[string]any{"rules": map[string]any{id: map[string]any{"action": "ALLOW"}}}
 	}
-	access := map[string]any{"add": map[string]any{
+	access := map[string]any{"remove": map[string]any{
+		// Sites made before: Submit was everyone's.
+		"refs/heads/*": map[string]any{"permissions": map[string]any{
+			"submit": map[string]any{"rules": map[string]any{"global:Registered-Users": map[string]any{}}},
+		}},
+	}, "add": map[string]any{
 		// Only the bridge can see or write its state (design §4.4).
 		"refs/bridge/*": map[string]any{"permissions": map[string]any{
 			"read":   map[string]any{"exclusive": true, "rules": map[string]any{bridge: map[string]any{"action": "ALLOW"}}},
@@ -251,7 +272,7 @@ func (s *Server) ConfigureProject(ctx context.Context, project string) error {
 		// Administrators edit project.config by pushing it.
 		"refs/meta/config": map[string]any{"permissions": map[string]any{"push": allow(admins)}},
 		"refs/heads/*": map[string]any{"permissions": map[string]any{
-			"submit": allow("global:Registered-Users"),
+			"submit": allow(submitters),
 			"push":   map[string]any{"rules": map[string]any{admins: map[string]any{"action": "ALLOW", "force": true}}},
 			"create": allow(admins),
 		}},
@@ -495,7 +516,7 @@ func (s *Server) EnsureGitHubUser(ctx context.Context, u GitHubUser) (*User, err
 	if errors.As(err, &ge) && ge.Status == http.StatusNotFound {
 		groups := []string{}
 		if u.Trusted {
-			groups = append(groups, TrustedGroup)
+			groups = append(groups, TrustedGroup, SubmitGroup)
 		}
 		if created, err = s.CreateUser(ctx, u.Login, u.Login, groups...); err != nil {
 			return nil, err

@@ -66,8 +66,8 @@ ruleset.
 | GitHub account | Role | Gerrit account |
 |---|---|---|
 | `realtimeroboticsbot` | the bridge (PRs, mirrored comments, statuses) and replication | `github-bridge` |
-| `AustinSchuh` | trusted developer; also forwards webhooks (repo admin) | `AustinSchuh` (Verified Users) |
-| `AustinSchuhBRT` | newer contributor | `AustinSchuhBRT` |
+| `AustinSchuh` | trusted developer; also forwards webhooks (repo admin) | `AustinSchuh` (Verified Users, Submitters, Administrators) |
+| `AustinSchuhBRT` | newer contributor | `AustinSchuhBRT` (may not submit) |
 
 As on AOS (Gerrit's github plugin), Gerrit accounts are named after GitHub
 logins, and the bridge matches them by username (`identity.match_usernames`).

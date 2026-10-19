@@ -550,3 +550,28 @@ func TestBridgeGrants(t *testing.T) {
 		}
 	}
 }
+
+// Submit is the Submitters group's, as on AOS, not every registered
+// user's: with it, anyone could rebase a trusted user's change onto their
+// own on that user's behalf.
+func TestOnlySubmittersMaySubmit(t *testing.T) {
+	ctx := context.Background()
+	pushChange(t, env.Alice, "submitters.txt")
+	id := fmt.Sprintf("I%x", sha1.Sum([]byte("submitters.txt")))
+	var cs []gerrit.ChangeInfo
+	if err := srv.Admin.Do(ctx, "GET", "changes/?q=change:"+id, nil, &cs); err != nil || len(cs) != 1 {
+		t.Fatalf("find change: %v %d", err, len(cs))
+	}
+	bob := &gerrit.Client{BaseURL: srv.URL, User: env.Bob.Username, Password: env.Bob.HTTPPassword}
+	actions, err := bob.RevisionActions(ctx, cs[0].Number, "current")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := actions["rebase"]; ok {
+		t.Error("bob (no submitter) may rebase alice's change")
+	}
+	err = bob.Do(ctx, "POST", fmt.Sprintf("changes/%d/rebase", cs[0].Number), map[string]any{"on_behalf_of_uploader": true, "allow_conflicts": true}, nil)
+	if err == nil {
+		t.Error("bob rebased alice's change on her behalf")
+	}
+}

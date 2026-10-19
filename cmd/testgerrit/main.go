@@ -318,7 +318,7 @@ func watchLoginUsers(ctx context.Context, s *testgerrit.Server, bridgeDir, spec 
 		for _, r := range f[1:] {
 			switch {
 			case r == "trusted":
-				w.groups = append(w.groups, testgerrit.TrustedGroup)
+				w.groups = append(w.groups, testgerrit.TrustedGroup, testgerrit.SubmitGroup)
 			case r == "admin":
 				w.groups = append(w.groups, "Administrators")
 			case strings.Contains(r, "@"):
