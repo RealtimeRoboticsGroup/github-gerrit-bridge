@@ -45,10 +45,9 @@ type Env struct {
 // SetupBridge creates project with the bridge's accounts, groups, ACLs and
 // labels. It is not idempotent: call it once, on a fresh site.
 func (s *Server) SetupBridge(ctx context.Context, project string) (*Env, error) {
-	for _, g := range []string{BridgeGroup, TrustedGroup, SubmitGroup} {
-		if err := s.CreateGroup(ctx, g); err != nil {
-			return nil, fmt.Errorf("group %s: %w", g, err)
-		}
+	// AOS's groups and access rules, and the bridge's group.
+	if err := s.ConfigureAllProjects(ctx); err != nil {
+		return nil, err
 	}
 	var err error
 	e := &Env{Project: project}
@@ -227,97 +226,13 @@ func (s *Server) groupID(ctx context.Context, name string) (string, error) {
 	return g.ID, err
 }
 
-// ConfigureProject sets up project the way the bridge expects (and the way
-// the real site should be): refs/bridge/* readable and writable only by the
-// bridge, Forge Author for imports, a Verified label with a submit
-// requirement, Submit for registered users, and Push for administrators
-// (to seed branches).
+// ConfigureProject sets up project the way the bridge expects (and the
+// way the real site should be): AOS's own project.config (labels, submit
+// requirements, Verified for Service Users), plus what the bridge needs
+// (BridgeProject).
 func (s *Server) ConfigureProject(ctx context.Context, project string) error {
-	bridge, err := s.groupID(ctx, BridgeGroup)
-	if err != nil {
-		return err
-	}
-	admins, err := s.groupID(ctx, "Administrators")
-	if err != nil {
-		return err
-	}
-	// Sites made before the Submitters group get it here.
-	if err := s.CreateGroup(ctx, SubmitGroup); err != nil {
-		var ge *gerrit.Error
-		if !errors.As(err, &ge) || ge.Status != http.StatusConflict {
-			return fmt.Errorf("group %s: %w", SubmitGroup, err)
-		}
-	}
-	submitters, err := s.groupID(ctx, SubmitGroup)
-	if err != nil {
-		return err
-	}
-	allow := func(id string) map[string]any {
-		return map[string]any{"rules": map[string]any{id: map[string]any{"action": "ALLOW"}}}
-	}
-	access := map[string]any{"remove": map[string]any{
-		// Sites made before: Submit was everyone's.
-		"refs/heads/*": map[string]any{"permissions": map[string]any{
-			"submit": map[string]any{"rules": map[string]any{"global:Registered-Users": map[string]any{}}},
-		}},
-	}, "add": map[string]any{
-		// Only the bridge can see or write its state (design §4.4).
-		"refs/bridge/*": map[string]any{"permissions": map[string]any{
-			"read":   map[string]any{"exclusive": true, "rules": map[string]any{bridge: map[string]any{"action": "ALLOW"}}},
-			"push":   allow(bridge),
-			"create": allow(bridge),
-		}},
-		// Imports from GitHub keep the real author (design §5.2).
-		"refs/*": map[string]any{"permissions": map[string]any{"forgeAuthor": allow(bridge)}},
-		// Administrators edit project.config by pushing it.
-		"refs/meta/config": map[string]any{"permissions": map[string]any{"push": allow(admins)}},
-		"refs/heads/*": map[string]any{"permissions": map[string]any{
-			"submit": allow(submitters),
-			"push":   map[string]any{"rules": map[string]any{admins: map[string]any{"action": "ALLOW", "force": true}}},
-			"create": allow(admins),
-		}},
-	}}
-	if err := s.Admin.Do(ctx, http.MethodPost, "projects/"+url.PathEscape(project)+"/access", access, nil); err != nil {
-		return fmt.Errorf("access: %w", err)
-	}
-	// The Verified label and submit requirements are AOS's
-	// (RealtimeRoboticsGroup/aos project.config, 2026-10-10), except the
-	// label function: AOS still has MaxWithBlock from before an upgrade,
-	// but 3.14 refuses to store it now. It changes nothing, because the
-	// explicit "Verified" submit requirement replaces the label function's
-	// check.
-	err = s.EditProjectConfig(ctx, project, "Configure like AOS", [][]string{
-		{"label.Verified.defaultValue", "0"},
-		{"--unset-all", "label.Verified.value"},
-		{"--add", "label.Verified.value", "-1 Fails"},
-		{"--add", "label.Verified.value", "0 No score"},
-		{"--add", "label.Verified.value", "+1 Verified"},
-		{"label.Verified.copyCondition", "changekind:NO_CHANGE"},
-		{"label.Verified.function", "NoBlock"},
-		{"receive.enableSignedPush", "true"},
-		{"submit-requirement.Verified.description", "At least one maximum vote for label 'Verified' is required"},
-		{"submit-requirement.Verified.submittableIf", "label:Verified=MAX,user=non_uploader AND -label:Verified=MIN"},
-		{"submit-requirement.Verified.canOverrideInChildProjects", "true"},
-		{"submit-requirement.Signed-off-by.description", "Commit message must include a Signed-off-by footer"},
-		{"submit-requirement.Signed-off-by.submittableIf", `message:"Signed-off-by"`},
-		{"submit-requirement.Signed-off-by.canOverrideInChildProjects", "false"},
-	})
-	if err != nil {
-		return fmt.Errorf("project.config: %w", err)
-	}
-	// AOS lets Service Users (its CI accounts) vote Verified.
-	svc, err := s.groupID(ctx, "Service Users")
-	if err != nil {
-		return err
-	}
-	vote := map[string]any{"add": map[string]any{"refs/heads/*": map[string]any{"permissions": map[string]any{
-		"label-Verified": map[string]any{"label": "Verified", "rules": map[string]any{
-			svc: map[string]any{"action": "ALLOW", "min": -1, "max": 1}}},
-	}}}}
-	if err := s.Admin.Do(ctx, http.MethodPost, "projects/"+url.PathEscape(project)+"/access", vote, nil); err != nil {
-		return fmt.Errorf("Verified access: %w", err)
-	}
-	return nil
+	return s.WriteAccess(ctx, project, "Configure like AOS, plus the bridge's", AOSProject,
+		append(append([][]string{}, ProjectFor314...), BridgeProject...))
 }
 
 // GrantRunAs gives the bridge group the global capabilities the bridge

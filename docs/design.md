@@ -1393,7 +1393,13 @@ Known gaps:
 ### 9.1 Deploying on the internet (audit 2026-10-18)
 
 What the site must have before the bridge faces strangers; the test
-instance (`internal/testgerrit`) is set up this way.
+instance (`internal/testgerrit`) is set up this way. Its access rules are
+AOS's own (`internal/testgerrit/aos/`, read from realtimeroboticsgroup.org
+on 2026-10-19), plus exactly the bridge's additions
+(`testgerrit.BridgeAllProjects`, `BridgeProject`), which an integration test
+checks: Run As and Stream Events for the bridge's group; on the project,
+`refs/bridge/*` (exclusive Read, Push, Create) and Forge Author for it,
+and Abandon and Toggle Work In Progress for Administrators.
 
 - **The bridge's Gerrit account:** global Run As and Stream Events through
   its own group. Not in Administrators, Service Users (which vote
@@ -1407,9 +1413,11 @@ instance (`internal/testgerrit`) is set up this way.
   anyone signed in may upload a patch set to anyone's change, with any
   author. The bridge keeps such patch sets off GitHub-born PRs (§7.1),
   but a Gerrit-born change's PR shows them, and GitHub credits a forged
-  author's commits to whoever owns that email on GitHub. Consider
-  granting both to maintainers (and the bridge) only: owners may always
-  add patch sets to their own changes (third audit).
+  author's commits to whoever owns that email on GitHub. AOS already
+  limits Forge Author (to Forge Author and Sudo); Add Patch Set is still
+  Registered Users'. Consider granting it to maintainers (and the bridge)
+  only: owners may always add patch sets to their own changes (third
+  audit).
 - **GitHub Actions.** The bridge pushes every open change, from anyone
   registered on Gerrit, to a branch of the repository and opens a PR from
   it, so any workflow that runs on pushes to non-default branches or on

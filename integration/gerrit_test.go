@@ -7,6 +7,7 @@ package integration
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/pem"
@@ -16,7 +17,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -573,5 +576,73 @@ func TestOnlySubmittersMaySubmit(t *testing.T) {
 	err = bob.Do(ctx, "POST", fmt.Sprintf("changes/%d/rebase", cs[0].Number), map[string]any{"on_behalf_of_uploader": true, "allow_conflicts": true}, nil)
 	if err == nil {
 		t.Error("bob rebased alice's change on her behalf")
+	}
+}
+
+// configLines is project.config's settings, one "key=value" each, sorted.
+func configLines(t *testing.T, config string) []string {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), "project.config")
+	os.WriteFile(f, []byte(config), 0o644)
+	out, err := exec.Command("git", "config", "-f", f, "--list").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	sort.Strings(lines)
+	return lines
+}
+
+// editedLines is configLines of config after edits (git config arguments).
+func editedLines(t *testing.T, config string, edits ...[][]string) []string {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), "project.config")
+	os.WriteFile(f, []byte(config), 0o644)
+	for _, es := range edits {
+		for _, e := range es {
+			if out, err := exec.Command("git", append([]string{"config", "-f", f}, e...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git config %v: %v: %s", e, err, out)
+			}
+		}
+	}
+	b, _ := os.ReadFile(f)
+	return configLines(t, string(b))
+}
+
+// The test site's access rules are AOS's (testgerrit/aos, read from
+// realtimeroboticsgroup.org) plus exactly the bridge's additions, the
+// deployment checklist: nothing granted here that AOS would not have.
+func TestAccessIsAOSsPlusTheBridges(t *testing.T) {
+	ctx := context.Background()
+	stored := func(project string) string {
+		t.Helper()
+		var content string
+		path := "projects/" + url.PathEscape(project) + "/branches/" + url.PathEscape("refs/meta/config") + "/files/project.config/content"
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/a/"+path, nil)
+		req.SetBasicAuth("admin", srv.Admin.Password)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		dec, err := base64.StdEncoding.DecodeString(string(b))
+		if err != nil {
+			t.Fatalf("%s: %v (%s)", project, err, b)
+		}
+		content = string(dec)
+		return content
+	}
+	for _, tc := range []struct {
+		project, aos string
+		edits         [][][]string
+	}{
+		{"All-Projects", testgerrit.AOSAllProjects, [][][]string{testgerrit.AllProjectsFor314, testgerrit.BridgeAllProjects}},
+		{project, testgerrit.AOSProject, [][][]string{testgerrit.ProjectFor314, testgerrit.BridgeProject}},
+	} {
+		got, want := configLines(t, stored(tc.project)), editedLines(t, tc.aos, tc.edits...)
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Errorf("%s's access differs from AOS's plus the bridge's:\n got: %q\nwant: %q", tc.project, got, want)
+		}
 	}
 }

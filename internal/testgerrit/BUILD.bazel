@@ -3,8 +3,13 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "testgerrit",
     srcs = [
+        "aos.go",
         "bridge.go",
         "testgerrit.go",
+    ],
+    embedsrcs = [
+        "aos/All-Projects.project.config",
+        "aos/aos.project.config",
     ],
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/testgerrit",
     visibility = ["//:__subpackages__"],

@@ -199,6 +199,10 @@ func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project
 	if err != nil {
 		return "", err
 	}
+	// Keep All-Projects' access AOS's (an older site's too).
+	if err := s.ConfigureAllProjects(ctx); err != nil {
+		return "", err
+	}
 	exists, err := s.ProjectExists(ctx, project)
 	if err != nil {
 		return "", err
