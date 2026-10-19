@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -222,5 +223,85 @@ func TestIdentities(t *testing.T) {
 	got, err := s[1].LoadIdentities(ctx)
 	if err != nil || got.ByUser["alice"].GitHubID != 42 {
 		t.Errorf("after fetch: %+v, %v", got, err)
+	}
+}
+
+// With the index built, conflicts still refresh what Load sees.
+func TestConcurrentWritersConflictIndexed(t *testing.T) {
+	ctx := context.Background()
+	_, s := newStores(t, 2)
+	a, b := s[0], s[1]
+	for _, st := range s {
+		if err := st.Fetch(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ca, cb := sample(), sample()
+	if err := a.Save(ctx, 5, ca, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Save(ctx, 5, cb, "b"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second create: err = %v, want ErrConflict", err)
+	}
+	if got, err := b.Load(ctx, 5); err != nil || got.Version != ca.Version {
+		t.Fatalf("b after conflict = %+v, %v; want a's version", got, err)
+	}
+	cb, _ = b.Load(ctx, 5)
+	cb.State.Stack = 99
+	if err := b.Save(ctx, 5, cb, "b"); err != nil {
+		t.Fatal(err)
+	}
+	ca.State.Lifecycle = "MERGED"
+	if err := a.Save(ctx, 5, ca, "a2"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale update: err = %v", err)
+	}
+	if got, _ := a.Load(ctx, 5); got.State.Stack != 99 || got.State.Lifecycle != "NEW" {
+		t.Errorf("a sees %+v; want b's write", got.State)
+	}
+}
+
+type countGit struct{ n *int }
+
+func (c countGit) Enabled(context.Context, slog.Level) bool  { return true }
+func (c countGit) Handle(context.Context, slog.Record) error { *c.n++; return nil }
+func (c countGit) WithAttrs([]slog.Attr) slog.Handler        { return c }
+func (c countGit) WithGroup(string) slog.Handler             { return c }
+
+// Once indexed, loading a change already read runs no git at all (a
+// reconcile loads every change the bridge ever tracked on the branch),
+// and a save is seen at once.
+func TestLoadIsCachedOnceIndexed(t *testing.T) {
+	ctx := context.Background()
+	_, s := newStores(t, 1)
+	st := s[0]
+	if err := st.Fetch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c := sample()
+	if err := st.Save(ctx, 5, c, "one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Load(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	st.Repo.Logger = slog.New(countGit{&calls})
+	got, err := st.Load(ctx, 5)
+	if err != nil || calls != 0 {
+		t.Fatalf("second load: %d git commands, err %v", calls, err)
+	}
+	got.State.Stack = 7 // callers may change what Load gives them
+	if again, _ := st.Load(ctx, 5); again.State.Stack != 0 {
+		t.Error("a change to a loaded state leaked into the cache")
+	}
+	got.State.Stack = 8
+	if err := st.Save(ctx, 5, got, "two"); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := st.Load(ctx, 5); again.State.Stack != 8 || again.Version != got.Version {
+		t.Errorf("after save: %+v", again)
+	}
+	if none, err := st.Load(ctx, 6); err != nil || none.Version != "" {
+		t.Errorf("unknown change: %+v %v", none, err)
 	}
 }

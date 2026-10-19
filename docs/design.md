@@ -205,6 +205,16 @@ refs/bridge/config                         identity map, label mapping overrides
 - **Exclude `refs/bridge/*` from replication to GitHub.** It holds identity
   data.
 
+**As built: the store caches in memory (2026-10-19).** A reconcile loads
+the state of every change the bridge ever tracked on the branch (the
+planner maps merged and abandoned changes' commits too), which on the
+test instance was ~2,900 git commands, 3 of a reconcile's 4 seconds,
+and would grow with history. Each change's state commit is kept in
+memory from startup (`Fetch`) and moved by every save, including after a
+conflict; files are cached by commit, which never changes. A load of a
+change already seen runs no git command. So state must not be edited by
+hand while the bridge runs (restart it after).
+
 **SQLite (or nothing) as a disposable cache.** The work queue and webhook
 dedup can live in memory. Reconciliation is level-triggered, so on startup
 the bridge just re-queues every open change. If a local cache is useful for

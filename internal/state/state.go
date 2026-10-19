@@ -138,6 +138,70 @@ type Store struct {
 	mu       sync.Mutex
 	byPR     map[int]int             // PR number -> change number
 	byBranch map[string]map[int]bool // target branch -> changes with state
+	// refs is each change's state commit, once the index is built; the
+	// store moves it with every write, so Load needs no git command to
+	// find it. Nil before Fetch: Load asks git.
+	refs map[int]string
+	// files caches state files by commit, which never change.
+	files map[string]map[string][]byte
+}
+
+// head is change n's state commit ("" for none).
+func (s *Store) head(ctx context.Context, n int) (string, error) {
+	s.mu.Lock()
+	refs := s.refs
+	ver, ok := refs[n]
+	s.mu.Unlock()
+	if refs != nil {
+		if ok {
+			return ver, nil
+		}
+		return "", nil
+	}
+	return s.Repo.RevParse(ctx, Ref(n)+"^{commit}")
+}
+
+// setHead records change n's state commit ("" = none).
+func (s *Store) setHead(n int, commit string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refs == nil || n < 0 {
+		return
+	}
+	if commit == "" {
+		delete(s.refs, n)
+	} else {
+		s.refs[n] = commit
+	}
+}
+
+// file returns name in state commit ver (nil, false if absent), from the
+// cache if read before.
+func (s *Store) file(ctx context.Context, ver, name string) ([]byte, bool, error) {
+	s.mu.Lock()
+	b, cached := s.files[ver][name]
+	s.mu.Unlock()
+	if cached {
+		return b, b != nil, nil
+	}
+	b, err := s.Repo.Git(ctx, nil, "cat-file", "blob", ver+":"+name)
+	if err != nil {
+		var ge *gitmirror.Error
+		if !errors.As(err, &ge) || !strings.Contains(ge.Stderr, "does not exist") {
+			return nil, false, err
+		}
+		b = nil
+	}
+	s.mu.Lock()
+	if s.files == nil {
+		s.files = map[string]map[string][]byte{}
+	}
+	if s.files[ver] == nil {
+		s.files[ver] = map[string][]byte{}
+	}
+	s.files[ver][name] = b
+	s.mu.Unlock()
+	return b, b != nil, nil
 }
 
 // Fetch updates the mirror's refs/bridge/* from Gerrit and rebuilds the
@@ -151,16 +215,27 @@ func (s *Store) Fetch(ctx context.Context) error {
 }
 
 func (s *Store) rebuildIndex(ctx context.Context) error {
-	out, err := s.Repo.Git(ctx, nil, "for-each-ref", "--format=%(refname)", refPrefix)
+	out, err := s.Repo.Git(ctx, nil, "for-each-ref", "--format=%(objectname) %(refname)", refPrefix)
 	if err != nil {
 		return err
 	}
 	idx := map[int]int{}
 	byBranch := map[string]map[int]bool{}
-	for _, ref := range strings.Fields(string(out)) {
+	refs := map[int]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		commit, ref, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		if n, err := strconv.Atoi(ref[strings.LastIndexByte(ref, '/')+1:]); err == nil {
+			refs[n] = commit
+		}
 		var st ChangeState
-		b, err := s.Repo.Git(ctx, nil, "cat-file", "blob", ref+":state.json")
+		b, ok, err := s.file(ctx, commit, "state.json")
 		if err != nil {
+			return err
+		}
+		if !ok {
 			continue // A state commit without state.json links nothing.
 		}
 		if err := json.Unmarshal(b, &st); err != nil {
@@ -177,6 +252,7 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 	s.mu.Lock()
 	s.byPR = idx
 	s.byBranch = byBranch
+	s.refs = refs
 	s.mu.Unlock()
 	return nil
 }
@@ -240,19 +316,18 @@ func (c *Change) files() map[string]any {
 // written comes back empty, with Version "".
 func (s *Store) Load(ctx context.Context, n int) (*Change, error) {
 	c := &Change{}
-	ver, err := s.Repo.RevParse(ctx, Ref(n)+"^{commit}")
+	ver, err := s.head(ctx, n)
 	if err != nil || ver == "" {
 		return c, err
 	}
 	c.Version = ver
 	for name, v := range c.files() {
-		b, err := s.Repo.Git(ctx, nil, "cat-file", "blob", ver+":"+name)
+		b, ok, err := s.file(ctx, ver, name)
 		if err != nil {
-			var ge *gitmirror.Error
-			if errors.As(err, &ge) && strings.Contains(ge.Stderr, "does not exist") {
-				continue
-			}
 			return nil, err
+		}
+		if !ok {
+			continue
 		}
 		if err := json.Unmarshal(b, v); err != nil {
 			return nil, fmt.Errorf("%s:%s: %w", Ref(n), name, err)
@@ -344,16 +419,26 @@ func (s *Store) pushRef(ctx context.Context, ref, old, commit string) error {
 	if res[0].Rejected && !isLeaseFailure(res[0].Reason) {
 		return fmt.Errorf("push %s rejected: %s", ref, res[0].Reason)
 	}
+	// Change refs are tracked in refs (not identities).
+	n := -1
+	if strings.HasPrefix(ref, refPrefix) {
+		n, _ = strconv.Atoi(ref[strings.LastIndexByte(ref, '/')+1:])
+	}
 	if res[0].Rejected {
 		// Someone else wrote it. Refresh our copy so the retry sees theirs.
 		if _, err := s.Repo.Git(ctx, nil, "fetch", "--quiet", "origin", "+"+ref+":"+ref); err != nil {
 			// Fetching a ref that was deleted fails; drop ours to match.
 			s.Repo.Git(ctx, nil, "update-ref", "-d", ref)
 		}
+		theirs, _ := s.Repo.RevParse(ctx, ref+"^{commit}")
+		s.setHead(n, theirs)
 		return fmt.Errorf("%w: %s: %s", ErrConflict, ref, res[0].Reason)
 	}
-	_, err = s.Repo.Git(ctx, nil, "update-ref", ref, commit)
-	return err
+	if _, err = s.Repo.Git(ctx, nil, "update-ref", ref, commit); err != nil {
+		return err
+	}
+	s.setHead(n, commit)
+	return nil
 }
 
 // writeTree stores c's files as blobs and returns the tree id. Output is
