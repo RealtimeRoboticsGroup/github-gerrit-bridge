@@ -544,14 +544,21 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	var cur *gerrit.ChangeInfo
 	if len(existing) > 0 {
 		cur = &existing[0]
-		if st == nil && im.ownUpload(ctx, cur, pr) {
-			// Uploaded for this PR, but the link was never saved (a crash,
-			// a refused state push): link it, and import next time.
-			if err := im.link(ctx, cur.Number, "github", branch, changeID, pr); err != nil {
+		if st == nil {
+			adopt, err := im.ownUpload(ctx, cur, pr, h)
+			if err != nil {
 				return nil, err
 			}
-			im.Logger.Warn("adopted a change uploaded for a PR whose link was lost", "pr", pr.Number, "change", cur.Number)
-			return nil, &syncError{state: "pending", msg: fmt.Sprintf("Linked to Gerrit change %d", cur.Number), retry: true}
+			if adopt {
+				// Uploaded for this PR, but the link was never saved (a
+				// crash, a refused state push): link it, and import next
+				// time.
+				if err := im.link(ctx, cur.Number, "github", branch, changeID, pr); err != nil {
+					return nil, err
+				}
+				im.Logger.Warn("adopted a change uploaded for a PR whose link was lost", "pr", pr.Number, "change", cur.Number)
+				return nil, &syncError{state: "pending", msg: fmt.Sprintf("Linked to Gerrit change %d", cur.Number), retry: true}
+			}
 		}
 		if st == nil || st.State.Change != cur.Number {
 			// Never let two PRs fight over one change.
@@ -851,24 +858,7 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		return "", "", nil
 	}
 	if base == "" {
-		author, ok := im.Identity.GerritUser(ctx, pr.User.Login)
-		if !ok {
-			return "", pr.User.Login, nil
-		}
-		if login, err = im.pusher(ctx, pr, h); err != nil {
-			return "", "", err
-		}
-		if login == "" && time.Since(pr.CreatedAt) < pusherWait {
-			// GitHub's activity log can lag a push by a little, and a
-			// fork's push sends no webhook here: decided on a guess, the
-			// change would be the bridge's for good.
-			return "", "", &syncError{state: "pending", msg: "Waiting for GitHub to say who pushed it", retry: true}
-		}
-		if pusher, _ := im.Identity.GerritUser(ctx, login); !strings.EqualFold(pusher, author) {
-			im.Logger.Info("first push not the PR author's (as GitHub says): the bridge uploads it", "pr", pr.Number, "author", pr.User.Login, "pusher", login)
-			return "", login, nil
-		}
-		return author, pr.User.Login, nil
+		return im.firstUploader(ctx, pr, h)
 	}
 	rev := cur.Revisions[base]
 	prev := rev.Uploader.Username
@@ -907,6 +897,32 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 	}
 	im.Logger.Info("someone else's push: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
 	return "", login, nil
+}
+
+// firstUploader is who uploads pr's first patch set, h, as above: its
+// author if they pushed h, else the bridge (""). login is the pusher.
+func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h string) (user, login string, err error) {
+	if !im.Uploader.CanActAs() {
+		return "", "", nil
+	}
+	author, ok := im.Identity.GerritUser(ctx, pr.User.Login)
+	if !ok {
+		return "", pr.User.Login, nil
+	}
+	if login, err = im.pusher(ctx, pr, h); err != nil {
+		return "", "", err
+	}
+	if login == "" && time.Since(pr.CreatedAt) < pusherWait {
+		// GitHub's activity log can lag a push by a little, and a
+		// fork's push sends no webhook here: decided on a guess, the
+		// change would be the bridge's for good.
+		return "", "", &syncError{state: "pending", msg: "Waiting for GitHub to say who pushed it", retry: true}
+	}
+	if pusher, _ := im.Identity.GerritUser(ctx, login); !strings.EqualFold(pusher, author) {
+		im.Logger.Info("first push not the PR author's (as GitHub says): the bridge uploads it", "pr", pr.Number, "author", pr.User.Login, "pusher", login)
+		return "", login, nil
+	}
+	return author, pr.User.Login, nil
 }
 
 // parentTrusted reports whether parent is on Gerrit's branch, or is a
@@ -1140,23 +1156,37 @@ func (im *Importer) restoreGerrit(ctx context.Context, n int, branch string, cur
 	return err
 }
 
-// ownUpload reports whether change cur is one the bridge uploaded for pr
-// whose link was never saved: no PR is linked to it, its first patch set
-// carries pr's GitHub-PR footer, and the bridge or pr's author uploaded
-// it (nobody else can be made the owner of a PR's change this way).
-func (im *Importer) ownUpload(ctx context.Context, cur *gerrit.ChangeInfo, pr *github.PullRequest) bool {
-	if st, err := im.Store.Load(ctx, cur.Number); err != nil || st.State.PR != 0 {
-		return false
+// ownUpload reports whether change cur is one the bridge uploaded for pr,
+// head h, whose link was never saved: it is open, no PR is linked to it,
+// its first patch set carries pr's GitHub-PR footer, and whoever uploaded
+// it is who the bridge would have uploaded it as (firstUploader). Nobody
+// else can be made the owner of a PR's change this way: not even the
+// PR's author, by uploading its Change-Id first when someone else pushed
+// its head (fourth audit).
+func (im *Importer) ownUpload(ctx context.Context, cur *gerrit.ChangeInfo, pr *github.PullRequest, h string) (bool, error) {
+	if cur.Status != "NEW" {
+		return false, nil
 	}
-	author, _ := im.Identity.GerritUser(ctx, pr.User.Login)
+	if st, err := im.Store.Load(ctx, cur.Number); err != nil || st.State.PR != 0 {
+		return false, nil
+	}
 	for _, r := range cur.Revisions {
 		if r.Number != 1 {
 			continue
 		}
-		byUs := r.Uploader.AccountID == im.Bridge.AccountID || (author != "" && strings.EqualFold(r.Uploader.Username, author))
-		return byUs && r.RealUploader == nil && strings.Contains(r.Commit.Message, "\nGitHub-PR: "+pr.HTMLURL+"\n")
+		if r.RealUploader != nil || !strings.Contains(r.Commit.Message, "\nGitHub-PR: "+pr.HTMLURL+"\n") {
+			return false, nil
+		}
+		if r.Uploader.AccountID == im.Bridge.AccountID {
+			return true, nil
+		}
+		user, _, err := im.firstUploader(ctx, pr, h)
+		if err != nil {
+			return false, err
+		}
+		return user != "" && strings.EqualFold(r.Uploader.Username, user) && !r.Uploader.Inactive, nil
 	}
-	return false
+	return false, nil
 }
 
 // recordGerritHead records that GitHub has patch set ps of change n as

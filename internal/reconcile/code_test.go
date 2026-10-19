@@ -260,9 +260,11 @@ type fakeUploader struct {
 	// create makes an upload with a new Change-Id a new change, as
 	// Gerrit would.
 	create bool
+	// alone makes it unable to act as anyone.
+	alone bool
 }
 
-func (u *fakeUploader) CanActAs() bool { return true }
+func (u *fakeUploader) CanActAs() bool { return !u.alone }
 
 func (u *fakeUploader) Upload(ctx context.Context, user, commit, target string, opts []string) error {
 	u.uploads = append(u.uploads, fmt.Sprintf("%s %s %v", user, commit, opts))
@@ -1424,20 +1426,41 @@ func TestLostLinkIsAdopted(t *testing.T) {
 		t.Fatalf("uploads %v, change %d, revisions %+v: want the one upload adopted and recorded", up.uploads, n, st.Revisions)
 	}
 
-	// Someone else's change with the PR's Change-Id, or one made for
-	// another PR, is not adopted.
-	for _, tc := range []struct{ uploader, url string }{{"brt", pr.HTMLURL}, {"austin", "https://github.com/o/r/pull/61"}} {
-		ci := &gerrit.ChangeInfo{Number: 9, Revisions: map[string]gerrit.RevisionInfo{"x": {Number: 1, Uploader: s.accounts[tc.uploader],
+	// Someone else's change with the PR's Change-Id, one made for another
+	// PR, or one no longer open, is not adopted. Nor is the author's own
+	// upload when someone else pushed the PR's head (fourth audit): the
+	// bridge would have uploaded that as itself.
+	s.accounts["bridge"] = im.Bridge
+	for _, tc := range []struct {
+		uploader, url, status, pusher string
+		alone                         bool // the bridge cannot act as anyone
+		want                          bool
+	}{
+		{"austin", pr.HTMLURL, "NEW", "austin", false, true},
+		{"bridge", pr.HTMLURL, "NEW", "brt", false, true},
+		{"brt", pr.HTMLURL, "NEW", "austin", false, false},
+		{"austin", "https://github.com/o/r/pull/61", "NEW", "austin", false, false},
+		{"austin", pr.HTMLURL, "ABANDONED", "austin", false, false},
+		{"austin", pr.HTMLURL, "NEW", "brt", false, false},
+		{"austin", pr.HTMLURL, "NEW", "austin", true, false},
+	} {
+		h2 := s.commit(m1, "new.txt", fmt.Sprintf("%+v", tc), "New")
+		pr2 := s.pr(62, "topic2", h2, "main", "austin")
+		pr2.HTMLURL = pr.HTMLURL
+		s.pushed("o/r", "refs/heads/topic2", h2, tc.pusher)
+		up.alone = tc.alone
+		ci := &gerrit.ChangeInfo{Number: 9, Status: tc.status, Revisions: map[string]gerrit.RevisionInfo{"x": {Number: 1, Uploader: s.accounts[tc.uploader],
 			Commit: gerrit.CommitInfo{Message: "T\n\nGitHub-PR: " + tc.url + "\nChange-Id: I1\n"}}}}
-		if im.ownUpload(ctx, ci, pr) {
-			t.Errorf("adopted a change uploaded by %s for %s", tc.uploader, tc.url)
+		if got, err := im.ownUpload(ctx, ci, pr2, h2); err != nil || got != tc.want {
+			t.Errorf("%+v: adopted %v (err %v)", tc, got, err)
 		}
 	}
+	up.alone = false
 	// Nor one another PR is linked to.
 	s.save(ctx, im.Store, 9, &state.Change{State: state.ChangeState{Change: 9, PR: 61}})
-	ci := &gerrit.ChangeInfo{Number: 9, Revisions: map[string]gerrit.RevisionInfo{"x": {Number: 1, Uploader: s.accounts["austin"],
+	ci := &gerrit.ChangeInfo{Number: 9, Status: "NEW", Revisions: map[string]gerrit.RevisionInfo{"x": {Number: 1, Uploader: s.accounts["austin"],
 		Commit: gerrit.CommitInfo{Message: "T\n\nGitHub-PR: " + pr.HTMLURL + "\nChange-Id: I1\n"}}}}
-	if im.ownUpload(ctx, ci, pr) {
+	if got, _ := im.ownUpload(ctx, ci, pr, h); got {
 		t.Error("adopted a change another PR is linked to")
 	}
 }
