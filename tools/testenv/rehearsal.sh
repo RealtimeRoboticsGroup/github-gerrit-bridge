@@ -25,6 +25,11 @@ FAILED=0
 pass() { echo "  PASS $*"; PASSED=$((PASSED + 1)); }
 fail() { echo "  FAIL $*"; FAILED=$((FAILED + 1)); }
 step() { echo; echo "== $*"; }
+# A reviewer reads a patch set before commenting on it, and the bridge
+# takes a comment to be about a patch set only once it has been on GitHub
+# for a minute (comments.go minSeen): a "retest" or /submit sooner is
+# about the one before it.
+read_it() { sleep 65; }
 
 # gh as each person.
 me() { "${GH}" "$@"; }
@@ -149,6 +154,7 @@ cr2() { for c in "${C1}" "${C2}" "${C3}"; do gerrit "changes/${c}?o=DETAILED_LAB
 wait_for "GitHub approvals become Code-Review +2 by AustinSchuh" cr2
 submittable() { for c in "${C1}" "${C2}" "${C3}"; do gerrit "changes/${c}?o=SUBMITTABLE" | jq -e '.submittable' || return 1; done; }
 wait_for "all three submittable (CI re-verified the new patch sets)" submittable
+read_it
 me api "repos/${R}/issues/${P3}/comments" -f body="/submit" --silent
 merged() { for p in "${P1}" "${P2}" "${P3}"; do [[ "$(me api "repos/${R}/pulls/${p}" --jq .merged)" == true ]] || return 1; done; }
 wait_for "/submit merges the chain; replication makes GitHub show all three merged" merged
@@ -172,6 +178,7 @@ wait_for "CI did not start for the untrusted uploader" status_is "${Q1}" gerrit/
 checks "${D1}" | jq -e '.runs == []' >/dev/null && pass "the Checks tab shows no runs" || fail "Checks tab: $(checks "${D1}")"
 
 step "6. retest from GitHub by a trusted reviewer"
+read_it
 me api "repos/${R}/issues/${Q1}/comments" -f body="retest" --silent
 wait_for "AustinSchuh's retest on GitHub starts CI (gerrit/Verified success)" status_is "${Q1}" gerrit/Verified success
 checks "${D1}" | jq -e '[.runs[].checkName] | sort == ["Build","Test"]' >/dev/null && pass "the Checks tab shows the retest's jobs" || fail "Checks tab: $(checks "${D1}")"
