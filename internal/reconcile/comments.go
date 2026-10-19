@@ -240,6 +240,7 @@ func (c *Comments) Sync(ctx context.Context, n int) error {
 		t := st.Threads[i]
 		threads[t.GerritRoot] = &t
 	}
+	var first *commentSnapshot
 	for pass := 0; ; pass++ {
 		if pass == 4 {
 			return fmt.Errorf("comments on change %d did not settle", n)
@@ -247,6 +248,11 @@ func (c *Comments) Sync(ctx context.Context, n int) error {
 		snap, err := c.observe(ctx, n, pr, st)
 		if err != nil {
 			return err
+		}
+		if first == nil {
+			first = snap
+		} else {
+			c.settle(snap, first)
 		}
 		c.recover(n, snap, m)
 		c.recoverThreads(snap, m, threads)
@@ -286,6 +292,58 @@ func (c *Comments) Sync(ctx context.Context, n int) error {
 		s.Comments = m.list()
 		s.Threads = ts
 	})
+}
+
+// settle leaves out of a later pass's snapshot s what someone other than
+// the bridge posted or edited since the first pass, first: the passes
+// after it only finish what that one started (replies whose roots are
+// mirrored now, ids learned by reading back). Anything newer waits for
+// the next sync (fourth audit: a comment posted during each pass kept the
+// sync, and the /submit and checks after it, from ever finishing).
+func (c *Comments) settle(s, first *commentSnapshot) {
+	ics := map[int64]string{}
+	for _, ic := range first.ics {
+		ics[ic.ID] = ic.Body
+	}
+	s.ics = slices.DeleteFunc(s.ics, func(ic github.IssueComment) bool {
+		body, ok := ics[ic.ID]
+		return !c.byBridge(ic.User.Login) && (!ok || body != ic.Body)
+	})
+	rcs := map[int64]string{}
+	for _, rc := range first.rcs {
+		rcs[rc.ID] = rc.Body
+	}
+	s.rcs = slices.DeleteFunc(s.rcs, func(rc github.ReviewComment) bool {
+		body, ok := rcs[rc.ID]
+		return !c.byBridge(rc.User.Login) && (!ok || body != rc.Body)
+	})
+	s.rcByID = map[int64]*github.ReviewComment{}
+	for i := range s.rcs {
+		s.rcByID[s.rcs[i].ID] = &s.rcs[i]
+	}
+	reviews := map[int64]github.Review{}
+	for _, r := range first.reviews {
+		reviews[r.ID] = r
+	}
+	s.reviews = slices.DeleteFunc(s.reviews, func(r github.Review) bool {
+		was, ok := reviews[r.ID]
+		return !c.byBridge(r.User.Login) && (!ok || was.Body != r.Body || was.State != r.State)
+	})
+	ours := func(a gerrit.AccountInfo, tag string) bool { return isBridgeTag(tag) || (a.AccountID != 0 && a.AccountID == c.BridgeAccount) }
+	gerritIDs := map[string]bool{}
+	for _, gc := range first.gerrit {
+		gerritIDs[gc.ID] = true
+	}
+	s.gerrit = slices.DeleteFunc(s.gerrit, func(gc gerrit.CommentInfo) bool { return !ours(gc.Author, gc.Tag) && !gerritIDs[gc.ID] })
+	s.byID = map[string]*gerrit.CommentInfo{}
+	for i := range s.gerrit {
+		s.byID[s.gerrit[i].ID] = &s.gerrit[i]
+	}
+	messageIDs := map[string]bool{}
+	for _, m := range first.messages {
+		messageIDs[m.ID] = true
+	}
+	s.messages = slices.DeleteFunc(s.messages, func(m gerrit.ChangeMessage) bool { return !ours(m.Author, m.Tag) && !messageIDs[m.ID] })
 }
 
 func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*commentSnapshot, error) {

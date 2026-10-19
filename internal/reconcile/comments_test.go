@@ -21,6 +21,8 @@ import (
 const bridgeID = 99
 
 type fakeGerrit struct {
+	// onList, if set, runs whenever comments are listed.
+	onList func()
 	// noFixes makes SetReview fail like a site without the fix
 	// suggestions feature flag.
 	noFixes bool
@@ -64,6 +66,9 @@ func (f *fakeGerrit) tick() string {
 }
 
 func (f *fakeGerrit) ListComments(context.Context, int) ([]gerrit.CommentInfo, error) {
+	if f.onList != nil {
+		f.onList()
+	}
 	return append([]gerrit.CommentInfo(nil), f.comments...), nil
 }
 
@@ -425,6 +430,46 @@ func (e *commentsEnv) settled(t *testing.T) {
 	e.sync(t)
 	if e.g.reviews != gp || e.h.posts != hp {
 		t.Errorf("a second sync posted again (gerrit %d->%d, github %d->%d)", gp, e.g.reviews, hp, e.h.posts)
+	}
+}
+
+// Someone posting during each pass of a sync, on either side, cannot keep
+// it from finishing (fourth audit): what is posted, or edited, after its
+// first pass waits for the next sync.
+func TestCommentSyncSettlesDespiteNewComments(t *testing.T) {
+	for _, side := range []string{"github", "gerrit", "message", "edit"} {
+		e := newCommentsEnv(t)
+		e.c.BridgeLogin = "bridge"
+		e.h.ics = append(e.h.ics, github.IssueComment{ID: 7, Body: "First.", User: github.User{Login: "stranger"}})
+		i := 0
+		e.g.onList = func() {
+			i++
+			switch side {
+			case "github":
+				e.h.ics = append(e.h.ics, github.IssueComment{ID: int64(100 + i), Body: fmt.Sprintf("Again %d.", i), User: github.User{Login: "stranger"}})
+			case "gerrit":
+				e.g.user(fmt.Sprintf("x%d", i), "a.txt", 2, 2, fmt.Sprintf("Again %d.", i), "", false)
+			case "message":
+				e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: fmt.Sprintf("m%d", i), Author: gerrit.AccountInfo{AccountID: 1, Name: "Alice"},
+					RevisionNumber: 2, Message: fmt.Sprintf("Patch Set 2:\n\nAgain %d.", i)})
+			case "edit":
+				e.h.ics[0].Body = fmt.Sprintf("First, edit %d.", i)
+				e.h.edited(7, "stranger")
+			}
+		}
+		if err := e.c.Sync(context.Background(), 5); err != nil {
+			t.Errorf("%s: %v", side, err)
+		}
+	}
+	// What the bridge posts in the first pass is still read back in the
+	// next: a GitHub reply follows its root to Gerrit in one sync.
+	e := newCommentsEnv(t)
+	e.c.BridgeLogin = "bridge"
+	root := e.h.human("a.txt", 3, "sha2", "Typo here.", 0)
+	e.h.human("a.txt", 3, "sha2", "And here.", root)
+	e.sync(t)
+	if len(e.g.comments) != 2 || e.g.comments[1].InReplyTo != e.g.comments[0].ID {
+		t.Errorf("Gerrit has %+v, want the root and a reply to it", e.g.comments)
 	}
 }
 
