@@ -532,38 +532,56 @@ type vouchedAnswer struct {
 
 // vouched returns the answer cached under key if the lists at paths are
 // unchanged since it was computed, and computes (and caches) it if not.
+// An answer is cached only if the lists were the same before and after
+// computing it, so one that raced a change (or a GraphQL view lagging
+// behind REST) is not kept.
 func (c *Client) vouched(ctx context.Context, key string, paths []string, compute func() (map[int64]string, error)) (map[int64]string, error) {
-	var print strings.Builder
-	for _, p := range paths {
-		pp, _, err := c.listPrint(ctx, p)
-		if err != nil {
-			return nil, err
-		}
-		if pp == "" {
-			print.Reset() // a page without an ETag: nothing to vouch with
-			break
-		}
-		print.WriteString(pp + "\n")
+	before, err := c.listsPrint(ctx, paths)
+	if err != nil {
+		return nil, err
 	}
 	c.mu.Lock()
 	cached, ok := c.answers[key]
 	c.mu.Unlock()
-	if ok && print.Len() > 0 && cached.print == print.String() {
+	if ok && before != "" && cached.print == before {
 		return maps.Clone(cached.value), nil
 	}
 	v, err := compute()
 	if err != nil {
 		return nil, err
 	}
-	if print.Len() > 0 {
-		c.mu.Lock()
-		if c.answers == nil {
-			c.answers = map[string]vouchedAnswer{}
-		}
-		c.answers[key] = vouchedAnswer{print: print.String(), value: maps.Clone(v)}
-		c.mu.Unlock()
+	after, err := c.listsPrint(ctx, paths)
+	if err != nil {
+		return nil, err
 	}
+	c.mu.Lock()
+	if c.answers == nil {
+		c.answers = map[string]vouchedAnswer{}
+	}
+	if before != "" && after == before {
+		c.answers[key] = vouchedAnswer{print: before, value: maps.Clone(v)}
+	} else {
+		delete(c.answers, key)
+	}
+	c.mu.Unlock()
 	return v, nil
+}
+
+// listsPrint is listPrint over several lists, "" if any has a page
+// without an ETag.
+func (c *Client) listsPrint(ctx context.Context, paths []string) (string, error) {
+	var print strings.Builder
+	for _, p := range paths {
+		pp, _, err := c.listPrint(ctx, p)
+		if err != nil {
+			return "", err
+		}
+		if pp == "" {
+			return "", nil // nothing to vouch with
+		}
+		print.WriteString(pp + "\n")
+	}
+	return print.String(), nil
 }
 
 // listPrint fetches every page of the list at path (free when unchanged,

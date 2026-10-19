@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -427,6 +429,88 @@ func TestGraphQLAnswersWithoutETags(t *testing.T) {
 		}
 	}
 	if f.queries["edits"] != 4 {
+		t.Errorf("queries = %v", f.queries)
+	}
+}
+
+// GitHub's ETag covers a page's body, not its Link header: a full last
+// page still answers 304 after a next page appears. Lists must still see
+// the new items.
+func TestETagCacheSeesNewPages(t *testing.T) {
+	items := 100
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page == 0 {
+			page = 1
+		}
+		var b strings.Builder
+		b.WriteString("[")
+		for i := (page-1)*100 + 1; i <= min(page*100, items); i++ {
+			if b.Len() > 1 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"id":%d}`, i)
+		}
+		b.WriteString("]")
+		etag := fmt.Sprintf(`"%x"`, sha256.Sum256([]byte(b.String()))) // body only, as GitHub
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", etag)
+		if page*100 < items {
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/o/r/issues/1/comments?per_page=100&page=%d>; rel="next"`, "http://"+r.Host, page+1))
+		}
+		fmt.Fprint(w, b.String())
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	ctx := context.Background()
+	if got, err := c.ListIssueComments(ctx, 1); err != nil || len(got) != 100 {
+		t.Fatalf("first: %d %v", len(got), err)
+	}
+	items = 101
+	if got, err := c.ListIssueComments(ctx, 1); err != nil || len(got) != 101 {
+		t.Errorf("after comment 101: %d %v", len(got), err)
+	}
+}
+
+func TestETagCacheBoundedByBytes(t *testing.T) {
+	big := strings.Repeat("x", maxCachedBody-100)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"`+r.URL.Path+`"`)
+		fmt.Fprintf(w, "%q", big)
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	for i := range maxCachedBytes/maxCachedBody + 10 {
+		if _, err := c.Do(context.Background(), http.MethodGet, fmt.Sprintf("/x/%d", i), nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c.etagBytes > maxCachedBytes || len(c.etags) != len(c.etagOrder) {
+		t.Errorf("cache holds %d bytes in %d entries (%d ordered)", c.etagBytes, len(c.etags), len(c.etagOrder))
+	}
+}
+
+// An answer computed while a list changed under it is not kept: the next
+// call asks again.
+func TestGraphQLAnswerRacingAChangeIsNotKept(t *testing.T) {
+	f := &fakeLists{version: map[string]int{}, items: map[string]int{}, queries: map[string]int{}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" && f.queries["edits"] == 0 {
+			f.version["issues/1/comments"]++ // an edit lands while GraphQL is asked
+		}
+		f.handler(w, r)
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	for range 2 {
+		if _, err := c.Edits(context.Background(), 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.queries["edits"] != 4 { // two queries each time: not reused
 		t.Errorf("queries = %v", f.queries)
 	}
 }

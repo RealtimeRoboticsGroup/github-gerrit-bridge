@@ -36,6 +36,7 @@ type Client struct {
 	// cannot serve anything stale.
 	etags     map[string]*cached
 	etagOrder []string
+	etagBytes int
 	// answers are GraphQL answers REST vouches for (reviews.go).
 	answers map[string]vouchedAnswer
 }
@@ -44,11 +45,37 @@ type cached struct {
 	etag   string
 	header http.Header
 	body   []byte
+	// fullLast is a full page of a list with no next page. GitHub's ETag
+	// covers the page's body, not its Link header: once more items are
+	// added, the page still answers 304, and its cached Link would hide
+	// the new next page. Such a page is always fetched in full.
+	fullLast bool
 }
 
-// Bounds on the ETag cache: entries, and the largest body kept.
+// fullLastPage reports whether body, the answer to GET u, is a JSON
+// array as long as the page size u asked for (GitHub's default 30), and
+// header has no rel="next" link.
+func fullLastPage(u string, header http.Header, body []byte) bool {
+	if nextLink(header.Get("Link")) != "" {
+		return false
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(body, &items) != nil {
+		return false // not a list
+	}
+	perPage := 30
+	if pu, err := url.Parse(u); err == nil {
+		if n, err := strconv.Atoi(pu.Query().Get("per_page")); err == nil && n > 0 {
+			perPage = n
+		}
+	}
+	return len(items) >= perPage
+}
+
+// Bounds on the ETag cache: entries, total and largest body kept.
 const (
 	maxCachedResponses = 4096
+	maxCachedBytes     = 64 << 20
 	maxCachedBody      = 1 << 20
 )
 
@@ -68,14 +95,21 @@ func (c *Client) cacheGet(u string, resp *http.Response, body []byte) {
 	if c.etags == nil {
 		c.etags = map[string]*cached{}
 	}
-	if _, ok := c.etags[u]; !ok {
+	if old, ok := c.etags[u]; ok {
+		c.etagBytes -= len(old.body)
+	} else {
 		c.etagOrder = append(c.etagOrder, u)
-		if len(c.etagOrder) > maxCachedResponses {
-			delete(c.etags, c.etagOrder[0])
-			c.etagOrder = c.etagOrder[1:]
-		}
 	}
-	c.etags[u] = &cached{etag: etag, header: resp.Header.Clone(), body: body}
+	c.etags[u] = &cached{etag: etag, header: resp.Header.Clone(), body: body, fullLast: fullLastPage(u, resp.Header, body)}
+	c.etagBytes += len(body)
+	// Oldest first, until within both bounds (never the entry just made).
+	for len(c.etagOrder) > 1 && (len(c.etagOrder) > maxCachedResponses || c.etagBytes > maxCachedBytes) {
+		if old, ok := c.etags[c.etagOrder[0]]; ok {
+			c.etagBytes -= len(old.body)
+			delete(c.etags, c.etagOrder[0])
+		}
+		c.etagOrder = c.etagOrder[1:]
+	}
 }
 
 // RateLimit is the most recent core rate-limit state GitHub reported.
@@ -161,7 +195,7 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) (*htt
 	}
 	var prev *cached
 	if method == http.MethodGet {
-		if prev = c.cachedGet(u); prev != nil {
+		if prev = c.cachedGet(u); prev != nil && !prev.fullLast {
 			req.Header.Set("If-None-Match", prev.etag)
 		}
 	}
