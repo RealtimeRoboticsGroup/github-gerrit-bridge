@@ -1223,8 +1223,9 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 	}
 	for _, login := range sortedStringKeys(latest) {
 		rv := latest[login]
-		if rv.State == "DISMISSED" || c.mine(rv.User.Login) || m.byGitHub[ghKey(kindReviewBody, rv.ID)] == nil {
-			continue
+		mc := m.byGitHub[ghKey(kindReviewBody, rv.ID)]
+		if rv.State == "DISMISSED" || c.mine(rv.User.Login) || mc == nil || strings.HasPrefix(mc.GerritID, "refused:") {
+			continue // not mirrored, or Gerrit would not take it: nothing to disagree with
 		}
 		user, ok := c.Users.GerritUser(ctx, rv.User.Login)
 		if !ok {
@@ -1621,6 +1622,14 @@ func (c *Comments) mirrorEdits(ctx context.Context, n, pr int, s *commentSnapsho
 				Tag:      commentTag,
 				Comments: map[string][]gerrit.CommentInput{gc.Path: {ci}},
 			})
+			var ge *gerrit.Error
+			if errors.As(err, &ge) && (ge.Status == http.StatusBadRequest || ge.Status == http.StatusConflict || ge.Status == http.StatusRequestEntityTooLarge) {
+				// As for new comments: one Gerrit will not take must not
+				// stop the change's sync.
+				c.Logger.Warn("Gerrit refused a GitHub edit; not mirroring it", "change", n, "github_id", mc.GitHubID, "err", err)
+				mc.BodyHash = h
+				continue
+			}
 			if err != nil {
 				return posted, err
 			}
@@ -1747,6 +1756,18 @@ func (c *Comments) setReviewAs(ctx context.Context, login string, n int, rev str
 // degrading gracefully: fix suggestions become text on sites without the
 // feature flag, and a vote the user may not give is lowered (+2 to +1)
 // or dropped, so the comments always get through.
+// castVote sets labels as login, or Code-Review +1 if +2 is refused.
+func (c *Comments) castVote(ctx context.Context, login string, n int, rev string, labels map[string]int) {
+	err := c.setReviewAs(ctx, login, n, rev, gerrit.ReviewInput{Labels: labels})
+	var ge *gerrit.Error
+	if errors.As(err, &ge) && (ge.Status == http.StatusForbidden || ge.Status == http.StatusBadRequest) && labels["Code-Review"] == 2 {
+		err = c.setReviewAs(ctx, login, n, rev, gerrit.ReviewInput{Labels: map[string]int{"Code-Review": 1}})
+	}
+	if err != nil {
+		c.Logger.Warn("casting a vote without its comments", "change", n, "github_login", login, "err", err)
+	}
+}
+
 func (c *Comments) postBatch(ctx context.Context, n int, login string, ps int, comments, plain map[string][]gerrit.CommentInput, labels map[string]int) error {
 	rev := strconv.Itoa(ps)
 	// Not OmitDuplicateComments: claim already keeps a comment from being
@@ -1756,6 +1777,7 @@ func (c *Comments) postBatch(ctx context.Context, n int, login string, ps int, c
 	if _, user := c.as(ctx, login); user != "" {
 		in.Labels = labels
 	}
+	want := in.Labels
 	for attempt := 0; ; attempt++ {
 		err := c.setReviewAs(ctx, login, n, rev, in)
 		var ge *gerrit.Error
@@ -1764,6 +1786,17 @@ func (c *Comments) postBatch(ctx context.Context, n int, login string, ps int, c
 			return nil
 		case attempt > 4 || !errors.As(err, &ge):
 			return err
+		case len(want) > 0 && len(in.Comments) > 0 && in.Labels == nil &&
+			(ge.Status == http.StatusBadRequest || ge.Status == http.StatusConflict || ge.Status == http.StatusRequestEntityTooLarge):
+			// Gerrit will not take the comments, with or without the vote
+			// (a change's comment limits, say): the vote alone, which it
+			// still takes, so nobody's vote is lost to someone else's
+			// comments. The caller records the comments as refused.
+			c.castVote(ctx, login, n, rev, want)
+			return err
+		case ge.Status == http.StatusConflict && len(in.Labels) > 0:
+			c.Logger.Info("Gerrit refused the vote (closed change?); posting the comment only", "change", n, "github_login", login, "err", err)
+			in.Labels = nil
 		case ge.Status >= 500 && hasFixes(in.Comments):
 			// Fix suggestions in human comments are behind Gerrit's
 			// experiments.enabled = GerritBackendFeature__allow_fix_suggestions_in_comments

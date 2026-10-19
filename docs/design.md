@@ -1228,7 +1228,11 @@ defenses, by threat:
   shortened, with a link to the rest (Gerrit's limit is 16 KiB). One Gerrit
   still refuses (a change's comment-count or total-size limit) is recorded
   as refused and not retried, so a stranger's comment cannot stop a
-  change's sync, `/submit` and votes (second audit).
+  change's sync, `/submit` and votes (second audit). A review whose text
+  Gerrit refuses still casts its vote alone, and is not dismissed on
+  GitHub for lacking one; on a closed change, where Gerrit takes no
+  votes, its text still goes in; a GitHub edit Gerrit refuses is dropped
+  too (third audit).
 - **Public text.** Import errors keep their details in the log, not in the
   public status, and so do `/submit` errors that are not Gerrit's own
   refusals. Mirrored Gerrit comments, messages and `gerrit/<Label>`

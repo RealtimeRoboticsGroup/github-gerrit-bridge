@@ -30,7 +30,9 @@ type fakeGerrit struct {
 	labels      map[string]map[string]int
 	refuseRunAs bool
 	// refuse makes SetReview refuse (400) comments containing it.
-	refuse   string
+	refuse string
+	// closed makes SetReview refuse (409) votes, as on a closed change.
+	closed   bool
 	attempts int // SetReview calls, refused or not
 	maxVote  int
 	messages []gerrit.ChangeMessage
@@ -99,6 +101,9 @@ func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ i
 				return &gerrit.Error{Status: 400, Body: "Exceeding maximum number of comments"}
 			}
 		}
+	}
+	if f.closed && len(in.Labels) > 0 {
+		return &gerrit.Error{Status: 409, Body: "change is closed"}
 	}
 	f.reviews++
 	for l, v := range in.Labels {
@@ -960,6 +965,63 @@ func TestReviewBodyEditedByOtherIsNotPostedWithItsComments(t *testing.T) {
 	if !body || !nit {
 		t.Errorf("not all mirrored (body %v, inline %v): %+v", body, nit, e.g.comments)
 	}
+	e.settled(t)
+}
+
+// Someone else's comments filling a change's limits do not cost a
+// reviewer their vote: Gerrit takes the vote alone, the review's text is
+// recorded as refused, and the GitHub approval is not dismissed. On a
+// closed change, where Gerrit takes no votes, the text still goes in.
+// And an edit Gerrit will not take does not stop the sync.
+func TestVoteSurvivesRefusedComments(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.g.refuse = "LIMIT"
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 50, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		Body: "LGTM LIMIT", SubmittedAt: time.Now(), HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-50"})
+	e.sync(t)
+	if len(e.g.votes) != 1 || e.g.votes[0] != "bobg:Code-Review=2" {
+		t.Errorf("votes = %v", e.g.votes)
+	}
+	if len(e.h.dismissed) != 0 {
+		t.Errorf("dismissed %v", e.h.dismissed)
+	}
+	e.settled(t)
+	// Only +1 allowed: +1 alone. None: the approval is left alone.
+	for _, max := range []int{1, 0} {
+		e = newCommentsEnv(t)
+		e.runAs()
+		e.g.refuse, e.g.maxVote = "LIMIT", max
+		e.h.reviews = append(e.h.reviews, github.Review{ID: 50, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+			Body: "LGTM LIMIT", SubmittedAt: time.Now(), HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-50"})
+		e.sync(t)
+		if want := map[int]string{1: "bobg:Code-Review=1", 0: ""}[max]; strings.Join(e.g.votes, ",") != want || len(e.h.dismissed) != 0 {
+			t.Errorf("max %d: votes = %v, dismissed %v", max, e.g.votes, e.h.dismissed)
+		}
+	}
+
+	e = newCommentsEnv(t)
+	e.runAs()
+	e.g.closed = true
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 51, State: "CHANGES_REQUESTED", CommitID: "sha2", User: github.User{Login: "bob"},
+		Body: "Needs work.", SubmittedAt: time.Now(), HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-51"})
+	e.sync(t)
+	if !slices.ContainsFunc(e.g.comments, func(gc gerrit.CommentInfo) bool { return strings.Contains(gc.Message, "Needs work.") }) {
+		t.Errorf("review text not posted on a closed change: %+v", e.g.comments)
+	}
+
+	e = newCommentsEnv(t)
+	e.runAs()
+	id := e.h.human("a.txt", 3, "sha2", "first", 0)
+	e.sync(t)
+	for i := range e.h.rcs {
+		if e.h.rcs[i].ID == id {
+			e.h.rcs[i].Body = "edited LIMIT"
+		}
+	}
+	e.h.edits = map[int64]string{id: "bob"}
+	e.g.refuse = "LIMIT"
+	e.sync(t)
 	e.settled(t)
 }
 
