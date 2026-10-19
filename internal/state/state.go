@@ -78,6 +78,9 @@ type ChangeState struct {
 	// ForeignNotice is the patch set whose "not pushed to the author's
 	// branch" notice was posted in Gerrit.
 	ForeignNotice int `json:"foreign_notice,omitempty"`
+	// HandledCommands are the GitHub comments whose commands (/submit)
+	// the bridge has run or answered.
+	HandledCommands []int64 `json:"handled_commands,omitempty"`
 }
 
 // Revision links a patch set to the GitHub commit with the same diff

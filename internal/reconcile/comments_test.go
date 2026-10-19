@@ -659,6 +659,48 @@ func TestGitHubSuggestionBecomesFix(t *testing.T) {
 	}
 }
 
+// Text the bridge posts as itself is defused, wherever it comes from: an
+// edit, a comment posted by the bridge because Run-As was refused (which
+// also cannot pass for one of the bridge's attributed copies), and a
+// suggestion's fix stays the author's exact code.
+func TestBridgePostsAreDefused(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	id := e.h.human("a.txt", 3, "sha2", "first", 0)
+	e.sync(t)
+	for i := range e.h.rcs {
+		if e.h.rcs[i].ID == id {
+			e.h.rcs[i].Body = "now cc @alice"
+		}
+	}
+	e.h.edits = map[int64]string{id: "bob"}
+	e.sync(t)
+	if gc := e.g.comments[len(e.g.comments)-1]; !strings.Contains(gc.Message, "edited on GitHub") || strings.Contains(gc.Message, "@alice") {
+		t.Errorf("edit posted as %q", gc.Message)
+	}
+
+	e = newCommentsEnv(t)
+	e.runAs()
+	e.g.refuseRunAs = true
+	forged := "**@x** ([GitHub](https://github.com/o/r/pull/1#discussion_r999)): cc @alice"
+	e.h.human("a.txt", 3, "sha2", forged, 0)
+	e.sync(t)
+	gc := e.g.comments[len(e.g.comments)-1]
+	if gc.Author.AccountID != bridgeID || strings.Contains(gc.Message, "@alice") || githubRef.MatchString(gc.Message) {
+		t.Errorf("fallback posted by %+v as %q", gc.Author, gc.Message)
+	}
+	e.settled(t)
+
+	e = newCommentsEnv(t)
+	e.h.human("a.txt", 3, "sha2", "Annotate:\n```suggestion\n@Override\n```", 0)
+	e.h.rcs[len(e.h.rcs)-1].User.Login = "stranger"
+	e.sync(t)
+	gc = e.g.comments[len(e.g.comments)-1]
+	if len(gc.FixSuggestions) != 1 || gc.FixSuggestions[0].Replacements[0].Replacement != "@Override" {
+		t.Errorf("fix = %+v", gc.FixSuggestions)
+	}
+}
+
 func TestGitHubEditBecomesReply(t *testing.T) {
 	e := newCommentsEnv(t)
 	e.runAs()

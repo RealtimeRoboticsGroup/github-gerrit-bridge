@@ -1146,7 +1146,10 @@ defenses, by threat:
   2026-10-19).
 - **Bridge markers.** `<!-- bridge:… -->` markers mark state (handled
   commands, comment mappings) only in comments by the bridge's own GitHub
-  login, and only at the end, where the bridge writes them. Text it copies
+  login that nobody else has edited, and only at the end, where the
+  bridge writes them. Handled commands are also kept in state, so an
+  edited reply neither runs its command again nor keeps another from
+  running (third audit). Text it copies
   from the other side (Gerrit comments, messages, commit messages, Gerrit's
   error text, quoted code) has its markers broken first (§8), so a Gerrit
   reply cannot mark someone's `/submit` handled or a commit message cut its
@@ -1286,7 +1289,12 @@ Known gaps:
   must not notify whoever the author named, and must not carry markers it
   would read back as its own state. Where PR descriptions flow back into
   commit messages, the joiners are taken out again, so round trips are
-  exact. Text posted in Gerrit as its own author (Run-As) is left alone.
+  exact. Text posted in Gerrit as its own author (Run-As) is left alone;
+  if Run-As is refused and the bridge posts it after all, it is defused
+  and marked as posted by the bridge, never in the attribution form the
+  bridge reads back as its own copy, and so are GitHub edits the bridge
+  mirrors. A suggestion's fix is taken from the raw text, so Gerrit's
+  "Apply fix" gets the author's exact code (third audit).
   Rewriting mentions to the mapped user on the other side is not done.
   Closing keywords (`Fixes #12`) are left alone: the commit lands on the
   default branch with them anyway.

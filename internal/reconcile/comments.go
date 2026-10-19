@@ -1004,6 +1004,14 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			if ci.Side == "" {
 				plain := ci.Message
 				ci.Message, ci.FixSuggestions = fromSuggestion(ci.Message, rc.Path, first, line, lastLen)
+				if ci.FixSuggestions != nil {
+					// The fix is the author's exact code: from the raw
+					// body, not the defused text (a decorator's @ would
+					// get a joiner).
+					if _, raw := fromSuggestion(rc.Body, rc.Path, first, line, lastLen); raw != nil {
+						ci.FixSuggestions = raw
+					}
+				}
 				add(key, login, src, ps, rc.Path, ci, plain)
 				continue
 			}
@@ -1152,9 +1160,9 @@ type ghComment struct {
 // does not post it twice.
 func (c *Comments) claim(s *commentSnapshot, m *commentMap, claimed map[string]bool, user string, src ghComment,
 	ps int, path string, ci gerrit.CommentInput, plain ...string) bool {
-	texts := []string{strings.TrimSpace(ci.Message)}
+	texts := []string{strings.TrimSpace(ci.Message), strings.TrimSpace(byBridgeFor(ci.Message))}
 	for _, p := range plain {
-		texts = append(texts, strings.TrimSpace(p))
+		texts = append(texts, strings.TrimSpace(p), strings.TrimSpace(byBridgeFor(p)))
 	}
 	for i := range s.gerrit { // oldest first
 		gc := &s.gerrit[i]
@@ -1609,7 +1617,7 @@ func (c *Comments) mirrorEdits(ctx context.Context, n, pr int, s *commentSnapsho
 			f := false
 			ci := gerrit.CommentInput{
 				InReplyTo: gc.ID, Line: gc.Line, Range: gc.Range, Side: gc.Side,
-				Message:    fmt.Sprintf("**@%s**'s comment was edited on GitHub ([GitHub](%s)):\n\n%s", login, prURL, limitComment(strings.TrimSpace(body), url)),
+				Message:    fmt.Sprintf("**@%s**'s comment was edited on GitHub ([GitHub](%s)):\n\n%s", login, prURL, forGerrit(limitComment(strings.TrimSpace(body), url))),
 				Unresolved: &f,
 			}
 			if mc.Kind == kindReviewComment {
@@ -1745,17 +1753,29 @@ func (c *Comments) setReviewAs(ctx context.Context, login string, n int, rev str
 		c.Logger.Warn("Run-As refused; posting as the bridge", "change", n, "user", user, "err", err)
 		in.Tag, in.Labels = commentTag, nil
 		// The comments were written for posting as their author, so say
-		// whose they are.
-		in.Message = strings.TrimSpace(fmt.Sprintf("From @%s on GitHub.\n\n%s", login, in.Message))
+		// whose they are, and defuse them as anything the bridge posts.
+		in.Message = strings.TrimSpace(fmt.Sprintf("From @%s on GitHub.\n\n%s", login, forGerrit(in.Message)))
+		comments := map[string][]gerrit.CommentInput{}
+		for path, cs := range in.Comments {
+			for _, ci := range cs {
+				ci.Message = byBridgeFor(ci.Message)
+				comments[path] = append(comments[path], ci)
+			}
+		}
+		in.Comments = comments
 		return c.Gerrit.SetReview(ctx, n, rev, in)
 	}
 	return err
 }
 
-// postBatch posts one GitHub review (or comment) to Gerrit as its author,
-// degrading gracefully: fix suggestions become text on sites without the
-// feature flag, and a vote the user may not give is lowered (+2 to +1)
-// or dropped, so the comments always get through.
+// byBridgeFor is a comment written to be posted as its GitHub author, as
+// the bridge posts it when Run-As is refused: said to be someone else's,
+// and defused. It never starts with the attribution header recover()
+// reads back, whatever the author wrote.
+func byBridgeFor(msg string) string {
+	return "(From GitHub; posted by the bridge.)\n\n" + forGerrit(msg)
+}
+
 // castVote sets labels as login, or Code-Review +1 if +2 is refused.
 func (c *Comments) castVote(ctx context.Context, login string, n int, rev string, labels map[string]int) {
 	err := c.setReviewAs(ctx, login, n, rev, gerrit.ReviewInput{Labels: labels})
@@ -1768,6 +1788,10 @@ func (c *Comments) castVote(ctx context.Context, login string, n int, rev string
 	}
 }
 
+// postBatch posts one GitHub review (or comment) to Gerrit as its author,
+// degrading gracefully: fix suggestions become text on sites without the
+// feature flag, and a vote the user may not give is lowered (+2 to +1)
+// or dropped, so the comments always get through.
 func (c *Comments) postBatch(ctx context.Context, n int, login string, ps int, comments, plain map[string][]gerrit.CommentInput, labels map[string]int) error {
 	rev := strconv.Itoa(ps)
 	// Not OmitDuplicateComments: claim already keeps a comment from being

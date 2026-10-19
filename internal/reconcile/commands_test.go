@@ -77,6 +77,28 @@ func TestSubmitCommandRunsOnce(t *testing.T) {
 	}
 }
 
+// Anyone with write access can edit the bridge's replies: changing a
+// reply's marker neither runs its command again nor, put on another
+// reply, keeps a pending one from running.
+func TestEditedRepliesDoNotDecideWhatWasHandled(t *testing.T) {
+	c, h, sub := newCommands(t)
+	ctx := context.Background()
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)})
+	if err := c.Run(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	r := len(h.ics) - 1 // the bridge's reply
+	h.ics[r].Body = strings.Replace(h.ics[r].Body, "cmd/1", "cmd/99", 1) + "\n\n<!-- bridge:cmd/3 -->"
+	h.edits = map[int64]string{h.ics[r].ID: "mallory"}
+	h.ics = append(h.ics, github.IssueComment{ID: 3, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: time.Date(2026, 1, 1, 13, 0, 0, 0, time.UTC)})
+	if err := c.Run(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	if len(sub.calls) != 2 {
+		t.Errorf("submits = %v, want #1 once and #3 once", sub.calls)
+	}
+}
+
 func TestSubmitCommandUnmappedAndRefused(t *testing.T) {
 	c, h, sub := newCommands(t)
 	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "stranger"}})

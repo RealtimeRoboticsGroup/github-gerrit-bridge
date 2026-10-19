@@ -133,9 +133,20 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 	if err != nil {
 		return err
 	}
+	// Handled: recorded in state, or (from before that was kept, or a
+	// crash before it was saved) named by the bridge's own unedited reply.
+	// Anyone with write access can edit the bridge's replies: an edited
+	// marker could otherwise run a command again, or keep one from
+	// running.
 	handled := map[int64]bool{}
+	for _, id := range st.State.HandledCommands {
+		handled[id] = true
+	}
 	for _, ic := range ics {
 		if c.BridgeLogin != "" && !strings.EqualFold(ic.User.Login, c.BridgeLogin) {
+			continue
+		}
+		if editor, ok := edits[ic.ID]; ok && (c.BridgeLogin == "" || !strings.EqualFold(editor, c.BridgeLogin)) {
 			continue
 		}
 		for _, sm := range handledMarker.FindAllStringSubmatch(ic.Body, -1) {
@@ -157,6 +168,11 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 			reply = fmt.Sprintf("@%s: `/submit` was not run because the comment was edited. Post it as a new comment.", ic.User.Login)
 		} else {
 			reply = c.submit(ctx, n, ic)
+		}
+		if err := updateStateFn(ctx, c.Store, n, fmt.Sprintf("Handled command %d", ic.ID), func(st *state.Change) {
+			st.State.HandledCommands = append(st.State.HandledCommands, ic.ID)
+		}); err != nil {
+			return err
 		}
 		if _, err := c.GitHub.CreateIssueComment(ctx, pr, fmt.Sprintf("%s\n\n<!-- bridge:cmd/%d -->", reply, ic.ID)); err != nil {
 			return err
