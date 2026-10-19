@@ -456,7 +456,7 @@ func TestOutOfHunkFallsBackToFileLevel(t *testing.T) {
 	if len(e.h.rcs) != 1 || e.h.rcs[0].SubjectType != "file" {
 		t.Fatalf("got %+v", e.h.rcs)
 	}
-	if !strings.Contains(e.h.rcs[0].Body, "`a.txt` L5:\n> five") {
+	if !strings.Contains(e.h.rcs[0].Body, "`a.txt` L5:\n```\nfive\n```") {
 		t.Errorf("no quote of the true anchor:\n%s", e.h.rcs[0].Body)
 	}
 	e.settled(t)
@@ -1215,6 +1215,11 @@ func TestGerritCommentsGitHubWouldRefuse(t *testing.T) {
 	e.g.files["big.txt"] = strings.Repeat("x", 100000) + "\n"
 	if q := e.c.quote(context.Background(), 5, &gerrit.CommentInfo{Path: "big.txt", PatchSet: 2, Line: 1}, "big.txt"); len(q) > 1000 {
 		t.Errorf("quote is %d bytes", len(q))
+	}
+	e.g.files["evil.txt"] = "</a><a href=\"https://evil\">Approved</a>\n```\n"
+	q := e.c.quote(context.Background(), 5, &gerrit.CommentInfo{Path: "evil.txt", PatchSet: 2, Line: 1, Range: &gerrit.Range{StartLine: 1, EndLine: 2}}, "evil.txt")
+	if !strings.Contains(q, "````\n</a>") || !strings.HasSuffix(q, "````") {
+		t.Errorf("quote = %q, want the lines in a fence they cannot close", q)
 	}
 }
 

@@ -135,3 +135,13 @@ func TestWhoNamesTheUsername(t *testing.T) {
 		t.Errorf("cut inside a character: %q", d)
 	}
 }
+
+// File paths and lines the bridge quotes are code: nothing in them can
+// end the code and render as Markdown or HTML.
+func TestQuotedCodeStaysCode(t *testing.T) {
+	for in, want := range map[string]string{"a.go": "`a.go`", "a`b.go": "``a`b.go``", "`x": "`` `x ``", "a\n**b**": "`a **b**`"} {
+		if got := codeSpan(in); got != want {
+			t.Errorf("codeSpan(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

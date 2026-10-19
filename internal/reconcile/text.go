@@ -99,11 +99,22 @@ func whoMD(a gerrit.AccountInfo) string {
 	return who(a)
 }
 
-// suggestionFence is a code fence for text that text itself cannot close:
-// longer than any run of backticks in it.
-func suggestionFence(text string) string {
+// codeSpan is s (a file path, say) as inline code it cannot break out
+// of, on one line.
+func codeSpan(s string) string {
+	s = shorten(strings.Join(strings.Fields(s), " "), 300)
+	ticks := strings.Repeat("`", longestBacktickRun(s)+1)
+	pad := ""
+	if strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") {
+		pad = " "
+	}
+	return ticks + pad + s + pad + ticks
+}
+
+// longestBacktickRun is the length of the longest run of backticks in s.
+func longestBacktickRun(s string) int {
 	longest, run := 0, 0
-	for _, r := range text {
+	for _, r := range s {
 		if r == '`' {
 			run++
 			longest = max(longest, run)
@@ -111,5 +122,11 @@ func suggestionFence(text string) string {
 			run = 0
 		}
 	}
-	return strings.Repeat("`", max(3, longest+1))
+	return longest
+}
+
+// suggestionFence is a code fence for text that text itself cannot close:
+// longer than any run of backticks in it.
+func suggestionFence(text string) string {
+	return strings.Repeat("`", max(3, longestBacktickRun(text)+1))
 }

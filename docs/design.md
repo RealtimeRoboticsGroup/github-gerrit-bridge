@@ -1329,7 +1329,11 @@ Known gaps:
   included: an approximation of what GitHub renders as code was fooled
   four ways. Suggestion blocks stay exact, inside a fence longer than any
   run of backticks in them, so nothing in them is ever outside code.
-  Names in bold have Markdown and `&` escaped. The bridge's account
+  Names in bold have Markdown and `&` escaped, and so do commit
+  subjects in a PR's links block; quoted file lines and paths are code,
+  in fences and spans they cannot close (third audit). The text itself
+  stays Markdown: someone can still write a line that looks like a
+  header, below the true one. The bridge's account
   must not notify whoever the author named, and must not carry markers it
   would read back as its own state. Where PR descriptions flow back into
   commit messages, the joiners are taken out again, so round trips are

@@ -771,7 +771,7 @@ func (c *Comments) postSingle(ctx context.Context, n, pr int, s *commentSnapshot
 		}
 	}
 	if quote == "" {
-		quote = fmt.Sprintf("`%s`", gc.Path)
+		quote = codeSpan(gc.Path)
 	}
 	ic, err := c.GitHub.CreateIssueComment(ctx, pr, c.ghBody(n, gc, s.current, quote, ""))
 	if c.refusedOnGitHub(n, m, gc.ID, err) {
@@ -809,13 +809,14 @@ func (c *Comments) portToCurrent(ctx context.Context, n int, s *commentSnapshot,
 	return p, true
 }
 
-// quote renders the commented lines as "`path` L3-L5" plus a quote block.
+// quote renders the commented lines as "`path` L3-L5" plus the lines, as
+// code: they are someone's file, not Markdown or HTML to render.
 func (c *Comments) quote(ctx context.Context, n int, gc *gerrit.CommentInfo, label string) string {
 	first, last := gc.Line, gc.Line
 	if r := gc.Range; r != nil {
 		first, last = r.StartLine, r.EndLine
 	}
-	where := fmt.Sprintf("`%s` L%d", label, first)
+	where := fmt.Sprintf("%s L%d", codeSpan(label), first)
 	if last != first {
 		where += fmt.Sprintf("-L%d", last)
 	}
@@ -827,12 +828,12 @@ func (c *Comments) quote(ctx context.Context, n int, gc *gerrit.CommentInfo, lab
 		return where
 	}
 	lines := strings.Split(string(content), "\n")
-	var b strings.Builder
-	b.WriteString(where + ":\n")
+	var code strings.Builder
 	for i := first; i <= last && i <= len(lines) && i-first < 10; i++ {
-		b.WriteString("> " + shorten(lines[i-1], 300) + "\n")
+		code.WriteString(shorten(lines[i-1], 300) + "\n")
 	}
-	return strings.TrimRight(b.String(), "\n")
+	f := suggestionFence(code.String())
+	return where + ":\n" + f + "\n" + code.String() + f
 }
 
 func isUnprocessable(err error) bool {
