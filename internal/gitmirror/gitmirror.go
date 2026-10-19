@@ -103,6 +103,16 @@ func (r *Repo) Init(ctx context.Context) error {
 	if _, err := r.Git(ctx, nil, "config", "http.followRedirects", "false"); err != nil {
 		return err
 	}
+	// No reachability bitmaps when packing a push: with them git leaves
+	// out every object any ref Gerrit advertised reaches, but Gerrit
+	// (JGit) counts as known only what its own walk from those refs
+	// reaches, and refuses the rest as missing. A bare mirror gets
+	// bitmaps from git's automatic gc; on the test site a new change's
+	// first state commit, sharing a blob with older state refs, was
+	// refused that way until this was set.
+	if _, err := r.Git(ctx, nil, "config", "pack.useBitmaps", "false"); err != nil {
+		return err
+	}
 	if _, err := r.Git(ctx, nil, "remote", "get-url", "origin"); err != nil {
 		_, err = r.Git(ctx, nil, "remote", "add", "origin", r.Remote)
 		return err

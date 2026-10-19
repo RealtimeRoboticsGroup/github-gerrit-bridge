@@ -41,6 +41,9 @@ func TestInitIdempotentAndRevParse(t *testing.T) {
 	if strings.TrimSpace(string(out)) != "/b" {
 		t.Errorf("origin = %q", out)
 	}
+	if out, _ := r.Git(ctx, nil, "config", "pack.useBitmaps"); strings.TrimSpace(string(out)) != "false" {
+		t.Errorf("pack.useBitmaps = %q", out)
+	}
 	if out, _ := r.Git(ctx, nil, "config", "http.followRedirects"); strings.TrimSpace(string(out)) != "false" {
 		t.Errorf("http.followRedirects = %q", out)
 	}

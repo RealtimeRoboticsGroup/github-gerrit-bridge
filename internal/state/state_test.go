@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -390,5 +391,46 @@ func TestConflictRefreshFailureKeepsState(t *testing.T) {
 	}
 	if got, _ := b.Load(ctx, 5); got.Version == "" {
 		t.Error("a failed refresh made the state look empty")
+	}
+}
+
+// A change's first state commit goes up with all its objects, even ones
+// Gerrit already has through other, unrelated refs, though the mirror has
+// reachability bitmaps (as git's gc makes for a bare repository): with
+// them git leaves those out, and Gerrit (JGit), which counts only what
+// its own walk reaches, refused such a push on the test site.
+func TestFirstStateCommitIsPushedWhole(t *testing.T) {
+	ctx := context.Background()
+	origin, s := newStores(t, 1)
+	st := s[0]
+	shared := []Vote{{Account: 1, Label: "Code-Review", Value: 2}}
+	if err := st.Save(ctx, 5, &Change{State: ChangeState{ChangeID: "I5"}, Votes: shared}, "five"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Repo.Git(ctx, nil, "repack", "-a", "-d", "-b", "-q"); err != nil {
+		t.Fatal(err)
+	}
+	// The remote keeps what it receives as packs, to look into.
+	if _, err := origin.Git(ctx, nil, "config", "receive.unpackLimit", "1"); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := filepath.Glob(filepath.Join(origin.Dir, "objects", "pack", "*.idx"))
+	if err := st.Save(ctx, 6, &Change{State: ChangeState{ChangeID: "I6"}, Votes: shared}, "six"); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := origin.Git(ctx, nil, "rev-parse", Ref(6)+":votes.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := filepath.Glob(filepath.Join(origin.Dir, "objects", "pack", "*.idx"))
+	sent := ""
+	for _, idx := range after {
+		if !slices.Contains(before, idx) {
+			out, _ := origin.Git(ctx, nil, "verify-pack", "-v", idx)
+			sent += string(out)
+		}
+	}
+	if !strings.Contains(sent, strings.TrimSpace(string(blob))) {
+		t.Errorf("the shared votes.json was not sent with change 6's first state commit; sent:\n%s", sent)
 	}
 }
