@@ -76,6 +76,9 @@ type Comments struct {
 	// Gerrit and its CI see the real author; otherwise as the bridge.
 	Users    Identity
 	GerritAs func(user string) GerritAPI
+	// PostBudget, if set, bounds the Gerrit comments and messages of each
+	// author the bridge posts on GitHub; the rest wait for a later sync.
+	PostBudget *Budget
 	// CIMessage matches CI messages, which are mirrored as statuses
 	// (Checks), not as comments.
 	CIMessage *regexp.Regexp
@@ -519,6 +522,7 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 	var groups []*group // review batches: one per (Gerrit reply, patch set)
 	gkey := map[string]*group{}
 	posted := false
+	deferred := 0
 	for i := range s.gerrit {
 		gc := &s.gerrit[i]
 		if c.bridgePost(gc) || m.byGerrit[gc.ID] != nil {
@@ -526,6 +530,10 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 		}
 		if c.DryRun {
 			c.Logger.Info("dry run: would mirror Gerrit comment to GitHub", "change", n, "pr", pr, "id", gc.ID, "path", gc.Path, "line", gc.Line)
+			continue
+		}
+		if !c.PostBudget.Take(ctx, gc.Author.AccountID) {
+			deferred++
 			continue
 		}
 		parent := githubParent(s, m, gc)
@@ -581,6 +589,10 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			c.Logger.Info("dry run: would mirror Gerrit message to GitHub", "change", n, "pr", pr, "id", msg.ID)
 			continue
 		}
+		if !c.PostBudget.Take(ctx, msg.Author.AccountID) {
+			deferred++
+			continue
+		}
 		votes := ""
 		if v := messageVotes(msg.Message); v != "" {
 			votes = ", **" + v + "**"
@@ -603,6 +615,9 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			return true, err
 		}
 		posted = true
+	}
+	if deferred > 0 {
+		c.Logger.Info("Gerrit comments deferred: their authors posted too many lately", "change", n, "pr", pr, "comments", deferred)
 	}
 	return posted, nil
 }

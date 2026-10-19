@@ -1218,6 +1218,35 @@ func TestGerritCommentsGitHubWouldRefuse(t *testing.T) {
 	}
 }
 
+// One Gerrit author's comments past their budget wait for a later sync.
+func TestGerritCommentsWithinTheAuthorsBudget(t *testing.T) {
+	e := newCommentsEnv(t)
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	e.c.PostBudget = &Budget{N: 2, Per: time.Hour, now: func() time.Time { return now }}
+	for _, id := range []string{"c1", "c2", "c3"} {
+		e.g.user(id, gerrit.PatchSetLevel, 2, 0, "Spam "+id, "", false)
+	}
+	e.sync(t)
+	if len(e.h.ics) != 2 {
+		t.Errorf("%d posted, want 2", len(e.h.ics))
+	}
+	now = now.Add(2 * time.Hour)
+	e.sync(t)
+	if len(e.h.ics) != 3 {
+		t.Errorf("%d posted, want the third later", len(e.h.ics))
+	}
+	// Messages count too.
+	now = now.Add(2 * time.Hour)
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	for _, id := range []string{"m1", "m2", "m3"} {
+		e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: id, Author: alice, RevisionNumber: 2, Message: "Patch Set 2:\n\nSpam " + id})
+	}
+	e.sync(t)
+	if len(e.h.ics) != 5 {
+		t.Errorf("%d posted, want 2 more", len(e.h.ics))
+	}
+}
+
 func TestCommentEditedBeforeMirroringIsNotPostedAsTheAuthor(t *testing.T) {
 	e := newCommentsEnv(t)
 	e.runAs()

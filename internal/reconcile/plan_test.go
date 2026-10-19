@@ -34,6 +34,8 @@ type world struct {
 	foreign map[int]bool
 	// hold changes' PRs had their GitHub side mirrored this reconcile.
 	hold map[int]bool
+	// deferred changes' owners are over their new-PR budget.
+	deferred map[int]bool
 }
 
 func newWorld(t *testing.T) *world {
@@ -66,7 +68,7 @@ func (w *world) snapshot() *Snapshot {
 		Branch: "main", DefaultBranch: "main",
 		Changes: map[int]*GerritChange{}, OnBranch: w.onMain,
 		GitHubBranches: map[string]string{}, PRs: map[int]*github.PullRequest{}, State: map[int]*state.Change{},
-		Repo: "o/r", NoPush: map[int]bool{}, Withheld: w.withheld, Foreign: w.foreign, Hold: w.hold,
+		Repo: "o/r", NoPush: map[int]bool{}, Withheld: w.withheld, Foreign: w.foreign, Hold: w.hold, Deferred: w.deferred,
 	}
 	// Like Code.observe: closed changes drop out once the bridge has
 	// recorded them closed, unless their PR is still open.
@@ -435,6 +437,27 @@ func TestHoldIsForHandledPRs(t *testing.T) {
 	s.hold(map[int]bool{10: true, 0: true})
 	if !reflect.DeepEqual(s.Hold, map[int]bool{1: true}) {
 		t.Errorf("hold = %v", s.Hold)
+	}
+}
+
+// A change deferred for its owner's budget gets nothing on GitHub yet;
+// one that has begun keeps going.
+func TestDeferredChangeWaits(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.upload(2, "b1", "m0")
+	w.deferred = map[int]bool{2: true}
+	w.converge()
+	if _, ok := w.branch["gerrit/"+cid(2)]; ok || w.state[2] != nil {
+		t.Error("a deferred change was exported")
+	}
+	if w.state[1] == nil {
+		t.Error("the other change was not exported")
+	}
+	w.deferred = nil
+	w.converge()
+	if w.state[2] == nil {
+		t.Error("change 2 not exported once allowed")
 	}
 }
 

@@ -4,6 +4,7 @@ go_library(
     name = "reconcile",
     srcs = [
         "body.go",
+        "budget.go",
         "checks.go",
         "code.go",
         "commands.go",
@@ -36,6 +37,7 @@ go_library(
 go_test(
     name = "reconcile_test",
     srcs = [
+        "budget_test.go",
         "checks_test.go",
         "code_test.go",
         "commands_test.go",

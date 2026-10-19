@@ -1579,6 +1579,34 @@ func TestChangesTouchingGitHubConfigAreWithheld(t *testing.T) {
 	}
 }
 
+// New PRs beyond an owner's budget wait; begun ones, PRs already made and
+// trusted owners' do not; creating a PR spends from the budget.
+func TestNewPRsWithinTheOwnersBudget(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	c.PRBudget = &Budget{N: 2, Per: time.Hour, Trusted: func(_ context.Context, a int) (bool, bool) { return a == 7, true }}
+	snap := &Snapshot{Changes: map[int]*GerritChange{}, State: map[int]*state.Change{}, GitHubBranches: map[string]string{"gerrit/" + cid(4): "x"}}
+	for n, owner := range map[int]int{1: 9, 2: 9, 3: 9, 4: 9, 5: 9, 6: 7, 7: 7, 8: 7} {
+		snap.Changes[n] = &GerritChange{Number: n, ChangeID: cid(n), Status: "NEW", OwnerID: owner}
+	}
+	snap.State[5] = &state.Change{State: state.ChangeState{PR: 50}}
+	c.deferOverBudget(ctx, snap)
+	if want := map[int]bool{3: true}; !reflect.DeepEqual(snap.Deferred, want) {
+		t.Errorf("deferred = %v, want %v", snap.Deferred, want)
+	}
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("github.git", m0, "refs/heads/gerrit/"+cid(1))
+	snap.Changes[1].Revision = m0
+	snap.Branch, snap.Repo = "main", "o/r"
+	if err := c.applyOne(ctx, snap, Action{Kind: CreatePR, Change: 1, New: &github.NewPull{Title: "One", Head: "gerrit/" + cid(1), Base: "main"}}); err != nil {
+		t.Fatal(err)
+	}
+	if left := c.PRBudget.Left(ctx, 9); left != 1 {
+		t.Errorf("budget left %d after a PR, want 1", left)
+	}
+}
+
 // Gerrit lets anyone add a patch set to any change; only the owner's, the
 // bridge's and trusted members' reach a PR author's branch.
 func TestForeignPatchSetsAreMarked(t *testing.T) {

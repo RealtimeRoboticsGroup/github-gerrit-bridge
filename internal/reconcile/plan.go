@@ -79,6 +79,9 @@ type Snapshot struct {
 	// push to it. Nothing of it reaches the PR: not its code, nor its
 	// commit message.
 	Foreign map[int]bool
+	// Deferred marks changes without a PR yet whose owner has used up
+	// their budget of new PRs (Code.PRBudget): not mirrored for now.
+	Deferred map[int]bool
 	// Hold marks changes whose PR's edits, draft toggles, closes or
 	// reopens were mirrored to Gerrit once in this reconcile already:
 	// newer ones wait for the next, so someone editing their PR over and
@@ -323,8 +326,8 @@ func MakePlan(s *Snapshot) *Plan {
 	mirrored := map[int]*GerritChange{}
 	byRev := map[string]int{}
 	for n, c := range s.Changes {
-		if _, onGitHub := s.GitHubBranches[s.head(n, c.ChangeID)]; s.Withheld[n] && !onGitHub {
-			continue // never exported: no branch, no PR
+		if _, onGitHub := s.GitHubBranches[s.head(n, c.ChangeID)]; (s.Withheld[n] || s.Deferred[n]) && !onGitHub {
+			continue // never exported (or not yet): no branch, no PR
 		}
 		if c.Status == "NEW" && !c.Private {
 			mirrored[n] = c

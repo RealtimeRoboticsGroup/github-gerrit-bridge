@@ -1232,6 +1232,13 @@ defenses, by threat:
   wait for the next, and the plan leaves that PR's text, draft and open
   state alone meanwhile, so someone editing their PR every few seconds
   cannot keep the branch from converging (third audit).
+- **Spam from Gerrit.** Anyone can register on Gerrit, and every change
+  and comment there costs the bridge's GitHub token writes (a new PR
+  about 15), which GitHub stalls past about 80 a minute. So a change
+  owner outside CI's trusted group gets at most 20 new PRs an hour (the
+  rest wait, `Snapshot.Deferred`), and an author outside it at most 120
+  comments and messages mirrored an hour (the rest wait for a later
+  sync). Set `receive.maxBatchChanges` too (third audit).
 - **API budget.** One key (a PR, a change's comments, a branch) runs at
   most every 10 seconds however many events arrive for it, during or
   after a run, from either side (anyone can sign up on both); only a
@@ -1416,7 +1423,9 @@ instance (`internal/testgerrit`) is set up this way.
 - **Administrators' `abandon` and `toggleWipState`** on the bridged
   project's `refs/heads/*` (Administrate Server is not applied through
   Run-As), not on All-Projects.
-- **`receive.maxObjectSizeLimit`** (say 25m) in gerrit.config.
+- **`receive.maxObjectSizeLimit`** (say 25m) and
+  **`receive.maxBatchChanges`** (say 50) in gerrit.config: one push
+  cannot then bring hundreds of changes to mirror.
 - **Administrators' GitHub logins** in `identity.github_to_gerrit`: they
   are not matched by username (`identity.never_groups`). Every group
   listed there must be visible to the bridge account (Administrators:

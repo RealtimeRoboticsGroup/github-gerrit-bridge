@@ -55,6 +55,9 @@ type Code struct {
 	// (known is false if that cannot be told). Only they, and a change's
 	// owner, have their Gerrit patch sets pushed to a PR author's branch.
 	Trusted func(ctx context.Context, account int) (trusted, known bool)
+	// PRBudget, if set, bounds the new PRs each change owner's changes
+	// get (Snapshot.Deferred).
+	PRBudget *Budget
 
 	// configCache remembers changesConfig answers by branch tip and
 	// commit.
@@ -303,6 +306,34 @@ func (c *Code) notice(ctx context.Context, n int, ch *GerritChange, msg string) 
 	}
 }
 
+// deferOverBudget marks the changes that would get a new PR beyond their
+// owner's PRBudget (lowest numbers first) as Deferred.
+func (c *Code) deferOverBudget(ctx context.Context, s *Snapshot) {
+	s.Deferred = map[int]bool{}
+	if c.PRBudget == nil {
+		return
+	}
+	want := map[int]int{}
+	for _, n := range sortedKeys(s.Changes) {
+		ch := s.Changes[n]
+		if ch.Status != "NEW" || ch.Private || s.Withheld[n] {
+			continue
+		}
+		if st := s.State[n]; st != nil && st.State.PR != 0 {
+			continue
+		}
+		if _, onGitHub := s.GitHubBranches[s.head(n, ch.ChangeID)]; onGitHub {
+			continue // begun already
+		}
+		if want[ch.OwnerID]++; want[ch.OwnerID] > c.PRBudget.Left(ctx, ch.OwnerID) {
+			s.Deferred[n] = true
+		}
+	}
+	if len(s.Deferred) > 0 {
+		c.Logger.Info("new PRs deferred: their owners made too many lately", "changes", len(s.Deferred))
+	}
+}
+
 // mayPushToAuthor reports whether a patch set uploaded in Gerrit by
 // uploader (on their behalf by real, if not 0) may go to a GitHub-born
 // PR's branch, which is its author's: only if each is the change's owner,
@@ -442,6 +473,7 @@ func (c *Code) observe(ctx context.Context, branch string) (*Snapshot, error) {
 	if err := c.markForeign(ctx, s); err != nil {
 		return nil, err
 	}
+	c.deferOverBudget(ctx, s)
 	revs := map[string]bool{}
 	for _, ch := range s.Changes {
 		revs[ch.Revision] = true
@@ -1050,6 +1082,9 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		pr, err := gh.CreatePull(ctx, *a.New)
 		if err != nil {
 			return err
+		}
+		if ch := s.Changes[a.Change]; ch != nil {
+			c.PRBudget.Take(ctx, ch.OwnerID)
 		}
 		c.Logger.Info("created PR", "change", a.Change, "pr", pr.Number, "url", pr.HTMLURL)
 		return c.link(ctx, s, a.Change, pr)
