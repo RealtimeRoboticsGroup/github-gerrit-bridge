@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
@@ -1149,6 +1150,29 @@ func TestImportFetchChecksObjects(t *testing.T) {
 	if sts := s.statuses[bad]; len(sts) != 1 || sts[0].State != "failure" || !strings.Contains(sts[0].Description, "object checks") {
 		t.Errorf("bad PR's gerrit/sync = %+v", sts)
 	}
+
+	// A fork PR listing someone else's head, whose real head is bad, gets
+	// only itself refused.
+	s2, im2, _, m1b, _, _ := gerritBornWorld(t, false)
+	victim := s2.commit(m1b, "v.txt", "v\n", "Victim")
+	s2.push("github.git", victim, "refs/heads/victim")
+	s2.pr(61, "victim", victim, "main", "austin")
+	s2.git("work", "hash-object", "-w", "-t", "blob", "/dev/null")
+	cmd = exec.Command("git", "hash-object", "-w", "-t", "tree", "--literally", "--stdin")
+	cmd.Dir = filepath.Join(s2.dir, "work")
+	cmd.Stdin = bytes.NewReader(append([]byte("100644 ..\x00"), raw...))
+	if out, err = cmd.Output(); err != nil {
+		t.Fatal(err)
+	}
+	evil := s2.git("work", "commit-tree", strings.TrimSpace(string(out)), "-p", m1b, "-m", "Evil")
+	s2.push("github.git", evil, "refs/pull/62/head")
+	s2.pr(62, "main", victim, "main", "mallory").Head.Repo.FullName = "mallory/fork"
+	for range 2 {
+		im2.Import(context.Background(), "main")
+	}
+	if sts := s2.statuses[victim]; len(sts) == 0 || sts[len(sts)-1].State == "failure" {
+		t.Errorf("victim's gerrit/sync = %+v", sts)
+	}
 }
 
 // Closed PRs' heads do not stay in the mirror, and a same-repo branch
@@ -1248,6 +1272,50 @@ func TestFirstUploadNeedsTheAuthorsPush(t *testing.T) {
 				t.Fatalf("uploads = %v, want one as %q", up.uploads, tc.want)
 			}
 		})
+	}
+	// Just opened, and nobody says yet: wait (GitHub's log lags a little)
+	// rather than make the change the bridge's for good.
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	h := s.commit(m1, "new.txt", "n\n", "New")
+	s.push("github.git", h, "refs/heads/topic")
+	s.pr(60, "topic", h, "main", "austin").CreatedAt = time.Now()
+	if err := im.Import(context.Background(), "main"); err == nil || len(up.uploads) != 0 {
+		t.Errorf("err = %v, uploads %v; want a retry and no upload yet", err, up.uploads)
+	}
+	if sts := s.statuses[h]; len(sts) != 1 || sts[0].State != "pending" {
+		t.Errorf("gerrit/sync = %+v", sts)
+	}
+}
+
+// An import that wants a retry (a fork PR's head not published yet) does
+// not hold back exporting the branch's Gerrit changes.
+func TestExportDespiteAnImportRetry(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	g := s.commit(m0, "one.txt", "1\n", "One\n\nChange-Id: "+cid(1)+"\n")
+	ci := s.change(1, cid(1), g, "One\n\nChange-Id: "+cid(1)+"\n", "NEW")
+	r := ci.Revisions[g]
+	r.Commit.Parents = append(r.Commit.Parents, struct {
+		Commit string `json:"commit"`
+	}{m0})
+	r.Commit.Subject = "One"
+	ci.Revisions[g] = r
+	fork := s.commit(m0, "fork.txt", "f\n", "From a fork")
+	pr := s.pr(52, "main", fork, "main", "brt")
+	pr.Head.Repo.FullName = "brt/fork" // not at refs/pull/52/head yet
+	c.Importer = &Importer{Project: "p", Gerrit: c.Gerrit, GitHub: c.GitHub, GitHubURL: c.GitHubURL, Mirror: c.Mirror, Store: store,
+		Uploader: &fakeUploader{s: s, m: c.Mirror}, Identity: c.Identity, Bridge: gerrit.AccountInfo{AccountID: 1}, DefaultBranch: "main",
+		Pushers: &Pushers{}, Logger: slog.Default()}
+	err := c.Reconcile(ctx, Key{Branch: "main"})
+	if err == nil || !strings.Contains(err.Error(), "importing") {
+		t.Errorf("err = %v, want the import's retry", err)
+	}
+	if got := s.gitOut("github.git", "rev-parse", "refs/heads/gerrit/"+cid(1)); strings.TrimSpace(got) != g {
+		t.Errorf("change 1 not exported (gerrit/%s = %q)", cid(1), got)
 	}
 }
 

@@ -104,6 +104,21 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("POST /repos/o/r/statuses/{sha}", s.createStatus)
 	mux.HandleFunc("POST /repos/o/r/stacks/{n}/unstack", s.unstack)
 	mux.HandleFunc("GET /repos/o/r/stacks", func(w http.ResponseWriter, r *http.Request) { s.json(w, []any{}, false) })
+	mux.HandleFunc("POST /repos/o/r/pulls", func(w http.ResponseWriter, r *http.Request) {
+		var in github.NewPull
+		json.NewDecoder(r.Body).Decode(&in)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		n := 100 + len(s.pulls)
+		pr := &github.PullRequest{Number: n, NodeID: fmt.Sprintf("PR_%d", n), State: "open", Title: in.Title, Body: in.Body, Draft: in.Draft,
+			User: github.User{Login: "bot"}, HTMLURL: fmt.Sprintf("https://github.com/o/r/pull/%d", n), CreatedAt: s.clock,
+			Head: github.Ref{Ref: in.Head, SHA: strings.TrimSpace(s.gitOut("github.git", "rev-parse", "refs/heads/"+in.Head)), Repo: &struct {
+				FullName string `json:"full_name"`
+			}{"o/r"}},
+			Base: github.Ref{Ref: in.Base}}
+		s.pulls[n] = pr
+		s.json(w, pr, false)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("fake sites: unexpected %s %s", r.Method, r.URL)
 		http.Error(w, "not faked", http.StatusNotImplemented)
@@ -126,6 +141,14 @@ func (s *sites) git(dir string, args ...string) string {
 		s.t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// gitOut runs git in dir without failing the test (for handlers).
+func (s *sites) gitOut(dir string, args ...string) string {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = filepath.Join(s.dir, dir)
+	out, _ := cmd.Output()
+	return string(out)
 }
 
 // commit commits file in the work tree on top of parent ("" = the current
@@ -422,6 +445,12 @@ func (s *sites) updatePull(w http.ResponseWriter, r *http.Request) {
 	}
 	if u.Base != nil {
 		pr.Base.Ref = *u.Base
+	}
+	if u.Title != nil {
+		pr.Title = *u.Title
+	}
+	if u.Body != nil {
+		pr.Body = *u.Body
 	}
 	s.json(w, pr, false)
 }

@@ -1054,7 +1054,9 @@ defenses, by threat:
   clicked a GitHub button on someone else's PR (audit 2026-10-18). The
   first upload is the PR author's, if GitHub says they pushed its head
   (anyone may open a PR from someone else's branch, and a branch may
-  move before the bridge sees the PR; third audit). A later push builds on the patch set
+  move before the bridge sees the PR; third audit); for its first ten
+  minutes a PR whose pusher GitHub does not name yet waits, since a
+  fork's push sends no webhook and the activity log can lag. A later push builds on the patch set
   GitHub last had (not a newer one only Gerrit has, such as someone
   else's that never reached the PR), and is uploaded as its pusher
   only if they uploaded that patch set too, and only as GitHub
@@ -1133,7 +1135,10 @@ defenses, by threat:
   checked by git as it arrives (`fetch.fsckObjects`), so malformed trees
   and `.gitmodules` tricks never reach the mirror or Gerrit; a PR that
   fails is refused on its own (the others still import), and a head
-  refused for its objects or size is not fetched again. A stack's upper
+  refused for its objects or size is not fetched again (keyed by PR as
+  well, since anyone can open a PR listing someone else's head and then
+  move it). An import that fails or waits does not hold back exporting
+  the branch's Gerrit changes (third audit). A stack's upper
   layer is sized without its lower layers. Closed PRs'
   heads are pruned from the mirror, and fetched branches
   (`refs/remotes/github/heads/…`) and fork PR heads

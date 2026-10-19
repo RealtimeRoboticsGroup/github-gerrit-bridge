@@ -133,13 +133,23 @@ const maxPasses = 5
 func (c *Code) Reconcile(ctx context.Context, k Key) error {
 	branch := k.Branch
 	defer c.lock(branch)()
+	// An import that failed (or wants a retry) does not hold back the
+	// export of everything else; its error comes back at the end, so the
+	// branch is tried again.
+	var importErr error
 	if c.Importer != nil {
 		c.Importer.link = c.linkPR
 		c.Importer.onImported = c.exported
 		if err := c.Importer.Import(ctx, branch); err != nil {
-			return fmt.Errorf("importing GitHub PRs for %s: %w", branch, err)
+			importErr = fmt.Errorf("importing GitHub PRs for %s: %w", branch, err)
+			c.Logger.Warn("import incomplete; exporting anyway", "branch", branch, "err", err)
 		}
 	}
+	return cmp.Or(c.export(ctx, branch), importErr)
+}
+
+// export mirrors the target branch's changes to GitHub.
+func (c *Code) export(ctx context.Context, branch string) error {
 	handled := map[int]bool{} // PRs whose GitHub side was mirrored this time
 	skip := map[int]bool{}    // changes whose PR GitHub refused an action on
 	for pass := 0; pass < maxPasses; pass++ {

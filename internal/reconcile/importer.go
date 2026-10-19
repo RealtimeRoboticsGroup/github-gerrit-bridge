@@ -89,6 +89,7 @@ type imported struct {
 type syncError struct {
 	state string // pending (the user can fix it by pushing), failure
 	msg   string
+	retry bool // worth trying again soon, without a push
 }
 
 func (e *syncError) Error() string { return e.msg }
@@ -137,19 +138,21 @@ func footerChangeID(msg string) (id string, ok bool) {
 	return sm[1], true
 }
 
-func (im *Importer) refuse(sha, why string) {
+// refuse remembers why PR pr's head sha is not imported. Keyed by PR too:
+// anyone can open a PR listing someone else's head, then move it.
+func (im *Importer) refuse(pr int, sha, why string) {
 	im.mu.Lock()
 	defer im.mu.Unlock()
 	if im.refused == nil || len(im.refused) > 10000 {
 		im.refused = map[string]string{} // bounded: forgetting costs a refetch
 	}
-	im.refused[sha] = why
+	im.refused[fmt.Sprintf("%d %s", pr, sha)] = why
 }
 
-func (im *Importer) refusedWhy(sha string) string {
+func (im *Importer) refusedWhy(pr int, sha string) string {
 	im.mu.Lock()
 	defer im.mu.Unlock()
-	return im.refused[sha]
+	return im.refused[fmt.Sprintf("%d %s", pr, sha)]
 }
 
 // Import imports every GitHub-born PR whose chain targets branch.
@@ -278,7 +281,7 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 	var all []string
 	failed := map[*layer]string{}
 	for _, l := range order {
-		if why := im.refusedWhy(l.pr.Head.SHA); why != "" {
+		if why := im.refusedWhy(l.pr.Number, l.pr.Head.SHA); why != "" {
 			failed[l] = why // not fetched again
 			continue
 		}
@@ -311,7 +314,7 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 				case ferr == nil:
 				case errors.As(ferr, &ge) && strings.Contains(ge.Stderr, "fsck error"):
 					failed[l] = "Its commits fail git's object checks (fsck), so they are not imported"
-					im.refuse(l.pr.Head.SHA, failed[l])
+					im.refuse(l.pr.Number, l.pr.Head.SHA, failed[l])
 					im.Logger.Warn("PR head fails git's object checks", "pr", l.pr.Number, "err", ferr)
 				default:
 					failed[l] = "" // skipped this time
@@ -342,6 +345,9 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 			changed := false
 			if errors.As(err, &se) {
 				changed = im.setSync(ctx, l.pr, se.state, se.msg, "")
+				if se.retry {
+					retry = cmp.Or(retry, err)
+				}
 			} else {
 				// Details (hosts, git output) stay in the log: the
 				// status is public.
@@ -483,13 +489,13 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		return res, nil
 	}
 	if len(own) == 0 {
-		return nil, &syncError{"pending", "No commits of its own yet"}
+		return nil, &syncError{state: "pending", msg: "No commits of its own yet"}
 	}
 	// A stack's lower layers are counted in their own PRs.
 	if err := im.checkSize(ctx, h, gerritParent, parentTip); err != nil {
 		var se *syncError
 		if errors.As(err, &se) {
-			im.refuse(h, se.msg) // not fetched again
+			im.refuse(pr.Number, h, se.msg) // not fetched again
 		}
 		return nil, err
 	}
@@ -507,7 +513,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			}
 			id, ok := footerChangeID(string(msg))
 			if !ok {
-				return nil, &syncError{"pending", fmt.Sprintf("Commit %s has Change-Id lines Gerrit could read differently; keep at most one, in the last paragraph", own[i])}
+				return nil, &syncError{state: "pending", msg: fmt.Sprintf("Commit %s has Change-Id lines Gerrit could read differently; keep at most one, in the last paragraph", own[i])}
 			}
 			changeID = id
 		}
@@ -525,7 +531,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		cur = &existing[0]
 		if st == nil || st.State.Change != cur.Number {
 			// Never let two PRs fight over one change.
-			return nil, &syncError{"failure", fmt.Sprintf("Change-Id %s already belongs to Gerrit change %d; give this PR's commits a new Change-Id", changeID, cur.Number)}
+			return nil, &syncError{state: "failure", msg: fmt.Sprintf("Change-Id %s already belongs to Gerrit change %d; give this PR's commits a new Change-Id", changeID, cur.Number)}
 		}
 	}
 	message := "" // the commit message, if not built from the PR
@@ -686,7 +692,7 @@ func (im *Importer) realParent(ctx context.Context, branch, h string, parentHead
 			}
 			commits := strings.Fields(string(out))
 			if len(commits) > maxCommits {
-				return nil, "", &syncError{"failure", fmt.Sprintf("More than %d commits: too many to import", maxCommits)}
+				return nil, "", &syncError{state: "failure", msg: fmt.Sprintf("More than %d commits: too many to import", maxCommits)}
 			}
 			return commits, ge, nil
 		}
@@ -697,7 +703,7 @@ func (im *Importer) realParent(ctx context.Context, branch, h string, parentHead
 	}
 	commits := strings.Fields(string(out))
 	if len(commits) > maxCommits {
-		return nil, "", &syncError{"failure", fmt.Sprintf("More than %d commits: too many to import", maxCommits)}
+		return nil, "", &syncError{state: "failure", msg: fmt.Sprintf("More than %d commits: too many to import", maxCommits)}
 	}
 	if parentHeads == nil {
 		if len(commits) == 0 {
@@ -709,7 +715,7 @@ func (im *Importer) realParent(ctx context.Context, branch, h string, parentHead
 		p, err := im.Mirror.Git(ctx, nil, "merge-base", h, target)
 		parent := strings.TrimSpace(string(p))
 		if err != nil || parent == "" {
-			return nil, "", &syncError{"failure", "This PR's history does not start from " + branch + ": rebase it onto " + branch}
+			return nil, "", &syncError{state: "failure", msg: "This PR's history does not start from " + branch + ": rebase it onto " + branch}
 		}
 		return commits, parent, nil
 	}
@@ -718,7 +724,7 @@ func (im *Importer) realParent(ctx context.Context, branch, h string, parentHead
 			return commits[:i], ge, nil
 		}
 	}
-	return nil, "", &syncError{"pending", "Restack needed: this PR is not on top of any version of the PR below it that Gerrit knows"}
+	return nil, "", &syncError{state: "pending", msg: "Restack needed: this PR is not on top of any version of the PR below it that Gerrit knows"}
 }
 
 // prunePullRefs drops the mirror's copies of closed PRs' heads, so forks'
@@ -784,12 +790,12 @@ func (im *Importer) checkSize(ctx context.Context, h, parent, parentTip string) 
 			return fmt.Errorf("sizing %s: %q", short(h), l)
 		}
 		if typ == "blob" && size > maxImportFile {
-			return &syncError{"failure", fmt.Sprintf("A file is larger than %d MB: too big to import", maxImportFile>>20)}
+			return &syncError{state: "failure", msg: fmt.Sprintf("A file is larger than %d MB: too big to import", maxImportFile>>20)}
 		}
 		total += size
 	}
 	if total > maxImportTotal {
-		return &syncError{"failure", fmt.Sprintf("This PR adds more than %d MB: too big to import", maxImportTotal>>20)}
+		return &syncError{state: "failure", msg: fmt.Sprintf("This PR adds more than %d MB: too big to import", maxImportTotal>>20)}
 	}
 	return nil
 }
@@ -817,6 +823,12 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		}
 		if login, err = im.pusher(ctx, pr, h); err != nil {
 			return "", "", err
+		}
+		if login == "" && time.Since(pr.CreatedAt) < pusherWait {
+			// GitHub's activity log can lag a push by a little, and a
+			// fork's push sends no webhook here: decided on a guess, the
+			// change would be the bridge's for good.
+			return "", "", &syncError{state: "pending", msg: "Waiting for GitHub to say who pushed it", retry: true}
 		}
 		if pusher, _ := im.Identity.GerritUser(ctx, login); !strings.EqualFold(pusher, author) {
 			im.Logger.Info("first push not the PR author's (as GitHub says): the bridge uploads it", "pr", pr.Number, "author", pr.User.Login, "pusher", login)
@@ -880,6 +892,10 @@ func (im *Importer) parentTrusted(ctx context.Context, parent, branch, user stri
 	}
 	return false, nil
 }
+
+// pusherWait is how long after a PR opens its first import waits for
+// GitHub to say who pushed its head.
+const pusherWait = 10 * time.Minute
 
 // pusher says who pushed h to pr's branch: GitHub's activity log for that
 // branch (in the fork, for a fork's PR), which outlives the bridge's
