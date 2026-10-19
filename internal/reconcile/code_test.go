@@ -986,3 +986,53 @@ func TestPusherFromGitHubsActivityLog(t *testing.T) {
 		})
 	}
 }
+
+// Draft, then ready again before the bridge recorded the first toggle as
+// in sync: the second is a toggle too, not Gerrit's to undo.
+func TestDraftThenReadyQuickly(t *testing.T) {
+	s, c, snap := editsWorld(t, "gerrit")
+	ctx := context.Background()
+	s.pulls[70].Draft = true
+	s.activity[70] = github.PRActivity{DraftActor: "austin"}
+	if changed, err := c.mirrorPREdits(ctx, snap); err != nil || !changed {
+		t.Fatalf("draft: changed=%v err=%v", changed, err)
+	}
+	// Re-observed: Gerrit is WIP now, and the PR is ready again.
+	st, err := c.Store.Load(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.State[7], snap.Changes[7].WIP = st, true
+	s.pulls[70].Draft = false
+	if changed, err := c.mirrorPREdits(ctx, snap); err != nil || !changed {
+		t.Fatalf("ready: changed=%v err=%v", changed, err)
+	}
+	if len(s.calls) != 2 || s.calls[1] != "ready 7 as austin" || s.changes[7].WorkInProgress {
+		t.Errorf("calls = %v, wip = %v", s.calls, s.changes[7].WorkInProgress)
+	}
+}
+
+// The same for two quick title edits.
+func TestTwoQuickPREdits(t *testing.T) {
+	s, c, snap := editsWorld(t, "gerrit")
+	ctx := context.Background()
+	s.pulls[70].Title = "Seven, better"
+	s.activity[70] = github.PRActivity{TextEditor: "austin"}
+	if changed, err := c.mirrorPREdits(ctx, snap); err != nil || !changed {
+		t.Fatalf("first: changed=%v err=%v", changed, err)
+	}
+	st, err := c.Store.Load(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci := s.changes[7]
+	snap.State[7] = st
+	snap.Changes[7].Message = ci.Revisions[ci.CurrentRevision].Commit.Message
+	s.pulls[70].Title = "Seven, best"
+	if changed, err := c.mirrorPREdits(ctx, snap); err != nil || !changed {
+		t.Fatalf("second: changed=%v err=%v comments=%v", changed, err, s.comments[70])
+	}
+	if got := ci.Revisions[ci.CurrentRevision].Commit.Message; !strings.HasPrefix(got, "Seven, best\n") {
+		t.Errorf("message %q", got)
+	}
+}

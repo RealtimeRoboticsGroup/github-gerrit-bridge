@@ -522,6 +522,11 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot) (bool, error) {
 				} else if note != "" {
 					notes = append(notes, note)
 				} else {
+					// Both sides have it now: a further edit before the
+					// next record is a new edit, not Gerrit's to undo.
+					if err := c.updateState(ctx, n, "PR text mirrored", func(st *state.Change) { st.State.SyncedText = ht }); err != nil {
+						return changed, err
+					}
 					changed = true
 				}
 			}
@@ -537,6 +542,11 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot) (bool, error) {
 				} else if note != "" {
 					notes = append(notes, note)
 				} else {
+					// As for text: toggling back before the next record
+					// is a new toggle.
+					if err := c.updateState(ctx, n, "PR draft state mirrored", func(st *state.Change) { st.State.SyncedWIP = hw }); err != nil {
+						return changed, err
+					}
 					changed = true
 				}
 			}

@@ -225,6 +225,10 @@ K="Fork ${RUN}"
 (cd "${BRT_CLONE}" && { git remote set-url fork "https://github.com/${FORK}.git" 2>/dev/null || git remote add fork "https://github.com/${FORK}.git"; } &&
   git fetch -q github && git checkout -q -B "fork-${RUN}" github/main)
 commit "${BRT_CLONE}" "fork-${RUN}.txt" "${K}"
+# GitHub allows one open PR per head: close any an interrupted run left.
+for n in $(me api "repos/${R}/pulls?state=open&head=AustinSchuhBRT:main" --jq '.[].number'); do
+  brt api -X PATCH "repos/${R}/pulls/${n}" -f state=closed --silent
+done
 (cd "${BRT_CLONE}" && git push -qf fork HEAD:refs/heads/main 2>/dev/null)
 brt api "repos/${R}/pulls" -f title="${K}" -f head="AustinSchuhBRT:main" -f base=main -f body="From a fork." -F maintainer_can_modify=true --silent
 FQ=$(pr_for "${K}")
