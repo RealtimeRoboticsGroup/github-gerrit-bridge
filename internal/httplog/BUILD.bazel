@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "httplog",
+    srcs = ["httplog.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/httplog",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "httplog_test",
+    srcs = ["httplog_test.go"],
+    embed = [":httplog"],
+)

@@ -86,7 +86,7 @@ unit bridge-test-ci "Bridge test instance: gerrit-buildkite" \
   "After=bridge-test-gerrit.service bridge-test-buildkite.service" \
   "Environment=PATH=${SITE}/ci/bin:/usr/bin:/bin"
 unit bridge-test-bridge "Bridge test instance: the bridge" \
-  "${TE}/bin/bridge --config ${SITE}/bridge/bridge-scratch.yaml --dry_run=false" \
+  "${TE}/bin/bridge --config ${SITE}/bridge/bridge-scratch.yaml --dry_run=false${BRIDGE_VERBOSE:+ -v}" \
   "After=bridge-test-gerrit.service" \
   "Environment=PATH=$(dirname "${GH}"):/usr/bin:/bin"
 if "${GH}" auth status 2>&1 | grep -q 'admin:repo_hook'; then

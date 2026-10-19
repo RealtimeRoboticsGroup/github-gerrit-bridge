@@ -12,9 +12,11 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Repo is a bare repository with one remote, "origin".
@@ -28,6 +30,8 @@ type Repo struct {
 	Env []string
 	// Ident is the author and committer of commits the bridge writes.
 	Name, Email string
+	// Logger, if set, logs each command and how long it took (debug).
+	Logger *slog.Logger
 }
 
 // HTTPCredentials returns Config and Env entries that answer git's
@@ -126,7 +130,13 @@ func (r *Repo) GitEnv(ctx context.Context, env []string, stdin []byte, args ...s
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	start := time.Now()
+	err := cmd.Run()
+	if r.Logger != nil {
+		// Arguments only: config and environment carry credentials.
+		r.Logger.Debug("git", "args", strings.Join(args, " "), "took", time.Since(start).Round(time.Millisecond), "err", err)
+	}
+	if err != nil {
 		return stdout.Bytes(), &Error{Args: args, Err: err, Stderr: strings.TrimSpace(stderr.String())}
 	}
 	return stdout.Bytes(), nil

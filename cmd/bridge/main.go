@@ -25,6 +25,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerritchecks"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/httplog"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/queue"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
@@ -112,7 +113,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		BaseURL:  cfg.Gerrit.URL,
 		User:     cfg.Gerrit.HTTPUser,
 		Password: gerritPassword,
-		HTTP:     &http.Client{Timeout: time.Minute},
+		HTTP:     &http.Client{Timeout: time.Minute, Transport: &httplog.Transport{Name: "gerrit", Logger: logger}},
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -136,6 +137,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Env:    gitEnv,
 		Name:   self.Name,
 		Email:  self.Email,
+		Logger: logger,
 	}
 	if err := mirror.Init(ctx); err != nil {
 		return err
@@ -154,7 +156,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Owner:  cfg.GitHub.Owner,
 		Repo:   cfg.GitHub.Repo,
 		Tokens: tokens,
-		HTTP:   &http.Client{Timeout: time.Minute},
+		HTTP:   &http.Client{Timeout: time.Minute, Transport: &httplog.Transport{Name: "github", Logger: logger}},
 	}
 	ghRepo, err := gh.GetRepo(ctx)
 	if err != nil {
