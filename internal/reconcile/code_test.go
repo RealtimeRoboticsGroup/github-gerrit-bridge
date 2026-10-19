@@ -694,6 +694,59 @@ func TestOnePRGitHubRefusesDoesNotStopTheRest(t *testing.T) {
 	}
 }
 
+// A fork's owner can move its branch under the bridge's lease whenever
+// they like: that leaves out only the changes appended there (fourth
+// audit), and what went to the repository is still recorded.
+func TestRefusedForkPushLeavesOutItsChanges(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.git("", "init", "-q", "--bare", "-b", "main", filepath.Join(s.dir, "alice.git"))
+	s.git("m.git", "config", "url."+filepath.Join(s.dir, "alice.git")+".insteadOf", "https://github.com/alice/r.git")
+	h1 := s.commit(m0, "f.txt", "1\n", "Alice's")
+	s.push("alice.git", h1, "refs/heads/main")
+	g1 := s.commit(m0, "f.txt", "2\n", "Gerrit's patch set 2")
+	e1 := s.commit(m0, "e.txt", "e\n", "Exported")
+	s.push("github.git", e1, "refs/heads/gerrit/"+cid(2))
+	g2 := s.commit(e1, "e.txt", "e2\n", "Gerrit's patch set 2")
+	for i, rev := range []string{h1, g1, e1, g2} {
+		s.push("gerrit.git", rev, fmt.Sprintf("refs/heads/tmp%d", i))
+	}
+	s.git("m.git", "fetch", "-q", "origin", "+refs/heads/*:refs/remotes/gerrit/heads/*")
+	h1b := s.commit(h1, "f.txt", "1b\n", "Alice moved it")
+	s.push("alice.git", h1b, "refs/heads/main")
+	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, PR: 10, Origin: "github", HeadBranch: "alice/r:main"}})
+	s.save(ctx, store, 2, &state.Change{State: state.ChangeState{Change: 2, PR: 20, Origin: "gerrit", HeadBranch: "gerrit/" + cid(2)}})
+	skip := newSkips()
+	p := &Plan{Actions: []Action{{Kind: PushBranches, Refs: map[string]string{},
+		Leases: map[string]string{"alice/r:main": h1, "gerrit/" + cid(2): e1},
+		Appends: map[string]Append{
+			"alice/r:main":    {Change: 1, PatchSet: 2, Revision: g1, Onto: h1, Lease: h1},
+			"gerrit/" + cid(2): {Change: 2, PatchSet: 2, Revision: g2, Onto: e1, Lease: e1},
+		}}}}
+	if err := c.apply(ctx, &Snapshot{Branch: "main", DefaultBranch: "main"}, p, skip); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(skip.changes, map[int]bool{1: true}) || s.ref("alice.git", "refs/heads/main") != h1b {
+		t.Errorf("skip %v, alice's main %s", skip.changes, short(s.ref("alice.git", "refs/heads/main")))
+	}
+	st1, _ := store.Load(ctx, 1)
+	st2, _ := store.Load(ctx, 2)
+	if len(st1.Revisions) != 0 || len(st2.Revisions) != 1 || st2.Revisions[0].GerritSHA != g2 || st2.Revisions[0].GitHubSHA != s.ref("github.git", "refs/heads/gerrit/"+cid(2)) {
+		t.Errorf("recorded %+v and %+v, want only change 2's push", st1.Revisions, st2.Revisions)
+	}
+	// Left out, it is not recorded as in sync either.
+	snap := &Snapshot{Changes: map[int]*GerritChange{1: {Number: 1, Status: "ABANDONED"}}, State: map[int]*state.Change{1: st1}}
+	if err := c.record(ctx, snap, &Plan{Desired: map[int]*Desired{}}, skip); err != nil {
+		t.Fatal(err)
+	}
+	if st1, _ = store.Load(ctx, 1); st1.State.Lifecycle == "ABANDONED" {
+		t.Error("a change left out was recorded")
+	}
+}
+
 // A description the bridge shortened for GitHub is what the bridge wrote,
 // not someone's edit to mirror back into the commit message.
 func TestShortenedDescriptionIsNoEdit(t *testing.T) {
@@ -705,7 +758,7 @@ func TestShortenedDescriptionIsNoEdit(t *testing.T) {
 	snap.PRs[70] = s.pulls[70]
 	s.save(context.Background(), c.Store, 7, snap.State[7]) // synced before the message grew
 	p := &Plan{Desired: map[int]*Desired{7: {Change: 7, PR: 70, Head: "gerrit/" + cid(7), Base: "main", Title: "Seven", Body: body, BodyHash: hash}}}
-	if err := c.record(context.Background(), snap, p); err != nil {
+	if err := c.record(context.Background(), snap, p, newSkips()); err != nil {
 		t.Fatal(err)
 	}
 	snap.State[7], _ = c.Store.Load(context.Background(), 7)
@@ -985,7 +1038,7 @@ func TestForeignPatchSetIsNotRecorded(t *testing.T) {
 			State: map[int]*state.Change{1: st}, PRs: map[int]*github.PullRequest{10: pr}, GitHubBranches: map[string]string{"feature": h1},
 			SameTree: map[int]string{1: h1}, Foreign: map[int]bool{1: foreign}}
 		p := &Plan{Desired: map[int]*Desired{1: {Change: 1, Head: "feature", PR: 10, Base: "main"}}}
-		if err := c.record(ctx, snap, p); err != nil {
+		if err := c.record(ctx, snap, p, newSkips()); err != nil {
 			t.Fatal(err)
 		}
 		got, _ := store.Load(ctx, 1)

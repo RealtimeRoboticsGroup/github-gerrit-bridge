@@ -182,7 +182,7 @@ func (c *Code) export(ctx context.Context, branch string) error {
 				c.Logger.Info("in sync", "branch", branch, "changes", len(plan.Desired))
 				return nil
 			}
-			return c.record(ctx, snap, plan)
+			return c.record(ctx, snap, plan, skip)
 		}
 		for _, a := range plan.Actions {
 			c.Logger.Info(map[bool]string{true: "dry run: would", false: "applying"}[c.DryRun], "branch", branch, "action", a.String())
@@ -989,7 +989,13 @@ func (c *Code) apply(ctx context.Context, s *Snapshot, p *Plan, skip *skips) err
 			continue
 		}
 		if err := c.applyOne(ctx, s, a); err != nil {
+			var fr *forkRefused
 			switch {
+			case errors.As(err, &fr):
+				for _, n := range fr.changes {
+					skip.changes[n] = true
+				}
+				continue
 			case a.Change != 0 && refusedByGitHub(err):
 				c.Logger.Warn("GitHub refused an action on one change's PR; leaving that change out", "change", a.Change, "action", a.String(), "err", err)
 				skip.changes[a.Change] = true
@@ -1004,6 +1010,12 @@ func (c *Code) apply(ctx context.Context, s *Snapshot, p *Plan, skip *skips) err
 	}
 	return nil
 }
+
+// forkRefused is a push the repository took, but forks did not, for
+// changes.
+type forkRefused struct{ changes []int }
+
+func (e *forkRefused) Error() string { return fmt.Sprintf("forks refused the push for changes %v", e.changes) }
 
 // refusedByGitHub reports whether GitHub refused a request for what it
 // asked (a 4xx), not for who asked or how often (401, 403, 429).
@@ -1044,6 +1056,7 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			specs[c.GitHubURL] = append(specs[c.GitHubURL], "--force-with-lease="+ref+":"+a.Leases[name], a.Refs[name]+":"+ref)
 		}
 		appended := map[string]string{}
+		urlOf := map[string]string{} // appended -> where to
 		for _, name := range sortedStringKeys(a.Appends) {
 			commit := a.Appends[name].Revision
 			if !a.Appends[name].Force {
@@ -1065,22 +1078,36 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			}
 			ref := "refs/heads/" + branch
 			specs[url] = append(specs[url], "--force-with-lease="+ref+":"+a.Leases[name], commit+":"+ref)
+			urlOf[name] = url
 		}
 		env, err := c.githubEnv(ctx)
 		if err != nil {
 			return err
 		}
+		failed := map[string]bool{} // forks that refused
 		for _, url := range urls {
 			if len(specs[url]) == 0 {
 				continue
 			}
 			args := append([]string{"push", "--porcelain", "--atomic", url}, specs[url]...)
 			if out, err := c.Mirror.GitEnv(ctx, env, nil, args...); err != nil {
-				return fmt.Errorf("%w\n%s", err, out)
+				if url == c.GitHubURL {
+					return fmt.Errorf("%w\n%s", err, out) // first: nothing pushed
+				}
+				// A fork's owner can move its branch under the lease
+				// whenever they like (fourth audit): only the changes
+				// appended there wait.
+				c.Logger.Warn("a fork refused the push; leaving its changes out", "url", url, "err", err, "out", string(out))
+				failed[url] = true
 			}
 		}
-		for name, commit := range appended {
-			ap := a.Appends[name]
+		var left []int
+		for _, name := range sortedStringKeys(appended) {
+			commit, ap := appended[name], a.Appends[name]
+			if failed[urlOf[name]] {
+				left = append(left, ap.Change)
+				continue
+			}
 			tree, parentTree := c.trees(ctx, ap.Revision)
 			err := c.updateState(ctx, ap.Change, fmt.Sprintf("Export patch set %d to %s", ap.PatchSet, name), func(st *state.Change) {
 				st.Revisions = append(st.Revisions, state.Revision{PatchSet: ap.PatchSet, GerritSHA: ap.Revision,
@@ -1092,6 +1119,9 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			if err := c.exported(ctx, ap.Change); err != nil {
 				return err
 			}
+		}
+		if len(left) > 0 {
+			return &forkRefused{changes: left}
 		}
 		return nil
 	case CreatePR:
@@ -1289,7 +1319,7 @@ func (c *Code) exported(ctx context.Context, n int) error {
 }
 
 // record saves the converged state of every linked change.
-func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan) error {
+func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan, skip *skips) error {
 	newRevision := map[int]bool{}
 	defer func() {
 		for _, n := range sortedKeys(newRevision) {
@@ -1308,6 +1338,9 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan) error {
 		ch := s.Changes[n]
 		d := p.Desired[n]
 		st := s.State[n]
+		if skip.changes[n] {
+			continue // not in sync: left out
+		}
 		if d == nil {
 			// Not mirrored (closed or private): remember the status so we
 			// stop fetching it.
