@@ -1158,7 +1158,10 @@ defenses, by threat:
   also reads). And it never uploads a PR's own commit: the upload always
   carries the bridge's message with exactly one Change-Id, so Gerrit
   files it under the change the bridge checked (second audit,
-  2026-10-19).
+  2026-10-19). A PR whose commits name no Change-Id gets one derived
+  with a key (from the webhook secret), so nobody can work it out from
+  the PR and upload a change with it first to keep the PR out (third
+  audit).
 - **Bridge markers.** `<!-- bridge:… -->` markers mark state (handled
   commands, comment mappings) only in comments by the bridge's own GitHub
   login that nobody else has edited, and only at the end, where the

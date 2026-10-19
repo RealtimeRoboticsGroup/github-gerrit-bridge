@@ -306,3 +306,16 @@ func TestCheckSizeCountsOnlyTheLayer(t *testing.T) {
 		t.Error("the whole stack fit the bound")
 	}
 }
+
+// A PR's derived Change-Id cannot be worked out without the bridge's key,
+// so nobody can upload a change with it first.
+func TestDerivedChangeIDIsKeyed(t *testing.T) {
+	pr := &github.PullRequest{NodeID: "PR_kwDO"}
+	plain := &Importer{GitHub: &github.Client{Owner: "o", Repo: "r"}}
+	keyed := &Importer{GitHub: plain.GitHub, ChangeIDKey: []byte("secret")}
+	other := &Importer{GitHub: plain.GitHub, ChangeIDKey: []byte("other")}
+	a, b, c := plain.derivedChangeID(pr), keyed.derivedChangeID(pr), other.derivedChangeID(pr)
+	if a == b || b == c || b != keyed.derivedChangeID(pr) || !canonicalChangeID.MatchString("Change-Id: "+b) {
+		t.Errorf("derived %s, keyed %s, other key %s", a, b, c)
+	}
+}

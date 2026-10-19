@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/hmac"
 	"crypto/sha1"
 	"errors"
 	"fmt"
@@ -46,6 +47,9 @@ type Importer struct {
 	// Trusted reports whether a Gerrit account is in CI's trusted group
 	// (see Code.Trusted).
 	Trusted func(ctx context.Context, account int) (trusted, known bool)
+	// ChangeIDKey keys the Change-Ids derived for PRs (derivedChangeID):
+	// a secret, so they cannot be worked out in advance.
+	ChangeIDKey []byte
 	DryRun  bool
 	Logger  *slog.Logger
 
@@ -530,7 +534,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		}
 	}
 	if changeID == "" {
-		changeID = fmt.Sprintf("I%x", sha1.Sum([]byte(im.GitHub.Owner+"/"+im.GitHub.Repo+"\x00"+pr.NodeID)))
+		changeID = im.derivedChangeID(pr)
 	}
 	existing, err := im.Gerrit.QueryChanges(ctx, fmt.Sprintf("project:%s branch:%s change:%s",
 		gerrit.QueryString(im.Project), gerrit.QueryString(branch), changeID), "ALL_REVISIONS", "ALL_COMMITS", "DETAILED_ACCOUNTS")
@@ -910,6 +914,19 @@ var (
 	fetchOneTimeout = 2 * time.Minute
 	errFetchTooSlow = errors.New("fetch took too long")
 )
+
+// derivedChangeID is the Change-Id of a PR whose commits name none. Keyed
+// with ChangeIDKey, so nobody can work it out from the PR and upload a
+// change with it first, which would keep the PR from being imported.
+func (im *Importer) derivedChangeID(pr *github.PullRequest) string {
+	msg := []byte(im.GitHub.Owner + "/" + im.GitHub.Repo + "\x00" + pr.NodeID)
+	if len(im.ChangeIDKey) == 0 {
+		return fmt.Sprintf("I%x", sha1.Sum(msg))
+	}
+	mac := hmac.New(sha1.New, im.ChangeIDKey)
+	mac.Write(msg)
+	return fmt.Sprintf("I%x", mac.Sum(nil))
+}
 
 // pusherWait is how long after a PR opens its first import waits for
 // GitHub to say who pushed its head.
