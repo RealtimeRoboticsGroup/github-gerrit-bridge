@@ -1096,6 +1096,16 @@ func signOffs(texts ...string) []string {
 	return out
 }
 
+// emailTaken reports whether email is a Gerrit account's. (No Gerrit
+// to ask, in tests: no.)
+func (im *Importer) emailTaken(ctx context.Context, email string) (bool, error) {
+	if strings.TrimSpace(email) == "" || im.Gerrit == nil {
+		return false, nil
+	}
+	accts, err := im.Gerrit.QueryAccounts(ctx, "email:"+gerrit.QueryString(email))
+	return len(accts) > 0, err
+}
+
 // squash builds the deterministic commit for a layer (design §5.2), or
 // reuses h itself when nothing needs rewriting.
 //
@@ -1122,6 +1132,13 @@ func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []st
 		// GitHub has, a noreply one say, need not be theirs in Gerrit).
 		// Others' sign-offs stay in the message.
 		an, ae = committer.Name, committer.Email
+	} else if taken, err := im.emailTaken(ctx, ae); err != nil || taken {
+		// Uploaded as the bridge, it keeps its author, for credit,
+		// unless that is a Gerrit user's: their name on someone else's
+		// code, which Gerrit lets only Forge Author write, and the bridge
+		// has it (fifth audit). Then it is the PR author's, as GitHub
+		// knows them.
+		an, ae = pr.User.Login, pr.User.Login+"@users.noreply.github.com"
 	}
 	// Sign-offs from every commit in the layer (oldest first) and from the
 	// PR description are kept; the squashed commit represents them all.

@@ -1432,16 +1432,20 @@ AOS's own (`internal/testgerrit/aos/`, read from realtimeroboticsgroup.org
 on 2026-10-19), plus exactly the bridge's additions
 (`testgerrit.BridgeAllProjects`, `BridgeProject`), which an integration test
 checks: Run As and Stream Events for the bridge's group; on the project,
-`refs/bridge/*` (exclusive Read, Push, Create) and Forge Author for it,
-and Abandon and Toggle Work In Progress for Administrators.
+`refs/bridge/*` (exclusive Read, Push, Create) and Forge Author on
+`refs/heads/*` (the branches only, as AOS's own grant is) for it, and
+Abandon and Toggle Work In Progress for Administrators.
 
 - **The bridge's Gerrit account:** global Run As and Stream Events through
   its own group. Not in Administrators, Service Users (which vote
   Verified on AOS), the CI trusted group, or any group with label, Submit,
   View Private Changes or Access Database rights. On the bridged project:
   Read on its branches, Push and Create on `refs/for/refs/heads/*`, Add
-  Patch Set, Forge Author, and `refs/bridge/*` with exclusive Read plus
-  Push and Create. Whatever the bridge's account may do, a GitHub user
+  Patch Set, Forge Author on `refs/heads/*`, and `refs/bridge/*` with
+  exclusive Read plus Push and Create. Forge Author lets its imports keep
+  their authors, but never one whose email is a Gerrit account's: that
+  would put a Gerrit user's name on code the bridge uploaded for someone
+  else, and such a commit is the PR author's instead (fifth audit). Whatever the bridge's account may do, a GitHub user
   without a Gerrit account effectively may too.
 - **Add Patch Set and Forge Author** are Registered Users' by default:
   anyone signed in may upload a patch set to anyone's change, with any

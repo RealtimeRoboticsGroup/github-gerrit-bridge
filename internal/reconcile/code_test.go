@@ -811,6 +811,34 @@ func TestPREditsMirroredOncePerReconcile(t *testing.T) {
 	}
 }
 
+// The bridge uploads the PR of someone without a Gerrit account as
+// itself, with Forge Author: the commit keeps its author, for credit,
+// unless that is a Gerrit user's, whose name would then vouch for code
+// they never uploaded (fifth audit). Then it is the PR author's.
+func TestBridgeUploadsNeverClaimAGerritUsersAuthorship(t *testing.T) {
+	for _, tc := range []struct{ author, want string }{
+		{"Austin <austin@example.com>", "newbie <newbie@users.noreply.github.com>"},
+		{"Newbie <newbie@example.org>", "Newbie <newbie@example.org>"},
+	} {
+		s, im, up, m1, _, _ := gerritBornWorld(t, false)
+		s.commit(m1, "new.txt", "n\n", "New")
+		s.git("work", "commit", "-q", "--amend", "--no-edit", "--author="+tc.author)
+		h := s.git("work", "rev-parse", "HEAD")
+		s.push("github.git", h, "refs/heads/topic")
+		s.pr(60, "topic", h, "main", "newbie")
+		s.pushed("o/r", "refs/heads/topic", h, "newbie")
+		if err := im.Import(context.Background(), "main"); err != nil {
+			t.Fatal(err)
+		}
+		if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], " ") {
+			t.Fatalf("uploads = %v, want one as the bridge", up.uploads)
+		}
+		if got := s.git("m.git", "log", "-1", "--format=%an <%ae>", strings.Fields(up.uploads[0])[0]); got != tc.want {
+			t.Errorf("author %s: uploaded as %s, want %s", tc.author, got, tc.want)
+		}
+	}
+}
+
 // A PR's commits' Change-Id is public once they are pushed: one that
 // someone else's change (or another PR's) already has gives the PR its
 // own keyed Change-Id instead of stopping its import (fourth audit). One
