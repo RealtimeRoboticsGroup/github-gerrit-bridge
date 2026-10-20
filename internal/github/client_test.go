@@ -377,10 +377,12 @@ func TestGraphQLAnswersVouchedByREST(t *testing.T) {
 	f := &fakeLists{version: map[string]int{}, items: map[string]int{"pulls/1/comments": 1}, queries: map[string]int{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.handler))
 	defer srv.Close()
-	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	now := time.Now()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r", now: func() time.Time { return now }}
 	ctx := context.Background()
 	call := func() {
 		t.Helper()
+		now = now.Add(confirmAfter) // answers come confirmAfter apart
 		if _, err := c.Edits(ctx, 1); err != nil {
 			t.Fatal(err)
 		}
@@ -439,8 +441,11 @@ func TestVouchedAnswersConfirmedBeforeReuse(t *testing.T) {
 		computed++
 		return v, nil
 	}
+	now := time.Now()
+	c.now = func() time.Time { return now }
 	var got map[int64]string
 	for range 4 {
+		now = now.Add(confirmAfter)
 		var err error
 		if got, err = c.vouched(context.Background(), "k", []string{c.RepoPath("issues/1/comments")}, compute); err != nil {
 			t.Fatal(err)
@@ -448,6 +453,28 @@ func TestVouchedAnswersConfirmedBeforeReuse(t *testing.T) {
 	}
 	if computed != 3 || got[7] != "mallory" {
 		t.Errorf("computed %d times, last answer %v", computed, got)
+	}
+	// Two alike, asked back to back, are not enough: both can lag (fifth
+	// audit).
+	c.answers, computed = nil, 0
+	lagging = []map[int64]string{{}, {}, {7: "mallory"}}
+	for range 3 {
+		now = now.Add(time.Second)
+		got, _ = c.vouched(context.Background(), "k", []string{c.RepoPath("issues/1/comments")}, compute)
+	}
+	if computed != 3 || got[7] != "mallory" {
+		t.Errorf("back to back: computed %d times, last answer %v", computed, got)
+	}
+	// Counted from when the lists were first seen so, not from the last
+	// answer: asked every 20 seconds, the third answer confirms.
+	c.answers, computed = nil, 0
+	lagging = []map[int64]string{{7: "mallory"}}
+	for range 4 {
+		now = now.Add(20 * time.Second)
+		c.vouched(context.Background(), "k", []string{c.RepoPath("issues/1/comments")}, compute)
+	}
+	if computed != 3 {
+		t.Errorf("every 20s: computed %d times, want 3", computed)
 	}
 }
 

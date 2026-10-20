@@ -525,17 +525,25 @@ func (c *Client) ReviewThreads(ctx context.Context, n int) ([]ReviewThread, erro
 type vouchedAnswer struct {
 	print string
 	value map[int64]string
-	// confirmed is set once the same answer came twice for print.
+	// since is when print was first seen; confirmed is set once the same
+	// answer came again at least confirmAfter later.
+	since     time.Time
 	confirmed bool
 }
+
+// confirmAfter is how long after the lists change an answer must still
+// be the same to be reused: two asked back to back can both lag (fifth
+// audit).
+var confirmAfter = 30 * time.Second
 
 // vouched returns the answer cached under key if the lists at paths are
 // unchanged since it was computed, and computes (and caches) it if not.
 // An answer is cached only if the lists were the same before and after
 // computing it, so one that raced a change is not kept; and reused only
-// once computed twice alike for them: GraphQL can lag REST a little, and
-// the first answer after an edit, not showing it yet, would otherwise
-// stand until the lists next changed (fourth audit).
+// once computed alike again confirmAfter after the lists were first seen
+// so: GraphQL can lag REST a little, and an answer after an edit, not
+// showing it yet, would otherwise stand until the lists next changed
+// (fourth and fifth audits).
 // maxAnswers bounds the GraphQL answers kept (a var for tests).
 var maxAnswers = 4096
 
@@ -565,8 +573,12 @@ func (c *Client) vouched(ctx context.Context, key string, paths []string, comput
 		c.answers = map[string]vouchedAnswer{}
 	}
 	if before != "" && after == before {
-		same := ok && cached.print == before && maps.Equal(cached.value, v)
-		c.answers[key] = vouchedAnswer{print: before, value: maps.Clone(v), confirmed: same}
+		a := vouchedAnswer{print: before, value: maps.Clone(v), since: c.clock()}
+		if ok && cached.print == before {
+			a.since = cached.since
+			a.confirmed = maps.Equal(cached.value, v) && c.clock().Sub(cached.since) >= confirmAfter
+		}
+		c.answers[key] = a
 	} else {
 		delete(c.answers, key)
 	}

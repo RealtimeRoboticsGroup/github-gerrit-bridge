@@ -39,6 +39,14 @@ type Client struct {
 	etagBytes int
 	// answers are GraphQL answers REST vouches for (reviews.go).
 	answers map[string]vouchedAnswer
+	now     func() time.Time // for tests
+}
+
+func (c *Client) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
 }
 
 type cached struct {
