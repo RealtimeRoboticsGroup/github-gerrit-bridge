@@ -1037,6 +1037,155 @@ func TestPushMergingInAnotherBranchIsTheBridges(t *testing.T) {
 	}
 }
 
+// brt owns change 1, which austin's change 2 sits on, so CI does not
+// build change 2 without a retest. brt abandons change 1: PR 20 goes on a
+// frozen base, and the importer squashes austin's next push onto main,
+// with brt's code folded in: not austin's to upload (eighth audit).
+func TestPushOverAnAbandonedChangeBelowIsTheBridges(t *testing.T) {
+	s, im, up, _, g, ids := gerritBornWorld(t, true)
+	ctx := context.Background()
+	r := s.changes[1].Revisions[g[0]]
+	r.Uploader = s.accounts["brt"]
+	r.Commit.Author.Email, r.Commit.Committer.Email = "brt@example.com", "brt@example.com"
+	s.changes[1].Revisions[g[0]] = r
+	// austin's change 2 is his own commit.
+	r2 := s.changes[2].Revisions[g[1]]
+	r2.Commit.Author.Email, r2.Commit.Committer.Email = "austin@example.com", "austin@example.com"
+	s.changes[2].Revisions[g[1]] = r2
+	// brt abandons change 1; the plan freezes PR 20's base.
+	s.changes[1].Status = "ABANDONED"
+	st1, _ := im.Store.Load(ctx, 1)
+	st1.State.Lifecycle = "ABANDONED"
+	if err := im.Store.Save(ctx, 1, st1, "abandoned"); err != nil {
+		t.Fatal(err)
+	}
+	s.pulls[10].State = "closed"
+	delete(s.pulls, 10)
+	s.pulls[20].Base.Ref = frozenPrefix + ids[1]
+	// austin pushes a fix to his own PR.
+	h := s.commit(g[1], "two.txt", "2 fixed\n", "Fix")
+	s.push("github.git", h, "refs/heads/gerrit/"+ids[1])
+	s.pulls[20].Head.SHA = h
+	s.webhookPush(im.Pushers, 20, "austin")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 {
+		t.Fatalf("uploads = %v, want one", up.uploads)
+	}
+	ps := s.changes[2].CurrentRevision
+	if strings.HasPrefix(up.uploads[0], "austin ") && strings.Contains(s.git("m.git", "diff", "--name-only", ps+"^", ps), "one.txt") {
+		t.Errorf("uploaded as austin with brt's one.txt folded into the diff: %v", up.uploads)
+	}
+}
+
+// The same fold when someone retargets the PR onto main (anyone with
+// write access may edit a PR's base).
+func TestPushAfterARetargetOverTheChangeBelowIsTheBridges(t *testing.T) {
+	s, im, up, _, g, ids := gerritBornWorld(t, true)
+	ctx := context.Background()
+	r := s.changes[1].Revisions[g[0]]
+	r.Uploader = s.accounts["brt"]
+	r.Commit.Author.Email, r.Commit.Committer.Email = "brt@example.com", "brt@example.com"
+	s.changes[1].Revisions[g[0]] = r
+	r2 := s.changes[2].Revisions[g[1]]
+	r2.Commit.Author.Email, r2.Commit.Committer.Email = "austin@example.com", "austin@example.com"
+	s.changes[2].Revisions[g[1]] = r2
+	s.pulls[20].Base.Ref = "main"
+	h := s.commit(g[1], "two.txt", "2 fixed\n", "Fix")
+	s.push("github.git", h, "refs/heads/gerrit/"+ids[1])
+	s.pulls[20].Head.SHA = h
+	s.webhookPush(im.Pushers, 20, "austin")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 {
+		t.Fatalf("uploads = %v, want one", up.uploads)
+	}
+	ps := s.changes[2].CurrentRevision
+	if strings.HasPrefix(up.uploads[0], "austin ") && strings.Contains(s.git("m.git", "diff", "--name-only", ps+"^", ps), "one.txt") {
+		t.Errorf("uploaded as austin with brt's one.txt folded into the diff: %v", up.uploads)
+	}
+}
+
+// austin's patch set is a merge of main and x, a stranger's commit in no
+// change: CI does not build it. A push on top squashes onto main alone,
+// x's code with it (eighth audit).
+func TestPushOnAMergePatchSetIsTheBridges(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	m0 := s.git("work", "rev-parse", g[0]+"^")
+	x := s.commit(m0, "x.txt", "stranger's code\n", "X")
+	s.git("work", "checkout", "-q", "--detach", m1)
+	s.git("work", "merge", "-q", "--no-ff", "-m", "Merge x\n\nChange-Id: "+ids[0], x)
+	mg := s.git("work", "rev-parse", "HEAD")
+	s.exported(im, 1, mg, "REWORK", "austin")
+	r := s.changes[1].Revisions[mg]
+	r.Commit.Author.Email, r.Commit.Committer.Email = "austin@example.com", "austin@example.com"
+	s.changes[1].Revisions[mg] = r
+	s.push("github.git", mg, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = mg
+	h := s.commit(mg, "one.txt", "1 fixed\n", "Fix")
+	s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = h
+	s.webhookPush(im.Pushers, 10, "austin")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 {
+		t.Fatalf("uploads = %v, want one", up.uploads)
+	}
+	ps := s.changes[1].CurrentRevision
+	if strings.HasPrefix(up.uploads[0], "austin ") && strings.Contains(s.git("m.git", "diff", "--name-only", ps+"^", ps), "x.txt") {
+		t.Errorf("uploaded as austin with x folded into a one-parent diff: %v", up.uploads)
+	}
+}
+
+// The same when brt's Update branch rebases that merge: no longer a pure
+// rebase on austin's behalf.
+func TestRebaseOfAMergePatchSetIsTheBridges(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	m0 := s.git("work", "rev-parse", g[0]+"^")
+	x := s.commit(m0, "x.txt", "stranger's code\n", "X")
+	s.git("work", "checkout", "-q", "--detach", m1)
+	s.git("work", "merge", "-q", "--no-ff", "-m", "Merge x\n\nChange-Id: "+ids[0], x)
+	mg := s.git("work", "rev-parse", "HEAD")
+	s.exported(im, 1, mg, "REWORK", "austin")
+	r := s.changes[1].Revisions[mg]
+	r.Commit.Author.Email, r.Commit.Committer.Email = "austin@example.com", "austin@example.com"
+	s.changes[1].Revisions[mg] = r
+	s.push("github.git", mg, "refs/heads/gerrit/"+ids[0])
+	// main moves; brt clicks Update branch.
+	m2 := s.commit(m1, "a.txt", "a\nmore\nand more\n", "main moves again")
+	s.push("gerrit.git", m2, "refs/heads/main")
+	s.push("github.git", m2, "refs/heads/main")
+	s.git("work", "checkout", "-q", "--detach", mg)
+	s.git("work", "merge", "-q", "--no-ff", "-m", "Merge main", m2)
+	h := s.git("work", "rev-parse", "HEAD")
+	s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = h
+	s.webhookPush(im.Pushers, 10, "brt")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 {
+		t.Fatalf("uploads = %v, want one", up.uploads)
+	}
+	ps := s.changes[1].CurrentRevision
+	if strings.HasPrefix(up.uploads[0], "austin ") && strings.Contains(s.git("m.git", "diff", "--name-only", ps+"^", ps), "x.txt") {
+		t.Errorf("brt's Update branch uploaded on austin's behalf with x folded in: %v", up.uploads)
+	}
+}
+
+// A patch set whose parents Gerrit did not say keeps none for sure.
+func TestKeepsParentsNeedsParents(t *testing.T) {
+	_, im, _, m1, _, _ := gerritBornWorld(t, false)
+	if kept, err := im.keepsParents(context.Background(), gerrit.RevisionInfo{}, m1); kept || err != nil {
+		t.Errorf("kept = %v, err %v; want false", kept, err)
+	}
+}
+
 // A force push replaces what its branch had: whoever pushed that is not in
 // the new head unless the head keeps some of it. A fork's main reused for
 // one PR after another, last pushed by the bridge (the old PR's Gerrit

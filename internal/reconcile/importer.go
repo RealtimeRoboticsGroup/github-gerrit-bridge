@@ -987,15 +987,21 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		im.Logger.Info("the patch set below is not its uploader's own code: the bridge uploads the push", "pr", pr.Number, "pusher", login, "uploader", prev)
 		return "", login, nil
 	}
+	if err := im.have(ctx, base, rev.Ref); err != nil {
+		return "", "", err
+	}
+	if kept, err := im.keepsParents(ctx, rev, parent); err != nil {
+		return "", "", err
+	} else if !kept {
+		im.Logger.Info("the squash's parent leaves out base's: their code would be in its diff: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
+		return "", login, nil
+	}
 	if pusher, ok := im.Identity.GerritUserFor(ctx, by); ok && strings.EqualFold(pusher, prev) {
 		if parent != rev.Commit.Parent() {
 			// It moved base's code onto a new parent too, whose code is
 			// built with it: their Update branch onto the change below's
 			// newer patch set, someone else's, say (seventh audit). As
 			// for a rebase of it, below.
-			if err := im.have(ctx, base, rev.Ref); err != nil {
-				return "", "", err
-			}
 			trusted, err := im.parentTrusted(ctx, parent, base, branch, prevID)
 			if err != nil {
 				return "", "", err
@@ -1028,6 +1034,44 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 	}
 	im.Logger.Info("someone else's push, or pushes: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
 	return "", login, nil
+}
+
+// keepsParents reports whether each parent of rev, the patch set a push
+// builds on, is below parent, the squash's, or an older patch set of
+// parent's change. Otherwise its code is in the squash's diff, as the
+// pusher's own: the change below abandoned, or the PR retargeted, so a
+// layer is squashed onto the branch with that change folded in; a merge's
+// other parent flattened (eighth audit).
+func (im *Importer) keepsParents(ctx context.Context, rev gerrit.RevisionInfo, parent string) (bool, error) {
+	ps := rev.Commit.ParentSHAs()
+	if len(ps) == 0 {
+		return false, nil
+	}
+	changesOf := func(commit string) (map[int]bool, error) {
+		cs, err := im.Gerrit.QueryChanges(ctx, fmt.Sprintf("project:%s commit:%s", gerrit.QueryString(im.Project), commit))
+		of := map[int]bool{}
+		for _, c := range cs {
+			of[c.Number] = true
+		}
+		return of, err
+	}
+	for _, p := range ps {
+		if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", p, parent); err == nil {
+			continue
+		}
+		mine, err := changesOf(p)
+		if err != nil {
+			return false, err
+		}
+		theirs, err := changesOf(parent)
+		if err != nil {
+			return false, err
+		}
+		if !slices.ContainsFunc(sortedKeys(mine), func(n int) bool { return theirs[n] }) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // ownUploadBy reports whether r was uploaded by account, not the bridge
