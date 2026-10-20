@@ -395,6 +395,21 @@ not_draft() { [[ "$(me api "repos/${R}/pulls/${Z1}" --jq .draft)" == false ]]; }
 wait_for "ready in Gerrit makes the PR ready" not_draft
 gerrit_as AustinSchuh POST "changes/${L1}/abandon" "{}" >/dev/null
 
+step "15. A dismissed approval on GitHub withdraws its Gerrit vote"
+Y2="Dismiss ${RUN}"
+(cd "${ME_CLONE}" && git fetch -q gerrit && git checkout -q -B "dismiss-${RUN}" gerrit/main)
+commit "${ME_CLONE}" "dismiss-${RUN}.txt" "${Y2}"
+(cd "${ME_CLONE}" && git push -q gerrit HEAD:refs/for/main 2>/dev/null)
+has_dismiss_pr() { [[ -n "$(pr_for "${Y2}")" ]]; }
+wait_for "the change has a PR" has_dismiss_pr
+L2=$(change "${Y2}"); Z2=$(pr_for "${Y2}")
+REV=$(brt api "repos/${R}/pulls/${Z2}/reviews" -f event=APPROVE -f body="Rehearsal ${RUN}: LGTM" --jq .id)
+brt_cr() { gerrit "changes/${L2}?o=DETAILED_LABELS&o=DETAILED_ACCOUNTS" | jq -e --argjson v "$1" '[.labels["Code-Review"].all[]? | select(.username == "AustinSchuhBRT") | (.value // 0)] | (if length == 0 then [0] else . end) | .[0] == $v'; }
+wait_for "AustinSchuhBRT's GitHub approval becomes their Code-Review +1" brt_cr 1
+me api -X PUT "repos/${R}/pulls/${Z2}/reviews/${REV}/dismissals" -f message="Rehearsal ${RUN}: not yet" -f event=DISMISS --silent
+wait_for "AustinSchuh dismissing it on GitHub withdraws the vote" brt_cr 0
+gerrit_as AustinSchuh POST "changes/${L2}/abandon" "{}" >/dev/null
+
 echo
 echo "Rehearsal ${RUN}: ${PASSED} passed, ${FAILED} failed"
 ((FAILED == 0))
