@@ -200,8 +200,10 @@ refs/bridge/config                         identity map, label mapping overrides
   advertisement keeps lookups cheap. The same design reasons apply as for
   NoteDb.
 - Gerrit ACL: the bridge account gets `Read`, `Push` and `Create Reference`
-  on `refs/bridge/*`. Everyone else gets nothing (`Read` denied), so it stays
-  hidden from users and from `git clone`.
+  on `refs/bridge/*`, all three exclusive. Everyone else gets nothing, so
+  it stays hidden from users and from `git clone`, and a grant of Push or
+  Create on `refs/*` added later lets nobody else write it (seventh
+  audit).
 - **Exclude `refs/bridge/*` from replication to GitHub.** It holds identity
   data.
 
@@ -1540,7 +1542,7 @@ Abandon and Toggle Work In Progress for Administrators.
   View Private Changes or Access Database rights. On the bridged project:
   Read on its branches, Push and Create on `refs/for/refs/heads/*`, Add
   Patch Set, Forge Author on `refs/heads/*`, and `refs/bridge/*` with
-  exclusive Read plus Push and Create. Forge Author lets its imports be
+  Read, Push and Create, all exclusive. Forge Author lets its imports be
   authored by the GitHub noreply address of whoever pushed all of them,
   never by an author a commit names (§5.2): that could put a Gerrit
   user's name on code the bridge uploaded for someone else. Whatever the bridge's

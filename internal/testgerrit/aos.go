@@ -70,8 +70,9 @@ var (
 		{"--add", "capability.streamEvents", "group " + BridgeGroup},
 	}
 	BridgeProject = [][]string{
-		// Only the bridge can see or write its state (design §4.4).
-		{"--add", "access.refs/bridge/*.exclusiveGroupPermissions", "read"},
+		// Only the bridge can see or write its state (design §4.4), whatever
+		// else grants Push or Create on refs/* (seventh audit).
+		{"--add", "access.refs/bridge/*.exclusiveGroupPermissions", "create push read"}, // as Gerrit writes it
 		{"--add", "access.refs/bridge/*.read", "group " + BridgeGroup},
 		{"--add", "access.refs/bridge/*.push", "group " + BridgeGroup},
 		{"--add", "access.refs/bridge/*.create", "group " + BridgeGroup},

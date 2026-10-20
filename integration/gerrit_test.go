@@ -263,6 +263,43 @@ func TestBridgeRefsHiddenFromUsers(t *testing.T) {
 	if err := sa.Save(ctx, 8, &state.Change{State: state.ChangeState{ChangeID: "I8"}}, "x"); err == nil {
 		t.Error("alice wrote refs/bridge/changes/08/8")
 	}
+	// Not even where someone grants everyone Push and Create on refs/*
+	// (seventh audit): the bridge's grants there are exclusive. On a
+	// project of its own, so the shared one's config stays AOS's.
+	const other = "bridge-refs-test"
+	if err := srv.CreateProject(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ConfigureProject(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	allow := map[string]any{"rules": map[string]any{"global:Registered-Users": map[string]any{"action": "ALLOW", "force": true}}}
+	if err := srv.Admin.Do(ctx, http.MethodPost, "projects/"+other+"/access", map[string]any{
+		"add": map[string]any{"refs/*": map[string]any{"permissions": map[string]any{"push": allow, "create": allow}}},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg, envv := gitmirror.HTTPCredentials(srv.URL, env.Alice.Username, env.Alice.HTTPPassword)
+	am := &gitmirror.Repo{Dir: filepath.Join(t.TempDir(), "other.git"), Remote: srv.URL + "/a/" + other, Config: cfg, Env: envv,
+		Name: "Alice", Email: env.Alice.Username + "@example.com"}
+	if err := am.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&state.Store{Repo: am}).Save(ctx, 9, &state.Change{State: state.ChangeState{ChangeID: "I9"}}, "x"); err == nil {
+		t.Error("with Push and Create on refs/* for all, alice wrote refs/bridge/changes/09/9")
+	}
+	// Which it does elsewhere: the refusal is the exclusive grant's.
+	tree, err := am.Git(ctx, []byte{}, "mktree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := am.Git(ctx, nil, "commit-tree", "-m", "alice's", strings.TrimSpace(string(tree)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := am.Git(ctx, nil, "push", "-q", "origin", strings.TrimSpace(string(c))+":refs/heads/alice-may"); err != nil {
+		t.Errorf("alice's push to a branch, which the grant allows, failed: %v", err)
+	}
 }
 
 func TestTrustedGroupMembers(t *testing.T) {
