@@ -3229,6 +3229,42 @@ func TestPushGuardLooksAtWhatGitHubUses(t *testing.T) {
 	}
 }
 
+// A mirrored change made private (or deleted) is one the bridge can no
+// longer see: its PR closes, and the rest of the branch goes on (eighth
+// audit: any owner's toggle stopped it).
+func TestChangeMadePrivateAfterItsPRClosesItAlone(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	msg1 := "Feature one\n\nChange-Id: " + cid(1) + "\n"
+	s.change(1, cid(1), s.commit(m0, "f.txt", "f\n", msg1), msg1, "NEW")
+	if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := store.Load(ctx, 1); st.State.PR == 0 {
+		t.Fatal("no PR for change 1")
+	}
+	// The owner marks change 1 private: the bridge can no longer see it.
+	delete(s.changes, 1)
+	// Someone else uploads change 2.
+	msg2 := "Feature two\n\nChange-Id: " + cid(2) + "\n"
+	s.change(2, cid(2), s.commit(m0, "g.txt", "g\n", msg2), msg2, "NEW")
+	pr1 := 0
+	if st, _ := store.Load(ctx, 1); st != nil {
+		pr1 = st.State.PR
+	}
+	err := c.Reconcile(ctx, Key{Branch: "main"})
+	if st2, _ := store.Load(ctx, 2); err != nil || st2.State.PR == 0 {
+		t.Errorf("change 2 was never mirrored (err %v): one owner's private toggle stopped the branch", err)
+	}
+	if s.pulls[pr1].State != "closed" {
+		t.Errorf("PR #%d of the change made private is %s, want closed", pr1, s.pulls[pr1].State)
+	}
+}
+
 // GitHub reads its configuration paths in any case (eighth audit: a
 // .GitHub/CODEOWNERS on a bridge branch requested reviews on GitHub).
 func TestConfigInAnyCaseIsWithheld(t *testing.T) {

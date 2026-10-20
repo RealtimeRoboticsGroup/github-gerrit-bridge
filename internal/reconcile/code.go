@@ -585,6 +585,14 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]bool)
 			continue
 		}
 		ci, err := c.Gerrit.GetChange(ctx, n, "CURRENT_REVISION", "CURRENT_COMMIT", "DETAILED_ACCOUNTS")
+		var ge *gerrit.Error
+		if errors.As(err, &ge) && ge.Status == http.StatusNotFound {
+			// Made private (or deleted): the bridge can no longer see it,
+			// and its PR closes as for a private change, the rest of the
+			// branch going on (eighth audit: its owner stopped it).
+			s.Changes[n] = &GerritChange{Number: n, ChangeID: st.State.ChangeID, Status: "NEW", Private: true, URL: c.changeURL(n)}
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
