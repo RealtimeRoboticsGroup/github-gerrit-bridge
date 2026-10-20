@@ -59,7 +59,7 @@ func TestSquashIsDeterministicAndKeepsTree(t *testing.T) {
 	c1 := g.commit("a.txt", "base\none\n", "one")
 	h := g.commit("b.txt", "two\n", "two")
 	pr := &github.PullRequest{Title: "Feature", Body: "Does things.\n\n" + linksStart + "\nold block\n" + linksEnd,
-		HTMLURL: "https://github.com/o/r/pull/3"}
+		HTMLURL: "https://github.com/o/r/pull/3", User: github.User{Login: "bob", ID: 7}}
 	who := gerrit.AccountInfo{Name: "Alice", Email: "alice@example.com"}
 	ctx := context.Background()
 	s1, err := im.squash(ctx, pr, []string{h, c1}, h, base, "I"+strings.Repeat("a", 40), "", who, false)
@@ -82,7 +82,8 @@ func TestSquashIsDeterministicAndKeepsTree(t *testing.T) {
 	if strings.Contains(msg, "old block") {
 		t.Errorf("bridge links block leaked into the commit message:\n%s", msg)
 	}
-	if got := g.run("log", "-1", "--format=%ae %ce", s1); got != "austin@example.com alice@example.com" {
+	// Uploaded as the bridge, it is the PR author's, by GitHub id.
+	if got := g.run("log", "-1", "--format=%an <%ae> %ce", s1); got != "bob <7+bob@users.noreply.github.com> alice@example.com" {
 		t.Errorf("author/committer = %s", got)
 	}
 	// Uploaded as a user, it is authored by them: nobody uploads a commit

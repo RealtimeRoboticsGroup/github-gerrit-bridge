@@ -1095,14 +1095,14 @@ func signOffs(texts ...string) []string {
 	return out
 }
 
-// emailTaken reports whether email is a Gerrit account's. (No Gerrit
-// to ask, in tests: no.)
-func (im *Importer) emailTaken(ctx context.Context, email string) (bool, error) {
-	if strings.TrimSpace(email) == "" || im.Gerrit == nil {
-		return false, nil
+// noreplyEmail is u's GitHub noreply address, by account id: GitHub
+// credits it to that account whatever its login becomes, where the
+// id-less form follows whoever holds the login.
+func noreplyEmail(u github.User) string {
+	if u.ID == 0 {
+		return u.Login + "@users.noreply.github.com"
 	}
-	accts, err := im.Gerrit.QueryAccounts(ctx, "email:"+gerrit.QueryString(email))
-	return len(accts) > 0, err
+	return fmt.Sprintf("%d+%s@users.noreply.github.com", u.ID, u.Login)
 }
 
 // squash builds the deterministic commit for a layer (design §5.2), or
@@ -1125,19 +1125,23 @@ func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []st
 	// carries the bridge's own message, with exactly one Change-Id
 	// (second audit, 2026-10-19).
 	_, an, ae, ad, cd := f[0], f[1], f[2], f[3], f[5]
-	if asCommitter {
+	if asCommitter || pr.User.Login == "" {
 		// Uploaded as a user, it is theirs: nobody may upload a commit
 		// as someone else's (AOS gives Forge Author to few, and an email
 		// GitHub has, a noreply one say, need not be theirs in Gerrit).
-		// Others' sign-offs stay in the message.
+		// Others' sign-offs stay in the message. (A PR naming no author
+		// is the uploader's too.)
 		an, ae = committer.Name, committer.Email
-	} else if taken, err := im.emailTaken(ctx, ae); err != nil || taken {
-		// Uploaded as the bridge, it keeps its author, for credit,
-		// unless that is a Gerrit user's: their name on someone else's
-		// code, which Gerrit lets only Forge Author write, and the bridge
-		// has it (fifth audit). Then it is the PR author's, as GitHub
-		// knows them.
-		an, ae = pr.User.Login, pr.User.Login+"@users.noreply.github.com"
+	} else {
+		// Uploaded as the bridge, it is the PR author's, as GitHub knows
+		// them. A commit's author is anyone's to write, and Gerrit lets
+		// only Forge Author upload it, which the bridge has: kept, it
+		// could put a Gerrit user's name on code the bridge uploaded for
+		// someone else, and the bridge cannot tell whose an email is
+		// (Gerrit shows it only preferred emails: fifth and sixth
+		// audits). Nor is a maintainer who clicked "Update branch" the
+		// author of the PR they updated.
+		an, ae = pr.User.Login, noreplyEmail(pr.User)
 	}
 	// Sign-offs from every commit in the layer (oldest first) and from the
 	// PR description are kept; the squashed commit represents them all.

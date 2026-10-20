@@ -812,20 +812,21 @@ func TestPREditsMirroredOncePerReconcile(t *testing.T) {
 }
 
 // The bridge uploads the PR of someone without a Gerrit account as
-// itself, with Forge Author: the commit keeps its author, for credit,
-// unless that is a Gerrit user's, whose name would then vouch for code
-// they never uploaded (fifth audit). Then it is the PR author's.
+// itself, with Forge Author: the commit is the PR author's, by GitHub
+// account id. An author the commit names could be a Gerrit user's, whose
+// name would then vouch for code they never uploaded (fifth audit), by an
+// email the bridge cannot see is theirs (a secondary one: sixth audit).
 func TestBridgeUploadsNeverClaimAGerritUsersAuthorship(t *testing.T) {
 	for _, tc := range []struct{ author, want string }{
-		{"Austin <austin@example.com>", "newbie <newbie@users.noreply.github.com>"},
-		{"Newbie <newbie@example.org>", "Newbie <newbie@example.org>"},
+		{"Austin <austin@example.com>", "newbie <4242+newbie@users.noreply.github.com>"},
+		{"Austin Schuh <austin-secondary@example.org>", "newbie <4242+newbie@users.noreply.github.com>"},
 	} {
 		s, im, up, m1, _, _ := gerritBornWorld(t, false)
 		s.commit(m1, "new.txt", "n\n", "New")
 		s.git("work", "commit", "-q", "--amend", "--no-edit", "--author="+tc.author)
 		h := s.git("work", "rev-parse", "HEAD")
 		s.push("github.git", h, "refs/heads/topic")
-		s.pr(60, "topic", h, "main", "newbie")
+		s.pr(60, "topic", h, "main", "newbie").User.ID = 4242
 		s.pushed("o/r", "refs/heads/topic", h, "newbie")
 		if err := im.Import(context.Background(), "main"); err != nil {
 			t.Fatal(err)
@@ -1753,9 +1754,9 @@ func TestFirstUploadNeedsTheAuthorsPush(t *testing.T) {
 			if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], tc.want+" ") {
 				t.Fatalf("uploads = %v, want one as %q", up.uploads, tc.want)
 			}
-			// Uploaded as austin, it is austin's; the bridge's keeps the
-			// commit's author.
-			want := map[string]string{"austin": "austin@example.com", "": "else@example.com"}[tc.want]
+			// Uploaded as austin, it is austin's; the bridge's is the PR
+			// author's GitHub identity, never the commit's author.
+			want := map[string]string{"austin": "austin@example.com", "": "austin@users.noreply.github.com"}[tc.want]
 			if got := s.git("m.git", "log", "-1", "--format=%ae", strings.Fields(strings.TrimPrefix(up.uploads[0], tc.want+" "))[0]); got != want {
 				t.Errorf("author %s, want %s", got, want)
 			}

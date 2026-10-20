@@ -96,7 +96,6 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("POST /graphql", s.graphql)
 	mux.HandleFunc("GET /a/changes/{n}/submitted_together", s.submittedTogether)
 	mux.HandleFunc("GET /a/accounts/{user}", s.account)
-	mux.HandleFunc("GET /a/accounts/{$}", s.queryAccounts)
 	mux.HandleFunc("GET /repos/o/r/pulls", s.listPulls)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/activity", s.activityLog)
 	mux.HandleFunc("GET /repos/o/r/pulls/{n}", s.getPull)
@@ -418,20 +417,6 @@ func (s *sites) account(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, a, true)
-}
-
-// queryAccounts answers "email:<address>" queries.
-func (s *sites) queryAccounts(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	q := r.URL.Query().Get("q")
-	out := []gerrit.AccountInfo{}
-	for _, name := range sortedStringKeys(s.accounts) {
-		if a := s.accounts[name]; a.Email != "" && strings.Contains(strings.ReplaceAll(q, `"`, ""), "email:"+a.Email) {
-			out = append(out, a)
-		}
-	}
-	s.json(w, out, true)
 }
 
 type pushEntry struct{ sha, actor, kind string }

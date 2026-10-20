@@ -715,17 +715,3 @@ func TestInactiveAccountsAreSaid(t *testing.T) {
 		t.Errorf("an inactive account matched, as %q", user)
 	}
 }
-
-// The bridge finds a Gerrit account by its email, so its own uploads never
-// keep an author who is a Gerrit user (Importer.emailTaken).
-func TestBridgeFindsAccountsByEmail(t *testing.T) {
-	ctx := context.Background()
-	bridge := &gerrit.Client{BaseURL: srv.URL, User: env.Bridge.Username, Password: env.Bridge.HTTPPassword}
-	accts, err := bridge.QueryAccounts(ctx, "email:"+gerrit.QueryString(env.Alice.Username+"@example.com"))
-	if err != nil || len(accts) != 1 || accts[0].Username != env.Alice.Username {
-		t.Errorf("found %+v, err %v; want alice", accts, err)
-	}
-	if accts, err := bridge.QueryAccounts(ctx, "email:"+gerrit.QueryString("nobody-audit5@example.com")); err != nil || len(accts) != 0 {
-		t.Errorf("nobody's email found %+v, err %v", accts, err)
-	}
-}

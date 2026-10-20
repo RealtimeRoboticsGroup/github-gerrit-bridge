@@ -311,7 +311,13 @@ exactly one Gerrit change**:
      them"; Forge Author is a few accounts'), and the email GitHub has
      (a noreply one, say) need not be theirs in Gerrit. The commits'
      sign-offs, others' included, stay in the message. When the bridge
-     uploads, the author is `H_k`'s (the bridge has Forge Author).
+     uploads, the author is the PR's author, as GitHub knows them
+     (`<id>+<login>@users.noreply.github.com`, which GitHub credits to
+     that account whatever its login becomes; the bridge has Forge
+     Author). Not `H_k`'s: anyone can write any author into a commit,
+     a Gerrit user's included, and the bridge cannot tell whose an email
+     is (Gerrit shows it only accounts' preferred emails: fifth and sixth
+     audits); nor is whoever clicked "Update branch" the PR's author.
      Committer: the Gerrit account the push runs as. Gerrit rejects a
      push whose committer email is not one of the uploader's emails
      unless the uploader has Forge Committer, and with `suexec` the
@@ -1445,11 +1451,12 @@ Abandon and Toggle Work In Progress for Administrators.
   View Private Changes or Access Database rights. On the bridged project:
   Read on its branches, Push and Create on `refs/for/refs/heads/*`, Add
   Patch Set, Forge Author on `refs/heads/*`, and `refs/bridge/*` with
-  exclusive Read plus Push and Create. Forge Author lets its imports keep
-  their authors, but never one whose email is a Gerrit account's: that
-  would put a Gerrit user's name on code the bridge uploaded for someone
-  else, and such a commit is the PR author's instead (fifth audit). Whatever the bridge's account may do, a GitHub user
-  without a Gerrit account effectively may too.
+  exclusive Read plus Push and Create. Forge Author lets its imports be
+  authored by the PR's author's GitHub noreply address, never by an
+  author a commit names (§5.2): that could put a Gerrit user's name on
+  code the bridge uploaded for someone else. Whatever the bridge's
+  account may do, a GitHub user without a Gerrit account effectively may
+  too.
 - **Add Patch Set and Forge Author** are Registered Users' by default:
   anyone signed in may upload a patch set to anyone's change, with any
   author. The bridge keeps such patch sets off GitHub-born PRs (§7.1),
