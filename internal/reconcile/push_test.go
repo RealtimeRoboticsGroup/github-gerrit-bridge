@@ -24,3 +24,20 @@ func TestShellQuote(t *testing.T) {
 		}
 	}
 }
+
+// A branch name with a % in it would bring its own push options to an
+// upload (submit, base=...), which Gerrit takes from any branch so named
+// (eighth audit); one git would read as something else is refused too.
+func TestRefsForRefusesOptionsInTheBranch(t *testing.T) {
+	if r, err := refsFor("main", []string{"wip"}); err != nil || r != "refs/for/main%wip" {
+		t.Errorf("refsFor(main) = %q, %v", r, err)
+	}
+	if r, err := refsFor("release/1.0", nil); err != nil || r != "refs/for/release/1.0" {
+		t.Errorf("refsFor(release/1.0) = %q, %v", r, err)
+	}
+	for _, target := range []string{"main%submit", "x:y", "-main", "", "a b", "a^", "a~1", "a*"} {
+		if r, err := refsFor(target, nil); err == nil {
+			t.Errorf("refsFor(%q) = %q, want refused", target, r)
+		}
+	}
+}

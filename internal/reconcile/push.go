@@ -19,13 +19,19 @@ type Uploader interface {
 	CanActAs() bool
 }
 
-// refsFor builds "refs/for/<target>%opt,opt".
-func refsFor(target string, opts []string) string {
+// refsFor builds "refs/for/<target>%opt,opt". A target with a % in it
+// would bring its own push options (submit, base=, ...), which Gerrit
+// takes from any branch so named (eighth audit): refused, as is one git
+// would read as something else.
+func refsFor(target string, opts []string) (string, error) {
+	if target == "" || strings.HasPrefix(target, "-") || strings.ContainsAny(target, "%:^~?*[\\ \t\n") {
+		return "", fmt.Errorf("refusing to upload to branch %q", target)
+	}
 	r := "refs/for/" + target
 	if len(opts) > 0 {
 		r += "%" + strings.Join(opts, ",")
 	}
-	return r
+	return r, nil
 }
 
 // uploadResult interprets git push output: "no new changes" means the
@@ -50,7 +56,11 @@ func (u HTTPUploader) Upload(ctx context.Context, user, commit, target string, o
 	if user != "" {
 		return fmt.Errorf("cannot upload as %s without a peer key", user)
 	}
-	out, err := u.Mirror.Git(ctx, nil, "push", "origin", commit+":"+refsFor(target, opts))
+	ref, err := refsFor(target, opts)
+	if err != nil {
+		return err
+	}
+	out, err := u.Mirror.Git(ctx, nil, "push", "origin", commit+":"+ref)
 	return uploadResult(out, err)
 }
 
@@ -85,8 +95,12 @@ func (u SuexecUploader) Upload(ctx context.Context, user, commit, target string,
 	// Git runs GIT_SSH_COMMAND through the shell: the paths are quoted.
 	ssh := "ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=30 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" +
 		" -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile=" + shellQuote(u.KnownHostsFile) + " -i " + shellQuote(u.PeerKeyFile)
+	ref, err := refsFor(target, opts)
+	if err != nil {
+		return err
+	}
 	out, err := u.Mirror.GitEnv(ctx, []string{"GIT_SSH_COMMAND=" + ssh}, nil,
-		"push", "--receive-pack=suexec --as "+user+" -- git-receive-pack", remote, commit+":"+refsFor(target, opts))
+		"push", "--receive-pack=suexec --as "+user+" -- git-receive-pack", remote, commit+":"+ref)
 	return uploadResult(out, err)
 }
 
