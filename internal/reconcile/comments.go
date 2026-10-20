@@ -51,6 +51,7 @@ type GitHubAPI interface {
 	Dismissals(ctx context.Context, n int) (map[int64]github.Dismissal, error)
 	FileAt(ctx context.Context, ref, path string) ([]byte, error)
 	IsAncestor(ctx context.Context, a, b string) (bool, error)
+	GetPull(ctx context.Context, n int) (*github.PullRequest, error)
 }
 
 // Comments mirrors review comments, replies and thread resolution between
@@ -155,52 +156,40 @@ type commentSnapshot struct {
 	threads            []github.ReviewThread
 	psToSHA            map[int]string
 	shaToPS            map[string]int
-	// psCreated is when each patch set was uploaded to Gerrit.
-	psCreated map[int]time.Time
-	current   int
-	revision  string
+	current            int
+	revision           string
 	// labels are the current patch set's votes.
 	labels map[string]gerrit.LabelInfo
 	// wait is how long what was left out for now waits (tooFresh).
 	wait time.Duration
+	// heads are the commits the PR's branch was seen at (state.Head), up
+	// to at, when it was read last, after everything listed here.
+	heads []state.Head
+	at    time.Time
 }
 
-// seen is the newest patch set GitHub had for minSeen at t, so the one
-// someone commenting then could have seen; 0 if none. A comment that
-// names no commit (an issue comment, a review of a commit Gerrit never
-// had) goes on it, not on whatever is current when the bridge gets to
-// it: a trusted reviewer's "retest" must not start CI on a patch set
-// uploaded after it, or pushed moments before it (fourth audit), which
-// they could not have read.
+// seen is the patch set whose commit GitHub had from minSeen before t
+// until now, so the one someone commenting then could have seen; 0 if
+// none. A comment that names no commit (an issue comment, a review of a
+// commit Gerrit never had) goes on it, not on whatever is current when
+// the bridge gets to it: a trusted reviewer's "retest" must not start CI
+// on a patch set uploaded after it, or pushed moments before it (fourth
+// audit), which they could not have read; nor on the newest patch set if
+// the branch went back to an older one's commit, or on to one the bridge
+// does not import (seventh audit). Until now: a head is seen once it is
+// there, so one first seen after t may have been there at t.
 func (s *commentSnapshot) seen(t time.Time) int {
-	t = t.Add(-minSeen)
-	ps := 0
-	for _, r := range s.revisions {
-		at := r.At
-		if at.IsZero() {
-			at = s.psCreated[r.PatchSet] // recorded before At was kept
-		}
-		if _, ok := s.psToSHA[r.PatchSet]; ok && r.GitHubSHA != "" && !at.IsZero() && !at.After(t) && r.PatchSet > ps {
-			ps = r.PatchSet
-		}
+	sha := headThroughout(s.heads, t.Add(-minSeen), s.at)
+	if _, ok := s.psToSHA[s.shaToPS[sha]]; sha == "" || !ok {
+		return 0
 	}
-	return ps
+	return s.shaToPS[sha]
 }
 
-// shown reports whether patch set ps had been on GitHub for minSeen at t,
-// as seen counts it.
-func (s *commentSnapshot) shown(ps int, t time.Time) bool {
-	t = t.Add(-minSeen)
-	for _, r := range s.revisions {
-		at := r.At
-		if at.IsZero() {
-			at = s.psCreated[r.PatchSet]
-		}
-		if r.PatchSet == ps && r.GitHubSHA != "" && !at.IsZero() && !at.After(t) {
-			return true
-		}
-	}
-	return false
+// shown reports whether commit had been the PR's head for minSeen at t,
+// and still was: a review then, which names it, is of it.
+func (s *commentSnapshot) shown(commit string, t time.Time) bool {
+	return commit != "" && headThroughout(s.heads, t.Add(-minSeen), t) == commit
 }
 
 // minSeen is how long a patch set must have been on GitHub before a
@@ -384,7 +373,7 @@ func (c *Comments) settle(s, first *commentSnapshot) {
 
 func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*commentSnapshot, error) {
 	s := &commentSnapshot{byID: map[string]*gerrit.CommentInfo{}, rcByID: map[int64]*github.ReviewComment{},
-		psToSHA: map[int]string{}, shaToPS: map[string]int{}, psCreated: map[int]time.Time{}}
+		psToSHA: map[int]string{}, shaToPS: map[string]int{}}
 	var err error
 	if s.gerrit, err = c.Gerrit.ListComments(ctx, n); err != nil {
 		return nil, err
@@ -405,9 +394,6 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	for sha, r := range ch.Revisions {
 		s.psToSHA[r.Number] = sha
 		s.shaToPS[sha] = r.Number
-		if t, err := time.Parse("2006-01-02 15:04:05.999999999", r.Created); err == nil {
-			s.psCreated[r.Number] = t
-		}
 	}
 	s.revision = ch.CurrentRevision
 	s.messages = ch.Messages
@@ -442,6 +428,18 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	}
 	if s.reviewEdits, err = c.GitHub.ReviewEdits(ctx, pr); err != nil {
 		return nil, err
+	}
+	// What GitHub has now, read after everything above was listed.
+	p, err := c.GitHub.GetPull(ctx, pr)
+	if err != nil {
+		return nil, err
+	}
+	s.at = c.now()
+	s.heads = withHead(st.Heads, p.Head.SHA, s.at)
+	if (len(st.Heads) == 0 || st.Heads[len(st.Heads)-1].SHA != p.Head.SHA) && !c.DryRun {
+		if err := noteHead(ctx, c.Store, n, p.Head.SHA, s.at); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -1211,7 +1209,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		// client says otherwise (GitHub's API, gh pr review): one pushed
 		// moments before is not what was read (sixth audit). As for
 		// comments and /submit, it counts only once on GitHub minSeen.
-		early := known && !s.shown(reviewed, rv.SubmittedAt)
+		early := known && !s.shown(rv.CommitID, rv.SubmittedAt)
 		ps := reviewed
 		if !known || early {
 			ps = s.seen(rv.SubmittedAt)

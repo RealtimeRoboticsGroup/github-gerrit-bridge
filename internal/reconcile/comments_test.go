@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -242,8 +243,10 @@ type fakeGitHub struct {
 	rcs         []github.ReviewComment
 	ics         []github.IssueComment
 	reviews     []github.Review
-	resolved    map[int64]bool        // thread root -> resolved
-	resolvedBy  map[int64]github.User // thread root -> who resolved it
+	// head is the PR's head ("sha2" if unset).
+	head       string
+	resolved   map[int64]bool        // thread root -> resolved
+	resolvedBy map[int64]github.User // thread root -> who resolved it
 	// diff lines per path that accept line comments; diffAt overrides it
 	// per "commit/path".
 	diff     map[string]map[int]bool
@@ -341,6 +344,19 @@ func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error)
 	}
 	return out, nil
 }
+func (f *fakeGitHub) GetPull(_ context.Context, n int) (*github.PullRequest, error) {
+	return &github.PullRequest{Number: n, Head: github.Ref{SHA: cmp.Or(f.head, "sha2")}}, nil
+}
+
+// pushed makes sha the PR's head, as seen at at.
+func (e *commentsEnv) pushed(t *testing.T, sha string, at time.Time) {
+	t.Helper()
+	e.h.head = sha
+	if err := updateStateFn(context.Background(), e.st, 5, "head", func(st *state.Change) { st.Heads = withHead(st.Heads, sha, at) }); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f *fakeGitHub) ReviewThreads(context.Context, int) ([]github.ReviewThread, error) {
 	var out []github.ReviewThread
 	for _, rc := range f.rcs {
@@ -471,7 +487,8 @@ func newCommentsEnv(t *testing.T) *commentsEnv {
 	// there (by default).
 	early := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	if err := store.Save(ctx, 5, &state.Change{State: state.ChangeState{PR: 1, Branch: "main", Lifecycle: "NEW"},
-		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "sha1", At: early}, {PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "sha2", At: early}}}, "link"); err != nil {
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "sha1", At: early}, {PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "sha2", At: early}},
+		Heads:     []state.Head{{SHA: "sha1", At: early}, {SHA: "sha2", At: early}}}, "link"); err != nil {
 		t.Fatal(err)
 	}
 	g := &fakeGerrit{revs: map[string]int{"sha1": 1, "sha2": 2}, current: "sha2",
@@ -1224,10 +1241,12 @@ func TestGitHubApprovalBecomesVote(t *testing.T) {
 }
 
 // A comment on no commit (an issue comment, a review of a commit Gerrit
-// never had) goes on the patch set GitHub had when it was written, as its
-// author; one written before GitHub had any is the bridge's. So a
-// trusted reviewer's "retest" never starts CI on a patch set uploaded
-// after it, or less than a minute before.
+// never had) goes on the patch set whose commit GitHub had from a minute
+// before it was written until now, as its author; any other is the
+// bridge's. So a trusted reviewer's "retest" never starts CI on a patch
+// set uploaded after it, or less than a minute before, or on one GitHub
+// stopped showing since (seventh audit: a head seen later may have been
+// there when the comment was written).
 func TestCommentsGoOnThePatchSetTheirAuthorCouldSee(t *testing.T) {
 	e := newCommentsEnv(t)
 	e.runAs()
@@ -1236,6 +1255,7 @@ func TestCommentsGoOnThePatchSetTheirAuthorCouldSee(t *testing.T) {
 	updateStateFn(ctx, e.st, 5, "revisions", func(s *state.Change) {
 		s.Revisions = []state.Revision{{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "sha1", At: t0}, {PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "sha2", At: t0.Add(time.Hour)},
 			{PatchSet: 3, GerritSHA: "sha3", At: t0.Add(90 * time.Minute)}} // not on GitHub
+		s.Heads = []state.Head{{SHA: "sha1", At: t0}, {SHA: "sha2", At: t0.Add(time.Hour)}}
 	})
 	e.g.revs["sha3"], e.g.current = 3, "sha3"
 	ic := func(id int64, body string, at time.Time) github.IssueComment {
@@ -1248,8 +1268,10 @@ func TestCommentsGoOnThePatchSetTheirAuthorCouldSee(t *testing.T) {
 		ic(4, "retest moments after", t0.Add(time.Hour+30*time.Second)))
 	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "COMMENTED", CommitID: "unimported", User: github.User{Login: "bob"},
 		Body: "review of a push", SubmittedAt: t0.Add(time.Minute), HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 72, State: "COMMENTED", CommitID: "unimported", User: github.User{Login: "bob"},
+		Body: "later review of a push", SubmittedAt: t0.Add(2 * time.Hour), HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-72"})
 	e.h.rcs = append(e.h.rcs, github.ReviewComment{ID: 80, ReviewID: 81, Path: "a.txt", CommitID: "unimported", OriginalCommitID: "unimported",
-		Body: "on a file of a push", SubjectType: "file", CreatedAt: t0.Add(time.Minute), User: github.User{Login: "bob"},
+		Body: "on a file of a push", SubjectType: "file", CreatedAt: t0.Add(2 * time.Hour), User: github.User{Login: "bob"},
 		HTMLURL: "https://github.com/o/r/pull/1#discussion_r80"})
 	e.h.rcs = append(e.h.rcs, github.ReviewComment{ID: 82, ReviewID: 83, Path: "a.txt", CommitID: "unimported", OriginalCommitID: "unimported",
 		Body: "early file comment", SubjectType: "file", CreatedAt: t0.Add(-time.Minute), User: github.User{Login: "bob"},
@@ -1257,11 +1279,11 @@ func TestCommentsGoOnThePatchSetTheirAuthorCouldSee(t *testing.T) {
 	e.h.reviews = append(e.h.reviews, github.Review{ID: 71, State: "COMMENTED", CommitID: "unimported", User: github.User{Login: "bob"},
 		Body: "early review", SubmittedAt: t0.Add(-time.Minute), HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-71"})
 	e.sync(t)
-	want := map[string]string{"retest one": "1 bobg", "retest two": "2 bobg", "too early": "3 ", "retest moments after": "1 bobg", "review of a push": "1 bobg", "on a file of a push": "1 bobg",
-		"early file comment": "3 ", "early review": "3 "}
+	want := map[string]string{"retest one": "3 ", "retest two": "2 bobg", "too early": "3 ", "retest moments after": "3 ", "review of a push": "3 ",
+		"later review of a push": "2 bobg", "on a file of a push": "2 bobg", "early file comment": "3 ", "early review": "3 "}
 	for _, gc := range e.g.comments {
 		for text, w := range want {
-			if strings.Contains(gc.Message, text) {
+			if strings.Contains(gc.Message, text) && !strings.Contains(gc.Message, "later "+text) {
 				if got := fmt.Sprintf("%d %s", gc.PatchSet, gc.Author.Username); got != w {
 					t.Errorf("%q posted on patch set and as %q, want %q", text, got, w)
 				}
@@ -1274,17 +1296,39 @@ func TestCommentsGoOnThePatchSetTheirAuthorCouldSee(t *testing.T) {
 	}
 	e.settled(t)
 
-	// Recorded before the time was kept: Gerrit's upload time stands in.
+	// The branch went back to patch set 1's commit (a known head: nothing
+	// is imported or recorded but the head), or on to one never imported:
+	// a retest now is not for patch set 2 (seventh audit).
+	// So did a branch GitHub has moved since the head was last recorded:
+	// the comment sync reads it after the comments.
+	for _, back := range []string{"sha1", "unimported", "not recorded"} {
+		e = newCommentsEnv(t)
+		e.runAs()
+		if back == "not recorded" {
+			e.h.head = "sha1"
+		} else {
+			e.pushed(t, back, t0.Add(3*time.Hour))
+		}
+		e.h.ics = append(e.h.ics, ic(5, "retest", t0.Add(4*time.Hour)))
+		e.sync(t)
+		want := map[string]string{"sha1": "1 bobg", "unimported": "2 ", "not recorded": "2 "}[back]
+		if gc := e.g.comments[len(e.g.comments)-1]; fmt.Sprintf("%d %s", gc.PatchSet, gc.Author.Username) != want {
+			t.Errorf("head back at %s: retest posted on patch set %d as %q, want %s", back, gc.PatchSet, gc.Author.Username, want)
+		}
+		if st, _ := e.st.Load(ctx, 5); st.Heads[len(st.Heads)-1].SHA != e.h.head {
+			t.Errorf("head back at %s: heads %+v, want the PR's head last", back, st.Heads)
+		}
+	}
+
+	// No head recorded (state from before they were kept): the first is
+	// seen now, and nothing before it is as its author.
 	e = newCommentsEnv(t)
 	e.runAs()
-	e.g.created = map[int]string{1: "2026-10-19 12:00:00.000000000", 2: "2026-10-19 13:00:00.000000000"}
-	updateStateFn(ctx, e.st, 5, "revisions", func(s *state.Change) {
-		s.Revisions = []state.Revision{{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "sha1"}, {PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "sha2"}}
-	})
+	updateStateFn(ctx, e.st, 5, "heads", func(s *state.Change) { s.Heads = nil })
 	e.h.ics = append(e.h.ics, ic(1, "retest one", t0.Add(time.Minute)))
 	e.sync(t)
-	if gc := e.g.comments[len(e.g.comments)-1]; gc.PatchSet != 1 || gc.Author.Username != "bobg" {
-		t.Errorf("posted on patch set %d as %q, want 1 as bobg", gc.PatchSet, gc.Author.Username)
+	if gc := e.g.comments[len(e.g.comments)-1]; gc.PatchSet != 2 || gc.Author.Username != "" {
+		t.Errorf("posted on patch set %d as %q, want 2 as the bridge", gc.PatchSet, gc.Author.Username)
 	}
 }
 
@@ -1550,9 +1594,11 @@ func TestReviewOfAHeadPushedMomentsBeforeIsNotAboutIt(t *testing.T) {
 				{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "gh1", At: now.Add(-time.Hour)},
 				{PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "gh2", At: now},
 			}
+			s.Heads = []state.Head{{SHA: "gh1", At: now.Add(-time.Hour)}, {SHA: "gh2", At: now}}
 		}); err != nil {
 			t.Fatal(err)
 		}
+		e.h.head = "gh2"
 		e.h.reviews = append(e.h.reviews,
 			github.Review{ID: 70, State: "APPROVED", CommitID: "gh2", User: github.User{Login: "bob"},
 				HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70", SubmittedAt: now.Add(after)},
@@ -1573,6 +1619,37 @@ func TestReviewOfAHeadPushedMomentsBeforeIsNotAboutIt(t *testing.T) {
 		said := slices.ContainsFunc(e.g.comments, func(gc gerrit.CommentInfo) bool { return strings.Contains(gc.Message, "less than a minute before it") })
 		if said != early {
 			t.Errorf("approved %v after: said it is not counted %v", after, said)
+		}
+	}
+}
+
+// A review counts for the commit it names only if GitHub had shown that
+// commit all along for a minute before: not one it went back to just
+// now, after an older patch set's commit (or the bridge added to it), for
+// which a record from long ago says nothing (seventh audit).
+func TestReviewOfAHeadThatJustCameBackIsNotAboutIt(t *testing.T) {
+	for _, after := range []time.Duration{5 * time.Second, minSeen + time.Second} {
+		e := newCommentsEnv(t)
+		e.runAs()
+		now := time.Now()
+		// gh2 has long been patch set 2's; the branch went back to gh1,
+		// and now forward to gh2 again.
+		if err := updateStateFn(context.Background(), e.st, 5, "revisions", func(s *state.Change) {
+			s.Revisions = []state.Revision{
+				{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "gh1", At: now.Add(-2 * time.Hour)},
+				{PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "gh2", At: now.Add(-time.Hour)},
+			}
+			s.Heads = []state.Head{{SHA: "gh1", At: now.Add(-2 * time.Hour)}, {SHA: "gh2", At: now.Add(-time.Hour)},
+				{SHA: "gh1", At: now.Add(-30 * time.Minute)}, {SHA: "gh2", At: now}}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		e.h.head = "gh2"
+		e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "gh2", User: github.User{Login: "bob"},
+			HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70", SubmittedAt: now.Add(after)})
+		e.sync(t)
+		if v := e.g.labels["Code-Review"]["bobg"]; (v == 2) != (after > minSeen) {
+			t.Errorf("approved %v after gh2 came back: Code-Review %+d", after, v)
 		}
 	}
 }

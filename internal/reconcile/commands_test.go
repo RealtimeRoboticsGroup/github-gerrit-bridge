@@ -221,9 +221,19 @@ func TestSubmitErrorsDoNotLeakDetails(t *testing.T) {
 }
 
 // /submit is for the patch set its author saw.
+// headAt makes sha the PR's head, as seen at at.
+func headAt(t *testing.T, c *Commands, h *fakeGitHub, sha string, at time.Time) {
+	t.Helper()
+	h.head = sha
+	if err := updateStateFn(context.Background(), c.Store, 5, "head", func(st *state.Change) { st.Heads = withHead(st.Heads, sha, at) }); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSubmitCommandIsForThePatchSetItsAuthorSaw(t *testing.T) {
 	c, h, sub := newCommands(t)
 	posted := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	headAt(t, c, h, "gh3", posted.Add(-time.Hour))
 	sub.rev, sub.uploaded = "sha3", posted.Add(time.Minute) // pushed after the comment
 	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: posted})
 	c.Run(context.Background(), 5)
@@ -262,27 +272,29 @@ func TestSubmitNeedsThePatchSetOnGitHub(t *testing.T) {
 	if len(sub.calls) != 0 || !strings.Contains(h.ics[len(h.ics)-1].Body, "was not on GitHub when you wrote it") {
 		t.Errorf("calls=%v reply=%q", sub.calls, h.ics[len(h.ics)-1].Body)
 	}
-	// Nor one pushed to GitHub moments before the comment (fourth audit).
+	// Nor one pushed to GitHub moments before the comment (fourth audit),
+	// nor one GitHub went back from since, to an older patch set's commit
+	// (seventh audit).
 	for _, tc := range []struct {
 		before time.Duration
+		back   bool
 		ran    bool
-		old    bool // recorded before At was kept: Gerrit's upload time stands in
-	}{{30 * time.Second, false, false}, {2 * time.Minute, true, false}, {30 * time.Second, false, true}} {
+		moved  bool // on GitHub since, not recorded yet
+	}{{30 * time.Second, false, false, false}, {2 * time.Minute, false, true, false}, {2 * time.Minute, true, false, false}, {2 * time.Minute, false, false, true}} {
 		c, h, sub := newCommands(t)
 		sub.rev, sub.uploaded = "sha3", posted.Add(-time.Hour)
-		st, _ := c.Store.Load(context.Background(), 5)
-		st.Revisions[1].At = posted.Add(-tc.before)
-		if tc.old {
-			st.Revisions[1].At, sub.uploaded = time.Time{}, posted.Add(-tc.before)
+		headAt(t, c, h, "gh3", posted.Add(-tc.before))
+		if tc.back {
+			headAt(t, c, h, "sha2", posted.Add(30*time.Second))
 		}
-		if err := c.Store.Save(context.Background(), 5, st, "at"); err != nil {
-			t.Fatal(err)
+		if tc.moved {
+			h.head = "elsewhere"
 		}
 		c.Now = func() time.Time { return posted.Add(time.Minute) }
 		h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: posted})
 		c.Run(context.Background(), 5)
 		if ran := len(sub.calls) != 0; ran != tc.ran {
-			t.Errorf("on GitHub %v before: ran %v, reply %q", tc.before, ran, h.ics[len(h.ics)-1].Body)
+			t.Errorf("on GitHub %v before (back since %v): ran %v, reply %q", tc.before, tc.back, ran, h.ics[len(h.ics)-1].Body)
 		}
 	}
 }

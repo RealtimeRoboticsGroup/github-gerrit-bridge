@@ -26,6 +26,7 @@ import (
 type Change struct {
 	State     ChangeState
 	Revisions []Revision
+	Heads     []Head
 	Threads   []Thread
 	Comments  []Comment
 	Votes     []Vote
@@ -95,6 +96,15 @@ type Revision struct {
 	// At is when the bridge recorded it on both sides: GitHub had it by
 	// then (zero in state written before this was kept).
 	At time.Time `json:"at,omitzero"`
+}
+
+// Head is a commit the PR's branch was seen at (heads.json): from At,
+// when the bridge first saw it there or put it there, until the next
+// one. Unlike Revisions, which record a commit once, a branch moved back
+// to an earlier commit is a new Head.
+type Head struct {
+	SHA string    `json:"sha"`
+	At  time.Time `json:"at"`
 }
 
 // Thread links a Gerrit comment thread to a GitHub review thread
@@ -341,6 +351,7 @@ func (c *Change) files() map[string]any {
 	return map[string]any{
 		"state.json":     &c.State,
 		"revisions.json": &c.Revisions,
+		"heads.json":     &c.Heads,
 		"threads.json":   &c.Threads,
 		"comments.json":  &c.Comments,
 		"votes.json":     &c.Votes,
@@ -370,6 +381,7 @@ func (s *Store) Load(ctx context.Context, n int) (*Change, error) {
 	}
 	// Empty lists are stored as []; hand them back as nil, as Save got them.
 	c.Revisions = nilIfEmpty(c.Revisions)
+	c.Heads = nilIfEmpty(c.Heads)
 	c.Threads = nilIfEmpty(c.Threads)
 	c.Comments = nilIfEmpty(c.Comments)
 	c.Votes = nilIfEmpty(c.Votes)

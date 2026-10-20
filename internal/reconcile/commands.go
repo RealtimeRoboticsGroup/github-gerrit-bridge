@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -74,6 +75,7 @@ type CommandsGitHub interface {
 	ListIssueComments(ctx context.Context, n int) ([]github.IssueComment, error)
 	Edits(ctx context.Context, n int) (map[int64]string, error)
 	CreateIssueComment(ctx context.Context, n int, body string) (*github.IssueComment, error)
+	GetPull(ctx context.Context, n int) (*github.PullRequest, error)
 }
 
 // Commands runs commands given as PR comments (design §6.7):
@@ -138,6 +140,17 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 	if err != nil {
 		return err
 	}
+	// What GitHub has now, read after the comments (state.Head).
+	p, err := c.GitHub.GetPull(ctx, pr)
+	if err != nil {
+		return err
+	}
+	heads := withHead(st.Heads, p.Head.SHA, c.now())
+	if (len(st.Heads) == 0 || st.Heads[len(st.Heads)-1].SHA != p.Head.SHA) && !c.DryRun {
+		if err := noteHead(ctx, c.Store, n, p.Head.SHA, c.now()); err != nil {
+			return err
+		}
+	}
 	// Handled: recorded in state, or (from before that was kept, or a
 	// crash before it was saved) named by the bridge's own unedited reply.
 	// Anyone with write access can edit the bridge's replies: an edited
@@ -187,7 +200,7 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 			// Anyone with write access can edit anyone's comment.
 			reply = fmt.Sprintf("@%s: `/submit` was not run because the comment was edited. Post it as a new comment.", ic.User.Login)
 		} else {
-			reply = c.submit(ctx, n, ic)
+			reply = c.submit(ctx, n, ic, heads)
 		}
 		if err := updateStateFn(ctx, c.Store, n, fmt.Sprintf("Handled command %d", ic.ID), func(st *state.Change) {
 			st.State.HandledCommands = append(st.State.HandledCommands, ic.ID)
@@ -212,7 +225,7 @@ func latest(a, b time.Time) time.Time {
 	return a
 }
 
-func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) string {
+func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, heads []state.Head) string {
 	user, ok := c.Identity.GerritUserFor(ctx, ic.User)
 	if !ok {
 		return fmt.Sprintf("@%s: `/submit` needs a linked Gerrit account, and yours is not linked. "+
@@ -232,23 +245,19 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) st
 	if age := c.now().Sub(ic.CreatedAt); age > maxCommandAge {
 		return fmt.Sprintf("@%s: `/submit` was not run: it is more than %v old. Post it again.", ic.User.Login, maxCommandAge)
 	}
-	// And one the commenter could have seen: on GitHub, for a minute
-	// (minSeen) when they wrote it. A patch set uploaded in Gerrit just
-	// before the comment may not be yet, and one pushed moments before it
-	// was not read (fourth audit).
+	// And one the commenter could have seen: the PR's head from a minute
+	// (minSeen) before they wrote it until now (state.Head). A patch set
+	// uploaded in Gerrit just before the comment may not be on GitHub
+	// yet, one pushed moments before it was not read (fourth audit), and
+	// the branch may have gone back to an older patch set's commit, or on
+	// to one never imported (seventh audit).
 	st, err := c.Store.Load(ctx, n)
 	if err != nil {
 		c.Logger.Warn("reading state for /submit", "change", n, "err", err)
 		return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not read its state (see its log). Post it again.", ic.User.Login)
 	}
-	seen := false
-	for _, r := range st.Revisions {
-		at := r.At
-		if at.IsZero() {
-			at = uploaded // recorded before At was kept
-		}
-		seen = seen || (r.GerritSHA == rev && r.GitHubSHA != "" && !at.After(ic.CreatedAt.Add(-minSeen)))
-	}
+	sha := headThroughout(heads, ic.CreatedAt.Add(-minSeen), c.now())
+	seen := sha != "" && (sha == rev || slices.ContainsFunc(st.Revisions, func(r state.Revision) bool { return r.GitHubSHA == sha && r.GerritSHA == rev }))
 	if !seen {
 		return fmt.Sprintf("@%s: `/submit` was not run: change %d's current patch set was not on GitHub when you wrote it (not yet, only just, or not at all: see the change). Submit it in Gerrit, or post again once it is here.", ic.User.Login, n)
 	}

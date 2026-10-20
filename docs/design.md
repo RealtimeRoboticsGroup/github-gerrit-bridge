@@ -1054,17 +1054,27 @@ defenses, by threat:
   the commit of Gerrit's current patch set. A review of a commit Gerrit
   does not have (a push not imported yet, or one that cannot be imported)
   is mirrored as text, saying it was not counted; so is one made less
-  than a minute after its commit reached GitHub, which GitHub's API and
-  `gh pr review` name by default whatever the reviewer read (sixth
-  audit): its text goes where a comment's would (below), so a `retest`
-  in it does not start CI on that commit either.
+  than a minute after its commit became the PR's head, which GitHub's
+  API and `gh pr review` name by default whatever the reviewer read
+  (sixth audit): its text goes where a comment's would (below), so a
+  `retest` in it does not start CI on that commit either. "Became the
+  head" is from the PR's heads (`heads.json`): every commit the bridge
+  has seen the branch at, or put it at, from when, a branch that went
+  back to an older patch set's commit included. A revision is recorded
+  once, when it first reached GitHub, so it cannot say the head came
+  back to it just now (seventh audit).
 - **Comments on no commit.** An issue comment, or a review (comment) of a
-  commit Gerrit never had, goes on the patch set GitHub had when it was
-  written (the newest the bridge had recorded on both sides by then),
-  not on whatever is current when the bridge gets to it: otherwise a
-  trusted reviewer's `retest`, followed at once by someone's new patch
-  set, started CI on code nobody had seen (third audit, confirmed live).
-  One written before GitHub had any patch set is posted by the bridge.
+  commit Gerrit never had, goes on the patch set whose commit was the
+  PR's head from a minute before it was written until the bridge reads
+  the PR, after listing its comments; not on whatever is current when
+  the bridge gets to it: otherwise a trusted reviewer's `retest`,
+  followed at once by someone's new patch set, started CI on code nobody
+  had seen (third audit, confirmed live). A head is only seen once it is
+  there, so one seen after the comment may have been there when it was
+  written: then, as when the branch went back to an older patch set's
+  commit or on to one never imported (seventh audit), and when it had
+  none for a minute, the comment is posted by the bridge, on the current
+  patch set. `/submit` is refused alike.
 - **Edited comments.** Anyone with write access can edit anyone's GitHub
   comment. GraphQL's `lastEditedAt` and `editor` say whether and by whom
   (`updated_at` does not: GitHub moves it without an edit). A comment last
@@ -1405,10 +1415,10 @@ Known gaps:
 - **Sign-offs.** `Signed-off-by` lines in a PR description are kept as
   written; AOS's requirement only checks that the words appear.
 - **A `retest` on GitHub names no patch set.** An issue comment goes on
-  the newest patch set that had been on GitHub a minute when it was
-  written: a maintainer who had the PR open for longer, and commented
-  just after the author pushed again, starts CI on that push (sixth
-  audit). GitHub shows new commits on the open page as they come; a
+  the patch set that had been the PR's head for a minute when it was
+  written, and still is: a maintainer who had the PR open since before
+  the author last pushed, and commented over a minute after that push,
+  starts CI on it (sixth audit). GitHub shows new commits on the open page as they come; a
   `retest` in a review, or in Gerrit, names its patch set.
 - **Dismissals are read from every page of a PR's issue events**, which
   its author can add to (renames, draft toggles); GraphQL's

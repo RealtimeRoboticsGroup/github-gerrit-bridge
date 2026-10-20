@@ -1075,6 +1075,45 @@ func TestPushesEditsAndClosesOnlyAsThePinnedGitHubAccount(t *testing.T) {
 	}
 }
 
+// The importer records every head it sees a linked PR at, a known one
+// too: a branch put back on an older patch set's commit imports and
+// records nothing else, yet that is what GitHub then shows, and what a
+// comment from then on is about (seventh audit).
+func TestImporterRecordsAHeadThatWentBack(t *testing.T) {
+	s, im, up, m1, g, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	st, _ := im.Store.Load(ctx, 1)
+	st.State.Origin, st.State.HeadBranch = "github", "feature"
+	if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+		t.Fatal(err)
+	}
+	s.changes[1].Owner = s.accounts["austin"]
+	s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
+	h2 := s.commit(s.rebase(g[0], m1), "one.txt", "new code\n", "More")
+	s.push("github.git", h2, "refs/heads/feature")
+	s.pulls[10].Head.SHA = h2
+	s.webhookPush(im.Pushers, 10, "austin")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 {
+		t.Fatalf("uploads = %v", up.uploads)
+	}
+	s.push("github.git", g[0], "refs/heads/feature")
+	s.pulls[10].Head.SHA = g[0]
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = im.Store.Load(ctx, 1)
+	snap := &commentSnapshot{heads: st.Heads, at: time.Now().Add(10 * time.Minute), psToSHA: map[int]string{}, shaToPS: map[string]int{}}
+	for sha, r := range s.changes[1].Revisions {
+		snap.psToSHA[r.Number], snap.shaToPS[sha] = sha, r.Number
+	}
+	if len(up.uploads) != 1 || snap.seen(time.Now().Add(10*time.Minute)) != 1 {
+		t.Errorf("uploads %v; ten minutes on, a comment is on patch set %d, want 1, which GitHub shows (heads %+v)", up.uploads, snap.seen(time.Now().Add(10*time.Minute)), st.Heads)
+	}
+}
+
 // A PR's Change-Id is public: someone uploading a change with it between
 // the bridge's look and its upload gets the upload as their patch set,
 // which is not linked to the PR (sixth audit). The next import finds the

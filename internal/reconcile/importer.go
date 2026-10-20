@@ -193,6 +193,15 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 	if err != nil {
 		return err
 	}
+	// Every linked PR's head, as GitHub has it now: what comments and
+	// reviews from now on are about (state.Head).
+	for i := range prs {
+		if n := im.Store.ChangeForPR(prs[i].Number); n != 0 && !im.DryRun {
+			if err := noteHead(ctx, im.Store, n, prs[i].Head.SHA, time.Now()); err != nil {
+				return err
+			}
+		}
+	}
 	repo := im.GitHub.Owner + "/" + im.GitHub.Repo
 	// Gerrit-born PR heads on this branch, which GitHub PRs may stack on,
 	// and which people may push to like any PR branch.
@@ -736,6 +745,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	err = updateStateFn(ctx, im.Store, ch.Number, fmt.Sprintf("Import PR #%d head %s as patch set %d", pr.Number, short(h), ps), func(st *state.Change) {
 		st.State.HeadBranch = pr.HeadKey(im.GitHub.Owner + "/" + im.GitHub.Repo)
 		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: s, GitHubSHA: h, Tree: tree, ParentTree: parentTree, At: time.Now()})
+		st.Heads = withHead(st.Heads, h, time.Now())
 	})
 	if err != nil {
 		return nil, err
