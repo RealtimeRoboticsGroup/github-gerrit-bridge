@@ -159,9 +159,9 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 
 // export mirrors the target branch's changes to GitHub.
 func (c *Code) export(ctx context.Context, branch string) error {
-	handled := map[int]bool{} // PRs whose GitHub side was mirrored this time
-	skip := newSkips()        // what GitHub refused
-	refused := map[int]bool{} // changes whose push the guard refuses
+	handled := map[int]bool{}   // PRs whose GitHub side was mirrored this time
+	skip := newSkips()          // what GitHub refused
+	refused := map[int]string{} // changes whose push is refused: by the guard (""), or by GitHub
 	for pass := 0; pass < maxPasses; pass++ {
 		snap, err := c.observe(ctx, branch, refused)
 		if err != nil {
@@ -211,12 +211,19 @@ func (c *Code) export(ctx context.Context, branch string) error {
 			// Withheld, and planned again without them.
 			for _, n := range sortedKeys(more) {
 				c.Logger.Warn("its push would bring "+withheldWhat+" changes to GitHub; withheld", "change", n)
-				refused[n] = true
+				refused[n] = ""
 			}
 			continue
 		}
 		if err := c.apply(ctx, snap, plan, skip); err != nil {
-			return err
+			var gr *githubRefused
+			if !errors.As(err, &gr) {
+				return err
+			}
+			// Withheld, and planned again without them.
+			for _, n := range gr.changes {
+				refused[n] = byGitHub
+			}
 		}
 	}
 	return fmt.Errorf("branch %s did not converge in %d passes", branch, maxPasses)
@@ -304,14 +311,15 @@ func (c *Code) changesConfigOf(ctx context.Context, branch, commit string, histo
 // Each gets a notice in Gerrit, once per patch set. Nothing here fails
 // the branch: a change that cannot be checked is withheld, and a notice
 // Gerrit will not take is not retried.
-func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused map[int]bool) error {
+func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused map[int]string) error {
 	s.Withheld = map[int]bool{}
 	for _, n := range sortedKeys(s.Changes) {
 		ch := s.Changes[n]
 		if ch.Status != "NEW" || ch.Private {
 			continue
 		}
-		w, err := refused[n], error(nil)
+		why, w := refused[n]
+		var err error
 		if !w {
 			w, err = c.changesConfig(ctx, branch, ch.Revision, true)
 		}
@@ -330,6 +338,10 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 		msg := fmt.Sprintf("Patch set %d is not mirrored to GitHub: it changes %s (here, below it in Gerrit or in the GitHub commits it "+
 			"builds on, or by being based on an older version of the branch), and GitHub would use that, with the repository's secrets, from the branch the bridge pushes. "+
 			"Review it here, or rebase it.", ch.PatchSet, withheldWhat)
+		if why == byGitHub {
+			msg = fmt.Sprintf("Patch set %d is not mirrored to GitHub: GitHub refused its push (its push protection, on something in it "+
+				"that looks like a secret, say). Review it here.", ch.PatchSet)
+		}
 		if !c.notice(ctx, n, ch, msg) {
 			continue
 		}
@@ -545,7 +557,7 @@ func authorsCode(ctx context.Context, trusted func(context.Context, int) (bool, 
 
 // observe gathers a Snapshot for branch from Gerrit, the mirror, GitHub
 // and refs/bridge.
-func (c *Code) observe(ctx context.Context, branch string, refused map[int]bool) (*Snapshot, error) {
+func (c *Code) observe(ctx context.Context, branch string, refused map[int]string) (*Snapshot, error) {
 	s := &Snapshot{
 		Branch: branch, DefaultBranch: c.DefaultBranch,
 		Changes: map[int]*GerritChange{}, OnBranch: map[string]bool{},
@@ -1276,6 +1288,17 @@ func (e *forkRefused) Error() string {
 	return fmt.Sprintf("forks refused the push for changes %v", e.changes)
 }
 
+// githubRefused is a push GitHub refused some changes of, for what they
+// are: the rest went.
+type githubRefused struct{ changes []int }
+
+func (e *githubRefused) Error() string {
+	return fmt.Sprintf("GitHub refused the push of changes %v", e.changes)
+}
+
+// byGitHub marks a change GitHub refused in the export's refused set.
+const byGitHub = "github"
+
 // refusedByGitHub reports whether GitHub refused a request for what it
 // asked (a 4xx), not for who asked or how often (401, 403, 429).
 func refusedByGitHub(err error) bool {
@@ -1306,13 +1329,23 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		}
 		urls := []string{c.GitHubURL}
 		specs := map[string][]string{}
+		// Each change's refs, to push them alone if the push of all is
+		// refused.
+		changeOf := map[string]int{}
+		for n, ch := range s.Changes {
+			changeOf[s.head(n, ch.ChangeID)] = n
+			changeOf[FrozenBranch(s.Branch, s.DefaultBranch, ch.ChangeID)] = n
+		}
+		bySpec := map[int][]string{} // GitHubURL's specs, by change (0: none's)
 		guard := func(name, commit string) error { return c.pushGuard(ctx, s.Branch, name, commit) }
 		for _, name := range sortedStringKeys(a.Refs) {
 			if err := guard(name, a.Refs[name]); err != nil {
 				return err
 			}
 			ref := "refs/heads/" + name
-			specs[c.GitHubURL] = append(specs[c.GitHubURL], "--force-with-lease="+ref+":"+a.Leases[name], a.Refs[name]+":"+ref)
+			spec := []string{"--force-with-lease=" + ref + ":" + a.Leases[name], a.Refs[name] + ":" + ref}
+			specs[c.GitHubURL] = append(specs[c.GitHubURL], spec...)
+			bySpec[changeOf[name]] = append(bySpec[changeOf[name]], spec...)
 		}
 		appended := map[string]string{}
 		urlOf := map[string]string{} // appended -> where to
@@ -1336,8 +1369,12 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 				}
 			}
 			ref := "refs/heads/" + branch
-			specs[url] = append(specs[url], "--force-with-lease="+ref+":"+a.Leases[name], commit+":"+ref)
+			spec := []string{"--force-with-lease=" + ref + ":" + a.Leases[name], commit + ":" + ref}
+			specs[url] = append(specs[url], spec...)
 			urlOf[name] = url
+			if url == c.GitHubURL {
+				bySpec[a.Appends[name].Change] = append(bySpec[a.Appends[name].Change], spec...)
+			}
 		}
 		env, err := c.githubEnv(ctx)
 		if err != nil {
@@ -1345,6 +1382,7 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		}
 		failed := map[string]bool{}      // forks that refused
 		pushed := map[string]time.Time{} // when each push was done
+		var left, rejected []int         // left out: by forks; by GitHub, from the repository
 		for _, url := range urls {
 			if len(specs[url]) == 0 {
 				continue
@@ -1354,7 +1392,27 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			pushed[url] = time.Now()
 			if err != nil {
 				if url == c.GitHubURL {
-					return fmt.Errorf("%w\n%s", err, out) // first: nothing pushed
+					// One change GitHub refuses (its push protection on a
+					// token-shaped string in it, say) must not stop the
+					// rest: each change's alone, and those refused wait
+					// (eighth audit).
+					for _, n := range sortedKeys(bySpec) {
+						one := append([]string{"push", "--porcelain", "--atomic", url}, bySpec[n]...)
+						out1, err1 := c.Mirror.GitEnv(ctx, env, nil, one...)
+						switch {
+						case err1 == nil:
+						case n == 0 || !strings.Contains(string(out1), "[remote rejected]"):
+							// No one change's, or not refused for what it is
+							// (a branch moved under the lease, the network):
+							// tried again.
+							return fmt.Errorf("%w\n%s", err, out)
+						default:
+							c.Logger.Warn("GitHub refused a change's push; withholding it", "change", n, "err", err1, "out", string(out1))
+							rejected = append(rejected, n)
+						}
+					}
+					pushed[url] = time.Now()
+					continue
 				}
 				// A fork's owner can move its branch under the lease
 				// whenever they like (fourth audit): only the changes
@@ -1363,11 +1421,12 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 				failed[url] = true
 			}
 		}
-		var left []int
 		for _, name := range sortedStringKeys(appended) {
 			commit, ap := appended[name], a.Appends[name]
-			if failed[urlOf[name]] {
-				left = append(left, ap.Change)
+			if failed[urlOf[name]] || (urlOf[name] == c.GitHubURL && slices.Contains(rejected, ap.Change)) {
+				if failed[urlOf[name]] {
+					left = append(left, ap.Change)
+				}
 				continue
 			}
 			tree, parentTree := c.trees(ctx, ap.Revision)
@@ -1388,6 +1447,9 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			if err := c.exported(ctx, ap.Change); err != nil {
 				return err
 			}
+		}
+		if len(rejected) > 0 {
+			return &githubRefused{changes: rejected}
 		}
 		if len(left) > 0 {
 			return &forkRefused{changes: left}

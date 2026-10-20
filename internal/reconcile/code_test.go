@@ -3229,6 +3229,48 @@ func TestPushGuardLooksAtWhatGitHubUses(t *testing.T) {
 	}
 }
 
+// A change GitHub refuses to take (its push protection on a token-shaped
+// string in it, say) waits alone: in the one atomic push of the branch's
+// refs, it stopped every change on the branch (eighth audit).
+func TestOneChangeGitHubRefusesWaitsAlone(t *testing.T) {
+	for _, hung := range []bool{false, true} {
+		s := newSites(t)
+		ctx := context.Background()
+		c, store := s.code(ctx)
+		refuse := "echo 'GH013: Push cannot contain secrets' >&2; exit 1"
+		if hung {
+			refuse = "kill -9 $PPID" // the connection dropped: not a refusal, tried again
+		}
+		hook := filepath.Join(s.dir, "github.git", "hooks", "pre-receive")
+		os.WriteFile(hook, []byte("#!/bin/sh\nwhile read old new ref; do\n"+
+			"  [ \"$new\" = 0000000000000000000000000000000000000000 ] && continue\n"+
+			"  if git log -p \"$new\" --not --all | grep -q 'ghp_'; then "+refuse+"; fi\n"+
+			"done\n"), 0o755)
+		m0 := s.commit("", "a.txt", "a\n", "base")
+		s.push("gerrit.git", m0, "refs/heads/main")
+		s.push("github.git", m0, "refs/heads/main")
+		msg1 := "Good change\n\nChange-Id: " + cid(1) + "\n"
+		s.change(1, cid(1), s.commit(m0, "good.txt", "g\n", msg1), msg1, "NEW")
+		msg2 := "Stranger's change\n\nChange-Id: " + cid(2) + "\n"
+		s.change(2, cid(2), s.commit(m0, "fixture.txt", "token = ghp_abcdefghijklmnopqrstuvwxyz0123456789\n", msg2), msg2, "NEW")
+		err := c.Reconcile(ctx, Key{Branch: "main"})
+		st1, _ := store.Load(ctx, 1)
+		st2, _ := store.Load(ctx, 2)
+		if hung {
+			if err == nil || (st2 != nil && st2.State.WithheldNotice != 0) {
+				t.Errorf("connection dropped: err %v, change 2 %+v; want the branch tried again, nothing withheld", err, st2)
+			}
+			continue
+		}
+		if err != nil || st1.State.PR == 0 {
+			t.Errorf("change 1 never reached GitHub (err %v): change 2's refused push failed the branch's atomic push", err)
+		}
+		if st2 == nil || st2.State.PR != 0 || st2.State.WithheldNotice != 1 {
+			t.Errorf("change 2's state %+v, want no PR, withheld with a notice", st2)
+		}
+	}
+}
+
 // A mirrored change made private (or deleted) is one the bridge can no
 // longer see: its PR closes, and the rest of the branch goes on (eighth
 // audit: any owner's toggle stopped it).
