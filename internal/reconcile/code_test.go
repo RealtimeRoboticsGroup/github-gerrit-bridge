@@ -2052,6 +2052,74 @@ func TestPureRebaseOntoSomeoneElsesParentIsTheBridges(t *testing.T) {
 	}
 }
 
+// exported adds sha as change n's next patch set, uploaded by user, as on
+// GitHub too.
+func (s *sites) exported(im *Importer, n int, sha, kind, user string) {
+	s.t.Helper()
+	ci := s.changes[n]
+	ps := len(ci.Revisions) + 1
+	ref := fmt.Sprintf("refs/changes/%02d/%d/%d", n%100, n, ps)
+	s.push("gerrit.git", sha, ref)
+	ci.Revisions[sha] = gerrit.RevisionInfo{Number: ps, Ref: ref, Kind: kind, Uploader: s.accounts[user],
+		Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, sha))}
+	ci.CurrentRevision = sha
+	ctx := context.Background()
+	// The mirror has what it exported.
+	if _, err := im.Mirror.Git(ctx, nil, "fetch", "-q", "origin", ref); err != nil {
+		s.t.Fatal(err)
+	}
+	st, _ := im.Store.Load(ctx, n)
+	st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: sha, GitHubSHA: sha})
+	if err := im.Store.Save(ctx, n, st, "exported"); err != nil {
+		s.t.Fatal(err)
+	}
+}
+
+// A pure rebase borrows the uploader's trust only onto a newer base, or
+// the change below's current patch set: not back onto an older one, a
+// combination nobody vouched for (sixth audit).
+func TestPureRebaseOntoAnOlderBaseIsTheBridges(t *testing.T) {
+	// Back onto the branch commit before the one it was on.
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	m0 := s.git("work", "rev-parse", g[0]+"^")
+	r1 := s.rebase(g[0], m1)
+	s.exported(im, 1, r1, "TRIVIAL_REBASE", "austin")
+	// (Reworded, or it would be patch set 1 again.)
+	s.rebase(r1, m0)
+	s.git("work", "commit", "-q", "--amend", "-m", "One, back")
+	h := s.git("work", "rev-parse", "HEAD")
+	s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = h
+	s.webhookPush(im.Pushers, 10, "")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], " ") {
+		t.Errorf("onto an older base: uploads = %v, want the bridge's", up.uploads)
+	}
+	// Back onto the change below's older patch set.
+	s, im, up, m1, g, ids = gerritBornWorld(t, true)
+	r1 = s.rebase(g[0], m1)
+	s.exported(im, 1, r1, "TRIVIAL_REBASE", "austin")
+	r2 := s.rebase(g[1], r1)
+	s.exported(im, 2, r2, "TRIVIAL_REBASE", "austin")
+	s.push("github.git", r1, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = r1
+	s.rebase(r2, g[0])
+	s.git("work", "commit", "-q", "--amend", "-m", "Two, back")
+	h = s.git("work", "rev-parse", "HEAD")
+	s.push("github.git", h, "refs/heads/gerrit/"+ids[1])
+	s.pulls[20].Head.SHA = h
+	s.webhookPush(im.Pushers, 20, "")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], " ") {
+		t.Errorf("onto the change below's older patch set: uploads = %v, want the bridge's", up.uploads)
+	}
+}
+
 // A parent someone else uploaded on the uploader's behalf (Gerrit's
 // rebase) is not the uploader's to vouch for.
 func TestPureRebaseOntoParentUploadedOnBehalfIsTheBridges(t *testing.T) {

@@ -936,7 +936,7 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		// The new parent's code is built too: it must be the branch's,
 		// or the uploader's own (second audit: anything else would let
 		// someone rebase a trusted change onto their own code).
-		trusted, err := im.parentTrusted(ctx, parent, branch, prev)
+		trusted, err := im.parentTrusted(ctx, parent, base, branch, prev)
 		if err != nil {
 			return "", "", err
 		}
@@ -986,20 +986,29 @@ func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h
 	return author, pr.User.Login, nil
 }
 
-// parentTrusted reports whether parent is on Gerrit's branch, or is a
-// patch set uploaded by user.
-func (im *Importer) parentTrusted(ctx context.Context, parent, branch, user string) (bool, error) {
-	if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", parent, "refs/remotes/gerrit/heads/"+branch); err == nil {
-		return true, nil
+// parentTrusted reports whether parent is on Gerrit's branch, no older
+// than the branch commit base was built on, or is the current patch set
+// of a change whose code is user's own (codeFrom): what a rebase of base,
+// on user's behalf, may be onto. Not an older base (old code, old CI
+// config: a combination nobody vouched for), nor an older patch set of
+// the change below, nor one with someone else's code (sixth audit).
+func (im *Importer) parentTrusted(ctx context.Context, parent, base, branch, user string) (bool, error) {
+	target := "refs/remotes/gerrit/heads/" + branch
+	if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", parent, target); err == nil {
+		was, err := im.Mirror.Git(ctx, nil, "merge-base", base, target)
+		if err != nil || strings.TrimSpace(string(was)) == "" {
+			return false, nil
+		}
+		_, err = im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", strings.TrimSpace(string(was)), parent)
+		return err == nil, nil
 	}
-	cs, err := im.Gerrit.QueryChanges(ctx, fmt.Sprintf("project:%s commit:%s", gerrit.QueryString(im.Project), parent), "ALL_REVISIONS", "DETAILED_ACCOUNTS")
+	cs, err := im.Gerrit.QueryChanges(ctx, fmt.Sprintf("project:%s commit:%s", gerrit.QueryString(im.Project), parent), "ALL_REVISIONS", "ALL_COMMITS", "DETAILED_ACCOUNTS")
 	if err != nil {
 		return false, err
 	}
 	for _, c := range cs {
-		// Uploaded on user's behalf by someone else is not theirs.
-		if rev, ok := c.Revisions[parent]; ok && strings.EqualFold(rev.Uploader.Username, user) && rev.Uploader.AccountID != im.Bridge.AccountID &&
-			(rev.RealUploader == nil || rev.RealUploader.AccountID == rev.Uploader.AccountID) {
+		if rev, ok := c.Revisions[parent]; ok && c.CurrentRevision == parent &&
+			codeFrom(revisionsByNumber(&c), rev.Number, func(r gerrit.RevisionInfo) bool { return ownUploadBy(r, user, im.Bridge.AccountID) }) {
 			return true, nil
 		}
 	}

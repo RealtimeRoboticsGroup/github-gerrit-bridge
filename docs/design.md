@@ -1080,18 +1080,24 @@ defenses, by threat:
   fork's push sends no webhook and the activity log can lag. A later push builds on the patch set
   GitHub last had (not a newer one only Gerrit has, such as someone
   else's that never reached the PR), and is uploaded as its pusher
-  only if they uploaded that patch set too, and only as GitHub
+  only if that patch set's code is their own, as gerrit-buildkite walks
+  it (every patch set that chose its parent or made its diff uploaded by
+  them, none on their behalf, and its REWORK their own commit, author =
+  committer: not their message edit, rebase, web edit or cherry-pick of
+  someone else's; sixth audit), and only as GitHub
   says: the activity log of the PR's branch (`GET /repos/{repo}/activity`,
   the fork's for a fork PR), which outlives the bridge's restarts and
   covers webhooks it missed; or, for a push the log does not list yet, the
-  webhook (`synchronize` or `push` senders; the first push of a commit
-  wins; reopening is not pushing). A pure rebase of the current patch set
+  webhook (`synchronize` or `push` senders; the latest push of a commit
+  wins, as in the activity log; reopening is not pushing). A pure rebase of the current patch set
   (GitHub's Rebase or Update branch: `git merge-tree` of it onto the new
   parent gives the pushed tree, without conflicts) is uploaded on behalf
   of its uploader, as Gerrit's own rebase is, but only onto a parent on
-  the target branch or one that uploader uploaded themselves (not on
-  their behalf): the parent's code is built too (second and third
-  audits). A head that is one of the change's own patch sets (the
+  the target branch no older than the branch commit it was on, or onto
+  the current patch set of a change whose code is that uploader's own
+  (as above): the parent's code is built too (second and third audits),
+  and an older base or patch set below is a combination nobody vouched
+  for (sixth audit). A head that is one of the change's own patch sets (the
   bridge's export of an older one, say) is nobody's push: it is recorded
   and never uploaded again (third audit, seen live: a quick second patch
   set was reverted by the bridge's re-upload of the first). Anything else, and anything no webhook
