@@ -1114,6 +1114,40 @@ func TestImporterRecordsAHeadThatWentBack(t *testing.T) {
 	}
 }
 
+// A later upload as the bridge is the author's only while they pushed
+// everything on the branch: after a maintainer's Update branch on it,
+// neither the PR's author nor the maintainer is the author of the whole,
+// and their noreply address may be their Gerrit email, which would make
+// their amend of it their own commit to CI (seventh audit).
+func TestBridgeUploadIsCreditedOnlyToWhoPushedAllOfIt(t *testing.T) {
+	for _, maintainer := range []bool{false, true} {
+		s, im, up, m1, _, _ := gerritBornWorld(t, false)
+		ctx := context.Background()
+		h := s.commit(m1, "new.txt", "n\n", "New")
+		s.push("github.git", h, "refs/heads/topic")
+		s.pr(60, "topic", h, "main", "newbie").User.ID = 4242
+		s.pushed("o/r", "refs/heads/topic", h, "newbie")
+		if err := im.Import(ctx, "main"); err != nil {
+			t.Fatal(err)
+		}
+		next := s.commit(h, "new.txt", "n2\n", "More")
+		pusher := map[bool]string{false: "newbie", true: "austin"}[maintainer]
+		s.push("github.git", next, "refs/heads/topic")
+		s.pulls[60].Head.SHA = next
+		s.pushed("o/r", "refs/heads/topic", next, pusher)
+		if err := im.Import(ctx, "main"); err != nil {
+			t.Fatal(err)
+		}
+		if len(up.uploads) != 2 || !strings.HasPrefix(up.uploads[1], " ") {
+			t.Fatalf("uploads = %v, want two as the bridge", up.uploads)
+		}
+		want := map[bool]string{false: "4242+newbie@users.noreply.github.com", true: "bridge@example.com"}[maintainer]
+		if got := s.git("m.git", "log", "-1", "--format=%ae", strings.Fields(up.uploads[1])[0]); got != want {
+			t.Errorf("pushed by %s: author %s, want %s", pusher, got, want)
+		}
+	}
+}
+
 // A PR's Change-Id is public: someone uploading a change with it between
 // the bridge's look and its upload gets the upload as their patch set,
 // which is not linked to the PR (sixth audit). The next import finds the
@@ -2052,16 +2086,20 @@ func TestPusherFromGitHubsActivityLog(t *testing.T) {
 // A PR's first upload is its author's only if they pushed its head: a
 // maintainer opening a PR from a stranger's branch, or a branch someone
 // else moved before the bridge saw the PR, is the bridge's to upload.
+// Uploaded as austin, it is austin's; the bridge's is whoever pushed all
+// of it, as GitHub knows them, never the commit's author, nor the PR's
+// if they did not push it (seventh audit), and the bridge's own if
+// nobody says.
 func TestFirstUploadNeedsTheAuthorsPush(t *testing.T) {
 	for _, tc := range []struct {
-		name, pusher, want string
-		opened             bool // a webhook says the author opened it
+		name, pusher, want, author string
+		opened                     bool // a webhook says the author opened it
 	}{
-		{"the author's push", "austin", "austin", false},
-		{"someone else's branch", "brt", "", false},
-		{"nobody says", "", "", false},
+		{"the author's push", "austin", "austin", "austin@example.com", false},
+		{"someone else's branch", "brt", "", "brt@users.noreply.github.com", false},
+		{"nobody says", "", "", "bridge@example.com", false},
 		// Opening a PR is not pushing its head (fourth audit).
-		{"opened by the author", "", "", true},
+		{"opened by the author", "", "", "bridge@example.com", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, im, up, m1, _, _ := gerritBornWorld(t, false)
@@ -2083,11 +2121,8 @@ func TestFirstUploadNeedsTheAuthorsPush(t *testing.T) {
 			if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], tc.want+" ") {
 				t.Fatalf("uploads = %v, want one as %q", up.uploads, tc.want)
 			}
-			// Uploaded as austin, it is austin's; the bridge's is the PR
-			// author's GitHub identity, never the commit's author.
-			want := map[string]string{"austin": "austin@example.com", "": "austin@users.noreply.github.com"}[tc.want]
-			if got := s.git("m.git", "log", "-1", "--format=%ae", strings.Fields(strings.TrimPrefix(up.uploads[0], tc.want+" "))[0]); got != want {
-				t.Errorf("author %s, want %s", got, want)
+			if got := s.git("m.git", "log", "-1", "--format=%ae", strings.Fields(strings.TrimPrefix(up.uploads[0], tc.want+" "))[0]); got != tc.author {
+				t.Errorf("author %s, want %s", got, tc.author)
 			}
 		})
 	}

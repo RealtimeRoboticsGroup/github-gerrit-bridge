@@ -483,8 +483,15 @@ func (s *sites) activityLog(w http.ResponseWriter, r *http.Request) {
 	log := s.pushLog[repo+" "+ref]
 	var out []map[string]any
 	for i := len(log) - 1; i >= 0; i-- { // newest first
+		// GitHub names the actor by id too: the PR author's, here.
+		var id int64
+		for _, pr := range s.pulls {
+			if pr.User.Login == log[i].actor {
+				id = pr.User.ID
+			}
+		}
 		out = append(out, map[string]any{"ref": ref, "before": log[i].before, "after": log[i].sha, "activity_type": log[i].kind,
-			"actor": map[string]string{"login": log[i].actor}})
+			"actor": map[string]any{"login": log[i].actor, "id": id}})
 	}
 	s.mu.Unlock()
 	s.json(w, out, false)

@@ -311,13 +311,19 @@ exactly one Gerrit change**:
      them"; Forge Author is a few accounts'), and the email GitHub has
      (a noreply one, say) need not be theirs in Gerrit. The commits'
      sign-offs, others' included, stay in the message. When the bridge
-     uploads, the author is the PR's author, as GitHub knows them
+     uploads, the author is the GitHub account that pushed all of the
+     branch (every push since it was made, or was at code the target
+     has, as §7.1's pusher rule follows them), as GitHub knows them
      (`<id>+<login>@users.noreply.github.com`, which GitHub credits to
      that account whatever its login becomes; the bridge has Forge
-     Author). Not `H_k`'s: anyone can write any author into a commit,
-     a Gerrit user's included, and the bridge cannot tell whose an email
-     is (Gerrit shows it only accounts' preferred emails: fifth and sixth
-     audits); nor is whoever clicked "Update branch" the PR's author.
+     Author), and the bridge itself if no one account did. Not `H_k`'s:
+     anyone can write any author into a commit, a Gerrit user's
+     included, and the bridge cannot tell whose an email is (Gerrit shows
+     it only accounts' preferred emails: fifth and sixth audits); nor the
+     PR's author, or whoever clicked "Update branch", if someone else
+     pushed: the github plugin may make a noreply address a Gerrit
+     account's email, and their amend of the upload would then be their
+     own commit to CI (seventh audit).
      Committer: the Gerrit account the push runs as. Gerrit rejects a
      push whose committer email is not one of the uploader's emails
      unless the uploader has Forge Committer, and with `suexec` the
@@ -1526,9 +1532,9 @@ Abandon and Toggle Work In Progress for Administrators.
   Read on its branches, Push and Create on `refs/for/refs/heads/*`, Add
   Patch Set, Forge Author on `refs/heads/*`, and `refs/bridge/*` with
   exclusive Read plus Push and Create. Forge Author lets its imports be
-  authored by the PR's author's GitHub noreply address, never by an
-  author a commit names (§5.2): that could put a Gerrit user's name on
-  code the bridge uploaded for someone else. Whatever the bridge's
+  authored by the GitHub noreply address of whoever pushed all of them,
+  never by an author a commit names (§5.2): that could put a Gerrit
+  user's name on code the bridge uploaded for someone else. Whatever the bridge's
   account may do, a GitHub user without a Gerrit account effectively may
   too.
 - **Add Patch Set and Forge Author** are Registered Users' by default:

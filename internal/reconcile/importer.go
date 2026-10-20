@@ -667,12 +667,15 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		return nil, err
 	}
 	committer := im.Bridge
+	var author github.User // as the bridge: whoever pushed all of it, if one account did
 	if user != "" {
 		var acct gerrit.AccountInfo
 		if err := im.Gerrit.Do(ctx, http.MethodGet, "accounts/"+url.PathEscape(user), nil, &acct); err != nil {
 			return nil, fmt.Errorf("Gerrit account %s for @%s: %w", user, login, err)
 		}
 		committer = acct
+	} else if author, err = im.pushedBy(ctx, pr, h, im.madeOrHad(ctx, gerritParent, parentTip)); err != nil {
+		return nil, err
 	}
 
 	// Both moved since the last sync? Gerrit wins (design §5.3).
@@ -681,7 +684,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		gerritMoved = true
 	}
 
-	s, err := im.squash(ctx, pr, own, h, gerritParent, changeID, message, committer, user != "")
+	s, err := im.squash(ctx, pr, own, h, gerritParent, changeID, message, committer, author, user != "")
 	if err != nil {
 		return nil, err
 	}
@@ -998,17 +1001,7 @@ func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h
 	if !ok {
 		return "", pr.User.Login, nil
 	}
-	by, err := im.pushedBy(ctx, pr, h, func(before string) bool {
-		if made(before) {
-			return true
-		}
-		for _, had := range []string{parent, parentTip} {
-			if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", before, had); had != "" && err == nil {
-				return true
-			}
-		}
-		return false
-	})
+	by, err := im.pushedBy(ctx, pr, h, im.madeOrHad(ctx, parent, parentTip))
 	if err != nil {
 		return "", "", err
 	}
@@ -1126,6 +1119,23 @@ func (im *Importer) pushedBy(ctx context.Context, pr *github.PullRequest, h stri
 	return github.User{}, nil
 }
 
+// madeOrHad says whether a push from before covers all of a branch's
+// code since it was made, or was at code parent or parentTip (the PR
+// below's head) already has.
+func (im *Importer) madeOrHad(ctx context.Context, parent, parentTip string) func(before string) bool {
+	return func(before string) bool {
+		if made(before) {
+			return true
+		}
+		for _, had := range []string{parent, parentTip} {
+			if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", before, had); had != "" && err == nil {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // made reports whether a push from before made its branch: everything in
 // it was pushed then.
 func made(before string) bool {
@@ -1218,7 +1228,7 @@ func noreplyEmail(u github.User) string {
 //
 // message, if set, is the commit message to use (a Gerrit-born change's);
 // otherwise it is built from the PR.
-func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []string, h, parent, changeID, message string, committer gerrit.AccountInfo, asCommitter bool) (string, error) {
+func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []string, h, parent, changeID, message string, committer gerrit.AccountInfo, author github.User, asCommitter bool) (string, error) {
 	info, err := im.Mirror.Git(ctx, nil, "log", "-1", "--format=%P%x00%an%x00%ae%x00%ad%x00%ce%x00%cd%x00%B", "--date=raw", h)
 	if err != nil {
 		return "", err
@@ -1233,23 +1243,26 @@ func (im *Importer) squash(ctx context.Context, pr *github.PullRequest, own []st
 	// carries the bridge's own message, with exactly one Change-Id
 	// (second audit, 2026-10-19).
 	_, an, ae, ad, cd := f[0], f[1], f[2], f[3], f[5]
-	if asCommitter || pr.User.Login == "" {
+	if asCommitter || author.Login == "" {
 		// Uploaded as a user, it is theirs: nobody may upload a commit
 		// as someone else's (AOS gives Forge Author to few, and an email
 		// GitHub has, a noreply one say, need not be theirs in Gerrit).
-		// Others' sign-offs stay in the message. (A PR naming no author
-		// is the uploader's too.)
+		// Others' sign-offs stay in the message. Uploaded as the bridge
+		// with no one account that pushed all of it, it is the bridge's.
 		an, ae = committer.Name, committer.Email
 	} else {
-		// Uploaded as the bridge, it is the PR author's, as GitHub knows
-		// them. A commit's author is anyone's to write, and Gerrit lets
-		// only Forge Author upload it, which the bridge has: kept, it
-		// could put a Gerrit user's name on code the bridge uploaded for
-		// someone else, and the bridge cannot tell whose an email is
-		// (Gerrit shows it only preferred emails: fifth and sixth
-		// audits). Nor is a maintainer who clicked "Update branch" the
-		// author of the PR they updated.
-		an, ae = pr.User.Login, noreplyEmail(pr.User)
+		// Uploaded as the bridge, it is the GitHub account's that pushed
+		// all of it (pushedBy), as GitHub knows them. A commit's author
+		// is anyone's to write, and Gerrit lets only Forge Author upload
+		// it, which the bridge has: kept, it could put a Gerrit user's
+		// name on code the bridge uploaded for someone else, and the
+		// bridge cannot tell whose an email is (Gerrit shows it only
+		// preferred emails: fifth and sixth audits). Nor is the PR's
+		// author, or a maintainer who clicked "Update branch", the author
+		// of code someone else pushed: their noreply address may be
+		// their Gerrit email, which would make their amend of it their
+		// own commit to CI (seventh audit).
+		an, ae = author.Login, noreplyEmail(author)
 	}
 	// Sign-offs from every commit in the layer (oldest first) and from the
 	// PR description are kept; the squashed commit represents them all.
