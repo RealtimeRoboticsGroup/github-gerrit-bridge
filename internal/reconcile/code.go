@@ -227,8 +227,10 @@ func (c *Code) changeURL(n int) string { return c.Gerrit.ChangeURL(c.Project, n)
 // withheldPaths are where GitHub reads repository configuration from:
 // workflows (and the rest of .github/) on any branch pushed to the
 // repository, and CODEOWNERS (also at the root and in docs/) on a PR's
-// base branch, which for a stacked PR is a branch the bridge pushed.
-var withheldPaths = []string{".github", "CODEOWNERS", "docs/CODEOWNERS"}
+// base branch, which for a stacked PR is a branch the bridge pushed. In
+// any case: GitHub takes .GitHub/CODEOWNERS, CodeOwners and
+// DOCS/CODEOWNERS too (eighth audit, checked live).
+var withheldPaths = []string{":(icase).github", ":(icase)CODEOWNERS", ":(icase)docs/CODEOWNERS"}
 
 // withheldWhat names withheldPaths in notices.
 const withheldWhat = ".github/ or CODEOWNERS"

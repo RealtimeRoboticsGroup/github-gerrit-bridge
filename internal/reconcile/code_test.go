@@ -3229,6 +3229,27 @@ func TestPushGuardLooksAtWhatGitHubUses(t *testing.T) {
 	}
 }
 
+// GitHub reads its configuration paths in any case (eighth audit: a
+// .GitHub/CODEOWNERS on a bridge branch requested reviews on GitHub).
+func TestConfigInAnyCaseIsWithheld(t *testing.T) {
+	for _, p := range []string{".GitHub/CODEOWNERS", "CodeOwners", "DOCS/CODEOWNERS", ".github/CODEOWNERS", ".GITHUB/workflows/x.yml"} {
+		s := newSites(t)
+		ctx := context.Background()
+		c, _ := s.code(ctx)
+		m0 := s.commit("", "a.txt", "a\n", "base")
+		s.push("gerrit.git", m0, "refs/heads/main")
+		s.git("m.git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/gerrit/heads/main")
+		os.MkdirAll(filepath.Join(s.dir, "work", filepath.Dir(p)), 0o755)
+		commit := s.commit(m0, p, "* @org/everyone\n", "owners "+p)
+		s.push("gerrit.git", commit, "refs/changes/01/1/1")
+		s.git("m.git", "fetch", "-q", "origin", "refs/changes/01/1/1")
+		w, err := c.changesConfig(ctx, "main", commit, true)
+		if !w || err != nil {
+			t.Errorf("%s is not withheld, but GitHub reads it as CODEOWNERS", p)
+		}
+	}
+}
+
 // The default branch's workflows are the ones the site vets (§9.1). A
 // stranger's change for another branch (an old release, someone's branch
 // pushed without review) that has workflows main does not must not reach
