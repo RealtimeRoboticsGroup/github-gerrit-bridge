@@ -645,6 +645,13 @@ func TestAccessIsAOSsPlusTheBridges(t *testing.T) {
 		if strings.Join(got, "\n") != strings.Join(want, "\n") {
 			t.Errorf("%s's access differs from AOS's plus the bridge's:\n got: %q\nwant: %q", tc.project, got, want)
 		}
+		// The bridge's Forge Author is on the branches only, as AOS's own
+		// is (fifth audit).
+		for _, l := range got {
+			if strings.Contains(strings.ToLower(l), ".forgeauthor=") && strings.Contains(l, testgerrit.BridgeGroup) && !strings.HasPrefix(l, "access.refs/heads/*.") {
+				t.Errorf("%s: the bridge may forge authors beyond the branches: %s", tc.project, l)
+			}
+		}
 	}
 }
 
@@ -706,5 +713,19 @@ func TestInactiveAccountsAreSaid(t *testing.T) {
 	users := &reconcile.Users{Gerrit: bridge}
 	if user, ok := users.GerritUser(ctx, u.Username); ok {
 		t.Errorf("an inactive account matched, as %q", user)
+	}
+}
+
+// The bridge finds a Gerrit account by its email, so its own uploads never
+// keep an author who is a Gerrit user (Importer.emailTaken).
+func TestBridgeFindsAccountsByEmail(t *testing.T) {
+	ctx := context.Background()
+	bridge := &gerrit.Client{BaseURL: srv.URL, User: env.Bridge.Username, Password: env.Bridge.HTTPPassword}
+	accts, err := bridge.QueryAccounts(ctx, "email:"+gerrit.QueryString(env.Alice.Username+"@example.com"))
+	if err != nil || len(accts) != 1 || accts[0].Username != env.Alice.Username {
+		t.Errorf("found %+v, err %v; want alice", accts, err)
+	}
+	if accts, err := bridge.QueryAccounts(ctx, "email:"+gerrit.QueryString("nobody-audit5@example.com")); err != nil || len(accts) != 0 {
+		t.Errorf("nobody's email found %+v, err %v", accts, err)
 	}
 }

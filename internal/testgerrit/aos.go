@@ -75,8 +75,10 @@ var (
 		{"--add", "access.refs/bridge/*.read", "group " + BridgeGroup},
 		{"--add", "access.refs/bridge/*.push", "group " + BridgeGroup},
 		{"--add", "access.refs/bridge/*.create", "group " + BridgeGroup},
-		// Imports and Gerrit-born exports keep their real authors.
-		{"--add", "access.refs/*.forgeAuthor", "group " + BridgeGroup},
+		// Imports keep their real authors (unless a Gerrit user's:
+		// Importer.squash). On the branches only, as AOS's own grant
+		// is (fifth audit).
+		{"--add", "access.refs/heads/*.forgeAuthor", "group " + BridgeGroup},
 		// Administrate Server is not applied through Run-As: closing a
 		// PR (abandon) or marking it a draft (WIP) as an administrator
 		// needs the explicit grants, on this project only.
