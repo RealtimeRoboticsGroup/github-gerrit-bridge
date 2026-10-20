@@ -15,7 +15,9 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -152,11 +154,20 @@ func (r *Repo) GitEnv(ctx context.Context, env []string, stdin []byte, args ...s
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
+	// A deadline stops git's children too: killed alone, git leaves them
+	// running (index-pack inflating a hostile pack, say), holding its
+	// output open, so the deadline bounded nothing (eighth audit).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = waitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	start := time.Now()
 	err := cmd.Run()
+	if err != nil && ctx.Err() != nil && cmd.Process != nil {
+		r.dropKeep(cmd.Process.Pid)
+	}
 	if r.Logger != nil {
 		// Arguments only: config and environment carry credentials.
 		r.Logger.Debug("git", "args", strings.Join(args, " "), "took", time.Since(start).Round(time.Millisecond), "err", err)
@@ -165,6 +176,20 @@ func (r *Repo) GitEnv(ctx context.Context, env []string, stdin []byte, args ...s
 		return stdout.Bytes(), &Error{Args: args, Err: err, Stderr: strings.TrimSpace(stderr.String())}
 	}
 	return stdout.Bytes(), nil
+}
+
+// waitDelay bounds how long a killed git's output may stay open.
+const waitDelay = 5 * time.Second
+
+// dropKeep removes the .keep file a fetch killed in pid left: it would
+// keep the pack it received from git gc for good.
+func (r *Repo) dropKeep(pid int) {
+	keeps, _ := filepath.Glob(filepath.Join(r.Dir, "objects", "pack", "*.keep"))
+	for _, k := range keeps {
+		if b, err := os.ReadFile(k); err == nil && strings.HasPrefix(string(b), fmt.Sprintf("fetch-pack %d ", pid)) {
+			os.Remove(k)
+		}
+	}
 }
 
 // RevParse resolves rev to an object id, or returns "" if it does not exist.

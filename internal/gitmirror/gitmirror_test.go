@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParsePorcelain(t *testing.T) {
@@ -96,5 +97,36 @@ func TestHTTPCredentialsScopedToURL(t *testing.T) {
 		if strings.Contains(c, "pa ss") || strings.Contains(c, "ghp_tok") {
 			t.Error("secret leaked into -c config")
 		}
+	}
+}
+
+// A deadline stops git's children too, and a fetch killed by it leaves no
+// .keep file to hold its pack for good (eighth audit: index-pack, fed a
+// small pack that inflates to gigabytes, outlived the importer's fetch
+// deadline by as long as it liked, with the branch locked meanwhile). The
+// alias stands in for fetch-pack: it marks a pack as fetch-pack does, and
+// its child, as index-pack does, holds git's output open.
+func TestDeadlineStopsGitsChildren(t *testing.T) {
+	r := &Repo{Dir: filepath.Join(t.TempDir(), "m.git"), Remote: "/none"}
+	if err := r.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	keep := filepath.Join(r.Dir, "objects", "pack", "pack-x.keep")
+	other := filepath.Join(r.Dir, "objects", "pack", "pack-y.keep")
+	if err := os.WriteFile(other, []byte("fetch-pack 1 on elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err := r.GitEnv(ctx, nil, nil, "-c", `alias.slow=!echo "fetch-pack $PPID on here" > "$GIT_DIR/objects/pack/pack-x.keep"; sleep 30`, "slow")
+	if took := time.Since(start); err == nil || took > 2*time.Second {
+		t.Errorf("returned after %v (err %v): the deadline was 300ms", took, err)
+	}
+	if _, err := os.Stat(keep); err == nil {
+		t.Error("the killed fetch's .keep file is still there")
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("another fetch's .keep file: %v", err)
 	}
 }
