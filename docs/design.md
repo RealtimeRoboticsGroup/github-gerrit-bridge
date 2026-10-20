@@ -1143,7 +1143,17 @@ defenses, by threat:
   audit). A push that moves the code onto a new parent too is theirs only
   on a parent a pure rebase of it could be on (below): not their Update
   branch onto someone else's newer patch set of the change below
-  (seventh audit). Who pushed is only as GitHub
+  (seventh audit). A force push that replaces what its branch had counts
+  only for what the head keeps of it; a commit in the head that someone
+  else pushed to the branch is theirs, though a reset hid their push from
+  the walk. Uploaded as anyone, a push may bring in no commits from beside
+  its own first-parent line but the target branch's and the version of
+  the layer below it is put on (an Update branch whose layer below moved
+  before the import merged a stranger's push in), and the squash's parent
+  must hold every parent of the patch set it builds on, or be a newer
+  patch set of that parent's change: else an abandoned or retargeted
+  change below, or a merge's other parent, is folded into its diff
+  (eighth audit). Who pushed is only as GitHub
   says: the activity log of the PR's branch (`GET /repos/{repo}/activity`,
   the fork's for a fork PR), which outlives the bridge's restarts and
   covers webhooks it missed; or, for a push the log does not list yet, the
@@ -1573,13 +1583,33 @@ Abandon and Toggle Work In Progress for Administrators.
   registered on Gerrit, to a branch of the repository and opens a PR from
   it, so any workflow that runs on pushes to non-default branches or on
   pull requests runs their code with the repository's (and
-  organisation's) secrets and a token that may write. Turn Actions off on
-  the bridged repository, or keep every workflow that has secrets or a
-  write token to the default branch. The bridge withholds changes that
-  touch `.github/` (§7.1) (they would bring their own workflows), and its token
+  organisation's) secrets and a token that may write. Turn Actions off
+  for the bridged repository in its (or the organisation's) settings,
+  not by editing workflows: the bridge mirrors every Gerrit branch, and
+  an old release branch, or an `unreviewed/*` one pushed without review,
+  keeps whatever workflows it has, which run on its changes' bridge
+  branches and PRs. If Actions must stay on, every workflow on every
+  branch must keep secrets and write tokens to the default branch, and
+  none may run on `pull_request_target` or `workflow_run` (those run the
+  default branch's workflow, with secrets, for every bridge PR).
+  CodeQL's default setup needs Actions and builds every PR. The bridge
+  withholds changes whose `.github/` or CODEOWNERS (in any case) differ
+  from their target branch's or the default branch's (§7.1; eighth
+  audit), and its token
   should lack the `workflow` scope (a fine-grained token or App without
   Workflows), so GitHub refuses such a push even if the bridge tried
-  (second audit). The same goes for Buildkite's own GitHub integration:
+  (second audit).
+- **Other CI and preview apps** (CircleCI, Netlify, Vercel, Read the
+  Docs, Cloud Build, Azure Pipelines, ...) read their configuration from
+  outside `.github/` (`.circleci/`, `netlify.toml`, ...), which the bridge
+  does not withhold: turn them off for the bridged repository, or limit
+  them to the default branch.
+- **Bots and apps that take commands in comments or PR descriptions**
+  (`/deploy`, `/ok-to-test`, `bors r+`, ...) from collaborators must
+  ignore the bridge's account: it posts anyone's Gerrit comments and
+  commit messages as itself, a collaborator. The bridge breaks a slash
+  command starting a line, and every mention (§8), but cannot know every
+  bot's syntax (eighth audit). The same goes for Buildkite's own GitHub integration:
   if the pipeline gerrit-buildkite triggers is connected to the bridged
   repository, turn off its builds on pushes and pull requests (or limit
   them to the default branch), or Buildkite builds every bridge branch
@@ -1623,10 +1653,12 @@ Abandon and Toggle Work In Progress for Administrators.
   user's rework of a change on the parent a stranger first chose, their
   amend of a stranger's commit, a commit with another of their emails,
   or anything on a stranger's patch set needs a `retest`. Run it with
-  `-gerrit_url` (https) and `-http_password_file` for its account (over
-  SSH, which cannot tell what a branch holds, a change on a merge commit
-  Gerrit made at submit, or on a commit pushed straight to the branch,
-  needs a `retest` too), and with `-webhook_token`, now required (a forged
+  `-gerrit_url` (https) and `-http_password_file` for its account: over
+  SSH it cannot see a commit's committer, so a stranger's commit naming a
+  trusted user as its author, pushed as it is by someone who may forge
+  committers, is trusted (eighth audit); nor tell what a branch holds,
+  so a change on a merge commit Gerrit made at submit, or on a commit
+  pushed straight to the branch, needs a `retest`. Run it too with `-webhook_token`, now required (a forged
   webhook reporting a build as passed would be Verified), and `-listen`
   on an address only Buildkite reaches.
 - **Administrators' `abandon` and `toggleWipState`** on the bridged
@@ -1636,7 +1668,11 @@ Abandon and Toggle Work In Progress for Administrators.
   **`receive.maxBatchChanges`** (say 50) in gerrit.config: one push
   cannot then bring hundreds of changes to mirror.
 - **Administrators' GitHub logins** in `identity.github_to_gerrit`: they
-  are not matched by username (`identity.never_groups`).
+  are not matched by username (`identity.never_groups`). Run As and
+  `suexec --as` can act as administrators and Service Users (checked on
+  3.14, eighth audit): `identity.never_groups` is what keeps the bridge
+  from doing so for whoever matches them on GitHub, so every group with
+  more than a contributor's rights belongs in it.
 - **Groups the bridge must see**: AOS hides every group from
   non-members. Make Administrators and Service Users (the
   `identity.never_groups`; the bridge refuses to start unless it can see
