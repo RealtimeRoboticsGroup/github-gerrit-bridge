@@ -1098,9 +1098,11 @@ defenses, by threat:
   else's that never reached the PR), and is uploaded as its pusher
   only if that patch set's code is their own, as gerrit-buildkite walks
   it (every patch set that chose its parent or made its diff uploaded by
-  them, none on their behalf, and its REWORK their own commit, author =
-  committer: not their message edit, rebase, web edit or cherry-pick of
-  someone else's; sixth audit), and only if they pushed everything
+  them, none on their behalf, a merge's other parents chosen by them
+  too, and its REWORK their own commit, author = committer = them: not
+  their message edit, rebase, web edit or cherry-pick of someone else's,
+  nor someone else's commit they pushed as it is; sixth and seventh
+  audits; matched by account id, not username), and only if they pushed everything
   since GitHub had that patch set: following each push back to the one
   it built on, every push from that commit to the head is theirs, by
   GitHub id. A commit someone else pushed in between, which the bridge
@@ -1559,15 +1561,25 @@ Abandon and Toggle Work In Progress for Administrators.
   (third audit). Whoever chose a patch set's parent must be trusted too
   (the lowest patch set below with the same parents: a REWORK that edits
   the patch set below, Gerrit's web editor say, keeps a parent someone
-  rebased it onto), and the REWORK whose diff it is must be its
-  uploader's own commit, author = committer (Gerrit keeps the author when
-  someone edits, applies a fix to, cherry-picks or rebases with conflicts
-  someone else's change) (sixth audit). So a trusted user's rework of a
-  change on the parent a stranger first chose, or their amend of a
-  stranger's commit, needs a `retest`. Run it with `-gerrit_url` (https)
-  and `-http_password_file` for its account (over SSH, which shows no
-  committer, a commit authored by another of the uploader's emails needs
-  a `retest` too), and with `-webhook_token`, now required (a forged
+  rebased it onto; for a merge, likewise whoever chose its other
+  parents, which Gerrit's Rebase of it keeps: seventh audit), and the
+  REWORK whose diff it is must be its uploader's own commit, author =
+  committer = the uploader's preferred email (Gerrit keeps the author
+  when someone edits, applies a fix to, cherry-picks or rebases with
+  conflicts someone else's change: sixth audit; and takes someone else's
+  commit as it is from whoever may forge committers, which on AOS is
+  Verified Users on their unreviewed branches: seventh). Its parents
+  must be trusted code as well: on the change's branch, a merged
+  change's commit, or another change's patch set trusted the same way
+  (anyone may add a patch set to the change below a trusted user's,
+  which their Rebase then puts under it: seventh audit). So a trusted
+  user's rework of a change on the parent a stranger first chose, their
+  amend of a stranger's commit, a commit with another of their emails,
+  or anything on a stranger's patch set needs a `retest`. Run it with
+  `-gerrit_url` (https) and `-http_password_file` for its account (over
+  SSH, which cannot tell what a branch holds, a change on a merge commit
+  Gerrit made at submit, or on a commit pushed straight to the branch,
+  needs a `retest` too), and with `-webhook_token`, now required (a forged
   webhook reporting a build as passed would be Verified), and `-listen`
   on an address only Buildkite reaches.
 - **Administrators' `abandon` and `toggleWipState`** on the bridged

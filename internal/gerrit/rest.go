@@ -201,17 +201,29 @@ type Person struct {
 	Email string `json:"email"`
 }
 
-// Own reports whether the commit is its committer's own, authored by them:
-// Gerrit checks the committer is the uploader (unless they may forge it),
-// and keeps the author when someone edits, cherry-picks or rebases with
-// conflicts someone else's commit.
-func (c CommitInfo) Own() bool {
-	return c.Author.Email != "" && strings.EqualFold(c.Author.Email, c.Committer.Email)
+// Own reports whether the patch set's commit is its uploader's own:
+// committed by them (by their preferred email, which DETAILED_ACCOUNTS
+// gives), and authored by them. Gerrit keeps the author when someone
+// edits, cherry-picks or rebases with conflicts someone else's commit,
+// and lets whoever may forge committers push someone else's commit as it
+// is.
+func (r RevisionInfo) Own() bool {
+	c := r.Commit
+	return c.Author.Email != "" && strings.EqualFold(c.Author.Email, c.Committer.Email) && strings.EqualFold(c.Committer.Email, r.Uploader.Email)
 }
 
 // SameParents reports whether c and o have the same parent commits.
 func (c CommitInfo) SameParents(o CommitInfo) bool {
 	return slices.Equal(c.Parents, o.Parents)
+}
+
+// ParentSHAs is its parents' SHAs, in order.
+func (c CommitInfo) ParentSHAs() []string {
+	shas := make([]string, len(c.Parents))
+	for i, p := range c.Parents {
+		shas[i] = p.Commit
+	}
+	return shas
 }
 
 // Parent is the first parent's SHA, or "" for a root commit.

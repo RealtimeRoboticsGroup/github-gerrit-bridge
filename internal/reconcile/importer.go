@@ -917,7 +917,7 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		return im.firstUploader(ctx, pr, h, parent, parentTip)
 	}
 	rev := cur.Revisions[base]
-	prev := rev.Uploader.Username
+	prev, prevID := rev.Uploader.Username, rev.Uploader.AccountID
 	// Nobody acts as an inactive account: Gerrit may read its name as
 	// someone else's.
 	if rev.Uploader.AccountID == im.Bridge.AccountID || gerrit.AmbiguousUsername(prev) || rev.Uploader.Inactive {
@@ -931,7 +931,7 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		return "", "", err
 	}
 	login = by.Login
-	if !codeFrom(revisionsByNumber(cur), rev.Number, func(r gerrit.RevisionInfo) bool { return ownUploadBy(r, prev, im.Bridge.AccountID) }) {
+	if !codeFrom(revisionsByNumber(cur), rev.Number, func(r gerrit.RevisionInfo) bool { return ownUploadBy(r, prevID, im.Bridge.AccountID) }) {
 		// The push builds on base, whose code, or parent, is not prev's
 		// own: their rebase or web edit of someone else's patch set, say,
 		// which a GitHub button would then carry on as prev's code (sixth
@@ -950,7 +950,7 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		// The new parent's code is built too: it must be the branch's,
 		// or the uploader's own (second audit: anything else would let
 		// someone rebase a trusted change onto their own code).
-		trusted, err := im.parentTrusted(ctx, parent, base, branch, prev)
+		trusted, err := im.parentTrusted(ctx, parent, base, branch, prevID)
 		if err != nil {
 			return "", "", err
 		}
@@ -965,13 +965,15 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 	return "", login, nil
 }
 
-// ownUploadBy reports whether r was uploaded by user, not the bridge nor
-// anyone on their behalf, and, a REWORK, is user's own commit (as CI
+// ownUploadBy reports whether r was uploaded by account, not the bridge
+// nor anyone on their behalf, and, a REWORK, is their own commit (as CI
 // asks: Gerrit keeps the author when someone edits, cherry-picks or
-// rebases with conflicts someone else's commit).
-func ownUploadBy(r gerrit.RevisionInfo, user string, bridge int) bool {
-	return strings.EqualFold(r.Uploader.Username, user) && r.Uploader.AccountID != bridge &&
-		(r.RealUploader == nil || r.RealUploader.AccountID == r.Uploader.AccountID) && (r.Kind != "REWORK" || r.Commit.Own())
+// rebases with conflicts someone else's commit, and takes someone else's
+// commit as it is from whoever may forge committers). By account, not
+// username, which a case-sensitive Gerrit lets two accounts spell alike.
+func ownUploadBy(r gerrit.RevisionInfo, account, bridge int) bool {
+	return account != 0 && r.Uploader.AccountID == account && account != bridge &&
+		(r.RealUploader == nil || r.RealUploader.AccountID == r.Uploader.AccountID) && (r.Kind != "REWORK" || r.Own())
 }
 
 // firstUploader is who uploads pr's first patch set, h, onto parent, as
@@ -1020,7 +1022,7 @@ func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h
 // on user's behalf, may be onto. Not an older base (old code, old CI
 // config: a combination nobody vouched for), nor an older patch set of
 // the change below, nor one with someone else's code (sixth audit).
-func (im *Importer) parentTrusted(ctx context.Context, parent, base, branch, user string) (bool, error) {
+func (im *Importer) parentTrusted(ctx context.Context, parent, base, branch string, user int) (bool, error) {
 	target := "refs/remotes/gerrit/heads/" + branch
 	if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", parent, target); err == nil {
 		was, err := im.Mirror.Git(ctx, nil, "merge-base", base, target)

@@ -2281,6 +2281,7 @@ func TestPureRebaseOntoSomeoneElsesParentIsTheBridges(t *testing.T) {
 	ctx := context.Background()
 	r := s.changes[1].Revisions[g[0]]
 	r.Uploader = s.accounts["brt"]
+	r.Commit.Author.Email, r.Commit.Committer.Email = "brt@example.com", "brt@example.com" // brt's own commit
 	s.changes[1].Revisions[g[0]] = r
 	r1 := s.rebase(g[0], m1)
 	r2 := s.rebase(g[1], r1)
@@ -2667,13 +2668,14 @@ func TestGerritWinsNeverRestoresForeignCode(t *testing.T) {
 		}
 		code := s.commit(g[0], "one.txt", "theirs\n", "Their message\n\nChange-Id: "+ids[0]+"\n")
 		s.push("gerrit.git", code, "refs/changes/01/1/2")
-		ci.Revisions[code] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Ref: "refs/changes/01/1/2", Uploader: who,
-			Commit: gerrit.CommitInfo{Message: "Their message\n\nChange-Id: " + ids[0] + "\n"}}
+		info := func(sha string) gerrit.CommitInfo {
+			return commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, sha))
+		}
+		ci.Revisions[code] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Ref: "refs/changes/01/1/2", Uploader: who, Commit: info(code)}
 		// The owner fixes the message in Gerrit: same files.
 		edit := s.commit(g[0], "one.txt", "theirs\n", "Fixed message\n\nChange-Id: "+ids[0]+"\n")
 		s.push("gerrit.git", edit, "refs/changes/01/1/3")
-		ci.Revisions[edit] = gerrit.RevisionInfo{Number: 3, Kind: "NO_CODE_CHANGE", Ref: "refs/changes/01/1/3", Uploader: s.accounts["austin"],
-			Commit: gerrit.CommitInfo{Message: "Fixed message\n\nChange-Id: " + ids[0] + "\n"}}
+		ci.Revisions[edit] = gerrit.RevisionInfo{Number: 3, Kind: "NO_CODE_CHANGE", Ref: "refs/changes/01/1/3", Uploader: s.accounts["austin"], Commit: info(edit)}
 		ci.CurrentRevision = edit
 		// And the author pushes meanwhile.
 		s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
@@ -2928,5 +2930,63 @@ func TestObserveMarksForeignPatchSets(t *testing.T) {
 		if snap.Foreign[1] != (real != nil) {
 			t.Errorf("real uploader %v: foreign = %v", real, snap.Foreign)
 		}
+	}
+}
+
+// codeRev is a REST patch set: uploaded by account id (whose email is
+// <id>@example.com), committed by them, authored by author, on parents.
+func codeRev(kind string, id, author int, parents ...string) gerrit.RevisionInfo {
+	r := gerrit.RevisionInfo{Kind: kind, Uploader: gerrit.AccountInfo{AccountID: id, Username: fmt.Sprint("u", id), Email: fmt.Sprintf("%d@example.com", id)}}
+	r.Commit.Author.Email, r.Commit.Committer.Email = fmt.Sprintf("%d@example.com", author), fmt.Sprintf("%d@example.com", id)
+	r.Commit.Parents = []struct {
+		Commit string `json:"commit"`
+	}{}
+	for _, p := range parents {
+		r.Commit.Parents = append(r.Commit.Parents, struct {
+			Commit string `json:"commit"`
+		}{p})
+	}
+	return r
+}
+
+// codeFrom judges whose code a patch set is as gerrit-buildkite does
+// (seventh audit): a merge's other parents stay whoever merged them in
+// when Gerrit's Rebase moves its first; a commit pushed as it is by
+// someone who may forge committers is not theirs; uploaders are matched
+// by account; and a patch set whose commit was not read is nobody's.
+func TestCodeFromMergesForgedCommittersAndMissingCommits(t *testing.T) {
+	own := func(id int) func(gerrit.RevisionInfo) bool {
+		return func(r gerrit.RevisionInfo) bool { return ownUploadBy(r, id, 1) }
+	}
+	merge := map[int]gerrit.RevisionInfo{
+		1: codeRev("REWORK", 6, 6, "m1", "x"),                    // 6's merge of 6's x
+		2: codeRev("REWORK", 5, 5, "m1", "x"),                    // 5's own rework, on 6's parents
+		3: codeRev("MERGE_FIRST_PARENT_UPDATE", 5, 5, "m2", "x"), // 5's Rebase of it
+		4: codeRev("REWORK", 5, 5, "m2", "y"),                    // 5's own merge of y
+		5: codeRev("MERGE_FIRST_PARENT_UPDATE", 5, 5, "m3", "y"),
+	}
+	for ps, want := range map[int]bool{2: false, 3: false, 4: true, 5: true} {
+		if got := codeFrom(merge, ps, own(5)); got != want {
+			t.Errorf("a stranger's merge: patch set %d is 5's: %v, want %v", ps, got, want)
+		}
+	}
+	pushed := codeRev("REWORK", 5, 6)
+	pushed.Commit.Committer.Email = "6@example.com" // 6's commit, pushed as it is by 5
+	if codeFrom(map[int]gerrit.RevisionInfo{1: pushed}, 1, own(5)) {
+		t.Error("a commit 6 committed, pushed by 5, was 5's own")
+	}
+	if !codeFrom(map[int]gerrit.RevisionInfo{1: codeRev("REWORK", 5, 5)}, 1, own(5)) {
+		t.Error("5's own commit was not theirs")
+	}
+	alike := codeRev("REWORK", 666, 666)
+	alike.Uploader.Username = "u5" // another account, spelt like 5's
+	if codeFrom(map[int]gerrit.RevisionInfo{1: alike}, 1, own(5)) {
+		t.Error("another account's patch set, its username spelt like 5's, was 5's own")
+	}
+	unread := codeRev("REWORK", 5, 5)
+	unread.Commit = gerrit.CommitInfo{}
+	if codeFrom(map[int]gerrit.RevisionInfo{1: codeRev("REWORK", 5, 5, "m"), 2: unread}, 2, own(5)) ||
+		codeFrom(map[int]gerrit.RevisionInfo{1: unread}, 1, func(gerrit.RevisionInfo) bool { return true }) {
+		t.Error("a patch set whose commit was not read was someone's")
 	}
 }

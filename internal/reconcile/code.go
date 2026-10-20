@@ -440,23 +440,20 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 // decides it: for whoever chose its parent, the lowest patch set below it
 // with the same parent commits (a REWORK keeps its parent when it edits
 // the patch set below, Gerrit's web editor say, so a parent someone chose
-// rebasing on the uploader's behalf stays theirs: sixth audit); and for
-// whoever made its diff, the first REWORK below it, past commit-message
-// edits and rebases. A kind this does not know is nobody's (fifth audit).
+// rebasing on the uploader's behalf stays theirs: sixth audit), and, for
+// a merge, the same for its other parents, which a rebase of it keeps
+// (seventh audit); and for whoever made its diff, the first REWORK below
+// it, past commit-message edits and rebases. A kind this does not know,
+// or a patch set whose commit is not said, is nobody's (fifth audit).
 func codeFrom(revs map[int]gerrit.RevisionInfo, ps int, allowed func(gerrit.RevisionInfo) bool) bool {
-	chose := ps
-	for ; chose > 1; chose-- {
-		r, ok := revs[chose]
-		below, okBelow := revs[chose-1]
-		if !ok || !okBelow {
+	if r, ok := revs[chooser(revs, ps, slices.Equal[[]string])]; !ok || !allowed(r) {
+		return false
+	}
+	if r := revs[ps]; len(r.Commit.Parents) > 1 {
+		others := func(a, b []string) bool { return len(a) > 1 && len(b) > 1 && slices.Equal(a[1:], b[1:]) }
+		if r, ok := revs[chooser(revs, ps, others)]; !ok || !allowed(r) {
 			return false
 		}
-		if !r.Commit.SameParents(below.Commit) {
-			break
-		}
-	}
-	if r, ok := revs[chose]; !ok || !allowed(r) {
-		return false
 	}
 	for ; ps >= 1; ps-- {
 		r, ok := revs[ps]
@@ -474,6 +471,27 @@ func codeFrom(revs map[int]gerrit.RevisionInfo, ps int, allowed func(gerrit.Revi
 		return false
 	}
 	return false
+}
+
+// chooser is the patch set of revs that chose patch set ps's parents, as
+// same compares their SHAs: walking down from it past patch sets with the
+// same parents, the lowest; 0 if one is missing, or its commit was not
+// read (no ALL_COMMITS).
+func chooser(revs map[int]gerrit.RevisionInfo, ps int, same func(a, b []string) bool) int {
+	for ; ps > 1; ps-- {
+		r, ok := revs[ps]
+		below, okBelow := revs[ps-1]
+		if !ok || !okBelow {
+			return 0
+		}
+		if !same(r.Commit.ParentSHAs(), below.Commit.ParentSHAs()) {
+			break
+		}
+	}
+	if r, ok := revs[ps]; !ok || r.Commit.Parents == nil {
+		return 0
+	}
+	return ps
 }
 
 // revisionsByNumber is ci's revisions by patch set number.
