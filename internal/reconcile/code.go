@@ -853,12 +853,12 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 		login := ev.Actor.Login
 		user, ok := "", false
 		if c.Identity != nil {
-			user, ok = c.Identity.GerritUser(ctx, login)
+			user, ok = c.Identity.GerritUserFor(ctx, ev.Actor)
 		}
 		g := c.Gerrit
 		if ok {
 			g = c.Gerrit.As(user)
-		} else if strings.EqualFold(login, pr.User.Login) && c.BridgeUser != "" && strings.EqualFold(ch.Owner, c.BridgeUser) {
+		} else if sameGitHubUser(ev.Actor, pr.User) && c.BridgeUser != "" && strings.EqualFold(ch.Owner, c.BridgeUser) {
 			// Their own PR, which the bridge owns for them (as asEditor
 			// says; fourth audit: refused, each close was reopened, over
 			// and over).
@@ -1002,15 +1002,15 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 				// Each part edited is its editor's (fourth audit: whoever
 				// renamed a PR was taken for whoever edited its body).
 				gTitle, gBody := prTextFromMessage(ch.Message)
-				var editors []string
+				var editors []github.User
 				if title != gTitle {
 					editors = append(editors, act.TitleEditor)
 				}
 				if body != gBody {
 					editors = append(editors, act.BodyEditor)
 				}
-				editor := ""
-				if len(editors) > 0 && (len(editors) == 1 || strings.EqualFold(editors[0], editors[1])) {
+				var editor github.User
+				if len(editors) > 0 && (len(editors) == 1 || sameGitHubUser(editors[0], editors[1])) {
 					editor = editors[0]
 				}
 				if note, err := c.asEditor(ctx, ch, pr, editor, true, http.MethodPut, "message", map[string]string{"message": msg},
@@ -1069,8 +1069,8 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 //     edit) is made only by the current patch set's uploader: CI trusts
 //     the uploader, and retitling someone else's PR on GitHub must not
 //     make the editor vouch for its code.
-func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRequest, login string, newPatchSet bool, method, endpoint string, in any, did, would string) (string, error) {
-	n := ch.Number
+func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRequest, gh github.User, newPatchSet bool, method, endpoint string, in any, did, would string) (string, error) {
+	n, login := ch.Number, gh.Login
 	who := "@" + login
 	if login == "" {
 		who = "Someone"
@@ -1080,7 +1080,7 @@ func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRe
 	}
 	user, ok := "", false
 	if c.Identity != nil && login != "" {
-		user, ok = c.Identity.GerritUser(ctx, login)
+		user, ok = c.Identity.GerritUserFor(ctx, gh)
 	}
 	g, as := c.Gerrit, "the bridge"
 	switch {
@@ -1088,7 +1088,7 @@ func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRe
 		return refuse("only the uploader of its current patch set can make a new one from GitHub, since CI trusts the uploader; edit it in Gerrit"), nil
 	case ok:
 		g, as = c.Gerrit.As(user), user
-	case login != "" && strings.EqualFold(login, pr.User.Login) && c.BridgeUser != "" && strings.EqualFold(ch.Owner, c.BridgeUser) &&
+	case login != "" && sameGitHubUser(gh, pr.User) && c.BridgeUser != "" && strings.EqualFold(ch.Owner, c.BridgeUser) &&
 		(!newPatchSet || strings.EqualFold(ch.Uploader, c.BridgeUser)):
 		// Their own PR, which the bridge owns for them.
 	case login == "":

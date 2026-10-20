@@ -33,6 +33,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/events"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/gerritssh"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
@@ -442,10 +443,10 @@ func TestRunAsAndUsernameMatching(t *testing.T) {
 	ctx := context.Background()
 	bridge := &gerrit.Client{BaseURL: srv.URL, User: env.Bridge.Username, Password: env.Bridge.HTTPPassword}
 	users := &reconcile.Users{Gerrit: bridge}
-	if u, ok := users.GerritUser(ctx, "ALICE"); !ok || u != "alice" {
+	if u, ok := users.GerritUserFor(ctx, github.User{Login: "ALICE"}); !ok || u != "alice" {
 		t.Errorf("GerritUser(ALICE) = %q, %v", u, ok)
 	}
-	if _, ok := users.GerritUser(ctx, "nobody-here"); ok {
+	if _, ok := users.GerritUserFor(ctx, github.User{Login: "nobody-here"}); ok {
 		t.Error("matched a login with no account")
 	}
 	pushChange(t, env.Bob, "runas.txt")
@@ -543,7 +544,7 @@ func TestNumericUsernamesAreAccountIDs(t *testing.T) {
 	}
 	bridge := &gerrit.Client{BaseURL: srv.URL, User: env.Bridge.Username, Password: env.Bridge.HTTPPassword}
 	users := &reconcile.Users{Gerrit: bridge}
-	if u, ok := users.GerritUser(ctx, name); ok {
+	if u, ok := users.GerritUserFor(ctx, github.User{Login: name}); ok {
 		t.Errorf("GitHub login %s acts as %q", name, u)
 	}
 	if err := bridge.As(name).Do(ctx, "GET", "accounts/self", nil, nil); err == nil {
@@ -735,7 +736,7 @@ func TestInactiveAccountsAreSaid(t *testing.T) {
 		t.Errorf("owner %+v, uploader %+v: want both inactive", cs[0].Owner, rev.Uploader)
 	}
 	users := &reconcile.Users{Gerrit: bridge}
-	if user, ok := users.GerritUser(ctx, u.Username); ok {
+	if user, ok := users.GerritUserFor(ctx, github.User{Login: u.Username}); ok {
 		t.Errorf("an inactive account matched, as %q", user)
 	}
 }

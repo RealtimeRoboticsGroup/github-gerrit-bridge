@@ -20,6 +20,7 @@ go_test(
         "//internal/gerrit",
         "//internal/gerrit/events",
         "//internal/gerrit/gerritssh",
+        "//internal/github",
         "//internal/gitmirror",
         "//internal/reconcile",
         "//internal/state",

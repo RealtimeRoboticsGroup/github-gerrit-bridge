@@ -242,7 +242,8 @@ type fakeGitHub struct {
 	rcs         []github.ReviewComment
 	ics         []github.IssueComment
 	reviews     []github.Review
-	resolved    map[int64]bool // thread root -> resolved
+	resolved    map[int64]bool        // thread root -> resolved
+	resolvedBy  map[int64]github.User // thread root -> who resolved it
 	// diff lines per path that accept line comments; diffAt overrides it
 	// per "commit/path".
 	diff     map[string]map[int]bool
@@ -344,7 +345,7 @@ func (f *fakeGitHub) ReviewThreads(context.Context, int) ([]github.ReviewThread,
 	var out []github.ReviewThread
 	for _, rc := range f.rcs {
 		if rc.InReplyTo == 0 {
-			out = append(out, github.ReviewThread{ID: fmt.Sprintf("T%d", rc.ID), RootID: rc.ID, IsResolved: f.resolved[rc.ID]})
+			out = append(out, github.ReviewThread{ID: fmt.Sprintf("T%d", rc.ID), RootID: rc.ID, IsResolved: f.resolved[rc.ID], ResolvedBy: f.resolvedBy[rc.ID]})
 		}
 	}
 	return out, nil
@@ -1641,6 +1642,36 @@ func TestReviewVotesOnlyAsThePinnedGitHubAccount(t *testing.T) {
 		e.sync(t)
 		if voted := e.g.labels["Code-Review"]["bobg"] == 2; voted != (id == 1) {
 			t.Errorf("GitHub id %d: voted %v", id, voted)
+		}
+	}
+}
+
+// A thread resolved on GitHub is resolved in Gerrit as whoever resolved
+// it only if GitHub's numeric id for them is the one their account is
+// pinned to; GraphQL says it (seventh audit: by login alone, from the
+// cache, the login's new holder resolved as bob).
+func TestResolutionOnlyAsThePinnedGitHubAccount(t *testing.T) {
+	for _, id := range []int64{1, 2, 0} {
+		e := newCommentsEnv(t)
+		e.runAs()
+		users := e.c.Users.(*Users)
+		users.Pins = &memPins{ids: &state.Identities{ByUser: map[string]state.Identity{}}}
+		gh := fakeIDs{"bob": 1}
+		users.GitHub = gh
+		if user, ok := users.GerritUserFor(context.Background(), github.User{Login: "bob", ID: 1}); !ok || user != "bobg" {
+			t.Fatalf("bob = %q %v", user, ok)
+		}
+		gh["bob"] = 2 // bob renamed; someone else took the login
+		e.g.user("c1", "a.txt", 2, 2, "Please fix.", "", true)
+		e.sync(t)
+		root := e.h.rcs[0].ID
+		e.h.resolved[root] = true
+		e.h.resolvedBy = map[int64]github.User{root: {Login: "bob", ID: map[int64]int64{1: 1, 2: 2, 0: 0}[id]}}
+		gh["bob"] = map[int64]int64{1: 1, 2: 2, 0: 2}[id]
+		e.sync(t)
+		gc := e.g.comments[len(e.g.comments)-1]
+		if gc.Message != "Resolved on GitHub." || (gc.Author.Username == "bobg") != (id == 1) {
+			t.Errorf("GitHub id %d: resolution posted as %q: %+v", id, gc.Author.Username, gc)
 		}
 	}
 }

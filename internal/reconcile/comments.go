@@ -1632,7 +1632,7 @@ func gerritResolved(s *commentSnapshot, root string) bool {
 
 func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnapshot, threads map[string]*state.Thread) error {
 	ghResolved := map[string]bool{}
-	resolver := map[string]string{} // thread -> GitHub login who resolved it
+	resolver := map[string]github.User{} // thread -> who resolved it
 	for _, t := range s.threads {
 		ghResolved[t.ID] = t.IsResolved
 		resolver[t.ID] = t.ResolvedBy
@@ -1667,8 +1667,8 @@ func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnap
 			if !hr {
 				msg = "Unresolved on GitHub."
 			}
-			_, user := c.as(ctx, resolver[t.GitHubThread])
-			err := c.setReviewAs(ctx, resolver[t.GitHubThread], user, n, strconv.Itoa(last.PatchSet), gerrit.ReviewInput{
+			_, user := c.asUser(ctx, resolver[t.GitHubThread])
+			err := c.setReviewAs(ctx, resolver[t.GitHubThread].Login, user, n, strconv.Itoa(last.PatchSet), gerrit.ReviewInput{
 				Comments: map[string][]gerrit.CommentInput{last.Path: {{
 					InReplyTo: last.ID, Line: last.Line, Range: last.Range, Side: last.Side,
 					Message: msg, Unresolved: &unresolved,
@@ -2056,12 +2056,6 @@ func (c *Comments) bridgePost(gc *gerrit.CommentInfo) bool {
 // as returns the Gerrit client to post GitHub user login's content with:
 // their own account if they have one and Run-As is set up, else the
 // bridge's.
-func (c *Comments) as(ctx context.Context, login string) (GerritAPI, string) {
-	return c.asUser(ctx, github.User{Login: login})
-}
-
-// asUser is as, for a GitHub account whose numeric id may be known
-// (Users.GerritUserFor).
 func (c *Comments) asUser(ctx context.Context, gh github.User) (GerritAPI, string) {
 	if c.GerritAs == nil || c.Users == nil || gh.Login == "" {
 		return c.Gerrit, ""

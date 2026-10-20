@@ -430,19 +430,17 @@ func (s *sites) graphql(w http.ResponseWriter, r *http.Request) {
 	if s.onActivity != nil {
 		s.onActivity()
 	}
-	type actor struct {
-		Login string `json:"login"`
-	}
+	actor := func(u github.User) map[string]any { return map[string]any{"login": u.Login, "databaseId": u.ID} }
 	var nodes []map[string]any
 	pr := map[string]any{"timelineItems": map[string]any{"nodes": &nodes}}
-	if a.BodyEditor != "" {
-		pr["lastEditedAt"], pr["editor"] = s.clock, actor{a.BodyEditor}
+	if a.BodyEditor.Login != "" {
+		pr["lastEditedAt"], pr["editor"] = s.clock, actor(a.BodyEditor)
 	}
-	if a.TitleEditor != "" {
-		nodes = append(nodes, map[string]any{"__typename": "RenamedTitleEvent", "createdAt": s.clock, "actor": actor{a.TitleEditor}})
+	if a.TitleEditor.Login != "" {
+		nodes = append(nodes, map[string]any{"__typename": "RenamedTitleEvent", "createdAt": s.clock, "actor": actor(a.TitleEditor)})
 	}
-	if a.DraftActor != "" {
-		nodes = append(nodes, map[string]any{"__typename": "ConvertToDraftEvent", "createdAt": s.clock, "actor": actor{a.DraftActor}})
+	if a.DraftActor.Login != "" {
+		nodes = append(nodes, map[string]any{"__typename": "ConvertToDraftEvent", "createdAt": s.clock, "actor": actor(a.DraftActor)})
 	}
 	s.json(w, map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": pr}}}, false)
 }

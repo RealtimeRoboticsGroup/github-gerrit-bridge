@@ -129,8 +129,25 @@ type ReviewThread struct {
 	IsResolved bool
 	// RootID is the database id of the thread's first comment.
 	RootID int64
-	// ResolvedBy is the login of whoever resolved it, if resolved.
-	ResolvedBy string
+	// ResolvedBy is whoever resolved it, if resolved.
+	ResolvedBy User
+}
+
+// graphQLActor is an actor as GraphQL gives it, asked for with
+// actorFields: its numeric id is databaseId ("id" is a node id).
+type graphQLActor struct {
+	Login      string `json:"login"`
+	DatabaseID int64  `json:"databaseId"`
+}
+
+// actorFields asks for an Actor's login and numeric id.
+const actorFields = `login ... on User { databaseId } ... on Bot { databaseId }`
+
+func (a *graphQLActor) user() User {
+	if a == nil {
+		return User{}
+	}
+	return User{Login: a.Login, ID: a.DatabaseID}
 }
 
 // ReviewThreads lists PR n's review threads.
@@ -139,7 +156,7 @@ func (c *Client) queryReviewThreads(ctx context.Context, n int) ([]ReviewThread,
   repository(owner: $o, name: $r) { pullRequest(number: $n) {
     reviewThreads(first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id isResolved resolvedBy { login } comments(first: 1) { nodes { databaseId } } }
+      nodes { id isResolved resolvedBy { login databaseId } comments(first: 1) { nodes { databaseId } } }
     } } } }`
 	var out []ReviewThread
 	var after any
@@ -153,12 +170,10 @@ func (c *Client) queryReviewThreads(ctx context.Context, n int) ([]ReviewThread,
 							EndCursor   string `json:"endCursor"`
 						} `json:"pageInfo"`
 						Nodes []struct {
-							ID         string `json:"id"`
-							IsResolved bool   `json:"isResolved"`
-							ResolvedBy *struct {
-								Login string `json:"login"`
-							} `json:"resolvedBy"`
-							Comments struct {
+							ID         string        `json:"id"`
+							IsResolved bool          `json:"isResolved"`
+							ResolvedBy *graphQLActor `json:"resolvedBy"`
+							Comments   struct {
 								Nodes []struct {
 									DatabaseID int64 `json:"databaseId"`
 								} `json:"nodes"`
@@ -174,10 +189,7 @@ func (c *Client) queryReviewThreads(ctx context.Context, n int) ([]ReviewThread,
 		}
 		rt := data.Repository.PullRequest.ReviewThreads
 		for _, t := range rt.Nodes {
-			th := ReviewThread{ID: t.ID, IsResolved: t.IsResolved}
-			if t.ResolvedBy != nil {
-				th.ResolvedBy = t.ResolvedBy.Login
-			}
+			th := ReviewThread{ID: t.ID, IsResolved: t.IsResolved, ResolvedBy: t.ResolvedBy.user()}
 			if len(t.Comments.Nodes) > 0 {
 				th.RootID = t.Comments.Nodes[0].DatabaseID
 			}
@@ -472,31 +484,31 @@ func (c *Client) Dismissals(ctx context.Context, n int) (map[int64]Dismissal, er
 // mirroring those changes as the person who made them.
 type PRActivity struct {
 	// TitleEditor last renamed the PR, and BodyEditor last edited its
-	// description ("" if nobody has since the PR was opened).
-	TitleEditor, BodyEditor string
+	// description (nobody if nobody has since the PR was opened).
+	TitleEditor, BodyEditor User
 	// DraftActor last converted the PR to a draft or marked it ready.
-	DraftActor string
+	DraftActor User
 }
 
 // Activity returns PR n's PRActivity.
 func (c *Client) Activity(ctx context.Context, n int) (*PRActivity, error) {
 	const q = `query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { pullRequest(number: $n) {
-  lastEditedAt editor { login }
+  lastEditedAt editor { ` + actorFields + ` }
   timelineItems(last: 50, itemTypes: [RENAMED_TITLE_EVENT, CONVERT_TO_DRAFT_EVENT, READY_FOR_REVIEW_EVENT]) {
     nodes { __typename
-      ... on RenamedTitleEvent { createdAt actor { login } }
-      ... on ConvertToDraftEvent { createdAt actor { login } }
-      ... on ReadyForReviewEvent { createdAt actor { login } } } } } } }`
+      ... on RenamedTitleEvent { createdAt actor { ` + actorFields + ` } }
+      ... on ConvertToDraftEvent { createdAt actor { ` + actorFields + ` } }
+      ... on ReadyForReviewEvent { createdAt actor { ` + actorFields + ` } } } } } } }`
 	type event struct {
-		Type      string    `json:"__typename"`
-		CreatedAt time.Time `json:"createdAt"`
-		Actor     *User     `json:"actor"`
+		Type      string        `json:"__typename"`
+		CreatedAt time.Time     `json:"createdAt"`
+		Actor     *graphQLActor `json:"actor"`
 	}
 	var data struct {
 		Repository struct {
 			PullRequest struct {
-				LastEditedAt  *time.Time `json:"lastEditedAt"`
-				Editor        *User      `json:"editor"`
+				LastEditedAt  *time.Time    `json:"lastEditedAt"`
+				Editor        *graphQLActor `json:"editor"`
 				TimelineItems struct {
 					Nodes []event `json:"nodes"`
 				} `json:"timelineItems"`
@@ -509,7 +521,7 @@ func (c *Client) Activity(ctx context.Context, n int) (*PRActivity, error) {
 	pr := data.Repository.PullRequest
 	a := &PRActivity{}
 	if pr.LastEditedAt != nil && pr.Editor != nil {
-		a.BodyEditor = pr.Editor.Login
+		a.BodyEditor = pr.Editor.user()
 	}
 	for _, e := range pr.TimelineItems.Nodes { // oldest first
 		if e.Actor == nil {
@@ -517,9 +529,9 @@ func (c *Client) Activity(ctx context.Context, n int) (*PRActivity, error) {
 		}
 		switch e.Type {
 		case "RenamedTitleEvent":
-			a.TitleEditor = e.Actor.Login
+			a.TitleEditor = e.Actor.user()
 		case "ConvertToDraftEvent", "ReadyForReviewEvent":
-			a.DraftActor = e.Actor.Login
+			a.DraftActor = e.Actor.user()
 		}
 	}
 	return a, nil

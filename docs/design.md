@@ -1170,11 +1170,15 @@ defenses, by threat:
   numeric GitHub id it was first matched to (`refs/bridge/identities`,
   `identities.json`, a commit per pin); the bridge looks up who holds a
   login now (`GET /users/{login}`, cached 2 minutes) and acts as the Gerrit
-  account only if the ids match. Where GitHub's REST answer says who did
-  something with their id too (a review, comment, `/submit` or PR
-  author), that id must be the one checked against the pin, looked up
-  afresh otherwise: within the cache's two minutes, whoever took a
-  renamed user's login would act as them (sixth audit). Before the first pin of a username
+  account only if the ids match. Whoever did something is taken with the
+  id GitHub says it with (REST's user and actor, a webhook's sender,
+  GraphQL's `databaseId` for editors, resolvers and timeline actors), and
+  that id must be the one checked against the pin, looked up afresh
+  otherwise: within the cache's two minutes, whoever took a renamed
+  user's login would act as them (sixth audit; pushes, PR edits, closes,
+  draft toggles and resolutions still went by login alone until the
+  seventh). Where no id is said, the login is looked up afresh, never
+  from the cache. Before the first pin of a username
   match, the GitHub account must be older than the Gerrit account
   (`created_at` against `registered_on`): a newer one cannot be the account
   Gerrit's was registered with, so it is someone who took the login of an

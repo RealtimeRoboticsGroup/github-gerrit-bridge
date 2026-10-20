@@ -70,10 +70,10 @@ func TestOverrideNeedsAnActiveAccount(t *testing.T) {
 	u := &Users{Overrides: map[string]string{"carol-gh": "carol", "alice-gh": "alice"},
 		Active: fakeAccounts{users: []string{"alice", "carol"}, inactive: map[string]bool{"carol": true}}}
 	ctx := context.Background()
-	if user, ok := u.GerritUser(ctx, "carol-gh"); ok {
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "carol-gh"}); ok {
 		t.Errorf("acts as inactive %q", user)
 	}
-	if user, ok := u.GerritUser(ctx, "alice-gh"); !ok || user != "alice" {
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice-gh"}); !ok || user != "alice" {
 		t.Errorf("alice-gh = %q %v", user, ok)
 	}
 }
@@ -85,12 +85,12 @@ func TestUsersNeverMatchesServiceAccounts(t *testing.T) {
 		NeverGroups: []string{"Service Users"},
 	}
 	ctx := context.Background()
-	if user, ok := u.GerritUser(ctx, "Alice"); !ok || user != "alice" {
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "Alice"}); !ok || user != "alice" {
 		t.Errorf("alice = %q %v", user, ok)
 	}
 	// Someone who registers the bridge's or CI's name on GitHub gets nothing.
 	for _, login := range []string{"github-bridge", "BuildKite"} {
-		if user, ok := u.GerritUser(ctx, login); ok {
+		if user, ok := u.GerritUserFor(ctx, github.User{Login: login}); ok {
 			t.Errorf("%s matched %q", login, user)
 		}
 	}
@@ -129,7 +129,7 @@ func TestUsersPinGitHubIDs(t *testing.T) {
 	u := &Users{Gerrit: fakeAccounts{users: []string{"alice"}}, Overrides: map[string]string{"alice-renamed": "alice"},
 		Pins: pins, GitHub: ids}
 	ctx := context.Background()
-	if user, ok := u.GerritUser(ctx, "alice"); !ok || user != "alice" {
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice"}); !ok || user != "alice" {
 		t.Fatalf("first sight = %q %v", user, ok)
 	}
 	if pins.ids.ByUser["alice"].GitHubID != 1 {
@@ -137,26 +137,28 @@ func TestUsersPinGitHubIDs(t *testing.T) {
 	}
 	// Alice renames her GitHub account (an override maps the new login):
 	// same id, still her.
-	if user, ok := u.GerritUser(ctx, "alice-renamed"); !ok || user != "alice" {
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice-renamed"}); !ok || user != "alice" {
 		t.Errorf("renamed = %q %v", user, ok)
 	}
 	// Someone else registers the freed login "alice".
 	ids["alice"] = 2
 	u.cache = nil
-	if user, ok := u.GerritUser(ctx, "alice"); ok {
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice"}); ok {
 		t.Errorf("new owner of the login acts as %q", user)
 	}
 	// Unknown on GitHub (deleted): nobody.
 	delete(ids, "alice")
 	u.cache = nil
-	if _, ok := u.GerritUser(ctx, "alice"); ok {
+	if _, ok := u.GerritUserFor(ctx, github.User{Login: "alice"}); ok {
 		t.Error("deleted GitHub account still maps")
 	}
 }
 
 // A lookup by login is reused for a while, but GitHub says by numeric id
 // who did something: whoever took a renamed user's login just now is not
-// them, cached or not (sixth audit).
+// them, cached or not (sixth audit). Where the id is not known, the
+// lookup is fresh (seventh audit: pushes, edits and resolutions were
+// matched by login alone, from the cache).
 func TestUsersCheckTheGitHubIDTheyAreGiven(t *testing.T) {
 	ids := fakeIDs{"alice": 1}
 	pins := &memPins{ids: &state.Identities{ByUser: map[string]state.Identity{}}}
@@ -166,8 +168,8 @@ func TestUsersCheckTheGitHubIDTheyAreGiven(t *testing.T) {
 		t.Fatalf("alice = %q %v", user, ok)
 	}
 	ids["alice"] = 2 // alice renamed; someone else took the login
-	if user, ok := u.GerritUser(ctx, "alice"); !ok || user != "alice" {
-		t.Fatalf("by login, cached: %q %v (the window this closes)", user, ok)
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice"}); ok {
+		t.Errorf("by login alone, from the cache: the login's new holder acts as %q", user)
 	}
 	if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice", ID: 2}); ok {
 		t.Errorf("the login's new holder acts as %q", user)
@@ -200,10 +202,10 @@ func TestUsernameMatchDoesNotTakeAnOverridesAccount(t *testing.T) {
 		if tc.withPins {
 			u.Pins = pins
 		}
-		if user, ok := u.GerritUser(ctx, "alice"); ok != tc.matches {
+		if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice"}); ok != tc.matches {
 			t.Errorf("%s: login alice = %q %v", tc.name, user, ok)
 		}
-		if user, ok := u.GerritUser(ctx, "alice-gh"); tc.withPins && (!ok || user != "alice") {
+		if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice-gh"}); tc.withPins && (!ok || user != "alice") {
 			t.Errorf("%s: the override's login = %q %v", tc.name, user, ok)
 		}
 		if p := pins.ids.ByUser["alice"]; tc.withPins && p.GitHubID != 1 {
@@ -222,25 +224,25 @@ func TestUsersRefuseUsernamesGerritReadsAsOtherAccounts(t *testing.T) {
 	}
 	ctx := context.Background()
 	for _, login := range []string{"1000000", "self", "me", "bob"} {
-		if user, ok := u.GerritUser(ctx, login); ok {
+		if user, ok := u.GerritUserFor(ctx, github.User{Login: login}); ok {
 			t.Errorf("%s acts as %q", login, user)
 		}
 	}
-	if user, ok := u.GerritUser(ctx, "alice2"); !ok || user != "alice2" {
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice2"}); !ok || user != "alice2" {
 		t.Errorf("alice2 = %q %v", user, ok)
 	}
 }
 
 func TestUsersRefuseLoginsMatchingSeveralAccounts(t *testing.T) {
 	u := &Users{Gerrit: fakeAccounts{users: []string{"Alice", "alice"}}}
-	if user, ok := u.GerritUser(context.Background(), "alice"); ok {
+	if user, ok := u.GerritUserFor(context.Background(), github.User{Login: "alice"}); ok {
 		t.Errorf("alice acts as %q", user)
 	}
 }
 
 func TestUsersNeverMatchTheBridgesOwnLogin(t *testing.T) {
 	u := &Users{Overrides: map[string]string{"bridge-bot": "alice"}, NeverLogins: []string{"Bridge-Bot"}}
-	if user, ok := u.GerritUser(context.Background(), "bridge-bot"); ok {
+	if user, ok := u.GerritUserFor(context.Background(), github.User{Login: "bridge-bot"}); ok {
 		t.Errorf("the bridge's login acts as %q", user)
 	}
 }
@@ -258,7 +260,7 @@ func TestUsersRefuseGitHubAccountsNewerThanTheGerritAccount(t *testing.T) {
 		Pins:      pins, GitHub: fakeIDs{"admin": 7, "alice": 8, "admin-on-github": 9},
 	}
 	ctx := context.Background()
-	if user, ok := u.GerritUser(ctx, "admin"); ok {
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "admin"}); ok {
 		t.Errorf("a newer GitHub account acts as %q", user)
 	}
 	// Pinned, if at all, to the override's account, never to this one.
@@ -267,10 +269,10 @@ func TestUsersRefuseGitHubAccountsNewerThanTheGerritAccount(t *testing.T) {
 	}
 	// Older GitHub accounts match and pin, and overrides are trusted as
 	// written.
-	if user, ok := u.GerritUser(ctx, "alice"); !ok || user != "alice" {
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice"}); !ok || user != "alice" {
 		t.Errorf("alice = %q %v", user, ok)
 	}
-	if user, ok := u.GerritUser(ctx, "admin-on-github"); !ok || user != "admin" {
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "admin-on-github"}); !ok || user != "admin" {
 		t.Errorf("override = %q %v", user, ok)
 	}
 }
@@ -287,7 +289,7 @@ func TestUsersNeverGroupsFailClosed(t *testing.T) {
 	if err := u.CheckGroups(ctx); err == nil || !strings.Contains(err.Error(), "Administrators") {
 		t.Errorf("CheckGroups = %v", err)
 	}
-	if user, ok := u.GerritUser(ctx, "admin"); ok {
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "admin"}); ok {
 		t.Errorf("admin acts as %q", user)
 	}
 	u.NeverGroups = []string{"Service Users"}
@@ -314,12 +316,12 @@ func TestUsersNeverGroupsFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	u.Gerrit = fakeAccounts{users: []string{"alice"}, groups: map[string][]string{"Service Users": nil}, includes: map[string][]string{"Service Users": {hidden}}}
-	if _, ok := u.GerritUser(ctx, "alice"); !ok {
+	if _, ok := u.GerritUserFor(ctx, github.User{Login: "alice"}); !ok {
 		t.Error("alice not matched while the last check holds")
 	}
 	now = now.Add(groupsRecheck + time.Second)
 	u.cache = nil
-	if user, ok := u.GerritUser(ctx, "alice"); ok {
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice"}); ok {
 		t.Errorf("alice acts as %q though the excluded groups cannot all be listed", user)
 	}
 }

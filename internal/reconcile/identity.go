@@ -17,11 +17,11 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
-// Identity maps GitHub logins to Gerrit usernames (design §7).
+// Identity maps GitHub accounts to Gerrit usernames (design §7). Only
+// by account: a login alone is a name a rename frees for anyone to take
+// (sixth and seventh audits), so whoever did something is given with the
+// numeric id GitHub says it with.
 type Identity interface {
-	GerritUser(ctx context.Context, githubLogin string) (string, bool)
-	// GerritUserFor is GerritUser for a GitHub account whose numeric id
-	// is known, as REST says who did something.
 	GerritUserFor(ctx context.Context, gh github.User) (string, bool)
 }
 
@@ -214,21 +214,23 @@ func checkGroup(ctx context.Context, gl groupLister, group string, seen map[stri
 	return nil
 }
 
-// GerritUser implements Identity.
-func (u *Users) GerritUser(ctx context.Context, login string) (string, bool) {
+// byLogin is login's Gerrit account as a lookup finds it (and, with
+// pins, the GitHub id it was checked against), reused for userCacheTTL
+// unless fresh.
+func (u *Users) byLogin(ctx context.Context, login string, fresh bool) cachedUser {
 	if login == "" {
-		return "", false
+		return cachedUser{}
 	}
 	for _, n := range u.NeverLogins {
 		if strings.EqualFold(n, login) {
-			return "", false
+			return cachedUser{}
 		}
 	}
 	key := strings.ToLower(login)
 	u.mu.Lock()
-	if c, ok := u.cache[key]; ok && time.Since(c.at) < userCacheTTL {
+	if c, ok := u.cache[key]; ok && !fresh && time.Since(c.at) < userCacheTTL {
 		u.mu.Unlock()
-		return c.user, c.ok
+		return c
 	}
 	u.mu.Unlock()
 
@@ -247,18 +249,19 @@ func (u *Users) GerritUser(ctx context.Context, login string) (string, bool) {
 		if u.Logger != nil {
 			u.Logger.Warn("looking up Gerrit account", "github_login", login, "err", err)
 		}
-		return "", false
+		return cachedUser{}
 	}
 	if !ok {
 		user = ""
 	}
+	c := cachedUser{user: user, ok: ok, at: time.Now(), id: id}
 	u.mu.Lock()
 	if u.cache == nil {
 		u.cache = map[string]cachedUser{}
 	}
-	u.cache[key] = cachedUser{user: user, ok: ok, at: time.Now(), id: id}
+	u.cache[key] = c
 	u.mu.Unlock()
-	return user, ok
+	return c
 }
 
 // GerritUserFor implements Identity. A login is only a name, which a
@@ -266,30 +269,21 @@ func (u *Users) GerritUser(ctx context.Context, login string) (string, bool) {
 // a while: with pins, the account is gh's only if gh's numeric id is the
 // one checked against its pin, looked up afresh if the cached one was
 // someone else's (sixth audit: within the cache's two minutes, whoever
-// took a renamed trusted user's login acted as them).
+// took a renamed trusted user's login acted as them), or if gh's id is
+// not known (seventh audit).
 func (u *Users) GerritUserFor(ctx context.Context, gh github.User) (string, bool) {
-	user, ok := u.GerritUser(ctx, gh.Login)
-	if !ok || gh.ID == 0 || u.Pins == nil || u.cachedID(gh.Login) == gh.ID {
-		return user, ok
+	c := u.byLogin(ctx, gh.Login, gh.ID == 0 && u.Pins != nil)
+	if !c.ok || gh.ID == 0 || u.Pins == nil || c.id == gh.ID {
+		return c.user, c.ok
 	}
-	u.mu.Lock()
-	delete(u.cache, strings.ToLower(gh.Login))
-	u.mu.Unlock()
-	if user, ok = u.GerritUser(ctx, gh.Login); ok && u.cachedID(gh.Login) == gh.ID {
-		return user, true
+	if c = u.byLogin(ctx, gh.Login, true); c.ok && c.id == gh.ID {
+		return c.user, true
 	}
-	if ok && u.Logger != nil {
+	if c.ok && u.Logger != nil {
 		u.Logger.Warn("GitHub account is not the one its login was pinned as (renamed just now?); not acting as it",
-			"github_login", gh.Login, "github_id", gh.ID, "gerrit_user", user)
+			"github_login", gh.Login, "github_id", gh.ID, "gerrit_user", c.user)
 	}
 	return "", false
-}
-
-// cachedID is the GitHub id login's cached lookup checked.
-func (u *Users) cachedID(login string) int64 {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	return u.cache[strings.ToLower(login)].id
 }
 
 // lookup finds login's Gerrit account by override or username. account is
