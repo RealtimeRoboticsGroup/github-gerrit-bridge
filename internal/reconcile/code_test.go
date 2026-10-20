@@ -304,6 +304,11 @@ func (u *fakeUploader) Upload(ctx context.Context, user, commit, target string, 
 	if cid == "" {
 		return fmt.Errorf("uploaded %s has no Change-Id:\n%s", commit, msg)
 	}
+	info, err := u.m.Git(ctx, nil, "log", "-1", "--format="+commitInfoFormat, commit)
+	if err != nil {
+		return err
+	}
+	ci := commitInfo(string(info))
 	u.s.mu.Lock()
 	defer u.s.mu.Unlock()
 	if u.create && !slices.ContainsFunc(slices.Collect(maps.Values(u.s.changes)), func(ci *gerrit.ChangeInfo) bool { return ci.ChangeID == cid }) {
@@ -317,17 +322,17 @@ func (u *fakeUploader) Upload(ctx context.Context, user, commit, target string, 
 			return err
 		}
 		u.s.changes[n] = &gerrit.ChangeInfo{Number: n, ChangeID: cid, Project: "p", Branch: "main", Status: "NEW", Owner: owner, CurrentRevision: commit,
-			Revisions: map[string]gerrit.RevisionInfo{commit: {Number: 1, Ref: ref, Uploader: owner, Commit: gerrit.CommitInfo{Message: string(msg)}}}}
+			Revisions: map[string]gerrit.RevisionInfo{commit: {Number: 1, Ref: ref, Uploader: owner, Kind: "REWORK", Commit: ci}}}
 		return nil
 	}
-	for _, ci := range u.s.changes {
-		if ci.ChangeID == cid {
+	for _, ch := range u.s.changes {
+		if ch.ChangeID == cid {
 			uploader, ok := u.s.accounts[user]
 			if !ok {
 				uploader = gerrit.AccountInfo{AccountID: 1, Username: "bridge"}
 			}
-			ci.Revisions[commit] = gerrit.RevisionInfo{Number: len(ci.Revisions) + 1, Uploader: uploader, Commit: gerrit.CommitInfo{Message: string(msg)}}
-			ci.CurrentRevision = commit
+			ch.Revisions[commit] = gerrit.RevisionInfo{Number: len(ch.Revisions) + 1, Uploader: uploader, Kind: "REWORK", Commit: ci}
+			ch.CurrentRevision = commit
 		}
 	}
 	return nil
@@ -1443,22 +1448,31 @@ func TestImportRefusesChangeIDsGerritReadsDifferently(t *testing.T) {
 }
 
 // CI trusts the uploader, so a push is uploaded as its pusher only if they
-// uploaded the current patch set too; anyone else's push that is more
-// than a rebase (Commit suggestion, a fix-up, Update branch with
-// conflicts resolved) is uploaded by the bridge, which CI does not trust.
+// uploaded the current patch set too, as their own commit; anyone else's
+// push that is more than a rebase (Commit suggestion, a fix-up, Update
+// branch with conflicts resolved) is uploaded by the bridge, which CI
+// does not trust. So is a push onto the uploader's edit of someone else's
+// commit (Gerrit's web editor keeps its author: sixth audit).
 func TestWhoUploadsAPush(t *testing.T) {
 	for _, tc := range []struct {
 		name, pusher, want string
-		edit               bool
+		edit, notOwn       bool
 	}{
-		{"uploader pushes", "austin", "austin", true},
-		{"someone else adds code", "brt", "", true},
-		{"unknown pusher adds code", "", "", true},
-		{"unknown pusher rebases", "", "austin", false},
+		{"uploader pushes", "austin", "austin", true, false},
+		{"someone else adds code", "brt", "", true, false},
+		{"unknown pusher adds code", "", "", true, false},
+		{"unknown pusher rebases", "", "austin", false, false},
+		{"uploader pushes onto their edit of someone else's commit", "austin", "", true, true},
+		{"unknown pusher rebases their edit of someone else's commit", "", "", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, im, up, m1, g, ids := gerritBornWorld(t, false)
 			ctx := context.Background()
+			if tc.notOwn {
+				r := s.changes[1].Revisions[g[0]]
+				r.Commit.Author.Email = "brt@example.com"
+				s.changes[1].Revisions[g[0]] = r
+			}
 			h := s.rebase(g[0], m1)
 			if tc.edit {
 				h = s.commit(h, "one.txt", "1 fixed\n", "Fix")
@@ -1473,6 +1487,37 @@ func TestWhoUploadsAPush(t *testing.T) {
 				t.Fatalf("uploads = %v, want one as %q", up.uploads, tc.want)
 			}
 		})
+	}
+}
+
+// Nor is a push onto the uploader's message edit of someone else's patch
+// set theirs: the code below is that one's.
+func TestPushOntoAnEditOfSomeoneElsesPatchSetIsTheBridges(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	r := s.changes[1].Revisions[g[0]]
+	r.Uploader = s.accounts["brt"]
+	s.changes[1].Revisions[g[0]] = r
+	ps2 := s.git("work", "commit-tree", g[0]+"^{tree}", "-p", g[0]+"^", "-m", "One, edited\n\nChange-Id: "+ids[0])
+	s.push("gerrit.git", ps2, "refs/changes/01/1/2")
+	r2 := gerrit.RevisionInfo{Number: 2, Ref: "refs/changes/01/1/2", Kind: "NO_CODE_CHANGE", Uploader: s.accounts["austin"],
+		Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, ps2))}
+	s.changes[1].Revisions[ps2] = r2
+	s.changes[1].CurrentRevision = ps2
+	st, _ := im.Store.Load(ctx, 1)
+	st.Revisions = append(st.Revisions, state.Revision{PatchSet: 2, GerritSHA: ps2, GitHubSHA: ps2})
+	if err := im.Store.Save(ctx, 1, st, "exported"); err != nil {
+		t.Fatal(err)
+	}
+	h := s.commit(s.rebase(ps2, m1), "one.txt", "1 fixed\n", "Fix")
+	s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = h
+	s.webhookPush(im.Pushers, 10, "austin")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], " ") {
+		t.Errorf("uploads = %v, want the bridge's", up.uploads)
 	}
 }
 
@@ -2541,6 +2586,9 @@ func TestObserveMarksForeignPatchSets(t *testing.T) {
 	ps2 := s.commit(m0, "b.txt", "theirs\n", "Mine\n\nChange-Id: "+cid(1)+"\n")
 	ci := s.change(1, cid(1), ps1, "Mine", "NEW")
 	ci.Owner = gerrit.AccountInfo{AccountID: 5, Username: "brt"}
+	ps1Rev := ci.Revisions[ps1]
+	ps1Rev.Uploader = ci.Owner
+	ci.Revisions[ps1] = ps1Rev
 	ps2Rev := gerrit.RevisionInfo{Number: 2, Ref: "refs/changes/01/1/2", Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 9, Username: "mallory"}}
 	ps2Rev.Commit.Parents = append(ps2Rev.Commit.Parents, struct {
 		Commit string `json:"commit"`

@@ -917,6 +917,14 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 	if login, err = im.pusher(ctx, pr, h); err != nil {
 		return "", "", err
 	}
+	if !codeFrom(revisionsByNumber(cur), rev.Number, func(r gerrit.RevisionInfo) bool { return ownUploadBy(r, prev, im.Bridge.AccountID) }) {
+		// The push builds on base, whose code, or parent, is not prev's
+		// own: their rebase or web edit of someone else's patch set, say,
+		// which a GitHub button would then carry on as prev's code (sixth
+		// audit).
+		im.Logger.Info("the patch set below is not its uploader's own code: the bridge uploads the push", "pr", pr.Number, "pusher", login, "uploader", prev)
+		return "", login, nil
+	}
 	if pusher, _ := im.Identity.GerritUser(ctx, login); strings.EqualFold(pusher, prev) {
 		return pusher, login, nil
 	}
@@ -941,6 +949,15 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 	}
 	im.Logger.Info("someone else's push: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
 	return "", login, nil
+}
+
+// ownUploadBy reports whether r was uploaded by user, not the bridge nor
+// anyone on their behalf, and, a REWORK, is user's own commit (as CI
+// asks: Gerrit keeps the author when someone edits, cherry-picks or
+// rebases with conflicts someone else's commit).
+func ownUploadBy(r gerrit.RevisionInfo, user string, bridge int) bool {
+	return strings.EqualFold(r.Uploader.Username, user) && r.Uploader.AccountID != bridge &&
+		(r.RealUploader == nil || r.RealUploader.AccountID == r.Uploader.AccountID) && (r.Kind != "REWORK" || r.Commit.Own())
 }
 
 // firstUploader is who uploads pr's first patch set, h, as above: its

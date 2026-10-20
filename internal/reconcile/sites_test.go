@@ -200,11 +200,34 @@ func (s *sites) githubClient() *github.Client {
 
 // change adds change n at patch set ps (commit rev) with Change-Id cid.
 func (s *sites) change(n int, cid, rev, msg, status string) *gerrit.ChangeInfo {
+	commit := commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, rev))
+	commit.Message = msg
 	ci := &gerrit.ChangeInfo{Number: n, ChangeID: cid, Project: "p", Branch: "main", Status: status, CurrentRevision: rev,
 		Revisions: map[string]gerrit.RevisionInfo{rev: {Number: 1, Ref: fmt.Sprintf("refs/changes/%02d/%d/1", n%100, n),
-			Commit: gerrit.CommitInfo{Message: msg}}}}
+			Kind: "REWORK", Commit: commit}}}
 	s.changes[n] = ci
 	s.push("gerrit.git", rev, ci.Revisions[rev].Ref)
+	return ci
+}
+
+// commitInfoFormat is the git log format commitInfo reads.
+const commitInfoFormat = "%P%x00%an%x00%ae%x00%cn%x00%ce%x00%s%x00%B"
+
+// commitInfo is a commit as Gerrit's ALL_COMMITS shows it, from git log
+// with commitInfoFormat ("" if git did not say).
+func commitInfo(out string) gerrit.CommitInfo {
+	var ci gerrit.CommitInfo
+	f := strings.SplitN(out, "\x00", 7)
+	if len(f) != 7 {
+		return ci
+	}
+	for _, p := range strings.Fields(f[0]) {
+		ci.Parents = append(ci.Parents, struct {
+			Commit string `json:"commit"`
+		}{p})
+	}
+	ci.Author, ci.Committer = gerrit.Person{Name: f[1], Email: f[2]}, gerrit.Person{Name: f[3], Email: f[4]}
+	ci.Subject, ci.Message = f[5], f[6]
 	return ci
 }
 
