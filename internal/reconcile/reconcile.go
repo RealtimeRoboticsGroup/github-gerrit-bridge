@@ -179,7 +179,7 @@ func (r *Router) RunResync(ctx context.Context, l Lister) error {
 		}
 		backoff = minBackoff
 		for _, k := range keys {
-			r.Queue.Add(k)
+			r.Queue.AddLow(k) // behind what events queue
 		}
 		r.Logger.Info("resync queued", "reason", reason, "keys", len(keys))
 	}

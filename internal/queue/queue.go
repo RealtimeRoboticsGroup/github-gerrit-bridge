@@ -9,6 +9,7 @@ package queue
 
 import (
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"time"
 )
@@ -19,6 +20,9 @@ type Queue[K comparable] struct {
 	cond *sync.Cond
 
 	order      []K            // keys waiting for a worker, FIFO
+	low        []K            // keys waiting only for AddLow, FIFO
+	lowOnly    map[K]bool     // dirty keys only AddLow asked for
+	sinceLow   int            // keys handed out from order since one from low
 	dirty      map[K]struct{} // keys that need processing (queued or re-queued)
 	processing map[K]struct{} // keys a worker holds
 	failures   map[K]int      // consecutive failures, for Retry backoff
@@ -46,6 +50,7 @@ type Queue[K comparable] struct {
 func New[K comparable]() *Queue[K] {
 	q := &Queue[K]{
 		dirty:      map[K]struct{}{},
+		lowOnly:    map[K]bool{},
 		processing: map[K]struct{}{},
 		failures:   map[K]int{},
 		started:    map[K]time.Time{},
@@ -66,8 +71,44 @@ func (q *Queue[K]) Add(k K) {
 		return
 	}
 	if _, ok := q.dirty[k]; ok {
+		if q.lowOnly[k] {
+			// Now an event's too: ahead of the rest of a resync.
+			delete(q.lowOnly, k)
+			if i := slices.Index(q.low, k); i >= 0 {
+				q.low = slices.Delete(q.low, i, i+1)
+				q.order = append(q.order, k)
+			}
+		}
 		return
 	}
+	q.mark(k)
+}
+
+// AddLow is Add for a key nothing is known to have changed (a periodic
+// resync visits them all): it waits behind those that Add queued, but
+// for one key in every lowShare handed out, so neither waits for good.
+// Throttled keys cannot hold it back, then, nor it them (in the
+// rehearsal, each resync held the PR events after it back minutes).
+func (q *Queue[K]) AddLow(k K) {
+	if q.Urgent != nil && q.Urgent(k) {
+		q.Add(k)
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if _, ok := q.dirty[k]; ok || q.shutdown {
+		return
+	}
+	q.lowOnly[k] = true
+	q.mark(k)
+}
+
+// lowShare: one key in this many goes to AddLow's while both wait.
+const lowShare = 4
+
+// mark makes k dirty and queues it, unless a worker has it or it ran
+// moments ago. q.mu is held.
+func (q *Queue[K]) mark(k K) {
 	q.dirty[k] = struct{}{}
 	q.queuedAt[k] = time.Now()
 	if _, ok := q.processing[k]; ok {
@@ -80,7 +121,16 @@ func (q *Queue[K]) Add(k K) {
 		time.AfterFunc(wait, func() { q.requeue(k) })
 		return
 	}
-	q.order = append(q.order, k)
+	q.enqueue(k)
+}
+
+// enqueue puts dirty k in line for a worker. q.mu is held.
+func (q *Queue[K]) enqueue(k K) {
+	if q.lowOnly[k] {
+		q.low = append(q.low, k)
+	} else {
+		q.order = append(q.order, k)
+	}
 	q.cond.Broadcast() // GetUrgent waiters may not take it
 }
 
@@ -140,17 +190,23 @@ func (q *Queue[K]) Forget(k K) {
 func (q *Queue[K]) Get() (k K, ok bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for len(q.order) == 0 && !q.shutdown {
+	for len(q.order) == 0 && len(q.low) == 0 && !q.shutdown {
 		q.cond.Wait()
 	}
 	if q.shutdown {
 		return k, false
 	}
-	i := q.urgent()
-	if i < 0 {
-		i = 0
+	if i := q.urgent(); i >= 0 {
+		return q.take(i), true
 	}
-	return q.take(i), true
+	if len(q.low) > 0 && (len(q.order) == 0 || q.sinceLow >= lowShare-1) {
+		k = q.low[0]
+		q.low = q.low[1:]
+		q.sinceLow = 0
+		return q.hand(k), true
+	}
+	q.sinceLow++
+	return q.take(0), true
 }
 
 // GetUrgent is Get for Urgent keys only: it waits until one is queued. A
@@ -182,11 +238,17 @@ func (q *Queue[K]) urgent() int {
 	return -1
 }
 
-// take hands out the key at index i. q.mu is held.
+// take hands out the key at index i of order. q.mu is held.
 func (q *Queue[K]) take(i int) K {
 	k := q.order[i]
 	q.order = append(q.order[:i:i], q.order[i+1:]...)
+	return q.hand(k)
+}
+
+// hand hands out k, taken out of line. q.mu is held.
+func (q *Queue[K]) hand(k K) K {
 	delete(q.dirty, k)
+	delete(q.lowOnly, k)
 	q.processing[k] = struct{}{}
 	q.started[k] = time.Now()
 	q.waited[k] = q.started[k].Sub(q.queuedAt[k])
@@ -225,8 +287,7 @@ func (q *Queue[K]) Done(k K) {
 			time.AfterFunc(wait, func() { q.requeue(k) })
 			return
 		}
-		q.order = append(q.order, k)
-		q.cond.Broadcast() // GetUrgent waiters may not take it
+		q.enqueue(k)
 	}
 }
 
@@ -234,8 +295,7 @@ func (q *Queue[K]) requeue(k K) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if _, ok := q.dirty[k]; ok && !q.shutdown {
-		q.order = append(q.order, k)
-		q.cond.Broadcast() // GetUrgent waiters may not take it
+		q.enqueue(k)
 	}
 }
 
@@ -243,7 +303,7 @@ func (q *Queue[K]) requeue(k K) {
 func (q *Queue[K]) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.order)
+	return len(q.order) + len(q.low)
 }
 
 // ShutDown makes Get return false in every worker, and drops pending keys.

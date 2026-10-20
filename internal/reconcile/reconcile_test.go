@@ -116,6 +116,26 @@ func TestResyncCoalescesAndQueues(t *testing.T) {
 	}
 }
 
+// A resync's keys wait behind events': the next event goes first (in the
+// rehearsal, each periodic resync held the PR events after it back
+// minutes).
+func TestResyncWaitsBehindEvents(t *testing.T) {
+	q := queue.New[Key]()
+	r := NewRouter("p", q, slog.Default())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.RunResync(ctx, &fakeLister{})
+	r.Resync("periodic")
+	deadline := time.Now().Add(5 * time.Second)
+	for q.Len() < 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	r.Delivery(&github.Delivery{Event: "pull_request", Action: "closed", PR: 9})
+	if got := drain(q); !equal(got, []string{"pr/9", "comments/1", "comments/2", "comments/3"}) {
+		t.Errorf("queued %v, want the PR's event first", got)
+	}
+}
+
 func TestResyncRetries(t *testing.T) {
 	q := queue.New[Key]()
 	r := NewRouter("p", q, slog.Default())

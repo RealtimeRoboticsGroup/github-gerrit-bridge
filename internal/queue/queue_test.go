@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -286,4 +287,47 @@ func TestMinIntervalBetweenRuns(t *testing.T) {
 		t.Errorf("ran again after %v", time.Since(start))
 	}
 	q.Done(k)
+}
+
+// AddLow's keys wait behind Add's, but for one in every lowShare handed
+// out; an Add of one waiting puts it with Add's.
+func TestAddLow(t *testing.T) {
+	q := New[int]()
+	for k := 100; k < 104; k++ {
+		q.AddLow(k)
+	}
+	for k := 1; k <= 7; k++ {
+		q.Add(k)
+	}
+	q.Add(103)
+	q.AddLow(1) // queued already
+	var got []int
+	for q.Len() > 0 {
+		k, _ := q.Get()
+		got = append(got, k)
+		q.Done(k)
+	}
+	want := []int{1, 2, 3, 100, 4, 5, 6, 101, 7, 103, 102}
+	if !slices.Equal(got, want) {
+		t.Errorf("handed out %v, want %v", got, want)
+	}
+}
+
+// Added low while a worker has it, it comes back low; added by Add too,
+// with Add's.
+func TestAddLowWhileProcessing(t *testing.T) {
+	for _, add := range []bool{false, true} {
+		q := New[int]()
+		q.Add(1)
+		k, _ := q.Get()
+		q.AddLow(1)
+		if add {
+			q.Add(1)
+		}
+		q.Done(k)
+		q.Add(2)
+		if k, _ := q.Get(); (k == 1) != add {
+			t.Errorf("Add too %v: got %d first", add, k)
+		}
+	}
 }

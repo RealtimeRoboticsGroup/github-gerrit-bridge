@@ -1503,7 +1503,11 @@ Known gaps:
   which the site's other tooling already uses. It reconnects with backoff.
   `stream-events` cannot replay events missed while it was disconnected,
   so every reconnect queues a full resync of open changes. Because
-  reconciliation is level-triggered, that is enough.
+  reconciliation is level-triggered, that is enough. A resync's keys wait
+  behind those events queue, but for one key in every four handed out,
+  and an event for one of them moves it up: a resync of every open PR
+  takes minutes, and in the rehearsal (seventh audit) each one held back
+  the reviews, closes and comments that came after it as long.
 - `/healthz` and `/metrics` (Prometheus). Metrics: queue depth, reconcile
   latency, API errors, and GitHub rate-limit budget.
 - Rate limits: GitHub ETag conditional requests (as built 2026-10-19:
