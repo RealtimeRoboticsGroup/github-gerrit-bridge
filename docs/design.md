@@ -855,7 +855,10 @@ mirrored are checked, and only for reviewers with a Gerrit account.
     if it cannot tell, and stops if its account joins it (directly or
     through an included group) while it runs: CI would then build
     everything the bridge uploads or posts as itself (fifth and sixth
-    audits).
+    audits). The watch reads the group afresh each minute, and stops the
+    bridge too if it cannot read it for ten minutes running (seventh
+    audit). Set it to the group gerrit-buildkite reads, which it names
+    itself: the bridge cannot check that.
 - **CI results come from Buildkite, not from CI's messages**
   (`ci.buildkite`; `internal/buildkite`). gerrit-buildkite builds a patch
   set with `commit` = the Gerrit revision, so the bridge lists the

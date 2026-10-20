@@ -238,7 +238,9 @@ func TestBridgeAccountMustNotBeTrusted(t *testing.T) {
 }
 
 // Nor once someone adds it, or a group it is in, while it runs (sixth
-// audit).
+// audit), as soon as the next check, which reads the group afresh, not
+// from the 5-minute answer IsTrusted keeps (seventh audit). A group it
+// cannot read waits, for maxUnread checks.
 func TestBridgeStopsOnceTrusted(t *testing.T) {
 	f := &checksFakes{group: []gerrit.AccountInfo{{AccountID: 5}}}
 	c := &Checks{Gerrit: f, TrustedGroup: "Verified Users", Logger: slog.Default()}
@@ -247,18 +249,26 @@ func TestBridgeStopsOnceTrusted(t *testing.T) {
 	if err := c.WatchUntrusted(ctx, 9, 5*time.Millisecond); err != nil {
 		t.Errorf("an untrusted bridge stopped: %v", err)
 	}
-	f.group, c.trusted = append(f.group, gerrit.AccountInfo{AccountID: 9}), nil
+	f.group = append(f.group, gerrit.AccountInfo{AccountID: 9})
+	if trusted, _ := c.IsTrusted(ctx, 9); trusted {
+		t.Fatal("precondition: IsTrusted's answer is the cached one")
+	}
 	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := c.WatchUntrusted(ctx, 9, 5*time.Millisecond); err == nil || ctx.Err() != nil {
 		t.Errorf("a bridge made trusted kept running (err %v)", err)
 	}
-	// A group it cannot read for now only waits.
+	// A group it cannot read for now only waits; for good, it stops.
 	c = &Checks{Gerrit: failingGroups{f}, TrustedGroup: "Verified Users", Logger: slog.Default()}
-	ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel = context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	if err := c.WatchUntrusted(ctx, 9, 5*time.Millisecond); err != nil {
-		t.Errorf("stopped on a group it could not read: %v", err)
+		t.Errorf("stopped on a group it could not read for a moment: %v", err)
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.WatchUntrusted(ctx, 9, 5*time.Millisecond); err == nil || ctx.Err() != nil {
+		t.Errorf("kept running on a group it could not read %d times (err %v)", maxUnread+1, err)
 	}
 }
 

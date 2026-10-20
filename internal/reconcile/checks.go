@@ -199,7 +199,7 @@ func (c *Checks) CheckUntrusted(ctx context.Context, account int) error {
 	if c.TrustedGroup == "" {
 		return nil
 	}
-	switch trusted, known := c.IsTrusted(ctx, account); {
+	switch trusted, known := c.isTrusted(ctx, account, true); {
 	case !known:
 		return fmt.Errorf("cannot read ci.trusted_group %q, to check the bridge's account is not in it; make it visible to the bridge", c.TrustedGroup)
 	case trusted:
@@ -211,32 +211,46 @@ func (c *Checks) CheckUntrusted(ctx context.Context, account int) error {
 // WatchUntrusted checks account against the trusted group (CheckUntrusted)
 // every period until ctx ends, returning an error once it is in it:
 // someone may add it, or a group it is in, while the bridge runs (sixth
-// audit). A group it cannot read for now only waits for the next check;
-// startup refused that already.
+// audit). Each check reads the group afresh, not IsTrusted's 5-minute
+// answer (seventh audit). A group it cannot read for now waits for the
+// next check, but not for longer than maxUnread checks.
 func (c *Checks) WatchUntrusted(ctx context.Context, account int, every time.Duration) error {
 	t := time.NewTicker(every)
 	defer t.Stop()
-	for {
+	for unread := 0; ; {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
 		}
-		if trusted, known := c.IsTrusted(ctx, account); trusted && known {
+		trusted, known := c.isTrusted(ctx, account, true)
+		if unread++; known {
+			unread = 0
+		}
+		if (trusted && known) || unread > maxUnread {
 			return c.CheckUntrusted(ctx, account)
 		}
 	}
 }
 
+// maxUnread is how many checks in a row WatchUntrusted lets go by without
+// reading the trusted group.
+const maxUnread = 10
+
 // IsTrusted reports whether account is in the trusted group. known is
 // false if the group could not be read (then nothing is claimed).
 func (c *Checks) IsTrusted(ctx context.Context, account int) (trusted, known bool) {
+	return c.isTrusted(ctx, account, false)
+}
+
+// isTrusted is IsTrusted, reading the group afresh if fresh.
+func (c *Checks) isTrusted(ctx context.Context, account int, fresh bool) (trusted, known bool) {
 	if c.TrustedGroup == "" {
 		return false, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.trusted == nil || time.Since(c.trustedAt) > 5*time.Minute {
+	if fresh || c.trusted == nil || time.Since(c.trustedAt) > 5*time.Minute {
 		members, err := c.Gerrit.GroupMembers(ctx, c.TrustedGroup)
 		if err != nil {
 			c.Logger.Warn("cannot read trusted group; not explaining CI", "group", c.TrustedGroup, "err", err)
