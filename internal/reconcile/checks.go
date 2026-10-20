@@ -208,6 +208,26 @@ func (c *Checks) CheckUntrusted(ctx context.Context, account int) error {
 	return nil
 }
 
+// WatchUntrusted checks account against the trusted group (CheckUntrusted)
+// every period until ctx ends, returning an error once it is in it:
+// someone may add it, or a group it is in, while the bridge runs (sixth
+// audit). A group it cannot read for now only waits for the next check;
+// startup refused that already.
+func (c *Checks) WatchUntrusted(ctx context.Context, account int, every time.Duration) error {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+		}
+		if trusted, known := c.IsTrusted(ctx, account); trusted && known {
+			return c.CheckUntrusted(ctx, account)
+		}
+	}
+}
+
 // IsTrusted reports whether account is in the trusted group. known is
 // false if the group could not be read (then nothing is claimed).
 func (c *Checks) IsTrusted(ctx context.Context, account int) (trusted, known bool) {

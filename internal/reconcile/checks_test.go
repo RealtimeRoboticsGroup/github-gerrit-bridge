@@ -237,6 +237,31 @@ func TestBridgeAccountMustNotBeTrusted(t *testing.T) {
 	}
 }
 
+// Nor once someone adds it, or a group it is in, while it runs (sixth
+// audit).
+func TestBridgeStopsOnceTrusted(t *testing.T) {
+	f := &checksFakes{group: []gerrit.AccountInfo{{AccountID: 5}}}
+	c := &Checks{Gerrit: f, TrustedGroup: "Verified Users", Logger: slog.Default()}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := c.WatchUntrusted(ctx, 9, 5*time.Millisecond); err != nil {
+		t.Errorf("an untrusted bridge stopped: %v", err)
+	}
+	f.group, c.trusted = append(f.group, gerrit.AccountInfo{AccountID: 9}), nil
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.WatchUntrusted(ctx, 9, 5*time.Millisecond); err == nil || ctx.Err() != nil {
+		t.Errorf("a bridge made trusted kept running (err %v)", err)
+	}
+	// A group it cannot read for now only waits.
+	c = &Checks{Gerrit: failingGroups{f}, TrustedGroup: "Verified Users", Logger: slog.Default()}
+	ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := c.WatchUntrusted(ctx, 9, 5*time.Millisecond); err != nil {
+		t.Errorf("stopped on a group it could not read: %v", err)
+	}
+}
+
 type failingGroups struct{ *checksFakes }
 
 func (failingGroups) GroupMembers(context.Context, string) ([]gerrit.AccountInfo, error) {

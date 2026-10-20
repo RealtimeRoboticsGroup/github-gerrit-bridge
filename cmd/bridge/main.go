@@ -395,6 +395,15 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Enqueue: q.Add}
 	wg.Go(func() { reconcile.Work(ctx, q, dispatch, cfg.Workers, logger) })
 	wg.Go(func() {
+		// Stop if the bridge's account joins CI's trusted group.
+		if err := checks.WatchUntrusted(ctx, self.AccountID, time.Minute); err != nil {
+			select {
+			case errc <- err:
+			default:
+			}
+		}
+	})
+	wg.Go(func() {
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 		}

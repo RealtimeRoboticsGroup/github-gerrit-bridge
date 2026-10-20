@@ -839,7 +839,12 @@ mirrored are checked, and only for reviewers with a Gerrit account.
     uploader is not in Verified Users. A trusted reviewer can comment
     `retest`."
   - The group name is a config value (`ci.trusted_group`, default
-    `Verified Users`).
+    `Verified Users`, which gerrit-buildkite hard-codes; it may not be
+    empty). The bridge refuses to start if its own account is in it, or
+    if it cannot tell, and stops if its account joins it (directly or
+    through an included group) while it runs: CI would then build
+    everything the bridge uploads or posts as itself (fifth and sixth
+    audits).
 - **CI results come from Buildkite, not from CI's messages**
   (`ci.buildkite`; `internal/buildkite`). gerrit-buildkite builds a patch
   set with `commit` = the Gerrit revision, so the bridge lists the

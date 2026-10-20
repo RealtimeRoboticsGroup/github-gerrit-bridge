@@ -90,6 +90,14 @@ func TestMissingRequired(t *testing.T) {
 	}
 }
 
+// The bridge checks it is not in CI's trusted group, so the group cannot
+// be left out (sixth audit).
+func TestTrustedGroupIsRequired(t *testing.T) {
+	if _, err := Parse([]byte(full + "ci:\n  trusted_group: \"\"\n")); err == nil || !strings.Contains(err.Error(), "ci.trusted_group") {
+		t.Errorf("err = %v", err)
+	}
+}
+
 func TestExactlyOneToken(t *testing.T) {
 	both := strings.Replace(full, "  token_file:", "  token_command: [gh, auth, token]\n  token_file:", 1)
 	none := strings.Replace(full, "  token_file: /etc/bridge/github-token\n", "", 1)

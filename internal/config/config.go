@@ -216,6 +216,9 @@ func (c *Config) validate() error {
 	if (c.GitHub.TokenFile == "") == (len(c.GitHub.TokenCommand) == 0) {
 		errs = append(errs, errors.New("exactly one of github.token_file and github.token_command is required"))
 	}
+	// CI's trusted group: the bridge must check it is not in it (design
+	// §6.5), so there is no turning that off.
+	req("ci.trusted_group", c.CI.TrustedGroup)
 	if _, err := regexp.Compile(c.CI.MessagePattern); err != nil {
 		errs = append(errs, fmt.Errorf("ci.message_pattern: %w", err))
 	}
