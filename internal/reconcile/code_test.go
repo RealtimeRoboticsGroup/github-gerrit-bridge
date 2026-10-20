@@ -2203,6 +2203,47 @@ func TestLostLinkIsAdopted(t *testing.T) {
 		t.Fatalf("uploads %v, change %d, revisions %+v: want the one upload adopted and recorded", up.uploads, n, st.Revisions)
 	}
 
+	// Had someone added a patch set before it was adopted, the next push
+	// builds on the adopted upload: not on theirs, whose message would
+	// become the PR's (seventh audit).
+	s2, im2, up2, _, _, _ := gerritBornWorld(t, false)
+	up2.create = true
+	h = s2.commit(s2.git("work", "rev-parse", "HEAD^"), "new.txt", "n\n", "New")
+	s2.push("github.git", h, "refs/heads/topic")
+	s2.pr(60, "topic", h, "main", "austin")
+	s2.pushed("o/r", "refs/heads/topic", h, "austin")
+	fail = true
+	im2.link = func(ctx context.Context, n int, origin, branch, changeID string, pr *github.PullRequest) error {
+		if fail {
+			fail = false
+			up2.before = nil
+			ci := s2.changes[n]
+			mal := s2.commit(h+"^", "new.txt", "mallory's\n", "Mallory's title\n\nChange-Id: "+changeID+"\n")
+			s2.push("gerrit.git", mal, fmt.Sprintf("refs/changes/%02d/%d/2", n%100, n))
+			ci.Revisions[mal] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 9, Username: "mallory"},
+				Commit: commitInfo(s2.gitOut("work", "log", "-1", "--format="+commitInfoFormat, mal))}
+			ci.CurrentRevision = mal
+			return errors.New("state push refused")
+		}
+		return updateStateFn(ctx, im2.Store, n, "Link", func(st *state.Change) {
+			st.State.Change, st.State.ChangeID, st.State.Branch, st.State.Origin, st.State.PR = n, changeID, branch, origin, pr.Number
+			st.State.HeadBranch = pr.HeadKey("o/r")
+		})
+	}
+	im2.Import(ctx, "main")
+	im2.Import(ctx, "main")
+	h2 := s2.commit(h, "new.txt", "n2\n", "More")
+	s2.push("github.git", h2, "refs/heads/topic")
+	s2.pulls[60].Head.SHA = h2
+	s2.pushed("o/r", "refs/heads/topic", h2, "austin")
+	if err := im2.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	last := strings.Fields(strings.TrimPrefix(up2.uploads[len(up2.uploads)-1], "austin "))[0]
+	if msg := s2.git("m.git", "log", "-1", "--format=%B", last); len(up2.uploads) < 2 || strings.Contains(msg, "Mallory") {
+		t.Errorf("uploads %v; the push after adoption took the message %q", up2.uploads, msg)
+	}
+
 	// Someone else's change with the PR's Change-Id, one made for another
 	// PR, or one no longer open, is not adopted. Nor is the author's own
 	// upload when someone else pushed the PR's head (fourth audit): the

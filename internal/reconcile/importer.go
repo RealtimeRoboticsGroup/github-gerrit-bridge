@@ -641,6 +641,15 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			return res, nil
 		}
 		base = cur.CurrentRevision
+		for sha, r := range cur.Revisions {
+			if baseGH == "" && r.Number == 1 && st.State.Origin == "github" {
+				// None recorded (a lost link adopted, ownUpload): the
+				// adopted upload, not whatever is current, someone else's
+				// patch set perhaps, whose message would become the PR's
+				// (seventh audit).
+				base = sha
+			}
+		}
 		for _, r := range st.Revisions {
 			if _, ok := cur.Revisions[r.GerritSHA]; ok && r.GitHubSHA != "" {
 				base, baseGH = r.GerritSHA, r.GitHubSHA
