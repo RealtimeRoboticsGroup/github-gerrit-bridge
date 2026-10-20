@@ -1274,6 +1274,14 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 				body = "Not counted as a vote: someone other than its author edited it.\n\n" + body
 			}
 		}
+		// Mirrored late (the bridge was busy, or down), it is older than
+		// the reviewer's own vote in Gerrit since, which stands: an old
+		// approval must not undo their veto (seventh audit).
+		since := vote && known && !early && login != "" && asAuthor(login) &&
+			s.votedSince(gerrit.AccountInfo{Username: authors[login]}, rv.SubmittedAt, anyCodeReview)
+		if since {
+			body = "Not counted as a vote: its author has voted in Gerrit since.\n\n" + body
+		}
 		if login != "" && c.bodyTooFresh(s, "review/"+strconv.FormatInt(rv.ID, 10), rv.SubmittedAt, rv.Body) {
 			continue
 		}
@@ -1281,7 +1289,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		key := "review/" + strconv.FormatInt(rv.ID, 10)
 		add(key, login, ghComment{kindReviewBody, rv.ID, rv.Body}, ps, gerrit.PatchSetLevel,
 			gerrit.CommentInput{Message: gerritBody(rv.User.Login, rv.HTMLURL, body, asAuthor(login)), Unresolved: &f})
-		if vote && known && !early && reviewed == s.current && login != "" {
+		if vote && known && !early && !since && reviewed == s.current && login != "" {
 			// Design §6.4: approve = Code-Review +2 (or the most the user
 			// may give), request changes = -1. Only as the user (Run-As);
 			// the bridge never votes on someone's behalf as itself.
@@ -1553,11 +1561,8 @@ func (c *Comments) dropDismissed(ctx context.Context, n, pr int, rv github.Revie
 		// a deleted account: still a person's.
 		return nil
 	}
-	for _, m := range s.messages {
-		at, err := time.Parse("2006-01-02 15:04:05.999999999", m.Date)
-		if err == nil && at.After(d.At) && sameAccount(m.Author, reviewer) && !isBridgeTag(m.Tag) && positiveCodeReview.MatchString(m.Message) {
-			return nil // voted again since
-		}
+	if s.votedSince(reviewer, d.At, positiveCodeReview) {
+		return nil // voted again since
 	}
 	by := "@" + d.By
 	if d.By == "" {
@@ -1601,8 +1606,24 @@ func sameAccount(a, b gerrit.AccountInfo) bool {
 
 // positiveCodeReview matches the change message Gerrit writes when
 // someone votes Code-Review up ("Patch Set 3: Code-Review+2", with any
-// other labels).
-var positiveCodeReview = regexp.MustCompile(`\APatch Set \d+:(?: [^ \n]+)*? Code-Review\+[1-9]`)
+// other labels); anyCodeReview when they vote it at all, reset it
+// ("-Code-Review") or remove it.
+var (
+	positiveCodeReview = regexp.MustCompile(`\APatch Set \d+:(?: [^ \n]+)*? Code-Review\+[1-9]`)
+	anyCodeReview      = regexp.MustCompile(`\A(?:Patch Set \d+:(?: [^ \n]+)*? (?:Code-Review[+-]\d|-Code-Review)|Removed Code-Review[+-]?\d)`)
+)
+
+// votedSince reports whether reviewer voted Code-Review in Gerrit after
+// t themselves, not through the bridge, as re matches the message.
+func (s *commentSnapshot) votedSince(reviewer gerrit.AccountInfo, t time.Time, re *regexp.Regexp) bool {
+	for _, m := range s.messages {
+		at, err := time.Parse("2006-01-02 15:04:05.999999999", m.Date)
+		if err == nil && at.After(t) && sameAccount(m.Author, reviewer) && !isBridgeTag(m.Tag) && re.MatchString(m.Message) {
+			return true
+		}
+	}
+	return false
+}
 
 // cannotWithdraw says, once, on change n and its PR, that the vote of
 // dismissed review rv still stands, and why: whoever submits must know.

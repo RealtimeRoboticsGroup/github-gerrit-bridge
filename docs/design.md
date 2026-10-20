@@ -765,7 +765,12 @@ Configurable per label. The default:
 | Vote removed           | Dismiss review                                       |
 
 GitHub → Gerrit: `APPROVE` → +2 if the user has the right in Gerrit,
-otherwise +1. `REQUEST_CHANGES` → -1 (configurable to -2). A person's
+otherwise +1. `REQUEST_CHANGES` → -1 (configurable to -2). A review the
+bridge gets to after its author voted Code-Review in Gerrit themselves
+(voted, reset or removed their vote: their own change messages, not the
+bridge's) is mirrored as text, saying it was not counted: an approval
+mirrored late, the bridge busy or down, must not undo a veto given since,
+nor a change request a +2 (seventh audit). A person's
 dismissal of an approval → the reviewer's positive Code-Review vote on the
 current patch set reset to 0, as them, unless they voted Code-Review up in
 Gerrit themselves since (the owner's call, 2026-10-19). Whoever may

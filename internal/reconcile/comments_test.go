@@ -1632,6 +1632,42 @@ func TestReviewOfAHeadPushedMomentsBeforeIsNotAboutIt(t *testing.T) {
 	}
 }
 
+// A review mirrored late (the bridge busy or down) is older than the
+// reviewer's own vote in Gerrit since, which stands: an old approval does
+// not undo their veto, nor an old change request their +2 (seventh
+// audit). Their own vote before it, or the bridge's, does not count.
+func TestOldReviewDoesNotReplaceANewerGerritVote(t *testing.T) {
+	for _, tc := range []struct {
+		state, msg string
+		before     bool // the Gerrit vote is older than the review
+		tag        string
+		gerrit     int // the vote cast in Gerrit
+		want       int
+	}{
+		{"APPROVED", "Patch Set 2: Code-Review-2\n\nNo: this breaks the build.", false, "", -2, -2},
+		{"CHANGES_REQUESTED", "Patch Set 2: Code-Review+2", false, "", 2, 2},
+		{"APPROVED", "Removed Code-Review+1 by Bob G <bob@example.com>", false, "", 0, 0},
+		{"APPROVED", "Patch Set 2: Code-Review-2", true, "", -2, 2},
+		{"APPROVED", "Patch Set 2: Code-Review-1", false, mirrorTag, -1, 2},
+	} {
+		e := newCommentsEnv(t)
+		e.runAs()
+		e.g.vote("bobg", "Code-Review", tc.gerrit)
+		e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "v", Author: gerrit.AccountInfo{AccountID: 7, Username: "bobg"},
+			Tag: tc.tag, Date: e.g.tick(), RevisionNumber: 2, Message: tc.msg})
+		submitted := e.g.now().Add(-24 * time.Hour)
+		if tc.before {
+			submitted = e.g.now().Add(time.Hour)
+		}
+		e.h.reviews = append(e.h.reviews, github.Review{ID: 50, State: tc.state, CommitID: "sha2", User: github.User{Login: "bob"},
+			SubmittedAt: submitted, HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-50"})
+		e.sync(t)
+		if v := e.g.labels["Code-Review"]["bobg"]; v != tc.want {
+			t.Errorf("%s, then %q in Gerrit (before %v, tag %q): Code-Review %+d, want %+d", tc.state, tc.msg, tc.before, tc.tag, v, tc.want)
+		}
+	}
+}
+
 // The wait is for any comment that would start CI as its author: one
 // whose "retest" Gerrit or the bridge may trim spaces from, and a review
 // body, which GitHub gives no edit time for, from when the bridge first

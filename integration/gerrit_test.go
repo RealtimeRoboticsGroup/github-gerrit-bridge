@@ -503,6 +503,25 @@ func TestRunAsAndUsernameMatching(t *testing.T) {
 			t.Errorf("alice's Code-Review %+d stands after deleting it", a.Value)
 		}
 	}
+	// A reviewer's own vote in Gerrit after their GitHub review keeps it
+	// from voting when mirrored late (seventh audit): a vote, a reset or a
+	// delete, each worded as Comments' anyCodeReview reads it.
+	if err := bridge.As("alice").SetReview(ctx, n, "current", gerrit.ReviewInput{Labels: map[string]int{"Code-Review": -1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := bridge.As("alice").SetReview(ctx, n, "current", gerrit.ReviewInput{Labels: map[string]int{"Code-Review": 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if ch, err = srv.Admin.GetChange(ctx, n, "MESSAGES", "DETAILED_ACCOUNTS"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Removed Code-Review+1 by", "Patch Set 1: Code-Review-1", "Patch Set 1: -Code-Review"} {
+		if !slices.ContainsFunc(ch.Messages, func(m gerrit.ChangeMessage) bool {
+			return m.Author.Username == "alice" && strings.HasPrefix(m.Message, want)
+		}) {
+			t.Errorf("no message of alice's begins %q: %+v", want, ch.Messages)
+		}
+	}
 }
 
 // The audit's premise (design §7.1), on a real Gerrit: X-Gerrit-RunAs
