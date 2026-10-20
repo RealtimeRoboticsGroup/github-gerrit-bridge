@@ -1445,6 +1445,14 @@ Known gaps:
   the author last pushed, and commented over a minute after that push,
   starts CI on it (sixth audit). GitHub shows new commits on the open page as they come; a
   `retest` in a review, or in Gerrit, names its patch set.
+- **A stranger can make a trusted user's later patch sets need a
+  retest.** Whoever chose a patch set's parents is the lowest patch set
+  below with the same parents; a stranger who uploads a patch set on the
+  parent a trusted user later moves to (say main's next tip) becomes
+  that chooser, so the trusted user's patch sets there are not their
+  own code to CI and to the bridge (it uploads their pushes as itself,
+  and does not export to the author's branch). Only trust is denied;
+  a rework onto another parent ends it (seventh audit).
 - **Dismissals are read from every page of a PR's issue events**, which
   its author can add to (renames, draft toggles); GraphQL's
   `timelineItems` filtered by type would cost less (sixth audit).
@@ -1638,6 +1646,22 @@ Abandon and Toggle Work In Progress for Administrators.
   The bridge needs a separate one, in none of those groups, even if it
   uses the same GitHub bot login (whose GitHub actions are never mapped
   to any Gerrit account).
+- **The github plugin's account page** (`/plugins/github-plugin/*.gh`,
+  its `AccountController`) takes the username, full name and email from
+  the form it posts, and links the email unverified: anyone signed in
+  can give themselves the username of a GitHub user with no Gerrit
+  account yet, and any email nobody has linked (seventh audit, by
+  reading the plugin, v3.8.1-97). The bridge matches a GitHub login to
+  the Gerrit account with that username: the claimer would then be
+  that GitHub user to the bridge (owning their imported changes, their
+  comments and votes posted as the claimer's), and the claimed email
+  puts that person's name on the claimer's commits once on GitHub. Not
+  CI's trust, nor a trusted user's account (their username and emails
+  are taken). Patch the plugin to take only the GitHub login and
+  GitHub-verified emails, or block posts to that page at the proxy if
+  sign-up still works without it; and set
+  `auth.userNameCaseInsensitive = true`, as the test site does, or a
+  case variant of a trusted username makes the bridge unmap that user.
 - **The bridge behind a TLS proxy** that forwards only `/webhook` and
   `/checks/`, buffers request bodies, and is listed in
   `github.webhook_trusted_proxies`; `listen` stays on loopback.
