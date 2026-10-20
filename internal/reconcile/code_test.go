@@ -957,10 +957,13 @@ func TestUnlinkedImportNeedsItsOwner(t *testing.T) {
 			"a": {Number: 1, Commit: gerrit.CommitInfo{Message: first}}, "b": {Number: 2, Commit: gerrit.CommitInfo{Message: trailer}}}}
 		s.Changes[n] = &GerritChange{Message: trailer, OwnerID: 5, Owner: "austin", PatchSet: 2}
 	}
+	// One whose patch sets cannot be read waits, and stops nothing else
+	// (sixth audit).
+	s.Changes[15] = &GerritChange{Message: trailer, OwnerID: 5, Owner: "austin", PatchSet: 2}
 	if err := c.markUnlinked(ctx, s, "o/r", open); err != nil {
 		t.Fatal(err)
 	}
-	if want := map[int]bool{1: true, 2: true, 14: true}; !reflect.DeepEqual(trueKeys(s.Unlinked), want) {
+	if want := map[int]bool{1: true, 2: true, 14: true, 15: true}; !reflect.DeepEqual(trueKeys(s.Unlinked), want) {
 		t.Errorf("unlinked %v, want %v", trueKeys(s.Unlinked), want)
 	}
 	if got := prBodyForMessage("Mine.\nGitHub-PR: https://github.com/o/r/pull/9\n"); got != "Mine." {

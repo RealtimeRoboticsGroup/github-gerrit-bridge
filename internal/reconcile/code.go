@@ -733,7 +733,11 @@ func (c *Code) markUnlinked(ctx context.Context, s *Snapshot, repo string, open 
 		if ch.PatchSet != 1 {
 			ci, err := c.Gerrit.GetChange(ctx, n, "ALL_REVISIONS", "ALL_COMMITS")
 			if err != nil {
-				return err
+				// It waits; the rest of the branch does not (sixth
+				// audit: anyone can make one change hard to read).
+				c.Logger.Warn("cannot read a change's patch sets; not exporting it for now", "change", n, "err", err)
+				s.Unlinked[n] = true
+				continue
 			}
 			first, ok := revisionsByNumber(ci)[1]
 			if n1, ok1 := importedFrom(first.Commit.Message, repo); !ok || !ok1 || n1 != num {
