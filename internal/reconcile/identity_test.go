@@ -153,6 +153,38 @@ func TestUsersPinGitHubIDs(t *testing.T) {
 	}
 }
 
+// An override maps login alice-gh to Gerrit's alice: whoever registers
+// "alice" on GitHub (with an account old enough to pass the age rule)
+// must not be matched to alice by username first, and so lock out the
+// override's own account (fifth audit). The override's account renamed
+// back to "alice" still is.
+func TestUsernameMatchDoesNotTakeAnOverridesAccount(t *testing.T) {
+	ctx := context.Background()
+	registered := githubCreated.Add(24 * time.Hour) // the attacker's GitHub account is older
+	for _, tc := range []struct {
+		name     string
+		aliceID  int64 // whoever has the login "alice" on GitHub
+		matches  bool
+		withPins bool
+	}{{"someone else", 2, false, true}, {"the override's account, renamed back", 1, true, true}, {"no pins: nobody", 1, false, false}} {
+		pins := &memPins{ids: &state.Identities{ByUser: map[string]state.Identity{}}}
+		u := &Users{Gerrit: fakeAccounts{users: []string{"alice"}, registered: map[int]time.Time{1: registered}},
+			Overrides: map[string]string{"alice-gh": "alice"}, GitHub: fakeIDs{"alice": tc.aliceID, "alice-gh": 1}}
+		if tc.withPins {
+			u.Pins = pins
+		}
+		if user, ok := u.GerritUser(ctx, "alice"); ok != tc.matches {
+			t.Errorf("%s: login alice = %q %v", tc.name, user, ok)
+		}
+		if user, ok := u.GerritUser(ctx, "alice-gh"); tc.withPins && (!ok || user != "alice") {
+			t.Errorf("%s: the override's login = %q %v", tc.name, user, ok)
+		}
+		if p := pins.ids.ByUser["alice"]; tc.withPins && p.GitHubID != 1 {
+			t.Errorf("%s: alice pinned to %+v", tc.name, p)
+		}
+	}
+}
+
 func TestUsersRefuseUsernamesGerritReadsAsOtherAccounts(t *testing.T) {
 	// Gerrit takes "1000000" as account 1000000 and "me"/"self" as the
 	// caller wherever it takes an account, so whoever registers such a
@@ -202,7 +234,8 @@ func TestUsersRefuseGitHubAccountsNewerThanTheGerritAccount(t *testing.T) {
 	if user, ok := u.GerritUser(ctx, "admin"); ok {
 		t.Errorf("a newer GitHub account acts as %q", user)
 	}
-	if _, ok := pins.ids.ByUser["admin"]; ok {
+	// Pinned, if at all, to the override's account, never to this one.
+	if p, ok := pins.ids.ByUser["admin"]; ok && p.GitHubID != 9 {
 		t.Errorf("pinned: %+v", pins.ids.ByUser)
 	}
 	// Older GitHub accounts match and pin, and overrides are trusted as

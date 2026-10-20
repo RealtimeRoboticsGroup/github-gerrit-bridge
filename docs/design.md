@@ -1319,7 +1319,10 @@ Known gaps:
 - **First sight is trusted, if the GitHub account is old enough.** A
   login that changed hands to an account older than the Gerrit account
   would still pin. To pin an account up front, write its entry in
-  `refs/bridge/identities` by hand.
+  `refs/bridge/identities` by hand, or give it an override: the Gerrit
+  account an override names is pinned to the override's GitHub account
+  before anyone matching its username can be (fifth audit: whoever
+  registered the username on GitHub first took it).
 - **Spam from forks.** Every fork PR becomes a Gerrit change, uploaded by
   the bridge if its author has no account, and every event on it costs
   GitHub API calls. Each PR is rate-limited, but not each author: someone

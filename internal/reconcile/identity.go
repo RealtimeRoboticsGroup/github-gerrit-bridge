@@ -229,6 +229,11 @@ func (u *Users) GerritUser(ctx context.Context, login string) (string, bool) {
 	user, account, ok, err := u.lookup(ctx, login)
 	if err == nil && ok && u.Pins != nil {
 		ok, err = u.pinned(ctx, login, user, account)
+	} else if err == nil && ok && account != 0 && u.overrideFor(user) != "" {
+		// Without pins, nothing tells an override's GitHub account
+		// from whoever registers the Gerrit username on GitHub.
+		u.warn("GitHub login is the Gerrit username an override gives another login; not acting as it", login, user)
+		ok = false
 	}
 	if err != nil {
 		// Don't cache errors; fall back to the bridge this time.
@@ -309,6 +314,17 @@ func (u *Users) lookup(ctx context.Context, login string) (user string, account 
 	return user, account, true, nil
 }
 
+// overrideFor is the GitHub login an override maps to Gerrit user user;
+// "" if none.
+func (u *Users) overrideFor(user string) string {
+	for _, gh := range sortedStringKeys(u.Overrides) {
+		if strings.EqualFold(u.Overrides[gh], user) {
+			return gh
+		}
+	}
+	return ""
+}
+
 func (u *Users) warn(msg, login, user string) {
 	if u.Logger != nil {
 		u.Logger.Warn(msg, "github_login", login, "gerrit_user", user)
@@ -340,7 +356,30 @@ func (u *Users) pinned(ctx context.Context, login, user string, account int) (bo
 			return false, err
 		}
 		key := strings.ToLower(user)
-		if p, ok := ids.ByUser[key]; ok {
+		p, ok := ids.ByUser[key]
+		if over := u.overrideFor(user); !ok && account != 0 && over != "" {
+			// An override says user is GitHub's over, so the account
+			// is theirs, whoever registers user's own name on GitHub
+			// first (fifth audit: they were matched, and pinned, before
+			// over was ever seen). Pinned to over's account now, it is
+			// still theirs under either login.
+			oid, _, err := u.GitHub.UserID(ctx, over)
+			if err != nil {
+				return false, err
+			}
+			p, ok = state.Identity{GitHubID: oid, GitHubLogin: over, Pinned: time.Now().UTC()}, true
+			if !u.DryRun {
+				ids.ByUser[key] = p
+				err := u.Pins.SaveIdentities(ctx, ids, fmt.Sprintf("Pin %s to GitHub @%s (id %d), its override", user, over, oid))
+				if errors.Is(err, state.ErrConflict) {
+					continue
+				}
+				if err != nil {
+					return false, err
+				}
+			}
+		}
+		if ok {
 			if p.GitHubID == id {
 				return true, nil
 			}
