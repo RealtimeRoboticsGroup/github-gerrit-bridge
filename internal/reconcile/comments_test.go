@@ -1721,14 +1721,64 @@ func TestOldReviewDoesNotReplaceANewerGerritVote(t *testing.T) {
 // would take: were its account ever trusted, any GitHub user's "retest"
 // would start CI with secrets (seventh audit).
 func TestBridgePostsCarryNoRetestLine(t *testing.T) {
-	e := newCommentsEnv(t)
-	e.h.ics = append(e.h.ics, github.IssueComment{ID: 1, Body: "Please\nretest\n Retest\r\n", User: github.User{Login: "stranger"},
-		HTMLURL: "https://github.com/o/r/pull/1#issuecomment-1"})
-	e.sync(t)
-	ci := regexp.MustCompile(`(?m)^retest$`) // gerrit-buildkite's
-	gc := e.g.comments[len(e.g.comments)-1]
-	if gc.Author.AccountID != bridgeID || !strings.Contains(gc.Message, "Please") || retestLine.MatchString(gc.Message) || ci.MatchString(gc.Message) {
-		t.Errorf("posted by %d: %q", gc.Author.AccountID, gc.Message)
+	ci := regexp.MustCompile(`(?mi)^retest$`) // gerrit-buildkite's, in any case
+	// However Gerrit or a client trims a message's ends (Java's trim takes
+	// every control character; eighth audit) or reads its line breaks.
+	javaTrim := func(s string) string { return strings.TrimFunc(s, func(r rune) bool { return r <= ' ' }) }
+	newlines := strings.NewReplacer("\r", "\n", "\v", "\n", "\f", "\n", "\u0085", "\n", "\u2028", "\n", "\u2029", "\n")
+	reads := func(m string) []string {
+		return []string{m, javaTrim(m), strings.TrimSpace(m), javaTrim(newlines.Replace(m))}
+	}
+	for _, body := range []string{
+		"Please\nretest\n Retest\r\n",
+		"Please\nRETEST",
+		"Please\n\u00a0retest",
+		"Please\nretest\x01",
+		"Please\rretest\rnow",
+		"Please\u2028retest",
+	} {
+		e := newCommentsEnv(t)
+		e.h.ics = append(e.h.ics, github.IssueComment{ID: 1, Body: body, User: github.User{Login: "stranger"},
+			HTMLURL: "https://github.com/o/r/pull/1#issuecomment-1"})
+		e.sync(t)
+		gc := e.g.comments[len(e.g.comments)-1]
+		if gc.Author.AccountID != bridgeID || !strings.Contains(gc.Message, "Please") {
+			t.Errorf("%q posted by %d: %q", body, gc.Author.AccountID, gc.Message)
+		}
+		for _, m := range reads(gc.Message) {
+			if ci.MatchString(m) {
+				t.Errorf("%q: CI reads a retest in %q", body, m)
+			}
+		}
+	}
+}
+
+// Whatever the bridge or Gerrit trims or cuts on the way, a comment that
+// may reach Gerrit as a "retest" line waits before it is posted as its
+// author: a no-break space or a control character around it, or a cut
+// at the size limit just after it (eighth audit).
+func TestAnyRetestWaits(t *testing.T) {
+	long := strings.Repeat("x", maxGerritComment-len("retest")-1) + "\nretest" + strings.Repeat("y", 100)
+	for name, body := range map[string]string{
+		"nbsp": "\u00a0retest", "vtab": "retest\v", "formfeed": "\fretest", "ideographic": "retest\u3000",
+		"control": "retest\x01", "zero width": "\u200bretest", "cut": long, "prose": "Please retest it",
+	} {
+		e := newCommentsEnv(t)
+		e.runAs()
+		now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+		e.c.Now = func() time.Time { return now }
+		e.h.ics = append(e.h.ics, github.IssueComment{ID: 1, Body: body, User: github.User{Login: "bob"}, CreatedAt: now.Add(-5 * time.Second),
+			HTMLURL: "https://github.com/o/r/pull/1#issuecomment-1"})
+		var later *errLater
+		err := e.c.Sync(context.Background(), 5)
+		for _, gc := range e.g.comments {
+			if gc.Author.Username == "bobg" {
+				t.Errorf("%s: posted as bob at once: %q", name, gc.Message)
+			}
+		}
+		if !errors.As(err, &later) {
+			t.Errorf("%s: err = %v, want a wait", name, err)
+		}
 	}
 }
 

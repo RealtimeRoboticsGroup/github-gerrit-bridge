@@ -3,6 +3,7 @@ package reconcile
 import (
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 )
@@ -76,8 +77,28 @@ func forGitHub(s string) string { return noMentions(noMarkers(s)) }
 // trusted (seventh audit: CI's log showed hundreds of them refused only
 // because it was not).
 func forGerrit(s string) string {
-	return retestLine.ReplaceAllStringFunc(noMentions(s), func(l string) string { return "`" + strings.TrimSpace(l) + "`" })
+	return defuseRetest(noMentions(s))
 }
+
+// defuseRetest quotes each line of s that gerrit-buildkite could read as
+// its command once trimmed: "retest", in any case, with only space or
+// control characters around it. Any line break counts (Gerrit
+// or a client may make any of them a newline).
+func defuseRetest(s string) string {
+	lines := strings.Split(lineBreaks.Replace(s), "\n")
+	for i, l := range lines {
+		if t := strings.TrimFunc(l, trimmable); strings.EqualFold(t, "retest") {
+			lines[i] = "`" + t + "`"
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+var lineBreaks = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n", "\u0085", "\n", "\u2028", "\n", "\u2029", "\n")
+
+// trimmable is what someone may trim from a line's ends: space and
+// control characters.
+func trimmable(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }
 
 var (
 	brokenMarker = regexp.MustCompile(`(?i)(<!--\s*/?bridge)` + zwj + `:`)

@@ -1012,18 +1012,22 @@ func (c *Comments) now() time.Time {
 	return time.Now()
 }
 
-// retestLine is gerrit-buildkite's command to build a patch set, a line
-// `(?m)^retest$` in a patch set's message: in any case, and with spaces
-// or a CR around it, which the bridge or Gerrit may trim (seventh audit:
-// "retest " went without the wait, and reached Gerrit as "retest").
-var retestLine = regexp.MustCompile(`(?mi)^[ \t\r]*retest[ \t\r]*$`)
+// mentionsRetest reports whether text may carry gerrit-buildkite's
+// command to build a patch set, a line `(?m)^retest$`, once Gerrit has
+// it: "retest" anywhere, in any case. What the bridge and Gerrit do to a
+// comment on the way trims its ends (Go and Java each their own set of
+// characters) and cuts it to size, which can leave such a line where a
+// stricter match saw none (seventh audit: "retest "; eighth: a no-break
+// space, a control character, a cut at 12 KiB). Prose that says it waits
+// too, which costs only the wait.
+func mentionsRetest(text string) bool { return strings.Contains(strings.ToLower(text), "retest") }
 
 // tooFresh reports whether a comment changed at changed, saying body,
 // waits before it is posted as its author: a "retest" starts CI as them
 // (editSettle). s keeps the longest wait.
 func (c *Comments) tooFresh(s *commentSnapshot, changed time.Time, body string) bool {
 	w := editSettle - c.now().Sub(changed)
-	if w <= 0 || !retestLine.MatchString(body) {
+	if w <= 0 || !mentionsRetest(body) {
 		return false
 	}
 	s.wait = max(s.wait, w)
@@ -1035,7 +1039,7 @@ func (c *Comments) tooFresh(s *commentSnapshot, changed time.Time, body string) 
 // it was submitted, if later. Anyone with write access can edit a review,
 // and GraphQL, which says who did, may lag REST (seventh audit).
 func (c *Comments) bodyTooFresh(s *commentSnapshot, key string, submitted time.Time, body string) bool {
-	if !retestLine.MatchString(body) {
+	if !mentionsRetest(body) {
 		return false
 	}
 	now := c.now()
