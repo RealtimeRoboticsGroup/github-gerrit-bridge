@@ -314,19 +314,23 @@ type Desired struct {
 // drop removes the actions on the changes in skip.
 func (p *Plan) drop(skip *skips) {
 	p.Actions = slices.DeleteFunc(p.Actions, func(a Action) bool {
-		return (a.Change != 0 && skip.changes[a.Change]) || (isStackAction(a.Kind) && skip.stacks[a.String()])
+		return (a.Change != 0 && skip.changes[a.Change]) || (isStackAction(a.Kind) && skip.stacks[a.String()]) ||
+			(a.Kind == UpdatePR && a.Update.State == nil && a.Update.Base == nil && skip.texts[a.PR])
 	})
 }
 
-// skips are what one reconcile leaves out, GitHub having refused it as
-// such (refusedByGitHub): changes whose PR it refused an action on, and
-// stack actions, which are no one change's.
+// skips are what one reconcile leaves out: changes whose PR GitHub
+// refused an action on (refusedByGitHub), stack actions GitHub refused,
+// which are no one change's, and PRs whose text updates wait for a budget.
 type skips struct {
 	changes map[int]bool
 	stacks  map[string]bool // Action.String()
+	texts   map[int]bool    // PR
 }
 
-func newSkips() *skips { return &skips{changes: map[int]bool{}, stacks: map[string]bool{}} }
+func newSkips() *skips {
+	return &skips{changes: map[int]bool{}, stacks: map[string]bool{}, texts: map[int]bool{}}
+}
 
 func isStackAction(k ActionKind) bool { return k == CreateStack || k == AddToStack || k == Unstack }
 

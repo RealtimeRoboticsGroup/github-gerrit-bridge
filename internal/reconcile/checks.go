@@ -60,8 +60,12 @@ type Checks struct {
 	Builds gerritchecks.Builds
 	// StatusBudget, if set, bounds the statuses each account's votes and
 	// uploads make the bridge write (fourth audit: anyone registered can
-	// vote on every open change, over and over). CI's own are not.
-	StatusBudget *Budget
+	// vote on every open change, over and over). CI's own are not, nor
+	// those of the bridge's uploads, BridgeAccount's: they are GitHub's
+	// pushes, each PR's its own, and one budget for all would let one
+	// person's PRs hold up everyone's (fifth audit).
+	StatusBudget  *Budget
+	BridgeAccount int
 	DryRun       bool
 	Logger       *slog.Logger
 
@@ -145,8 +149,8 @@ func (c *Checks) Sync(ctx context.Context, n int) error {
 			c.Logger.Info("dry run: would set status", "change", n, "sha", short(sha), "context", s.Context, "state", s.State, "description", s.Description)
 			continue
 		}
-		if who := statusCause(ch, rev, s.Context); who.AccountID != 0 && (c.CIAccount == "" || who.Username != c.CIAccount) &&
-			!c.StatusBudget.Take(ctx, who.AccountID) {
+		if who := statusCause(ch, rev, s.Context); who.AccountID != 0 && who.AccountID != c.BridgeAccount &&
+			(c.CIAccount == "" || who.Username != c.CIAccount) && !c.StatusBudget.Take(ctx, who.AccountID) {
 			// The next sync, or resync, brings it up to date.
 			c.Logger.Info("status waits: whoever changed it changed too many lately", "change", n, "context", s.Context, "account", who.AccountID)
 			continue

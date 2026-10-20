@@ -198,6 +198,20 @@ func TestStatusesWithinTheirCausesBudget(t *testing.T) {
 	if !slices.Equal(f.set, []string{"gerrit/Code-Review", "gerrit/submittable"}) {
 		t.Errorf("set %v, want Code-Review and submittability, bob's", f.set)
 	}
+	// The bridge's upload (a GitHub push) is not charged: one budget for
+	// everyone without a Gerrit account would let one hold up all.
+	c.BridgeAccount = 9
+	c.StatusBudget.now = func() time.Time { return time.Now().Add(4 * time.Hour) }
+	c.StatusBudget.Take(ctx, 9)
+	f.ch.Labels["Code-Review"] = gerrit.LabelInfo{Values: crValues, All: []gerrit.ApprovalInfo{{AccountInfo: mallory, Value: 1, Date: "2026-10-19 14:00:00.000000000"}}}
+	f.set = nil
+	if err := c.Sync(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(f.set, "gerrit/Code-Review") {
+		t.Errorf("set %v: the bridge-caused status waited", f.set)
+	}
+	c.BridgeAccount = 0
 	// A newer upload is its uploader's doing.
 	if who := statusCause(f.ch, gerrit.RevisionInfo{Created: "2026-10-19 13:00:00.000000000", Uploader: mallory}, "gerrit/Code-Review"); who.AccountID != 9 {
 		t.Errorf("upload's status caused by %+v", who)

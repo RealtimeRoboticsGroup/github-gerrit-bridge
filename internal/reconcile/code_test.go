@@ -999,12 +999,33 @@ func TestPRUpdatesWithinBudget(t *testing.T) {
 	if err := c.apply(ctx, snap, p, skip); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(skip.changes, map[int]bool{2: true}) || strings.Join(s.calls, ",") != "update #10,update #30,update #30" {
-		t.Errorf("skip %v, calls %v", skip.changes, s.calls)
+	// Only the update waits, not the change: it is still recorded, so its
+	// statuses, votes and /submit do not wait too (fifth audit).
+	if len(skip.changes) != 0 || !reflect.DeepEqual(skip.texts, map[int]bool{20: true}) || strings.Join(s.calls, ",") != "update #10,update #30,update #30" {
+		t.Errorf("skip %v %v, calls %v", skip.changes, skip.texts, s.calls)
+	}
+	p.drop(skip)
+	if len(p.Actions) != 3 || slices.ContainsFunc(p.Actions, func(a Action) bool { return a.PR == 20 }) {
+		t.Errorf("after drop: %v", p.Actions)
 	}
 	s.calls = nil
-	if err := c.apply(ctx, snap, &Plan{Actions: []Action{{Kind: UpdatePR, Change: 3, PR: 30, Update: &github.PullUpdate{Body: ptr(links + " ")}}}}, skip); err != nil || !skip.changes[3] || len(s.calls) != 0 {
-		t.Errorf("err %v, skip %v, calls %v: #30's second chain update was made", err, skip.changes, s.calls)
+	if err := c.apply(ctx, snap, &Plan{Actions: []Action{{Kind: UpdatePR, Change: 3, PR: 30, Update: &github.PullUpdate{Body: ptr(links + " ")}}}}, skip); err != nil || !skip.texts[30] || len(s.calls) != 0 {
+		t.Errorf("err %v, skip %v, calls %v: #30's second chain update was made", err, skip.texts, s.calls)
+	}
+	// A trusted owner's chain is not held back by others' uploads, and the
+	// bridge's own uploads (GitHub's pushes, each PR's its own) share no
+	// budget.
+	c.Trusted = func(_ context.Context, a int) (bool, bool) { return a == 7, true }
+	c.BridgeAccount = 1
+	snap.Changes[3].OwnerID, snap.Changes[2].UploaderID = 7, 1
+	c.TextBudget.Take(ctx, 1) // the bridge's would be spent, had it one
+	s.calls = nil
+	p = &Plan{Actions: []Action{
+		{Kind: UpdatePR, Change: 3, PR: 30, Update: &github.PullUpdate{Body: ptr(links + "  ")}},
+		{Kind: UpdatePR, Change: 2, PR: 20, Update: &github.PullUpdate{Title: ptr("Imported, retitled")}},
+	}}
+	if err := c.apply(ctx, snap, p, newSkips()); err != nil || strings.Join(s.calls, ",") != "update #30,update #20" {
+		t.Errorf("err %v, calls %v: a trusted owner's chain or the bridge's import waited", err, s.calls)
 	}
 }
 

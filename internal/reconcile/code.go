@@ -1188,8 +1188,11 @@ func (c *Code) apply(ctx context.Context, s *Snapshot, p *Plan, skip *skips) err
 				}
 				continue
 			case errors.Is(err, errTooMany) && a.Change != 0:
-				c.Logger.Info("leaving a change out: its update waits", "change", a.Change, "action", a.String())
-				skip.changes[a.Change] = true
+				// Only the update waits: the change is still recorded,
+				// so its statuses, votes and /submit do not (fifth
+				// audit).
+				c.Logger.Info("a PR's text update waits", "change", a.Change, "action", a.String())
+				skip.texts[a.PR] = true
 				continue
 			case a.Change != 0 && refusedByGitHub(err):
 				c.Logger.Warn("GitHub refused an action on one change's PR; leaving that change out", "change", a.Change, "action", a.String(), "err", err)
@@ -1342,9 +1345,19 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			// Text only: wait if whoever changed it changed too many.
 			ch, pr := s.Changes[a.Change], s.PRs[a.PR]
 			linksOnly := u.Title == nil && u.Body != nil && pr != nil && userPart(*u.Body) == userPart(pr.Body)
+			trustedOwner := false
+			if ch != nil && c.Trusted != nil {
+				t, known := c.Trusted(ctx, ch.OwnerID)
+				trustedOwner = t && known
+			}
 			switch {
 			case ch == nil:
-			case linksOnly && !c.LinksBudget.Take(ctx, a.PR), !linksOnly && !c.TextBudget.Take(ctx, ch.UploaderID):
+			case linksOnly && !trustedOwner && !c.LinksBudget.Take(ctx, a.PR):
+				return errTooMany
+			case !linksOnly && ch.UploaderID != c.BridgeAccount && !c.TextBudget.Take(ctx, ch.UploaderID):
+				// (The bridge's uploads are GitHub's pushes, each PR's
+				// its own: not one budget for everyone without a Gerrit
+				// account; fifth audit.)
 				return errTooMany
 			}
 		}
