@@ -74,7 +74,8 @@ type Importer struct {
 // layer is one GitHub-born PR being imported.
 type layer struct {
 	pr     *github.PullRequest
-	parent *layer // GitHub-born parent layer, if any
+	listed time.Time // when GitHub said pr's head is what it is
+	parent *layer    // GitHub-born parent layer, if any
 	// gerritParentChange is set when the parent is a Gerrit-born PR.
 	gerritParentChange int
 }
@@ -187,6 +188,7 @@ func (im *Importer) refusedWhy(pr int, sha string) string {
 // Import imports every GitHub-born PR whose chain targets branch.
 func (im *Importer) Import(ctx context.Context, branch string) error {
 	prs, err := im.GitHub.ListPulls(ctx, "open")
+	listed := time.Now() // when GitHub said what prs' heads are
 	if err == nil {
 		err = im.prunePullRefs(ctx, prs)
 	}
@@ -197,7 +199,7 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 	// reviews from now on are about (state.Head).
 	for i := range prs {
 		if n := im.Store.ChangeForPR(prs[i].Number); n != 0 && !im.DryRun {
-			if err := noteHead(ctx, im.Store, n, prs[i].Head.SHA, time.Now()); err != nil {
+			if err := noteHead(ctx, im.Store, n, prs[i].Head.SHA, listed); err != nil {
 				return err
 			}
 		}
@@ -286,7 +288,7 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		if depth > 50 {
 			return nil
 		}
-		l := &layer{pr: pr}
+		l := &layer{pr: pr, listed: listed}
 		base := baseOf[pr.Number]
 		switch {
 		case base == branch:
@@ -757,7 +759,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	err = updateStateFn(ctx, im.Store, ch.Number, fmt.Sprintf("Import PR #%d head %s as patch set %d", pr.Number, short(h), ps), func(st *state.Change) {
 		st.State.HeadBranch = pr.HeadKey(im.GitHub.Owner + "/" + im.GitHub.Repo)
 		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: s, GitHubSHA: h, Tree: tree, ParentTree: parentTree, At: time.Now()})
-		st.Heads = withHead(st.Heads, h, time.Now())
+		st.Heads = withHead(st.Heads, h, l.listed)
 	})
 	if err != nil {
 		return nil, err

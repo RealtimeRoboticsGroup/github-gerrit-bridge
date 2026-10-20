@@ -443,7 +443,7 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	}
 	s.at = c.now()
 	s.heads = withHead(st.Heads, p.Head.SHA, s.at)
-	if (len(st.Heads) == 0 || st.Heads[len(st.Heads)-1].SHA != p.Head.SHA) && !c.DryRun {
+	if !slices.Equal(s.heads, st.Heads) && !c.DryRun {
 		if err := noteHead(ctx, c.Store, n, p.Head.SHA, s.at); err != nil {
 			return nil, err
 		}

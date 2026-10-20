@@ -1157,6 +1157,65 @@ func TestNewPRHasItsHeadFromTheStart(t *testing.T) {
 	}
 }
 
+// A head goes in by when GitHub was read: an upload takes a while, and a
+// comment sync may see the PR move meanwhile. Recorded as of the upload's
+// end, the importer's head would hide that move: the PR back at an older
+// patch set's commit while a reviewer read it, then forward again, and a
+// retest said then built the newer one (seventh audit's V1, again).
+func TestHeadReadBeforeAnUploadDoesNotHideAMoveSeenDuringIt(t *testing.T) {
+	s, im, up, m1, g, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	st, _ := im.Store.Load(ctx, 1)
+	st.State.Origin, st.State.HeadBranch = "github", "feature"
+	if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+		t.Fatal(err)
+	}
+	s.changes[1].Owner = s.accounts["austin"]
+	s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
+	h2 := s.commit(s.rebase(g[0], m1), "one.txt", "new code\n", "More")
+	s.push("github.git", h2, "refs/heads/feature")
+	s.pulls[10].Head.SHA = h2
+	s.webhookPush(im.Pushers, 10, "austin")
+	up.before = func() { // a comment sync sees the PR back at patch set 1
+		if err := noteHead(ctx, im.Store, 1, g[0], time.Now()); err != nil {
+			t.Error(err)
+		}
+	}
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+	st, _ = im.Store.Load(ctx, 1)
+	if len(up.uploads) != 1 {
+		t.Fatalf("uploads = %v", up.uploads)
+	}
+	// A minute on, the PR is at h2 again: since when is not known.
+	later := after.Add(minSeen)
+	heads := withHead(st.Heads, h2, later)
+	if got := headThroughout(heads, after, later); got != "" {
+		t.Errorf("heads %+v: GitHub showed %s throughout the minute after the upload, want not known (it was at %s during it)", heads, short(got), short(g[0]))
+	}
+}
+
+// Heads stay in time order, so the last is the newest: what the PR has
+// now is new only if it differs from that (the comment and command syncs
+// record it then).
+func TestHeadsStayInTimeOrder(t *testing.T) {
+	t0 := time.Now()
+	heads := withHead(nil, "a", t0)
+	heads = withHead(heads, "b", t0.Add(2*time.Second))
+	heads = withHead(heads, "c", t0.Add(time.Second)) // read before b, recorded after
+	heads = withHead(heads, "b", t0.Add(3*time.Second))
+	heads = withHead(heads, "a", t0.Add(time.Second/2))
+	var got []string
+	for _, h := range heads {
+		got = append(got, h.SHA)
+	}
+	if !slices.Equal(got, []string{"a", "c", "b"}) {
+		t.Errorf("heads %+v, want a, c, b: nothing new in the last two", heads)
+	}
+}
+
 // The importer records every head it sees a linked PR at, a known one
 // too: a branch put back on an older patch set's commit imports and
 // records nothing else, yet that is what GitHub then shows, and what a

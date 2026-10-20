@@ -19,29 +19,36 @@ import (
 // maxHeads bounds the heads a change's state keeps.
 const maxHeads = 100
 
-// withHead is heads with sha appended, seen at at, unless sha is the last
-// one already.
+// withHead is heads, in time order, with sha seen at at, unless the one
+// before at is sha already. at is when GitHub was read, which may be well
+// before the bridge gets to record it (an upload takes a while): placed by
+// that, a head read before one recorded since cannot hide that one.
 func withHead(heads []state.Head, sha string, at time.Time) []state.Head {
-	if sha == "" || (len(heads) > 0 && heads[len(heads)-1].SHA == sha) {
+	i := len(heads)
+	for i > 0 && heads[i-1].At.After(at) {
+		i--
+	}
+	if sha == "" || (i > 0 && heads[i-1].SHA == sha) {
 		return heads
 	}
-	heads = append(heads, state.Head{SHA: sha, At: at})
+	heads = slices.Insert(slices.Clone(heads), i, state.Head{SHA: sha, At: at})
 	if len(heads) > maxHeads {
 		heads = heads[len(heads)-maxHeads:]
 	}
 	return heads
 }
 
-// noteHead records that change n's PR has head sha, as seen now.
-func noteHead(ctx context.Context, store *state.Store, n int, sha string, now time.Time) error {
+// noteHead records that change n's PR had head sha when GitHub was read,
+// at at.
+func noteHead(ctx context.Context, store *state.Store, n int, sha string, at time.Time) error {
 	st, err := store.Load(ctx, n)
 	if err != nil {
 		return err
 	}
-	if len(st.Heads) > 0 && st.Heads[len(st.Heads)-1].SHA == sha {
+	if slices.Equal(withHead(st.Heads, sha, at), st.Heads) {
 		return nil
 	}
-	return updateStateFn(ctx, store, n, "PR head "+short(sha), func(st *state.Change) { st.Heads = withHead(st.Heads, sha, now) })
+	return updateStateFn(ctx, store, n, "PR head "+short(sha), func(st *state.Change) { st.Heads = withHead(st.Heads, sha, at) })
 }
 
 // headThroughout is the commit heads say the branch was at from from to

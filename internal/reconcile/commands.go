@@ -145,9 +145,10 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 	if err != nil {
 		return err
 	}
-	heads := withHead(st.Heads, p.Head.SHA, c.now())
-	if (len(st.Heads) == 0 || st.Heads[len(st.Heads)-1].SHA != p.Head.SHA) && !c.DryRun {
-		if err := noteHead(ctx, c.Store, n, p.Head.SHA, c.now()); err != nil {
+	at := c.now()
+	heads := withHead(st.Heads, p.Head.SHA, at)
+	if !slices.Equal(heads, st.Heads) && !c.DryRun {
+		if err := noteHead(ctx, c.Store, n, p.Head.SHA, at); err != nil {
 			return err
 		}
 	}
