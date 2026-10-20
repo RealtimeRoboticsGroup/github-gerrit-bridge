@@ -716,6 +716,14 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	if ps == 0 {
 		return nil, fmt.Errorf("uploaded PR #%d but %s is not a patch set of change %d", pr.Number, short(s), ch.Number)
 	}
+	if st == nil && ps != 1 {
+		// Someone uploaded a change with this Change-Id, public once the
+		// PR's commits are, between the bridge's look and its upload,
+		// which became a patch set of theirs (sixth audit): not this
+		// PR's. Next time, its Change-Id is someone else's.
+		im.Logger.Warn("the PR's upload became a patch set of someone else's change; not linking it", "pr", pr.Number, "change", ch.Number, "patch_set", ps)
+		return nil, &syncError{state: "pending", msg: fmt.Sprintf("Change-Id %s was taken by Gerrit change %d meanwhile; trying again", changeID, ch.Number), retry: true}
+	}
 	im.Logger.Info("imported PR", "pr", pr.Number, "change", ch.Number, "patch_set", ps, "as", or(user, "bridge"), "commit", short(s), "github_head", short(h))
 	if st == nil {
 		if err := im.link(ctx, ch.Number, "github", branch, changeID, pr); err != nil {

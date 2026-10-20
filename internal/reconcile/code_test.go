@@ -283,11 +283,16 @@ type fakeUploader struct {
 	create bool
 	// alone makes it unable to act as anyone.
 	alone bool
+	// before, if set, runs as an upload starts.
+	before func()
 }
 
 func (u *fakeUploader) CanActAs() bool { return !u.alone }
 
 func (u *fakeUploader) Upload(ctx context.Context, user, commit, target string, opts []string) error {
+	if u.before != nil {
+		u.before()
+	}
 	u.uploads = append(u.uploads, fmt.Sprintf("%s %s %v", user, commit, opts))
 	msg, err := u.m.Git(ctx, nil, "log", "-1", "--format=%B", commit)
 	if err != nil {
@@ -875,6 +880,51 @@ func TestSquattedChangeIDFallsBackToTheKeyedOne(t *testing.T) {
 		if id, _ := footerChangeID(got); id != im.derivedChangeID(pr) {
 			t.Errorf("%s's change: uploaded with Change-Id %s, want the PR's keyed one", owner, id)
 		}
+	}
+}
+
+// A PR's Change-Id is public: someone uploading a change with it between
+// the bridge's look and its upload gets the upload as their patch set,
+// which is not linked to the PR (sixth audit). The next import finds the
+// Change-Id taken and uses the PR's own.
+func TestFirstUploadRacedOntoSomeoneElsesChangeIsNotLinked(t *testing.T) {
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	up.create = true
+	msg := "New\n\nChange-Id: " + cid(77) + "\n"
+	h := s.commit(m1, "new.txt", "n\n", msg)
+	s.push("github.git", h, "refs/heads/topic")
+	pr := s.pr(60, "topic", h, "main", "austin")
+	s.pushed("o/r", "refs/heads/topic", h, "austin")
+	squat := s.commit(m1, "squat.txt", "s\n", msg)
+	im.link = func(ctx context.Context, n int, origin, branch, changeID string, pr *github.PullRequest) error {
+		return updateStateFn(ctx, im.Store, n, "Link", func(st *state.Change) {
+			st.State.Change, st.State.ChangeID, st.State.Branch, st.State.Origin, st.State.PR = n, changeID, branch, origin, pr.Number
+		})
+	}
+	up.before = func() {
+		up.before = nil
+		ci := s.change(77, cid(77), squat, msg, "NEW")
+		ci.Owner = s.accounts["brt"]
+	}
+	if err := im.Import(ctx, "main"); err == nil {
+		t.Error("want a retry")
+	}
+	if st, _ := im.Store.Load(ctx, 77); st != nil && st.State.PR != 0 {
+		t.Fatalf("someone else's change linked to PR #%d", st.State.PR)
+	}
+	if sts := s.statuses[h]; len(sts) == 0 || sts[len(sts)-1].State != "pending" {
+		t.Errorf("gerrit/sync = %+v, want pending", sts)
+	}
+	up.uploads = nil
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 {
+		t.Fatalf("uploads = %v", up.uploads)
+	}
+	if id, _ := footerChangeID(s.git("m.git", "log", "-1", "--format=%B", strings.Fields(up.uploads[0])[1])); id != im.derivedChangeID(pr) {
+		t.Errorf("uploaded again with Change-Id %s, want the PR's keyed one", id)
 	}
 }
 
