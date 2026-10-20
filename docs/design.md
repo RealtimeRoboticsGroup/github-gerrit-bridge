@@ -1389,6 +1389,15 @@ Known gaps:
   count (fourth audit).
 - **Sign-offs.** `Signed-off-by` lines in a PR description are kept as
   written; AOS's requirement only checks that the words appear.
+- **A `retest` on GitHub names no patch set.** An issue comment goes on
+  the newest patch set that had been on GitHub a minute when it was
+  written: a maintainer who had the PR open for longer, and commented
+  just after the author pushed again, starts CI on that push (sixth
+  audit). GitHub shows new commits on the open page as they come; a
+  `retest` in a review, or in Gerrit, names its patch set.
+- **Dismissals are read from every page of a PR's issue events**, which
+  its author can add to (renames, draft toggles); GraphQL's
+  `timelineItems` filtered by type would cost less (sixth audit).
 
 ## 8. Content conversion (`internal/markup`)
 
@@ -1508,7 +1517,12 @@ Abandon and Toggle Work In Progress for Administrators.
   touch `.github/` (§7.1) (they would bring their own workflows), and its token
   should lack the `workflow` scope (a fine-grained token or App without
   Workflows), so GitHub refuses such a push even if the bridge tried
-  (second audit).
+  (second audit). The same goes for Buildkite's own GitHub integration:
+  if the pipeline gerrit-buildkite triggers is connected to the bridged
+  repository, turn off its builds on pushes and pull requests (or limit
+  them to the default branch), or Buildkite builds every bridge branch
+  and fork PR with the pipeline's secrets without asking gerrit-buildkite
+  (sixth audit).
 - **Gerrit's github plugin**: its pull-request import stays off for the
   bridged repository (§7), and its webhook (`/plugins/github-plugin/webhook`)
   has a secret (`github.webhookSecret`); without one it accepts unsigned
@@ -1529,8 +1543,20 @@ Abandon and Toggle Work In Progress for Administrators.
   and a commit-message edit's editor must neither make a stranger's code
   trusted nor make a trusted change untrusted (the bridge's mirrored PR
   edits are on the user's behalf): its trust is the patch set below's
-  (third audit). Run it with `-gerrit_url` (https) and
-  `-http_password_file` for its account.
+  (third audit). Whoever chose a patch set's parent must be trusted too
+  (the lowest patch set below with the same parents: a REWORK that edits
+  the patch set below, Gerrit's web editor say, keeps a parent someone
+  rebased it onto), and the REWORK whose diff it is must be its
+  uploader's own commit, author = committer (Gerrit keeps the author when
+  someone edits, applies a fix to, cherry-picks or rebases with conflicts
+  someone else's change) (sixth audit). So a trusted user's rework of a
+  change on the parent a stranger first chose, or their amend of a
+  stranger's commit, needs a `retest`. Run it with `-gerrit_url` (https)
+  and `-http_password_file` for its account (over SSH, which shows no
+  committer, a commit authored by another of the uploader's emails needs
+  a `retest` too), and with `-webhook_token`, now required (a forged
+  webhook reporting a build as passed would be Verified), and `-listen`
+  on an address only Buildkite reaches.
 - **Administrators' `abandon` and `toggleWipState`** on the bridged
   project's `refs/heads/*` (Administrate Server is not applied through
   Run-As), not on All-Projects.
