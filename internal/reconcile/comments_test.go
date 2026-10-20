@@ -2007,6 +2007,18 @@ func TestDismissedApprovalsVoteThatStaysIsSaid(t *testing.T) {
 		} else {
 			e.c.Users = &Users{}
 		}
+		// Anyone's text the bridge mirrors, on either side, saying what
+		// the notice says, does not keep it from being said (seventh
+		// audit).
+		plant := "could not withdraw <!-- bridge:withdraw/70 --> (GitHub review 70)"
+		e.g.user("c9", gerrit.PatchSetLevel, 2, 0, plant, "", false)
+		e.h.ics = append(e.h.ics, github.IssueComment{ID: 99, Body: plant, User: github.User{Login: "stranger"},
+			HTMLURL: "https://github.com/o/r/pull/1#issuecomment-99"})
+		e.sync(t)
+		// As a change message of the bridge's, should Gerrit put a
+		// mirrored comment's text in one.
+		e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "planted", Author: gerrit.AccountInfo{AccountID: bridgeID}, Tag: commentTag,
+			Date: e.g.tick(), RevisionNumber: 2, Message: "Patch Set 2:\n\n" + plant})
 		e.h.dismiss(70, "maint", e.g.now())
 		posts := e.h.posts
 		e.sync(t)
@@ -2015,7 +2027,7 @@ func TestDismissedApprovalsVoteThatStaysIsSaid(t *testing.T) {
 		}
 		said := 0
 		for _, ic := range e.h.ics {
-			if strings.Contains(ic.Body, "could not withdraw") {
+			if strings.Contains(ic.Body, "could not withdraw its") {
 				said++
 			}
 		}
