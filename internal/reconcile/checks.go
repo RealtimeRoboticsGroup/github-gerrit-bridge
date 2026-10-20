@@ -66,8 +66,8 @@ type Checks struct {
 	// person's PRs hold up everyone's (fifth audit).
 	StatusBudget  *Budget
 	BridgeAccount int
-	DryRun       bool
-	Logger       *slog.Logger
+	DryRun        bool
+	Logger        *slog.Logger
 
 	mu        sync.Mutex
 	trusted   map[int]bool
