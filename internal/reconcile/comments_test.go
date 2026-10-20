@@ -26,6 +26,8 @@ type fakeGerrit struct {
 	// noFixes makes SetReview fail like a site without the fix
 	// suggestions feature flag.
 	noFixes bool
+	// voted is when each "label/user" vote was given.
+	voted map[string]string
 	// votes records labels set by SetReview, as "user:Label=value";
 	// labels holds the resulting votes, label -> user -> value.
 	votes       []string
@@ -52,12 +54,18 @@ type fakeGerrit struct {
 // vote sets user's vote on the current patch set, as Gerrit would.
 func (f *fakeGerrit) vote(user, label string, v int) {
 	if f.labels == nil {
-		f.labels = map[string]map[string]int{}
+		f.labels, f.voted = map[string]map[string]int{}, map[string]string{}
 	}
 	if f.labels[label] == nil {
 		f.labels[label] = map[string]int{}
 	}
 	f.labels[label][user] = v
+	f.voted[label+"/"+user] = f.tick()
+}
+
+// now is the fake's clock, as a time: after the last tick.
+func (f *fakeGerrit) now() time.Time {
+	return time.Date(2026, 10, 4, 0, 0, f.clock, 500000000, time.UTC)
 }
 
 func (f *fakeGerrit) tick() string {
@@ -142,7 +150,7 @@ func (f *fakeGerrit) GetChange(context.Context, int, ...string) (*gerrit.ChangeI
 	for label, byUser := range f.labels {
 		var l gerrit.LabelInfo
 		for _, u := range slices.Sorted(maps.Keys(byUser)) {
-			l.All = append(l.All, gerrit.ApprovalInfo{AccountInfo: gerrit.AccountInfo{Username: u}, Value: byUser[u]})
+			l.All = append(l.All, gerrit.ApprovalInfo{AccountInfo: gerrit.AccountInfo{Username: u}, Value: byUser[u], Date: f.voted[label+"/"+u]})
 		}
 		ci.Labels[label] = l
 	}
@@ -181,6 +189,8 @@ type fakeGitHub struct {
 	edits  map[int64]string // edited comment id -> editor
 	// reviewEdits is edits for review bodies.
 	reviewEdits map[int64]string
+	// dismissals are the PR's dismissal events, by review.
+	dismissals map[int64]github.Dismissal
 	// dismissed records DismissReview calls, as "id: message".
 	dismissed []string
 	// afterReview runs once, when the bridge reads back a review it posted.
@@ -1343,13 +1353,27 @@ func TestMessageVotes(t *testing.T) {
 }
 
 func (h *fakeGitHub) DismissReview(_ context.Context, _ int, id int64, message string) error {
+	h.dismiss(id, "bridge", time.Now())
+	h.dismissed = append(h.dismissed, fmt.Sprintf("%d: %s", id, message))
+	return nil
+}
+
+// dismiss dismisses review id as login, as GitHub would, noting it in the
+// PR's events.
+func (h *fakeGitHub) dismiss(id int64, login string, at time.Time) {
+	if h.dismissals == nil {
+		h.dismissals = map[int64]github.Dismissal{}
+	}
 	for i := range h.reviews {
 		if h.reviews[i].ID == id {
+			h.dismissals[id] = github.Dismissal{State: strings.ToLower(h.reviews[i].State), By: login, At: at}
 			h.reviews[i].State = "DISMISSED"
 		}
 	}
-	h.dismissed = append(h.dismissed, fmt.Sprintf("%d: %s", id, message))
-	return nil
+}
+
+func (h *fakeGitHub) Dismissals(context.Context, int) (map[int64]github.Dismissal, error) {
+	return maps.Clone(h.dismissals), nil
 }
 
 // Design §6.4: GitHub shows what Gerrit counts. An approval whose vote
@@ -1396,6 +1420,59 @@ func TestStaleApprovalIsDismissed(t *testing.T) {
 	e.settled(t)
 	if len(e.h.dismissed) != 2 {
 		t.Errorf("dismissed an unmapped reviewer's approval: %v", e.h.dismissed)
+	}
+}
+
+// Dismissing an approval on GitHub withdraws the Code-Review vote it cast
+// in Gerrit (the owner's call, 2026-10-19), as its reviewer, once; a vote
+// the reviewer gives again in Gerrit afterwards stays, and a dismissed
+// change request, or an unmapped reviewer's approval, changes nothing.
+func TestDismissedApprovalWithdrawsItsVote(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+	e.sync(t)
+	if e.g.labels["Code-Review"]["bobg"] != 2 {
+		t.Fatalf("votes = %v", e.g.labels)
+	}
+	e.h.dismiss(70, "maint", e.g.now())
+	e.sync(t)
+	if v := e.g.labels["Code-Review"]["bobg"]; v != 0 || e.g.votes[len(e.g.votes)-1] != "bobg:Code-Review=0" {
+		t.Fatalf("bobg's Code-Review = %d (votes %v), want withdrawn", v, e.g.votes)
+	}
+	e.settled(t)
+	// bob approves again in Gerrit: his.
+	e.g.vote("bobg", "Code-Review", 2)
+	e.sync(t)
+	if e.g.labels["Code-Review"]["bobg"] != 2 {
+		t.Errorf("bob's new vote was withdrawn too")
+	}
+	// GitHub's own stale-approval dismissal on a push, or a bot's, is not
+	// a person's call: the vote is left to Gerrit's copyCondition (§6.4).
+	for i, d := range []github.Dismissal{{By: "pusher", Commit: "abc"}, {By: "app[bot]", Bot: true}} {
+		id := int64(80 + i)
+		e.h.reviews = append(e.h.reviews, github.Review{ID: id, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+			HTMLURL: fmt.Sprintf("https://github.com/o/r/pull/1#pullrequestreview-%d", id), SubmittedAt: time.Now().Add(time.Duration(i) * time.Second)})
+		e.sync(t)
+		e.h.dismiss(id, d.By, e.g.now())
+		dd := e.h.dismissals[id]
+		dd.Commit, dd.Bot = d.Commit, d.Bot
+		e.h.dismissals[id] = dd
+		e.sync(t)
+		if e.g.labels["Code-Review"]["bobg"] != 2 {
+			t.Errorf("%+v: withdrew the vote", d)
+		}
+	}
+	// A dismissed change request withdraws nothing.
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 71, State: "CHANGES_REQUESTED", CommitID: "sha2", User: github.User{Login: "bob"},
+		Body: "No.", HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-71", SubmittedAt: time.Now().Add(time.Hour)}) // bob's latest
+	e.sync(t)
+	e.g.vote("bobg", "Code-Review", 2)
+	e.h.dismiss(71, "maint", e.g.now())
+	e.sync(t)
+	if e.g.labels["Code-Review"]["bobg"] != 2 {
+		t.Errorf("a dismissed change request withdrew bob's +2")
 	}
 }
 

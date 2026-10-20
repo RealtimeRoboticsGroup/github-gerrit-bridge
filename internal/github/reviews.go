@@ -427,6 +427,47 @@ func (c *Client) LastStateEvent(ctx context.Context, n int) (*IssueEvent, error)
 	return nil, nil
 }
 
+// Dismissal is a review dismissed on PR: what it was (approved,
+// changes_requested), who dismissed it (a bot, or GitHub itself on a push
+// for a stale approval, with Commit set), and when.
+type Dismissal struct {
+	State, By string
+	Bot       bool
+	Commit    string
+	At        time.Time
+}
+
+// Dismissals returns PR n's dismissed reviews, by review id, from its
+// events.
+func (c *Client) Dismissals(ctx context.Context, n int) (map[int64]Dismissal, error) {
+	type event struct {
+		Event           string    `json:"event"`
+		Actor           *User     `json:"actor"`
+		CreatedAt       time.Time `json:"created_at"`
+		DismissedReview *struct {
+			State    string `json:"state"`
+			ReviewID int64  `json:"review_id"`
+			Commit   string `json:"dismissal_commit_id"`
+		} `json:"dismissed_review"`
+	}
+	evs, err := list[event](ctx, c, c.RepoPath(fmt.Sprintf("issues/%d/events", n)))
+	if err != nil {
+		return nil, err
+	}
+	out := map[int64]Dismissal{}
+	for _, e := range evs {
+		if e.Event != "review_dismissed" || e.DismissedReview == nil {
+			continue
+		}
+		d := Dismissal{State: strings.ToLower(e.DismissedReview.State), Commit: e.DismissedReview.Commit, At: e.CreatedAt}
+		if e.Actor != nil {
+			d.By, d.Bot = e.Actor.Login, e.Actor.Type == "Bot"
+		}
+		out[e.DismissedReview.ReviewID] = d
+	}
+	return out, nil
+}
+
 // PRActivity says who last changed a PR's text and its draft state, for
 // mirroring those changes as the person who made them.
 type PRActivity struct {

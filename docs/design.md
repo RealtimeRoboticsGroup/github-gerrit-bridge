@@ -535,9 +535,9 @@ Gerrit                         GitHub
     should **not** enable GitHub's required reviews or "dismiss stale
     approvals". `gerrit/submittable` is the only required gate.
   - If dismissal is enabled anyway, the bridge ignores dismissals made by
-    GitHub itself (`review_dismissed` with no human actor). It does not
-    remove the matching Gerrit vote. Gerrit's own `copyCondition` decides
-    whether a vote survives a rebase.
+    GitHub itself (`review_dismissed` with a `dismissal_commit_id`, on a
+    push) or by a bot. It does not remove the matching Gerrit vote.
+    Gerrit's own `copyCondition` decides whether a vote survives a rebase.
   - Approvals the bridge mirrored from Gerrit are re-posted if the Gerrit
     vote is still there.
 
@@ -759,8 +759,12 @@ Configurable per label. The default:
 | Vote removed           | Dismiss review                                       |
 
 GitHub → Gerrit: `APPROVE` → +2 if the user has the right in Gerrit,
-otherwise +1. `REQUEST_CHANGES` → -1 (configurable to -2). Dismissal → vote
-removed.
+otherwise +1. `REQUEST_CHANGES` → -1 (configurable to -2). A person's
+dismissal of an approval → the reviewer's Code-Review vote on the current
+patch set reset to 0, as them, if it is positive and was given no later
+than the dismissal (copied to a newer patch set included); one they gave
+again since stays (the owner's call, 2026-10-19). Whoever may dismiss
+reviews on GitHub may so withdraw a reviewer's approval.
 
 A GitHub approval on a stack layer applies only to that layer's Gerrit
 change. This matches the semantics on both sides.
@@ -1347,7 +1351,6 @@ Known gaps:
   count (fourth audit).
 - **Sign-offs.** `Signed-off-by` lines in a PR description are kept as
   written; AOS's requirement only checks that the words appear.
-- A dismissed GitHub review leaves its Gerrit vote.
 
 ## 8. Content conversion (`internal/markup`)
 

@@ -619,3 +619,30 @@ func TestETagCacheKeepsAPageOfPRs(t *testing.T) {
 		t.Errorf("a page of 100 PRs (%d bytes) is not cached (bound %d)", 100*17<<10, maxCachedBody)
 	}
 }
+
+// Dismissals come from a PR's events: what each dismissed review was,
+// who dismissed it, and when.
+func TestDismissals(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/o/r/issues/5/events" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `[{"event":"closed","actor":{"login":"x"},"created_at":"2026-10-19T10:00:00Z"},
+ {"event":"review_dismissed","actor":{"login":"maint","type":"User"},"created_at":"2026-10-19T11:00:00Z",
+  "dismissed_review":{"state":"approved","review_id":70,"dismissal_message":"no"}},
+ {"event":"review_dismissed","actor":{"login":"pusher","type":"User"},"created_at":"2026-10-19T12:00:00Z",
+  "dismissed_review":{"state":"approved","review_id":71,"dismissal_commit_id":"abc"}},
+ {"event":"review_dismissed","actor":{"login":"app[bot]","type":"Bot"},"created_at":"2026-10-19T13:00:00Z",
+  "dismissed_review":{"state":"approved","review_id":72}}]`)
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	ds, err := c.Dismissals(context.Background(), 5)
+	want := map[int64]Dismissal{70: {State: "approved", By: "maint", At: time.Date(2026, 10, 19, 11, 0, 0, 0, time.UTC)},
+		71: {State: "approved", By: "pusher", Commit: "abc", At: time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)},
+		72: {State: "approved", By: "app[bot]", Bot: true, At: time.Date(2026, 10, 19, 13, 0, 0, 0, time.UTC)}}
+	if err != nil || !reflect.DeepEqual(ds, want) {
+		t.Errorf("dismissals %+v, err %v", ds, err)
+	}
+}

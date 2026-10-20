@@ -47,6 +47,7 @@ type GitHubAPI interface {
 	UpdateReviewComment(ctx context.Context, id int64, body string) error
 	UpdateIssueComment(ctx context.Context, id int64, body string) error
 	DismissReview(ctx context.Context, n int, id int64, message string) error
+	Dismissals(ctx context.Context, n int) (map[int64]github.Dismissal, error)
 	FileAt(ctx context.Context, ref, path string) ([]byte, error)
 	IsAncestor(ctx context.Context, a, b string) (bool, error)
 }
@@ -1342,11 +1343,18 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 			}
 		}
 	}
+	var dismissals map[int64]github.Dismissal
 	for _, login := range sortedStringKeys(latest) {
 		rv := latest[login]
 		mc := m.byGitHub[ghKey(kindReviewBody, rv.ID)]
-		if rv.State == "DISMISSED" || c.mine(rv.User.Login) || mc == nil || strings.HasPrefix(mc.GerritID, "refused:") {
+		if c.mine(rv.User.Login) || mc == nil || strings.HasPrefix(mc.GerritID, "refused:") {
 			continue // not mirrored, or Gerrit would not take it: nothing to disagree with
+		}
+		if rv.State == "DISMISSED" {
+			if err := c.dropDismissed(ctx, n, pr, rv, s, &dismissals); err != nil {
+				return err
+			}
+			continue
 		}
 		user, ok := c.Users.GerritUser(ctx, rv.User.Login)
 		if !ok {
@@ -1376,6 +1384,62 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 		}
 		c.Logger.Info("dismissed GitHub review Gerrit disagrees with", "change", n, "pr", pr, "review", rv.ID, "user", rv.User.Login, "state", rv.State, "gerrit", now)
 	}
+	return nil
+}
+
+// dropDismissed withdraws the Code-Review vote a GitHub approval cast once
+// someone (a person, not GitHub, a bot or the bridge) dismisses that
+// approval on GitHub (the owner's call, 2026-10-19): the reviewer's
+// positive vote on the current patch set,
+// given no later than the dismissal (copied to a new patch set, too), is
+// reset to 0, as them. One they gave again since is theirs.
+func (c *Comments) dropDismissed(ctx context.Context, n, pr int, rv github.Review, s *commentSnapshot, dismissals *map[int64]github.Dismissal) error {
+	g, user := c.as(ctx, rv.User.Login)
+	if user == "" || gerrit.AmbiguousUsername(user) {
+		return nil // never voted
+	}
+	var vote *gerrit.ApprovalInfo
+	for _, a := range s.labels["Code-Review"].All {
+		if strings.EqualFold(a.Username, user) && a.Value > 0 {
+			vote = &a
+		}
+	}
+	if vote == nil {
+		return nil
+	}
+	if *dismissals == nil {
+		ds, err := c.GitHub.Dismissals(ctx, pr)
+		if err != nil {
+			return err
+		}
+		*dismissals = ds
+	}
+	d, ok := (*dismissals)[rv.ID]
+	if !ok || d.State != "approved" || d.By == "" || d.Bot || d.Commit != "" || c.mine(d.By) {
+		// Not a person's call (§6.4: GitHub's own stale-approval
+		// dismissals, on a push, leave the vote to Gerrit's copyCondition;
+		// the bridge's dismiss only votes already gone).
+		return nil
+	}
+	if at, err := time.Parse("2006-01-02 15:04:05.999999999", vote.Date); err == nil && at.After(d.At) {
+		return nil // voted again since
+	}
+	if c.DryRun {
+		c.Logger.Info("dry run: would withdraw a dismissed approval's vote", "change", n, "pr", pr, "review", rv.ID, "user", user)
+		return nil
+	}
+	msg := fmt.Sprintf("Code-Review %s withdrawn: @%s dismissed this approval on GitHub.", voteString(vote.Value), d.By)
+	err := g.SetReview(ctx, n, strconv.Itoa(s.current), gerrit.ReviewInput{Message: forGerrit(msg), Tag: mirrorTag, Labels: map[string]int{"Code-Review": 0}})
+	var ge *gerrit.Error
+	if errors.As(err, &ge) && ge.Status < 500 {
+		// Not the bridge's to undo as itself; it stops nothing else.
+		c.Logger.Warn("Gerrit refused to withdraw a dismissed approval's vote", "change", n, "user", user, "err", err)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("withdrawing %s's vote on change %d: %w", user, n, err)
+	}
+	c.Logger.Info("withdrew the vote of an approval dismissed on GitHub", "change", n, "pr", pr, "review", rv.ID, "user", user, "dismissed_by", d.By)
 	return nil
 }
 
