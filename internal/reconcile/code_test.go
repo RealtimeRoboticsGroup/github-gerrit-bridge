@@ -939,6 +939,53 @@ func TestFirstUploadNeedsEveryPushTheAuthors(t *testing.T) {
 	}
 }
 
+// A force push replaces what its branch had: whoever pushed that is not in
+// the new head unless the head keeps some of it. A fork's main reused for
+// one PR after another, last pushed by the bridge (the old PR's Gerrit
+// patch set): the rehearsal's fork PR was the bridge's. What the branch
+// had must be known to say so.
+func TestFirstUploadOverAForcePushedBranchIsTheAuthors(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		keep, seen, noBefore bool
+		want                 string
+	}{
+		{"replaced", false, true, false, "austin"},
+		{"kept", true, true, false, ""},      // built on brt's commit
+		{"unseen", false, false, false, ""},  // what it replaced is not known
+		{"no before", false, true, true, ""}, // a webhook that does not say
+	} {
+		s, im, up, m1, _, _ := gerritBornWorld(t, false)
+		ctx := context.Background()
+		old := s.commit(m1, "old.txt", "old\n", "Theirs")
+		s.push("github.git", old, "refs/heads/topic")
+		s.pushed("o/r", "refs/heads/topic", old, "brt")
+		if tc.seen { // a PR's head the bridge fetched before, say
+			if _, err := im.Mirror.Git(ctx, nil, "fetch", "-q", filepath.Join(s.dir, "github.git"), "refs/heads/topic:refs/remotes/github/heads/topic"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		base := m1
+		if tc.keep {
+			base = old
+		}
+		h := s.commit(base, "new.txt", "n\n", "New")
+		s.push("github.git", h, "refs/heads/topic")
+		if tc.noBefore {
+			im.Pushers.Record("o/r", "refs/heads/topic", "", h, github.User{Login: "austin"})
+		} else {
+			s.pushed("o/r", "refs/heads/topic", h, "austin")
+		}
+		s.pr(60, "topic", h, "main", "austin")
+		if err := im.Import(ctx, "main"); err != nil {
+			t.Fatal(err)
+		}
+		if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], tc.want+" ") {
+			t.Errorf("%s: uploads = %v, want one as %q", tc.name, up.uploads, tc.want)
+		}
+	}
+}
+
 // A later push is its pusher's only if they pushed everything since the
 // commit GitHub had when the bridge last imported. A commit someone else
 // pushed in between, which the bridge did not get to (or could not
@@ -948,22 +995,30 @@ func TestFirstUploadNeedsEveryPushTheAuthors(t *testing.T) {
 // activity log where it lags.
 func TestPushIsThePushersOnlyIfEveryPushSinceIsTheirs(t *testing.T) {
 	for _, tc := range []struct {
-		first, second string
-		webhook       bool
-		want          string
+		first, second    string
+		webhook, replace bool
+		want             string
 	}{
-		{"brt", "austin", false, ""},
-		{"brt", "austin", true, ""},
-		{"austin", "austin", false, "austin"},
-		{"austin", "austin", true, "austin"},
-		{"austin", "", false, ""}, // by an account since deleted
+		{"brt", "austin", false, false, ""},
+		{"brt", "austin", true, false, ""},
+		{"austin", "austin", false, false, "austin"},
+		{"austin", "austin", true, false, "austin"},
+		{"austin", "", false, false, ""},         // by an account since deleted
+		{"brt", "austin", false, true, "austin"}, // force-pushed over brt's: none of it kept
 	} {
 		s, im, up, _, g, ids := gerritBornWorld(t, false)
 		ref := "refs/heads/gerrit/" + ids[0]
 		x := s.commit(g[0], "x.txt", "x\n", "First")
 		s.push("github.git", x, ref)
 		s.pushed("o/r", ref, x, tc.first)
-		h := s.commit(x, "one.txt", "1 fixed\n", "Apply suggestion")
+		on := x
+		if tc.replace {
+			on = g[0]
+			if _, err := im.Mirror.Git(context.Background(), nil, "fetch", "-q", filepath.Join(s.dir, "github.git"), ref); err != nil {
+				t.Fatal(err) // the bridge saw x
+			}
+		}
+		h := s.commit(on, "one.txt", "1 fixed\n", "Apply suggestion")
 		s.push("github.git", h, ref)
 		s.pulls[10].Head.SHA = h
 		if tc.webhook {

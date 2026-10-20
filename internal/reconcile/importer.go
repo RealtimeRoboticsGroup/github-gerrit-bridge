@@ -683,7 +683,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			return nil, fmt.Errorf("Gerrit account %s for @%s: %w", user, login, err)
 		}
 		committer = acct
-	} else if author, err = im.pushedBy(ctx, pr, h, im.madeOrHad(ctx, gerritParent, parentTip)); err != nil {
+	} else if author, err = im.pushedBy(ctx, pr, h, gerritParent, parentTip); err != nil {
 		return nil, err
 	}
 
@@ -927,7 +927,7 @@ func (im *Importer) checkSize(ctx context.Context, h, parent, parentTip string) 
 // else's branch (a maintainer from a stranger's fork, say), and a branch
 // may move before the bridge sees the PR. A later one is the pusher's
 // (as GitHub says; never guessed) if they uploaded base, the patch set
-// GitHub last had (baseGH), too, and pushed everything since. A pure
+// GitHub last had (baseGH), too, and pushed all of it baseGH lacks. A pure
 // rebase of base is uploaded on behalf of its uploader, as Gerrit's own
 // rebase is. Anything else is the bridge's, and needs a trusted reviewer
 // to start CI.
@@ -948,7 +948,7 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 	if prev == "" {
 		return "", "", nil // the bridge's already: nothing to lose
 	}
-	by, err := im.pushedBy(ctx, pr, h, func(before string) bool { return made(before) || before == baseGH })
+	by, err := im.pushedBy(ctx, pr, h, baseGH)
 	if err != nil {
 		return "", "", err
 	}
@@ -1016,9 +1016,9 @@ func ownUploadBy(r gerrit.RevisionInfo, account, bridge int) bool {
 }
 
 // firstUploader is who uploads pr's first patch set, h, onto parent, as
-// above: its author if they pushed everything in it (since the branch was
-// made, or was at code parent or parentTip, the PR below's head, has
-// already), else the bridge (""). login is the pusher.
+// above: its author if they pushed everything in it but code parent or
+// parentTip, the PR below's head, has already, else the bridge (""). login
+// is the pusher.
 func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h, parent, parentTip string) (user, login string, err error) {
 	if !im.Uploader.CanActAs() {
 		return "", "", nil
@@ -1027,7 +1027,7 @@ func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h
 	if !ok {
 		return "", pr.User.Login, nil
 	}
-	by, err := im.pushedBy(ctx, pr, h, im.madeOrHad(ctx, parent, parentTip))
+	by, err := im.pushedBy(ctx, pr, h, parent, parentTip)
 	if err != nil {
 		return "", "", err
 	}
@@ -1101,14 +1101,15 @@ const pusherWait = 10 * time.Minute
 // maxPushes bounds the pushes pushedBy follows back.
 const maxPushes = 300
 
-// pushedBy is who pushed pr's head h, and everything since its branch was
-// at a commit done says is accounted for: walking back from h through the
-// pushes to the branch, as GitHub's activity log lists them (or, where it
-// lags, webhooks said), each from the commit the one below moved it to,
-// all by one GitHub account. Nobody (a zero User) if someone else pushed
-// one of them (a commit the bridge never imported, which the next push
-// would carry, say: seventh audit), or if a push is not known.
-func (im *Importer) pushedBy(ctx context.Context, pr *github.PullRequest, h string, done func(before string) bool) (github.User, error) {
+// pushedBy is who pushed pr's head h, all of it but code in had: walking
+// back from h through the pushes to the branch, as GitHub's activity log
+// lists them (or, where it lags, webhooks said), each from the commit the
+// one below moved it to, all by one GitHub account, to one whose code
+// before it h has none of but had's (covered). Nobody (a zero User) if
+// someone else pushed one of them (a commit the bridge never imported,
+// which the next push would carry, say: seventh audit), or if a push is
+// not known.
+func (im *Importer) pushedBy(ctx context.Context, pr *github.PullRequest, h string, had ...string) (github.User, error) {
 	repo := im.GitHub.Owner + "/" + im.GitHub.Repo
 	if pr.Head.Repo != nil && pr.Head.Repo.FullName != "" {
 		repo = pr.Head.Repo.FullName
@@ -1137,7 +1138,7 @@ func (im *Importer) pushedBy(ctx context.Context, pr *github.PullRequest, h stri
 			return github.User{}, nil
 		}
 		by = p.Actor
-		if done(p.Before) {
+		if im.covered(ctx, h, p.Before, had...) {
 			return by, nil
 		}
 		at = p.Before
@@ -1145,21 +1146,34 @@ func (im *Importer) pushedBy(ctx context.Context, pr *github.PullRequest, h stri
 	return github.User{}, nil
 }
 
-// madeOrHad says whether a push from before covers all of a branch's
-// code since it was made, or was at code parent or parentTip (the PR
-// below's head) already has.
-func (im *Importer) madeOrHad(ctx context.Context, parent, parentTip string) func(before string) bool {
-	return func(before string) bool {
-		if made(before) {
-			return true
-		}
-		for _, had := range []string{parent, parentTip} {
-			if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", before, had); had != "" && err == nil {
-				return true
-			}
-		}
+// covered reports whether a push from before leaves h none of the code
+// the branch had then, but had's: the push made the branch, or before is
+// one of had, or all h shares with before is in had. A force push replaces
+// what was there: a fork's main, reused for a new PR, keeps nothing of
+// whoever pushed to it for the last one. Not if before is not in the
+// mirror: what h shares with it is not known.
+func (im *Importer) covered(ctx context.Context, h, before string, had ...string) bool {
+	if before == "" {
 		return false
 	}
+	if made(before) || slices.Contains(had, before) {
+		return true
+	}
+	// What two commits share is everything below their merge bases.
+	out, err := im.Mirror.Git(ctx, nil, "merge-base", "--all", before, h)
+	bases := strings.Fields(string(out))
+	if err != nil || len(bases) == 0 {
+		return false // before is unknown (or shares nothing, which is rare)
+	}
+	for _, m := range bases {
+		if !slices.ContainsFunc(had, func(c string) bool {
+			_, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", m, c)
+			return c != "" && err == nil
+		}) {
+			return false
+		}
+	}
+	return true
 }
 
 // made reports whether a push from before made its branch: everything in
