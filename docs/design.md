@@ -1048,7 +1048,11 @@ defenses, by threat:
 - **Votes on unseen code.** A GitHub review votes only if it was made on
   the commit of Gerrit's current patch set. A review of a commit Gerrit
   does not have (a push not imported yet, or one that cannot be imported)
-  is mirrored as text, saying it was not counted.
+  is mirrored as text, saying it was not counted; so is one made less
+  than a minute after its commit reached GitHub, which GitHub's API and
+  `gh pr review` name by default whatever the reviewer read (sixth
+  audit): its text goes where a comment's would (below), so a `retest`
+  in it does not start CI on that commit either.
 - **Comments on no commit.** An issue comment, or a review (comment) of a
   commit Gerrit never had, goes on the patch set GitHub had when it was
   written (the newest the bridge had recorded on both sides by then),

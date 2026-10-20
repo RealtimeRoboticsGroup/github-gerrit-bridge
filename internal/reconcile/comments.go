@@ -183,6 +183,22 @@ func (s *commentSnapshot) seen(t time.Time) int {
 	return ps
 }
 
+// shown reports whether patch set ps had been on GitHub for minSeen at t,
+// as seen counts it.
+func (s *commentSnapshot) shown(ps int, t time.Time) bool {
+	t = t.Add(-minSeen)
+	for _, r := range s.revisions {
+		at := r.At
+		if at.IsZero() {
+			at = s.psCreated[r.PatchSet]
+		}
+		if r.PatchSet == ps && r.GitHubSHA != "" && !at.IsZero() && !at.After(t) {
+			return true
+		}
+	}
+	return false
+}
+
 // minSeen is how long a patch set must have been on GitHub before a
 // comment counts as being about it (seen); it also covers the clocks of
 // the bridge, which records when, and GitHub, which dates comments.
@@ -1144,8 +1160,13 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			continue
 		}
 		reviewed, known := s.shaToPS[rv.CommitID]
+		// A review names the PR's head when it was submitted unless its
+		// client says otherwise (GitHub's API, gh pr review): one pushed
+		// moments before is not what was read (sixth audit). As for
+		// comments and /submit, it counts only once on GitHub minSeen.
+		early := known && !s.shown(reviewed, rv.SubmittedAt)
 		ps := reviewed
-		if !known {
+		if !known || early {
 			ps = s.seen(rv.SubmittedAt)
 		}
 		body := rv.Body
@@ -1159,6 +1180,8 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			// GitHub showed code Gerrit does not have (say a push not
 			// imported yet): a vote would land on code nobody reviewed.
 			body = "Not counted as a vote: it was made on a commit that is not a patch set in Gerrit.\n\n" + body
+		} else if vote && early {
+			body = "Not counted as a vote: it was made on a commit that reached GitHub less than a minute before it. Review it again to count it.\n\n" + body
 		}
 		login := rv.User.Login
 		if ps == 0 {
@@ -1175,7 +1198,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		key := "review/" + strconv.FormatInt(rv.ID, 10)
 		add(key, login, ghComment{kindReviewBody, rv.ID, rv.Body}, ps, gerrit.PatchSetLevel,
 			gerrit.CommentInput{Message: gerritBody(rv.User.Login, rv.HTMLURL, body, asAuthor(login)), Unresolved: &f})
-		if vote && known && reviewed == s.current && login != "" {
+		if vote && known && !early && reviewed == s.current && login != "" {
 			// Design §6.4: approve = Code-Review +2 (or the most the user
 			// may give), request changes = -1. Only as the user (Run-As);
 			// the bridge never votes on someone's behalf as itself.

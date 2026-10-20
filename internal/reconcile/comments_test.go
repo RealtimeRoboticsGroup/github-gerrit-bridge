@@ -305,7 +305,14 @@ func (f *fakeGitHub) ListReviewComments(context.Context, int) ([]github.ReviewCo
 	return append([]github.ReviewComment(nil), f.rcs...), nil
 }
 func (f *fakeGitHub) ListReviews(context.Context, int) ([]github.Review, error) {
-	return append([]github.Review(nil), f.reviews...), nil
+	out := append([]github.Review(nil), f.reviews...)
+	for i := range out {
+		if out[i].SubmittedAt.IsZero() {
+			// As for issue comments.
+			out[i].SubmittedAt = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+		}
+	}
+	return out, nil
 }
 func (f *fakeGitHub) ListIssueComments(context.Context, int) ([]github.IssueComment, error) {
 	out := append([]github.IssueComment(nil), f.ics...)
@@ -458,7 +465,11 @@ func newCommentsEnv(t *testing.T) *commentsEnv {
 		t.Fatal(err)
 	}
 	store := &state.Store{Repo: mirror}
-	if err := store.Save(ctx, 5, &state.Change{State: state.ChangeState{PR: 1, Branch: "main", Lifecycle: "NEW"}}, "link"); err != nil {
+	// Patch sets 1 and 2 reached GitHub long before anything a test posts
+	// there (by default).
+	early := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := store.Save(ctx, 5, &state.Change{State: state.ChangeState{PR: 1, Branch: "main", Lifecycle: "NEW"},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "sha1", At: early}, {PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "sha2", At: early}}}, "link"); err != nil {
 		t.Fatal(err)
 	}
 	g := &fakeGerrit{revs: map[string]int{"sha1": 1, "sha2": 2}, current: "sha2",
@@ -1519,6 +1530,48 @@ func TestDismissedApprovalWithdrawsItsVote(t *testing.T) {
 	e.sync(t)
 	if e.g.labels["Code-Review"]["bobg"] != 2 {
 		t.Errorf("a dismissed change request withdrew bob's +2")
+	}
+}
+
+// A review names the PR's head when it is submitted unless its client says
+// otherwise (GitHub's API, gh pr review --approve): one pushed moments
+// before was not what was read, so it neither votes on it nor puts a
+// "retest" on it (sixth audit), as for comments and /submit. A minute on,
+// it does.
+func TestReviewOfAHeadPushedMomentsBeforeIsNotAboutIt(t *testing.T) {
+	for _, after := range []time.Duration{5 * time.Second, minSeen + time.Second} {
+		e := newCommentsEnv(t)
+		e.runAs()
+		now := time.Now()
+		if err := updateStateFn(context.Background(), e.st, 5, "revisions", func(s *state.Change) {
+			s.Revisions = []state.Revision{
+				{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "gh1", At: now.Add(-time.Hour)},
+				{PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "gh2", At: now},
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		e.h.reviews = append(e.h.reviews,
+			github.Review{ID: 70, State: "APPROVED", CommitID: "gh2", User: github.User{Login: "bob"},
+				HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70", SubmittedAt: now.Add(after)},
+			github.Review{ID: 71, State: "COMMENTED", Body: "retest", CommitID: "gh2", User: github.User{Login: "bob"},
+				HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-71", SubmittedAt: now.Add(after)})
+		e.sync(t)
+		early := after < minSeen
+		if v := e.g.labels["Code-Review"]["bobg"]; (v == 2) == early {
+			t.Errorf("approved %v after patch set 2 reached GitHub: Code-Review %+d", after, v)
+		}
+		retest := false
+		for _, gc := range e.g.comments {
+			retest = retest || gc.Message == "retest" && gc.Author.Username == "bobg" && gc.PatchSet == 2
+		}
+		if retest == early {
+			t.Errorf("retest %v after patch set 2 reached GitHub: posted on it as bob %v", after, retest)
+		}
+		said := slices.ContainsFunc(e.g.comments, func(gc gerrit.CommentInfo) bool { return strings.Contains(gc.Message, "less than a minute before it") })
+		if said != early {
+			t.Errorf("approved %v after: said it is not counted %v", after, said)
+		}
 	}
 }
 
