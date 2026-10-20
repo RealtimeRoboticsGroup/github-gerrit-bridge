@@ -234,8 +234,10 @@ type fakeGitHub struct {
 	edits  map[int64]string // edited comment id -> editor
 	// reviewEdits is edits for review bodies.
 	reviewEdits map[int64]string
-	// dismissals are the PR's dismissal events, by review.
-	dismissals map[int64]github.Dismissal
+	// dismissals are the PR's dismissal events, by review; onDismissals
+	// runs when they are read.
+	dismissals   map[int64]github.Dismissal
+	onDismissals func()
 	// dismissed records DismissReview calls, as "id: message".
 	dismissed []string
 	// afterReview runs once, when the bridge reads back a review it posted.
@@ -1473,7 +1475,34 @@ func (h *fakeGitHub) dismiss(id int64, login string, at time.Time) {
 }
 
 func (h *fakeGitHub) Dismissals(context.Context, int) (map[int64]github.Dismissal, error) {
+	if h.onDismissals != nil {
+		h.onDismissals()
+	}
 	return maps.Clone(h.dismissals), nil
+}
+
+// A dismissed approval's vote is read again just before it is withdrawn:
+// the reviewer may have vetoed in Gerrit while the bridge read every page
+// of the PR's issue events, which anyone can pad, and withdrawing their
+// "approval" would then remove the veto (seventh audit).
+func TestDismissalDoesNotWithdrawAVetoGivenMeanwhile(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+	e.sync(t)
+	if e.g.labels["Code-Review"]["bobg"] != 2 {
+		t.Fatalf("votes = %v", e.g.labels)
+	}
+	e.h.dismiss(70, "maint", e.g.now())
+	e.h.onDismissals = func() {
+		e.h.onDismissals = nil
+		e.g.vote("bobg", "Code-Review", -2)
+	}
+	e.sync(t)
+	if v := e.g.labels["Code-Review"]["bobg"]; v != -2 {
+		t.Errorf("bob's veto, given while the dismissal was read, is now Code-Review %+d (votes %v)", v, e.g.votes)
+	}
 }
 
 // Design §6.4: GitHub shows what Gerrit counts. An approval whose vote

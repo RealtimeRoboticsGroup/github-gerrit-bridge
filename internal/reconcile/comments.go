@@ -1564,6 +1564,23 @@ func (c *Comments) dropDismissed(ctx context.Context, n, pr int, rv github.Revie
 	if s.votedSince(reviewer, d.At, positiveCodeReview) {
 		return nil // voted again since
 	}
+	// Read again just before acting: the reviewer may have vetoed since
+	// the snapshot, while every page of the PR's issue events, which
+	// anyone can pad, was read (seventh audit). Gerrit has no
+	// compare-and-set for votes; this keeps the window short.
+	now, err := c.Gerrit.GetChange(ctx, n, "DETAILED_LABELS", "DETAILED_ACCOUNTS")
+	if err != nil {
+		return err
+	}
+	vote = nil
+	for _, a := range now.Labels["Code-Review"].All {
+		if sameAccount(a.AccountInfo, reviewer) && a.Value > 0 {
+			vote = &a
+		}
+	}
+	if vote == nil {
+		return nil
+	}
 	by := "@" + d.By
 	if d.By == "" {
 		by = "A deleted GitHub account"
@@ -1576,7 +1593,7 @@ func (c *Comments) dropDismissed(ctx context.Context, n, pr int, rv github.Revie
 		return c.cannotWithdraw(ctx, n, pr, rv, s, vote, by, "the bridge no longer knows @"+rv.User.Login+"'s Gerrit account")
 	}
 	msg := fmt.Sprintf("Code-Review %s withdrawn: %s dismissed this approval on GitHub.", voteString(vote.Value), by)
-	err := g.SetReview(ctx, n, strconv.Itoa(s.current), gerrit.ReviewInput{Message: forGerrit(msg), Tag: mirrorTag, Labels: map[string]int{"Code-Review": 0}})
+	err = g.SetReview(ctx, n, strconv.Itoa(s.current), gerrit.ReviewInput{Message: forGerrit(msg), Tag: mirrorTag, Labels: map[string]int{"Code-Review": 0}})
 	var ge *gerrit.Error
 	if errors.As(err, &ge) && ge.Status < 500 {
 		// Over the change's message limits, say, which anyone can fill
