@@ -1588,7 +1588,9 @@ func TestReviewOfAHeadPushedMomentsBeforeIsNotAboutIt(t *testing.T) {
 	for _, after := range []time.Duration{5 * time.Second, minSeen + time.Second} {
 		e := newCommentsEnv(t)
 		e.runAs()
-		now := time.Now()
+		now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+		clock := now.Add(after + time.Second)
+		e.c.Now = func() time.Time { return clock }
 		if err := updateStateFn(context.Background(), e.st, 5, "revisions", func(s *state.Change) {
 			s.Revisions = []state.Revision{
 				{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "gh1", At: now.Add(-time.Hour)},
@@ -1604,6 +1606,13 @@ func TestReviewOfAHeadPushedMomentsBeforeIsNotAboutIt(t *testing.T) {
 				HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70", SubmittedAt: now.Add(after)},
 			github.Review{ID: 71, State: "COMMENTED", Body: "retest", CommitID: "gh2", User: github.User{Login: "bob"},
 				HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-71", SubmittedAt: now.Add(after)})
+		// A retest posted as its author waits editSettle (it may yet be
+		// edited by someone else).
+		var later *errLater
+		if err := e.c.Sync(context.Background(), 5); err != nil && !errors.As(err, &later) {
+			t.Fatal(err)
+		}
+		clock = clock.Add(editSettle)
 		e.sync(t)
 		early := after < minSeen
 		if v := e.g.labels["Code-Review"]["bobg"]; (v == 2) == early {
@@ -1620,6 +1629,45 @@ func TestReviewOfAHeadPushedMomentsBeforeIsNotAboutIt(t *testing.T) {
 		if said != early {
 			t.Errorf("approved %v after: said it is not counted %v", after, said)
 		}
+	}
+}
+
+// The wait is for any comment that would start CI as its author: one
+// whose "retest" Gerrit or the bridge may trim spaces from, and a review
+// body, which GitHub gives no edit time for, from when the bridge first
+// saw it as it is (seventh audit).
+func TestRetestInAnyFormOrAReviewWaits(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	e.c.Now = func() time.Time { return now }
+	e.h.ics = append(e.h.ics, github.IssueComment{ID: 1, Body: "LGTM\r\n Retest \r\n", User: github.User{Login: "bob"}, CreatedAt: now.Add(-5 * time.Second)})
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 71, State: "COMMENTED", Body: "retest", CommitID: "sha2", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-71", SubmittedAt: now.Add(-time.Hour)})
+	posted := func() []string {
+		var out []string
+		for _, gc := range e.g.comments {
+			if gc.Author.Username == "bobg" {
+				out = append(out, strings.TrimSpace(gc.Message))
+			}
+		}
+		return out
+	}
+	var later *errLater
+	if err := e.c.Sync(context.Background(), 5); !errors.As(err, &later) || len(posted()) != 0 {
+		t.Fatalf("err = %v, posted as bob %q; want both to wait", err, posted())
+	}
+	// Edited meanwhile: its wait starts again.
+	now = now.Add(editSettle / 2)
+	e.h.reviews[0].Body = "retest\nPlease."
+	now = now.Add(editSettle / 2)
+	if err := e.c.Sync(context.Background(), 5); !errors.As(err, &later) || len(posted()) != 1 {
+		t.Fatalf("err = %v, posted as bob %q; want the issue comment, and the edited review to wait", err, posted())
+	}
+	now = now.Add(editSettle)
+	e.sync(t)
+	if got := posted(); len(got) != 2 || !strings.Contains(got[1], "Please.") {
+		t.Errorf("posted as bob %q once settled, want both", got)
 	}
 }
 

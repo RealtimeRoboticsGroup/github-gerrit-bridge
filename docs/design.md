@@ -1086,7 +1086,10 @@ defenses, by threat:
   REST shows the edit, so a `/submit`, or a comment with a `retest` line
   posted as its author, waits until it has been unchanged (REST
   `updated_at`, or its creation) for 30 seconds (sixth audit); its sync
-  comes back for it then.
+  comes back for it then. A review body has no `updated_at`: one is
+  timed from when the bridge first saw it as it is. A `retest` line is
+  matched in any case and with spaces around it, which Gerrit's own
+  matching may not take but the bridge trims (seventh audit).
 - **Edits to the bridge's own GitHub comments.** A Gerrit comment's GitHub
   copy can be edited by anyone with write access, which would put words in
   a Gerrit reviewer's mouth or change its `bridge:gerrit/…` marker. Gerrit

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -89,6 +90,10 @@ type Comments struct {
 	CIMessage *regexp.Regexp
 	DryRun    bool
 	Logger    *slog.Logger
+
+	mu sync.Mutex
+	// firstSeen is when each review body was first seen (bodyTooFresh).
+	firstSeen map[string]time.Time
 }
 
 // Comment kinds in comments.json.
@@ -1005,8 +1010,11 @@ func (c *Comments) now() time.Time {
 	return time.Now()
 }
 
-// retestLine is gerrit-buildkite's command to build a patch set.
-var retestLine = regexp.MustCompile(`(?m)^retest$`)
+// retestLine is gerrit-buildkite's command to build a patch set, a line
+// `(?m)^retest$` in a patch set's message: in any case, and with spaces
+// or a CR around it, which the bridge or Gerrit may trim (seventh audit:
+// "retest " went without the wait, and reached Gerrit as "retest").
+var retestLine = regexp.MustCompile(`(?mi)^[ \t\r]*retest[ \t\r]*$`)
 
 // tooFresh reports whether a comment changed at changed, saying body,
 // waits before it is posted as its author: a "retest" starts CI as them
@@ -1018,6 +1026,33 @@ func (c *Comments) tooFresh(s *commentSnapshot, changed time.Time, body string) 
 	}
 	s.wait = max(s.wait, w)
 	return true
+}
+
+// bodyTooFresh is tooFresh for a body GitHub gives no edit time for, a
+// review's (key): changed when the bridge first saw it as it is, or when
+// it was submitted, if later. Anyone with write access can edit a review,
+// and GraphQL, which says who did, may lag REST (seventh audit).
+func (c *Comments) bodyTooFresh(s *commentSnapshot, key string, submitted time.Time, body string) bool {
+	if !retestLine.MatchString(body) {
+		return false
+	}
+	now := c.now()
+	k := key + " " + hashString(body)
+	c.mu.Lock()
+	first, ok := c.firstSeen[k]
+	if !ok {
+		if c.firstSeen == nil {
+			c.firstSeen = map[string]time.Time{}
+		}
+		for k, at := range c.firstSeen {
+			if now.Sub(at) > time.Hour {
+				delete(c.firstSeen, k)
+			}
+		}
+		first, c.firstSeen[k] = now, now
+	}
+	c.mu.Unlock()
+	return c.tooFresh(s, latest(first, submitted), body)
 }
 
 func (c *Comments) mine(login string) bool {
@@ -1238,6 +1273,9 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			if vote {
 				body = "Not counted as a vote: someone other than its author edited it.\n\n" + body
 			}
+		}
+		if login != "" && c.bodyTooFresh(s, "review/"+strconv.FormatInt(rv.ID, 10), rv.SubmittedAt, rv.Body) {
+			continue
 		}
 		f := false
 		key := "review/" + strconv.FormatInt(rv.ID, 10)
