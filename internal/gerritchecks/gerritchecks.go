@@ -299,8 +299,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			client = host
 		}
 		if ip := net.ParseIP(client); ip != nil && ip.To4() == nil {
-			// One IPv6 host has a /64 to rotate through (fourth audit).
-			client = ip.Mask(net.CIDRMask(64, 128)).String()
+			// One IPv6 host has a /64 to rotate through (fourth audit),
+			// often a /56 or a /48 (fifth audit: 65,536 /64s fill the
+			// clients counted): a /56, the usual home delegation, is one
+			// client.
+			client = ip.Mask(net.CIDRMask(56, 128)).String()
 		}
 		if !h.miss(client) {
 			http.Error(w, "busy", http.StatusTooManyRequests)

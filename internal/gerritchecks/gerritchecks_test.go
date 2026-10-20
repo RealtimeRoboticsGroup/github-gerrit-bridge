@@ -286,15 +286,16 @@ func TestHandlerBoundsEachClient(t *testing.T) {
 	if code := get("203.0.113.9", 2000); code == http.StatusTooManyRequests {
 		t.Error("still refused the next minute")
 	}
-	// One IPv6 host is a /64 (fourth audit).
+	// One IPv6 site is a /56, rotating through its /64s or not (fourth
+	// and fifth audits).
 	now, refused = now.Add(time.Minute), 0
 	for i := 1; i <= maxMissesPerClient+10; i++ {
-		if get(fmt.Sprintf("2001:db8:1:2::%x", i), 3000+i) == http.StatusTooManyRequests {
+		if get(fmt.Sprintf("2001:db8:1:2%02x::%x", i%256, i), 3000+i) == http.StatusTooManyRequests {
 			refused++
 		}
 	}
 	if refused != 10 {
-		t.Errorf("one /64: refused %d", refused)
+		t.Errorf("one /56: refused %d", refused)
 	}
 	// So many clients that they are not all counted: new ones wait for the
 	// next minute, and those counted keep their budgets.
