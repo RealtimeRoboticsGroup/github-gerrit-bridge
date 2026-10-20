@@ -85,10 +85,12 @@ func (p *Pushers) FromDelivery(d *github.Delivery) {
 	case d.Event == "push":
 		p.Record(payload.Repository.FullName, payload.Ref, payload.After, payload.Sender.Login)
 	case d.Event == "pull_request" && d.Action == "synchronize":
-		// A fork's pushes send no push webhook here; this one does.
+		// A fork's pushes send no push webhook here; this one does. What
+		// was pushed is after: the PR's head, read when the delivery was
+		// built, may already be a later push's (sixth audit).
 		head := payload.PullRequest.Head
 		if head.Ref != "" {
-			p.Record(head.Repo.FullName, "refs/heads/"+head.Ref, head.SHA, payload.Sender.Login)
+			p.Record(head.Repo.FullName, "refs/heads/"+head.Ref, payload.After, payload.Sender.Login)
 		}
 	}
 }

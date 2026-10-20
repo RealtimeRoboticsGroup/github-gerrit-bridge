@@ -272,8 +272,10 @@ func TestPushersFromWebhooks(t *testing.T) {
 	head := func(ref, sha string) string {
 		return `"head":{"ref":"` + ref + `","sha":"` + sha + `","repo":{"full_name":"fork/r"}}`
 	}
+	// What a synchronize pushed is its after: the PR's head may already
+	// be a later push's.
 	r.Delivery(&github.Delivery{Event: "pull_request", Action: "synchronize", PR: 3,
-		Payload: []byte(`{"sender":{"login":"bob"},"pull_request":{"number":3,` + head("b", "abc") + `}}`)})
+		Payload: []byte(`{"sender":{"login":"bob"},"after":"abc","pull_request":{"number":3,` + head("b", "later") + `}}`)})
 	r.Delivery(&github.Delivery{Event: "push",
 		Payload: []byte(`{"sender":{"login":"carol"},"after":"def","ref":"refs/heads/x","repository":{"full_name":"O/R"}}`)})
 	r.Delivery(&github.Delivery{Event: "pull_request", Action: "edited", PR: 3,
@@ -293,6 +295,7 @@ func TestPushersFromWebhooks(t *testing.T) {
 		{"fork/r", "refs/heads/g", "ghi", ""},
 		{"fork/r", "refs/heads/test-it", "abc", "maint"},
 		{"o/r", "refs/heads/b", "abc", ""},
+		{"fork/r", "refs/heads/b", "later", ""},
 	} {
 		if got := r.Pushers.Lookup(c.repo, c.ref, c.sha); got != c.want {
 			t.Errorf("%s %s %s: %q, want %q", c.repo, c.ref, c.sha, got, c.want)
