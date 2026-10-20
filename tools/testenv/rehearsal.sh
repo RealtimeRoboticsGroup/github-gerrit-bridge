@@ -149,6 +149,7 @@ wait_for "the rebase is a merge of the new base; the PR still shows only its own
 
 # --- 4. Approve on GitHub, /submit from GitHub, replication marks merged ---
 step "4. Approve on GitHub, then /submit"
+read_it  # an approval counts for a head GitHub has had a minute
 for p in "${P1}" "${P2}" "${P3}"; do me api "repos/${R}/pulls/${p}/reviews" -f event=APPROVE -f body="Rehearsal ${RUN}: LGTM" --silent; done
 cr2() { for c in "${C1}" "${C2}" "${C3}"; do gerrit "changes/${c}?o=DETAILED_LABELS&o=DETAILED_ACCOUNTS" | jq -e '.labels["Code-Review"].all[] | select(.username == "AustinSchuh" and .value == 2)' || return 1; done; }
 wait_for "GitHub approvals become Code-Review +2 by AustinSchuh" cr2
@@ -403,6 +404,7 @@ commit "${ME_CLONE}" "dismiss-${RUN}.txt" "${Y2}"
 has_dismiss_pr() { [[ -n "$(pr_for "${Y2}")" ]]; }
 wait_for "the change has a PR" has_dismiss_pr
 L2=$(change "${Y2}"); Z2=$(pr_for "${Y2}")
+read_it
 REV=$(brt api "repos/${R}/pulls/${Z2}/reviews" -f event=APPROVE -f body="Rehearsal ${RUN}: LGTM" --jq .id)
 brt_cr() { gerrit "changes/${L2}?o=DETAILED_LABELS&o=DETAILED_ACCOUNTS" | jq -e --argjson v "$1" '[.labels["Code-Review"].all[]? | select(.username == "AustinSchuhBRT") | (.value // 0)] | (if length == 0 then [0] else . end) | .[0] == $v'; }
 wait_for "AustinSchuhBRT's GitHub approval becomes their Code-Review +1" brt_cr 1
