@@ -53,6 +53,7 @@ type GitHubAPI interface {
 	FileAt(ctx context.Context, ref, path string) ([]byte, error)
 	IsAncestor(ctx context.Context, a, b string) (bool, error)
 	GetPull(ctx context.Context, n int) (*github.PullRequest, error)
+	Pushes(ctx context.Context, repo, ref string) ([]github.Push, error)
 }
 
 // Comments mirrors review comments, replies and thread resolution between
@@ -442,12 +443,16 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 		return nil, err
 	}
 	s.at = c.now()
-	s.heads = withHead(st.Heads, p.Head.SHA, s.at)
-	if !slices.Equal(s.heads, st.Heads) && !c.DryRun {
+	if !slices.Equal(withHead(st.Heads, p.Head.SHA, s.at), st.Heads) && !c.DryRun {
 		if err := noteHead(ctx, c.Store, n, p.Head.SHA, s.at); err != nil {
 			return nil, err
 		}
 	}
+	heads, err := withPushes(ctx, c.GitHub, p, st.Heads)
+	if err != nil {
+		return nil, err
+	}
+	s.heads = withHead(heads, p.Head.SHA, s.at)
 	return s, nil
 }
 

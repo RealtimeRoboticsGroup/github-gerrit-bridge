@@ -1563,6 +1563,44 @@ func TestHeadsStayInTimeOrder(t *testing.T) {
 	}
 }
 
+// Pushes the activity log lists are all kept, wherever they fall among
+// the heads read: one that looks like nothing new where it goes is news
+// once an earlier one goes before it (the branch back to patch set 1's
+// commit, then on to patch set 2's again, listed newest first).
+func TestPushesKeepEveryMove(t *testing.T) {
+	t0 := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	now := t0.Add(2 * time.Hour)
+	pr := &github.PullRequest{Number: 1, Head: github.Ref{Ref: "topic", SHA: "sha2"}}
+	pr.Head.Repo = &struct {
+		FullName string `json:"full_name"`
+	}{"o/r"}
+	gh := &fakeGitHub{pushes: []github.Push{{After: "sha2", At: now.Add(-5 * time.Minute)}, {After: "sha1", At: now.Add(-10 * time.Minute)}}}
+	heads, err := withPushes(context.Background(), gh, pr, []state.Head{{SHA: "sha1", At: t0}, {SHA: "sha2", At: t0.Add(time.Hour)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	heads = withHead(heads, "sha2", now)
+	if got := headThroughout(heads, now.Add(-2*time.Minute), now.Add(-time.Minute)); got != "sha2" {
+		t.Errorf("heads %+v: a minute ago GitHub showed %q, want sha2, pushed five minutes ago", heads, got)
+	}
+	if got := headThroughout(heads, now.Add(-8*time.Minute), now); got != "" {
+		t.Errorf("heads %+v: over the last eight minutes, %q throughout; want none", heads, got)
+	}
+	// A push GitHub gives no time for says nothing about when; and the
+	// head read now goes after every push, though the log lags it.
+	gh.pushes = []github.Push{{After: "sha1", At: now.Add(-5 * time.Minute)}, {After: "sha2", At: now.Add(-10 * time.Minute)}, {After: "sha3"}}
+	if heads, err = withPushes(context.Background(), gh, pr, []state.Head{{SHA: "sha2", At: t0}}); err != nil {
+		t.Fatal(err)
+	}
+	heads = withHead(heads, "sha2", now)
+	if got := headThroughout(heads, t0.Add(-time.Hour), t0.Add(-30*time.Minute)); got != "" {
+		t.Errorf("heads %+v: before any was read, %q", heads, got)
+	}
+	if got := headThroughout(heads, now.Add(-2*time.Minute), now); got != "" {
+		t.Errorf("heads %+v: over the last two minutes, %q throughout; want none (sha1 pushed, sha2 read now)", heads, got)
+	}
+}
+
 // The importer records every head it sees a linked PR at, a known one
 // too: a branch put back on an older patch set's commit imports and
 // records nothing else, yet that is what GitHub then shows, and what a

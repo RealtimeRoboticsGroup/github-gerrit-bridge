@@ -2,9 +2,11 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"time"
 
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
@@ -49,6 +51,34 @@ func noteHead(ctx context.Context, store *state.Store, n int, sha string, at tim
 		return nil
 	}
 	return updateStateFn(ctx, store, n, "PR head "+short(sha), func(st *state.Change) { st.Heads = withHead(st.Heads, sha, at) })
+}
+
+// withPushes is heads with every push to pr's branch the activity log
+// lists, as of when GitHub says it was: the bridge sees a head only when
+// it reads the PR, and a branch moved away and back meanwhile (with the
+// bridge down, or busy) would look as if it had stayed (eighth audit).
+// A PR whose branch is gone has none to list. All are kept: placed among
+// heads read at other times, a push that looks like nothing new where it
+// goes may be news once the next one goes before it. The head read now
+// goes in after them (withHead).
+func withPushes(ctx context.Context, gh interface {
+	Pushes(ctx context.Context, repo, ref string) ([]github.Push, error)
+}, pr *github.PullRequest, heads []state.Head) ([]state.Head, error) {
+	if pr.Head.Repo == nil || pr.Head.Repo.FullName == "" || pr.Head.Ref == "" {
+		return heads, nil
+	}
+	pushes, err := gh.Pushes(ctx, pr.Head.Repo.FullName, "refs/heads/"+pr.Head.Ref)
+	if err != nil {
+		return nil, fmt.Errorf("pushes to #%d's branch: %w", pr.Number, err)
+	}
+	heads = slices.Clone(heads)
+	for _, p := range pushes {
+		if !p.At.IsZero() { // a deletion too: then not there
+			heads = append(heads, state.Head{SHA: p.After, At: p.At})
+		}
+	}
+	slices.SortStableFunc(heads, func(a, b state.Head) int { return a.At.Compare(b.At) })
+	return heads, nil
 }
 
 // headThroughout is the commit heads say the branch was at from from to

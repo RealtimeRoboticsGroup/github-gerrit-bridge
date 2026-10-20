@@ -76,6 +76,7 @@ type CommandsGitHub interface {
 	Edits(ctx context.Context, n int) (map[int64]string, error)
 	CreateIssueComment(ctx context.Context, n int, body string) (*github.IssueComment, error)
 	GetPull(ctx context.Context, n int) (*github.PullRequest, error)
+	Pushes(ctx context.Context, repo, ref string) ([]github.Push, error)
 }
 
 // Commands runs commands given as PR comments (design §6.7):
@@ -146,12 +147,16 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 		return err
 	}
 	at := c.now()
-	heads := withHead(st.Heads, p.Head.SHA, at)
-	if !slices.Equal(heads, st.Heads) && !c.DryRun {
+	if !slices.Equal(withHead(st.Heads, p.Head.SHA, at), st.Heads) && !c.DryRun {
 		if err := noteHead(ctx, c.Store, n, p.Head.SHA, at); err != nil {
 			return err
 		}
 	}
+	heads, err := withPushes(ctx, c.GitHub, p, st.Heads)
+	if err != nil {
+		return err
+	}
+	heads = withHead(heads, p.Head.SHA, at)
 	// Handled: recorded in state, or (from before that was kept, or a
 	// crash before it was saved) named by the bridge's own unedited reply.
 	// Anyone with write access can edit the bridge's replies: an edited

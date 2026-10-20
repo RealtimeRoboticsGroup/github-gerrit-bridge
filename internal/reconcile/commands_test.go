@@ -274,13 +274,15 @@ func TestSubmitNeedsThePatchSetOnGitHub(t *testing.T) {
 	}
 	// Nor one pushed to GitHub moments before the comment (fourth audit),
 	// nor one GitHub went back from since, to an older patch set's commit
-	// (seventh audit).
+	// (seventh audit), even if only the activity log says so (eighth).
 	for _, tc := range []struct {
 		before time.Duration
 		back   bool
 		ran    bool
 		moved  bool // on GitHub since, not recorded yet
-	}{{30 * time.Second, false, false, false}, {2 * time.Minute, false, true, false}, {2 * time.Minute, true, false, false}, {2 * time.Minute, false, false, true}} {
+		logged bool // away and back, as only the activity log says
+	}{{30 * time.Second, false, false, false, false}, {2 * time.Minute, false, true, false, false}, {2 * time.Minute, true, false, false, false},
+		{2 * time.Minute, false, false, true, false}, {2 * time.Minute, false, false, false, true}} {
 		c, h, sub := newCommands(t)
 		sub.rev, sub.uploaded = "sha3", posted.Add(-time.Hour)
 		headAt(t, c, h, "gh3", posted.Add(-tc.before))
@@ -289,6 +291,9 @@ func TestSubmitNeedsThePatchSetOnGitHub(t *testing.T) {
 		}
 		if tc.moved {
 			h.head = "elsewhere"
+		}
+		if tc.logged {
+			h.pushes = []github.Push{{After: "gh3", At: posted.Add(10 * time.Second)}, {After: "sha2", At: posted.Add(-50 * time.Second)}}
 		}
 		c.Now = func() time.Time { return posted.Add(time.Minute) }
 		h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: posted})

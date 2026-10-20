@@ -276,7 +276,7 @@ func TestPushes(t *testing.T) {
 		}
 		fmt.Fprint(w, `[
  {"ref":"refs/heads/main","before":"bbb","after":"0000000000000000000000000000000000000000","activity_type":"branch_deletion","actor":{"login":"x","id":3}},
- {"ref":"refs/heads/main","before":"aaa","after":"bbb","activity_type":"force_push","actor":{"login":"maintainer","id":2}},
+ {"ref":"refs/heads/main","before":"aaa","after":"bbb","activity_type":"force_push","timestamp":"2026-10-20T18:44:12Z","actor":{"login":"maintainer","id":2}},
  {"ref":"refs/heads/other","before":"aaa","after":"ccc","activity_type":"push","actor":{"login":"brt","id":1}},
  {"ref":"refs/heads/main","before":"0000000000000000000000000000000000000000","after":"aaa","activity_type":"branch_creation","actor":{"login":"brt","id":1}}]`)
 	}))
@@ -285,7 +285,7 @@ func TestPushes(t *testing.T) {
 	got, err := c.Pushes(context.Background(), "brt/fork", "refs/heads/main")
 	want := []Push{
 		{Before: "bbb", After: "0000000000000000000000000000000000000000", Actor: User{Login: "x", ID: 3}},
-		{Before: "aaa", After: "bbb", Actor: User{Login: "maintainer", ID: 2}},
+		{Before: "aaa", After: "bbb", Actor: User{Login: "maintainer", ID: 2}, At: time.Date(2026, 10, 20, 18, 44, 12, 0, time.UTC)},
 		{Before: "0000000000000000000000000000000000000000", After: "aaa", Actor: User{Login: "brt", ID: 1}},
 	}
 	if err != nil || !reflect.DeepEqual(got, want) {

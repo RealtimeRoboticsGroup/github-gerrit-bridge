@@ -232,6 +232,8 @@ func (f *fakeGerrit) user(id, path string, ps, line int, msg, inReplyTo string, 
 type fakeGitHub struct {
 	// refuse makes CreateIssueComment refuse (422) bodies containing it.
 	refuse string
+	// pushes is the activity log of the PR's branch, newest first.
+	pushes []github.Push
 	edits  map[int64]string // edited comment id -> editor
 	// reviewEdits is edits for review bodies.
 	reviewEdits map[int64]string
@@ -348,7 +350,17 @@ func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error)
 	return out, nil
 }
 func (f *fakeGitHub) GetPull(_ context.Context, n int) (*github.PullRequest, error) {
-	return &github.PullRequest{Number: n, Head: github.Ref{SHA: cmp.Or(f.head, "sha2")}}, nil
+	pr := &github.PullRequest{Number: n, Head: github.Ref{Ref: "topic", SHA: cmp.Or(f.head, "sha2")}}
+	pr.Head.Repo = &struct {
+		FullName string `json:"full_name"`
+	}{"o/r"}
+	return pr, nil
+}
+func (f *fakeGitHub) Pushes(_ context.Context, repo, ref string) ([]github.Push, error) {
+	if repo != "o/r" || ref != "refs/heads/topic" {
+		return nil, fmt.Errorf("pushes to %s %s", repo, ref)
+	}
+	return f.pushes, nil
 }
 
 // pushed makes sha the PR's head, as seen at at.
@@ -1240,6 +1252,39 @@ func TestGitHubApprovalBecomesVote(t *testing.T) {
 	e.sync(t)
 	if len(e.g.votes) != 3 {
 		t.Errorf("approval of an unknown commit voted: %v", e.g.votes)
+	}
+}
+
+// The bridge sees a head only when it reads the PR: a branch moved away
+// and back in between (with the bridge down or busy) would look as if it
+// had stayed, but the activity log lists both pushes (eighth audit). A
+// comment written while GitHub showed patch set 1's commit is about no
+// patch set it can name.
+func TestCommentWhileTheBranchWasElsewhereIsNotAboutTheHead(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	t0 := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	now := t0.Add(2 * time.Hour)
+	e.c.Now = func() time.Time { return now }
+	updateStateFn(context.Background(), e.st, 5, "revisions", func(s *state.Change) {
+		s.Revisions = []state.Revision{{PatchSet: 1, GerritSHA: "sha1", GitHubSHA: "sha1", At: t0}, {PatchSet: 2, GerritSHA: "sha2", GitHubSHA: "sha2", At: t0.Add(time.Hour)}}
+		s.Heads = []state.Head{{SHA: "sha1", At: t0}, {SHA: "sha2", At: t0.Add(time.Hour)}}
+	})
+	e.h.pushes = []github.Push{{Before: "sha1", After: "sha2", At: now.Add(-5 * time.Minute)}, {Before: "sha2", After: "sha1", At: now.Add(-10 * time.Minute)}}
+	e.h.ics = append(e.h.ics, github.IssueComment{ID: 1, Body: "Ship it", User: github.User{Login: "bob"}, CreatedAt: now.Add(-7 * time.Minute),
+		HTMLURL: "https://github.com/o/r/pull/1#issuecomment-1"})
+	e.sync(t)
+	posted := false
+	for _, gc := range e.g.comments {
+		if strings.Contains(gc.Message, "Ship it") {
+			posted = true
+			if gc.Author.Username == "bobg" {
+				t.Errorf("posted as bob on patch set %d: GitHub showed patch set 1's commit then", gc.PatchSet)
+			}
+		}
+	}
+	if !posted {
+		t.Error("not mirrored")
 	}
 }
 

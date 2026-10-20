@@ -149,6 +149,7 @@ func SplitHeadKey(key string) (repo, branch string, ok bool) {
 type Push struct {
 	Before, After string
 	Actor         User
+	At            time.Time // when, as GitHub says
 }
 
 // Pushes lists the newest few hundred pushes to branch ref
@@ -161,10 +162,11 @@ func (c *Client) Pushes(ctx context.Context, repo, ref string) ([]Push, error) {
 	next := "/repos/" + repo + "/activity?per_page=100&ref=" + url.QueryEscape(ref)
 	for page := 0; page < 3 && next != ""; page++ {
 		var acts []struct {
-			Before string `json:"before"`
-			After  string `json:"after"`
-			Ref    string `json:"ref"`
-			Actor  *User  `json:"actor"`
+			Before string    `json:"before"`
+			After  string    `json:"after"`
+			Ref    string    `json:"ref"`
+			Actor  *User     `json:"actor"`
+			At     time.Time `json:"timestamp"`
 		}
 		resp, err := c.Do(ctx, http.MethodGet, next, nil, &acts)
 		if err != nil {
@@ -172,7 +174,7 @@ func (c *Client) Pushes(ctx context.Context, repo, ref string) ([]Push, error) {
 		}
 		for _, a := range acts {
 			if a.Ref == ref {
-				p := Push{Before: a.Before, After: a.After}
+				p := Push{Before: a.Before, After: a.After, At: a.At}
 				if a.Actor != nil {
 					p.Actor = *a.Actor
 				}
