@@ -2347,35 +2347,6 @@ func TestForeignCodeBelowAnEditOrRebase(t *testing.T) {
 	c, store := s.code(ctx)
 	c.BridgeAccount = 1
 	snap := &Snapshot{Changes: map[int]*GerritChange{}, State: map[int]*state.Change{}}
-	for n, tc := range map[int]struct {
-		kind  string
-		below int // patch set 1's uploader
-	}{
-		1: {"NO_CODE_CHANGE", 9}, 2: {"TRIVIAL_REBASE", 9}, 3: {"TRIVIAL_REBASE_WITH_MESSAGE_UPDATE", 9},
-		4: {"NO_CODE_CHANGE", 1}, 5: {"TRIVIAL_REBASE", 5}, 6: {"REWORK", 9},
-		7: {"NO_CODE_CHANGE", 0}, // its patch sets cannot be read
-	} {
-		snap.Changes[n] = &GerritChange{Number: n, Status: "NEW", Revision: "b", PatchSet: 2, OwnerID: 5, UploaderID: 5, Kind: tc.kind}
-		if tc.below != 0 {
-			s.changes[n] = &gerrit.ChangeInfo{Number: n, Revisions: map[string]gerrit.RevisionInfo{
-				"a": {Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: tc.below}},
-				"b": {Number: 2, Kind: tc.kind, Uploader: gerrit.AccountInfo{AccountID: 5}}}}
-		}
-		snap.State[n] = &state.Change{State: state.ChangeState{Change: n, Origin: "github"}}
-		s.save(ctx, store, n, snap.State[n])
-	}
-	// The owner's edit of a stranger's rebase of the owner's code: the
-	// stranger chose its parent.
-	snap.Changes[8] = &GerritChange{Number: 8, Status: "NEW", Revision: "c", PatchSet: 3, OwnerID: 5, UploaderID: 5, Kind: "NO_CODE_CHANGE"}
-	s.changes[8] = &gerrit.ChangeInfo{Number: 8, Revisions: map[string]gerrit.RevisionInfo{
-		"a": {Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 5}},
-		"b": {Number: 2, Kind: "TRIVIAL_REBASE", Uploader: gerrit.AccountInfo{AccountID: 9}},
-		"c": {Number: 3, Kind: "NO_CODE_CHANGE", Uploader: gerrit.AccountInfo{AccountID: 5}}}}
-	snap.State[8] = &state.Change{State: state.ChangeState{Change: 8, Origin: "github"}}
-	s.save(ctx, store, 8, snap.State[8])
-	// A kind this does not know is nobody's; a message edit onto another
-	// parent commit (Gerrit compares parents' trees) chose that parent;
-	// and a patch set whose kind is not said is walked, not taken on trust.
 	parent := func(sha string) gerrit.CommitInfo {
 		var ci gerrit.CommitInfo
 		ci.Parents = append(ci.Parents, struct {
@@ -2383,6 +2354,42 @@ func TestForeignCodeBelowAnEditOrRebase(t *testing.T) {
 		}{sha})
 		return ci
 	}
+	for n, tc := range map[int]struct {
+		kind   string
+		below  int    // patch set 1's uploader
+		parent string // patch set 2's parent (patch set 1's is p1)
+	}{
+		1: {"NO_CODE_CHANGE", 9, "p1"}, 2: {"TRIVIAL_REBASE", 9, "p2"}, 3: {"TRIVIAL_REBASE_WITH_MESSAGE_UPDATE", 9, "p2"},
+		4: {"NO_CODE_CHANGE", 1, "p1"}, 5: {"TRIVIAL_REBASE", 5, "p2"}, 6: {"REWORK", 9, "p2"},
+		7: {"NO_CODE_CHANGE", 0, "p1"}, // its patch sets cannot be read
+		// The owner's rework keeping the parent a stranger chose (an
+		// edit in Gerrit's web editor, say: sixth audit).
+		13: {"REWORK", 9, "p1"},
+	} {
+		snap.Changes[n] = &GerritChange{Number: n, Status: "NEW", Revision: "b", PatchSet: 2, OwnerID: 5, UploaderID: 5, Kind: tc.kind}
+		if tc.below != 0 {
+			s.changes[n] = &gerrit.ChangeInfo{Number: n, Revisions: map[string]gerrit.RevisionInfo{
+				"a": {Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: tc.below}, Commit: parent("p1")},
+				"b": {Number: 2, Kind: tc.kind, Uploader: gerrit.AccountInfo{AccountID: 5}, Commit: parent(tc.parent)}}}
+		}
+		snap.State[n] = &state.Change{State: state.ChangeState{Change: n, Origin: "github"}}
+		s.save(ctx, store, n, snap.State[n])
+	}
+	// The owner's edit of a stranger's rebase of the owner's code: the
+	// stranger chose its parent. So too for the owner's rework of it,
+	// which keeps that parent.
+	for n, kind := range map[int]string{8: "NO_CODE_CHANGE", 14: "REWORK"} {
+		snap.Changes[n] = &GerritChange{Number: n, Status: "NEW", Revision: "c", PatchSet: 3, OwnerID: 5, UploaderID: 5, Kind: kind}
+		s.changes[n] = &gerrit.ChangeInfo{Number: n, Revisions: map[string]gerrit.RevisionInfo{
+			"a": {Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 5}, Commit: parent("p1")},
+			"b": {Number: 2, Kind: "TRIVIAL_REBASE", Uploader: gerrit.AccountInfo{AccountID: 9}, Commit: parent("strangers")},
+			"c": {Number: 3, Kind: kind, Uploader: gerrit.AccountInfo{AccountID: 5}, Commit: parent("strangers")}}}
+		snap.State[n] = &state.Change{State: state.ChangeState{Change: n, Origin: "github"}}
+		s.save(ctx, store, n, snap.State[n])
+	}
+	// A kind this does not know is nobody's; a message edit onto another
+	// parent commit (Gerrit compares parents' trees) chose that parent;
+	// and a patch set whose kind is not said is walked, not taken on trust.
 	for n, revs := range map[int]map[string]gerrit.RevisionInfo{
 		9: {"a": {Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 5}},
 			"b": {Number: 2, Kind: "SOME_NEW_KIND", Uploader: gerrit.AccountInfo{AccountID: 5}}},
@@ -2406,7 +2413,7 @@ func TestForeignCodeBelowAnEditOrRebase(t *testing.T) {
 	if err := c.markForeign(ctx, snap); err != nil {
 		t.Fatal(err)
 	}
-	if want := map[int]bool{1: true, 2: true, 3: true, 7: true, 8: true, 9: true, 10: true, 12: true}; !reflect.DeepEqual(snap.Foreign, want) {
+	if want := map[int]bool{1: true, 2: true, 3: true, 7: true, 8: true, 9: true, 10: true, 12: true, 13: true, 14: true}; !reflect.DeepEqual(snap.Foreign, want) {
 		t.Errorf("foreign = %v, want %v", snap.Foreign, want)
 	}
 }
@@ -2427,7 +2434,7 @@ func TestForeignPatchSetsAreMarked(t *testing.T) {
 		5: {5, 9, 0}, // someone else's, on a Gerrit-born change
 		6: {5, 1, 0}, // the bridge's (an import)
 	} {
-		snap.Changes[n] = &GerritChange{Number: n, Status: "NEW", Revision: fmt.Sprintf("r%d", n), PatchSet: 2,
+		snap.Changes[n] = &GerritChange{Number: n, Status: "NEW", Revision: fmt.Sprintf("r%d", n), PatchSet: 1,
 			OwnerID: ids[0], UploaderID: ids[1], RealUploaderID: ids[2], Kind: "REWORK"}
 		origin := "github"
 		if n == 5 {

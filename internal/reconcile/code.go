@@ -391,7 +391,7 @@ func mayPushToAuthor(ctx context.Context, trusted func(context.Context, int) (bo
 // markForeign marks the GitHub-born changes whose current patch set was
 // uploaded, or uploaded on someone's behalf, in Gerrit by someone other
 // than the change's owner, the bridge or a member of CI's trusted group,
-// or whose code is such a patch set's below it (codeFrom; fourth audit:
+// or whose code or parent is such a patch set's below it (codeFrom; fourth audit:
 // the owner's commit-message edit of a stranger's patch set carried it
 // to the author's branch) (Snapshot.Foreign). Each gets a notice in
 // Gerrit, once per patch set.
@@ -403,8 +403,9 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 			continue
 		}
 		ok, known := mayPushToAuthor(ctx, c.Trusted, c.BridgeAccount, ch.OwnerID, ch.UploaderID, ch.RealUploaderID)
-		if ok && ch.Kind != "REWORK" {
-			// A message edit or rebase: whose code, and parent, is it?
+		if ok && (ch.PatchSet > 1 || ch.Kind != "REWORK") {
+			// Whose code, and parent, is it? (A REWORK can keep a parent
+			// someone else chose: sixth audit.)
 			ci, err := c.Gerrit.GetChange(ctx, n, "ALL_REVISIONS", "ALL_COMMITS")
 			if err != nil {
 				c.Logger.Warn("cannot read a change's patch sets; not pushing its latest", "change", n, "err", err)
@@ -436,22 +437,26 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 
 // codeFrom reports whether allowed holds for whoever is responsible for
 // the code of patch set ps of revs, as gerrit-buildkite's codeTrusted
-// decides it: walking down past commit-message edits, whoever made them,
-// the first patch set that is not one chose the code's parent, so allowed
-// must hold for it; and if it is a rebase, for the last rework below it
-// too, whose diff it is. A message edit onto another parent commit (same
-// files: Gerrit compares parents' trees) chose that parent too, and a kind
-// this does not know is nobody's (fifth audit).
+// decides it: for whoever chose its parent, the lowest patch set below it
+// with the same parent commits (a REWORK keeps its parent when it edits
+// the patch set below, Gerrit's web editor say, so a parent someone chose
+// rebasing on the uploader's behalf stays theirs: sixth audit); and for
+// whoever made its diff, the first REWORK below it, past commit-message
+// edits and rebases. A kind this does not know is nobody's (fifth audit).
 func codeFrom(revs map[int]gerrit.RevisionInfo, ps int, allowed func(gerrit.RevisionInfo) bool) bool {
-	parentChosen := false
-	choose := func(r gerrit.RevisionInfo) bool {
-		if !parentChosen {
-			if !allowed(r) {
-				return false
-			}
-			parentChosen = true
+	chose := ps
+	for ; chose > 1; chose-- {
+		r, ok := revs[chose]
+		below, okBelow := revs[chose-1]
+		if !ok || !okBelow {
+			return false
 		}
-		return true
+		if !r.Commit.SameParents(below.Commit) {
+			break
+		}
+	}
+	if r, ok := revs[chose]; !ok || !allowed(r) {
+		return false
 	}
 	for ; ps >= 1; ps-- {
 		r, ok := revs[ps]
@@ -460,14 +465,8 @@ func codeFrom(revs map[int]gerrit.RevisionInfo, ps int, allowed func(gerrit.Revi
 		}
 		switch r.Kind {
 		case "NO_CODE_CHANGE", "NO_CHANGE":
-			if below, ok := revs[ps-1]; ok && below.Commit.Parent() != r.Commit.Parent() && !choose(r) {
-				return false
-			}
 			continue // only the message changed: the code is below's
 		case "TRIVIAL_REBASE", "TRIVIAL_REBASE_WITH_MESSAGE_UPDATE", "MERGE_FIRST_PARENT_UPDATE":
-			if !choose(r) {
-				return false
-			}
 			continue // the same diff: whose is it?
 		case "REWORK":
 			return allowed(r)

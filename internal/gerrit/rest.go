@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -188,12 +189,29 @@ type CommitInfo struct {
 	Parents []struct {
 		Commit string `json:"commit"`
 	} `json:"parents"`
-	Author struct {
-		Name  string `json:"name"`
-		Email string `json:"email"`
-	} `json:"author"`
-	Subject string `json:"subject"`
-	Message string `json:"message"`
+	Author    Person `json:"author"`
+	Committer Person `json:"committer"`
+	Subject   string `json:"subject"`
+	Message   string `json:"message"`
+}
+
+// Person is a commit's author or committer.
+type Person struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// Own reports whether the commit is its committer's own, authored by them:
+// Gerrit checks the committer is the uploader (unless they may forge it),
+// and keeps the author when someone edits, cherry-picks or rebases with
+// conflicts someone else's commit.
+func (c CommitInfo) Own() bool {
+	return c.Author.Email != "" && strings.EqualFold(c.Author.Email, c.Committer.Email)
+}
+
+// SameParents reports whether c and o have the same parent commits.
+func (c CommitInfo) SameParents(o CommitInfo) bool {
+	return slices.Equal(c.Parents, o.Parents)
 }
 
 // Parent is the first parent's SHA, or "" for a root commit.
