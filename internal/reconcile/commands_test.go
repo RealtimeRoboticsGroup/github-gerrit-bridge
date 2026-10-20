@@ -286,3 +286,41 @@ func TestSubmitNeedsThePatchSetOnGitHub(t *testing.T) {
 		}
 	}
 }
+
+// Anyone with write access can edit anyone's comment, and GraphQL, which
+// says who did, may lag REST: a /submit changed moments ago waits until
+// it has been unchanged for editSettle (sixth audit).
+func TestSubmitChangedMomentsAgoWaits(t *testing.T) {
+	c, h, sub := newCommands(t)
+	ctx := context.Background()
+	now := c.Now()
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh"},
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-5 * time.Second)})
+	var later *errLater
+	if err := c.Run(ctx, 5); !errors.As(err, &later) || later.after != editSettle-5*time.Second || len(sub.calls) != 0 {
+		t.Fatalf("err %v, submits %v: want it to wait %v", err, sub.calls, editSettle-5*time.Second)
+	}
+	c.Now = func() time.Time { return now.Add(editSettle) }
+	if err := c.Run(ctx, 5); err != nil || len(sub.calls) != 1 {
+		t.Errorf("err %v, submits %v: want it run once settled", err, sub.calls)
+	}
+}
+
+// What waits (a fresh retest) does not hold up the commands after it.
+func TestWhatWaitsHoldsUpNothingElse(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	e.c.Now = func() time.Time { return now }
+	e.h.ics = append(e.h.ics,
+		github.IssueComment{ID: 1, Body: "retest", User: github.User{Login: "bob"}, CreatedAt: now.Add(-5 * time.Second)},
+		github.IssueComment{ID: 2, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: now.Add(-time.Hour)})
+	sub := &fakeSubmitter{}
+	d := &Dispatcher{Code: &Code{}, Comments: e.c, Store: e.st, Logger: slog.Default(),
+		Commands: &Commands{GitHub: e.h, Submitter: sub, Store: e.st, Identity: &Users{Overrides: map[string]string{"AustinSchuh": "alice"}},
+			BridgeLogin: "bridge", Logger: slog.Default(), Now: func() time.Time { return now }}}
+	var later *errLater
+	if err := d.Reconcile(context.Background(), Key{Comments: 5}); !errors.As(err, &later) || len(sub.calls) != 1 {
+		t.Errorf("err %v, submits %v: want the retest to wait and the submit run", err, sub.calls)
+	}
+}

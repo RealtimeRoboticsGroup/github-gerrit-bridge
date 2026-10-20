@@ -221,6 +221,50 @@ func TestWorkRetries(t *testing.T) {
 	}
 }
 
+// laterOnce waits once, then is done.
+type laterOnce struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (l *laterOnce) Reconcile(context.Context, Key) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.calls++; l.calls == 1 {
+		return &errLater{after: time.Millisecond}
+	}
+	return nil
+}
+
+// A reconcile that leaves work for later comes back then, not after a
+// failure's backoff.
+func TestWorkComesBackForWhatWaits(t *testing.T) {
+	q := queue.New[Key]()
+	q.MinRetry, q.MaxRetry = time.Hour, time.Hour
+	l := &laterOnce{}
+	done := make(chan struct{})
+	go func() {
+		Work(context.Background(), q, l, 1, slog.Default())
+		close(done)
+	}()
+	q.Add(Key{Comments: 1})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		l.mu.Lock()
+		calls := l.calls
+		l.mu.Unlock()
+		if calls == 2 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	q.ShutDown()
+	<-done
+	if l.calls != 2 {
+		t.Errorf("calls = %d, want the wait and the run after it", l.calls)
+	}
+}
+
 func TestPushersFromWebhooks(t *testing.T) {
 	q := queue.New[Key]()
 	r := NewRouter("p", q, slog.Default())

@@ -10,6 +10,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -208,6 +209,28 @@ func Work(ctx context.Context, q *queue.Queue[Key], rec Reconciler, n int, logge
 	}
 }
 
+// errLater says a reconcile left work it may do only later (a comment
+// edited too recently to act on as its author): its key comes back then,
+// which is not a failure.
+type errLater struct{ after time.Duration }
+
+func (e *errLater) Error() string { return fmt.Sprintf("some of it waits %v", e.after) }
+
+// waitFor is the errLater for work that waits d (nil if d is not
+// positive).
+func waitFor(d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	return &errLater{after: d}
+}
+
+// editSettle is how long a comment must be unchanged before the bridge
+// acts on it as its author where that submits or starts CI: anyone with
+// write access can edit anyone's comment, and GraphQL, which says who
+// last did, may lag REST by a little (design §9; sixth audit).
+const editSettle = 30 * time.Second
+
 func reconcileOne(ctx context.Context, q *queue.Queue[Key], rec Reconciler, k Key, logger *slog.Logger) {
 	defer q.Done(k)
 	defer func() {
@@ -224,6 +247,13 @@ func reconcileOne(ctx context.Context, q *queue.Queue[Key], rec Reconciler, k Ke
 		logger.Info("slow reconcile", "key", k.String(), "waited", waited.Round(time.Millisecond), "took", took.Round(time.Millisecond))
 	} else {
 		logger.Debug("reconciled", "key", k.String(), "waited", waited.Round(time.Millisecond), "took", took.Round(time.Millisecond))
+	}
+	var later *errLater
+	if errors.As(err, &later) {
+		q.Forget(k)
+		q.AddAfter(k, later.after)
+		logger.Debug("reconcile waits", "key", k.String(), "for", later.after)
+		return
 	}
 	if err != nil {
 		if ctx.Err() != nil {

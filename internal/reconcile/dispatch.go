@@ -2,8 +2,10 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
@@ -90,16 +92,37 @@ func (d *Dispatcher) syncComments(ctx context.Context, n int) error {
 		return err
 	}
 	defer d.Code.lock(st.State.Branch)()
-	if err := d.Comments.Sync(ctx, n); err != nil {
+	// What waits (errLater) does not hold up the rest.
+	var later error
+	var l *errLater
+	if err := d.Comments.Sync(ctx, n); errors.As(err, &l) {
+		later = err
+	} else if err != nil {
 		return err
 	}
 	if d.Commands != nil {
-		if err := d.Commands.Run(ctx, n); err != nil {
+		if err := d.Commands.Run(ctx, n); errors.As(err, &l) {
+			later = waitFor(max(l.after, laterOf(later)))
+		} else if err != nil {
 			return err
 		}
 	}
 	// Votes and CI results arrive as replies, so they ride along.
-	return d.Checks.Sync(ctx, n)
+	if d.Checks != nil {
+		if err := d.Checks.Sync(ctx, n); err != nil {
+			return err
+		}
+	}
+	return later
+}
+
+// laterOf is how long err, an errLater or nil, waits.
+func laterOf(err error) time.Duration {
+	var l *errLater
+	if errors.As(err, &l) {
+		return l.after
+	}
+	return 0
 }
 
 // targetBranch follows PR bases down a stack to the branch the chain

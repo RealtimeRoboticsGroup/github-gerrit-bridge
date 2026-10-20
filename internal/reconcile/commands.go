@@ -159,8 +159,14 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 			handled[id] = true
 		}
 	}
+	var wait time.Duration
 	for _, ic := range ics {
 		if handled[ic.ID] || isMirror(ic.Body) || !submitCommand.MatchString(ic.Body) {
+			continue
+		}
+		if w := editSettle - c.now().Sub(lastChanged(ic)); w > 0 {
+			// Edited by someone else just now, GraphQL may not say yet.
+			wait = max(wait, w)
 			continue
 		}
 		if c.DryRun {
@@ -192,7 +198,18 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 			return err
 		}
 	}
-	return nil
+	return waitFor(wait)
+}
+
+// lastChanged is when ic was posted or last updated.
+func lastChanged(ic github.IssueComment) time.Time { return latest(ic.CreatedAt, ic.UpdatedAt) }
+
+// latest is the later of a and b.
+func latest(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) string {

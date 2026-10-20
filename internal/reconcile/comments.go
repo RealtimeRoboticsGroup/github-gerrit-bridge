@@ -64,6 +64,8 @@ type GitHubAPI interface {
 // bridge never mirrors its own posts back, and can rebuild the mapping if
 // refs/bridge is lost or a crash interrupts a sync.
 type Comments struct {
+	// Now is the clock (time.Now if nil).
+	Now     func() time.Time
 	Project string
 	Gerrit  GerritAPI
 	GitHub  GitHubAPI
@@ -159,6 +161,8 @@ type commentSnapshot struct {
 	revision  string
 	// labels are the current patch set's votes.
 	labels map[string]gerrit.LabelInfo
+	// wait is how long what was left out for now waits (tooFresh).
+	wait time.Duration
 }
 
 // seen is the newest patch set GitHub had for minSeen at t, so the one
@@ -266,6 +270,7 @@ func (c *Comments) Sync(ctx context.Context, n int) error {
 		threads[t.GerritRoot] = &t
 	}
 	var first *commentSnapshot
+	var wait time.Duration
 	for pass := 0; ; pass++ {
 		if pass == 4 {
 			return fmt.Errorf("comments on change %d did not settle", n)
@@ -289,6 +294,7 @@ func (c *Comments) Sync(ctx context.Context, n int) error {
 		if err != nil {
 			return err
 		}
+		wait = max(wait, snap.wait)
 		p3, err := c.mirrorEdits(ctx, n, pr, snap, m)
 		if err != nil {
 			return err
@@ -313,10 +319,13 @@ func (c *Comments) Sync(ctx context.Context, n int) error {
 		ts = append(ts, *t)
 	}
 	sort.Slice(ts, func(i, j int) bool { return ts[i].GerritRoot < ts[j].GerritRoot })
-	return updateStateFn(ctx, c.Store, n, "Sync comments", func(s *state.Change) {
+	if err := updateStateFn(ctx, c.Store, n, "Sync comments", func(s *state.Change) {
 		s.Comments = m.list()
 		s.Threads = ts
-	})
+	}); err != nil {
+		return err
+	}
+	return waitFor(wait)
 }
 
 // settle leaves out of a later pass's snapshot s what someone other than
@@ -991,6 +1000,28 @@ func ownMirror(edits map[int64]string, id int64, author, body string) bool {
 // mine reports whether the bridge's GitHub account wrote a comment: never
 // mirrored to Gerrit as someone's GitHub comment, whatever its text says
 // now.
+func (c *Comments) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
+
+// retestLine is gerrit-buildkite's command to build a patch set.
+var retestLine = regexp.MustCompile(`(?m)^retest$`)
+
+// tooFresh reports whether a comment changed at changed, saying body,
+// waits before it is posted as its author: a "retest" starts CI as them
+// (editSettle). s keeps the longest wait.
+func (c *Comments) tooFresh(s *commentSnapshot, changed time.Time, body string) bool {
+	w := editSettle - c.now().Sub(changed)
+	if w <= 0 || !retestLine.MatchString(body) {
+		return false
+	}
+	s.wait = max(s.wait, w)
+	return true
+}
+
 func (c *Comments) mine(login string) bool {
 	return c.BridgeLogin != "" && strings.EqualFold(login, c.BridgeLogin)
 }
@@ -1070,6 +1101,9 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			// Anyone with write access can edit anyone's comment: not as
 			// the author.
 			login, key = "", key+"/edited"
+		}
+		if login != "" && c.tooFresh(s, latest(rc.CreatedAt, rc.UpdatedAt), rc.Body) {
+			continue
 		}
 		body := gerritBody(rc.User.Login, rc.HTMLURL, rc.Body, asAuthor(login))
 		ci := gerrit.CommentInput{Message: body, Unresolved: &unresolved}
@@ -1219,6 +1253,9 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		login := ic.User.Login
 		if editedByOther(s.edits, ic.ID, ic.User.Login) {
 			login = "" // edited by someone else: not as the author
+		}
+		if login != "" && c.tooFresh(s, lastChanged(ic), ic.Body) {
+			continue
 		}
 		ps := s.seen(ic.CreatedAt)
 		if ps == 0 {

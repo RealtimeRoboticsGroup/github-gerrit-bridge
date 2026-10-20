@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -1572,6 +1573,38 @@ func TestReviewOfAHeadPushedMomentsBeforeIsNotAboutIt(t *testing.T) {
 		if said != early {
 			t.Errorf("approved %v after: said it is not counted %v", after, said)
 		}
+	}
+}
+
+// A "retest" starts CI as whoever it is posted as, and anyone with write
+// access can edit anyone's comment, which GraphQL may say only a little
+// later: one changed moments ago waits until it has been unchanged for
+// editSettle before it is posted as its author (sixth audit). Others go
+// at once.
+func TestFreshRetestWaitsBeforePostingAsItsAuthor(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	e.c.Now = func() time.Time { return now }
+	e.h.ics = append(e.h.ics,
+		github.IssueComment{ID: 1, Body: "retest", User: github.User{Login: "bob"}, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-5 * time.Second)},
+		github.IssueComment{ID: 2, Body: "Nice.", User: github.User{Login: "bob"}, CreatedAt: now.Add(-5 * time.Second)})
+	e.h.human("a.txt", 3, "sha2", "retest", 0)
+	e.h.rcs[len(e.h.rcs)-1].CreatedAt = now.Add(-5 * time.Second)
+	var later *errLater
+	if err := e.c.Sync(context.Background(), 5); !errors.As(err, &later) || later.after != editSettle-5*time.Second {
+		t.Fatalf("err = %v, want a wait of %v", err, editSettle-5*time.Second)
+	}
+	posted := func(msg string) bool {
+		return slices.ContainsFunc(e.g.comments, func(gc gerrit.CommentInfo) bool { return gc.Message == msg && gc.Author.Username == "bobg" })
+	}
+	if posted("retest") || !posted("Nice.") {
+		t.Fatalf("comments %+v: want only Nice. posted yet", e.g.comments)
+	}
+	now = now.Add(editSettle)
+	e.sync(t)
+	if n := len(slices.DeleteFunc(slices.Clone(e.g.comments), func(gc gerrit.CommentInfo) bool { return gc.Message != "retest" })); n != 2 {
+		t.Errorf("%d retests posted once settled, want both", n)
 	}
 }
 

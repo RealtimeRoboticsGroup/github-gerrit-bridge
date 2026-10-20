@@ -1072,7 +1072,11 @@ defenses, by threat:
   when first mirrored (so a `retest` edited into a maintainer's comment
   does not start CI), and `/submit` does not run from it; later edits are
   always mirrored by the bridge account. The same goes for review bodies,
-  and such a review never votes.
+  and such a review never votes. GraphQL may say so only a little after
+  REST shows the edit, so a `/submit`, or a comment with a `retest` line
+  posted as its author, waits until it has been unchanged (REST
+  `updated_at`, or its creation) for 30 seconds (sixth audit); its sync
+  comes back for it then.
 - **Edits to the bridge's own GitHub comments.** A Gerrit comment's GitHub
   copy can be edited by anyone with write access, which would put words in
   a Gerrit reviewer's mouth or change its `bridge:gerrit/…` marker. Gerrit
