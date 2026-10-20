@@ -16,8 +16,11 @@ import (
 //     handled, or a commit message cut its PR's description short.
 //   - @mentions in it would have the bridge notify whoever the author
 //     named, teams included.
+//   - A line starting with a slash command (/deploy, /ok-to-test) would
+//     be a command from the bridge's account, a collaborator's, to any
+//     bot on GitHub that takes collaborators' commands (eighth audit).
 //
-// Both are broken with a zero-width joiner, which renders as nothing.
+// All are broken with a zero-width joiner, which renders as nothing.
 // unGitHub takes the bridge's joiners out again where GitHub text flows
 // back (PR descriptions into commit messages), so round trips are exact.
 const zwj = "‍"
@@ -68,8 +71,15 @@ func isAt(s string, m []int) bool {
 	return next < '0' || next > '9'
 }
 
+// slashCommand is a line's start that is a slash command: a slash and a
+// letter. Not // or /*, which code is full of.
+var slashCommand = regexp.MustCompile(`(?m)^([ \t]*)/([[:alpha:]])`)
+
+// noCommands breaks the slash starting a line of s.
+func noCommands(s string) string { return slashCommand.ReplaceAllString(s, "${1}"+zwj+"/${2}") }
+
 // forGitHub defuses text for the bridge to post on GitHub.
-func forGitHub(s string) string { return noMentions(noMarkers(s)) }
+func forGitHub(s string) string { return noCommands(noMentions(noMarkers(s))) }
 
 // forGerrit defuses text the bridge posts in Gerrit as itself (Gerrit
 // notifies @mentioned users too). Markers mean nothing in Gerrit; a
@@ -103,11 +113,12 @@ func trimmable(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) 
 var (
 	brokenMarker = regexp.MustCompile(`(?i)(<!--\s*/?bridge)` + zwj + `:`)
 	brokenAt     = regexp.MustCompile(`(?i)(@|&#0*64;?|&#x0*40;?|&commat;|\x{FF20}|\x{FE6B})` + zwj)
+	brokenSlash  = regexp.MustCompile(`(?m)^([ \t]*)` + zwj + `/`)
 )
 
 // unGitHub removes the joiners forGitHub added.
 func unGitHub(s string) string {
-	return brokenMarker.ReplaceAllString(brokenAt.ReplaceAllString(s, "${1}"), "${1}:")
+	return brokenSlash.ReplaceAllString(brokenMarker.ReplaceAllString(brokenAt.ReplaceAllString(s, "${1}"), "${1}:"), "${1}/")
 }
 
 // inlineName is a free-form name (a Gerrit full name) safe to put in bold

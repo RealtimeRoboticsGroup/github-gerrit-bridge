@@ -83,10 +83,24 @@ func TestInlineName(t *testing.T) {
 // A commit message with mentions and the bridge's own block marker
 // round-trips through the PR description unchanged: nothing looks like a
 // GitHub edit, and the description is not cut short.
+// A line someone wrote in Gerrit that starts with a slash command is no
+// command on GitHub, where the bridge's account, a collaborator, posts it
+// (eighth audit).
+func TestForGitHubBreaksSlashCommands(t *testing.T) {
+	in := "/deploy prod\n  /ok-to-test\nnot/this\n\t/azp run\n// code\n/* too */"
+	got := forGitHub(in)
+	if regexp.MustCompile(`(?m)^\s*/[[:alpha:]]`).MatchString(got) || !strings.Contains(got, "not/this\n\t") || !strings.Contains(got, "\n// code\n/* too */") {
+		t.Errorf("commands survive: %q", got)
+	}
+	if unGitHub(got) != in {
+		t.Errorf("round trip: %q", unGitHub(got))
+	}
+}
+
 func TestPRBodyRoundTripsDefusedText(t *testing.T) {
-	msg := "Subject\n\nThanks @alice. <!-- bridge:links --> not the block.\n\nChange-Id: " + cid(3) + "\n"
+	msg := "Subject\n\nThanks @alice. <!-- bridge:links --> not the block.\n/deploy\n\nChange-Id: " + cid(3) + "\n"
 	body, _ := composeBody(msg, linksBlock("https://g/c/p/+/3", 3, 1, nil, ""))
-	if strings.Contains(body, "@alice") || strings.Count(body, linksStart) != 1 {
+	if strings.Contains(body, "@alice") || strings.Count(body, linksStart) != 1 || strings.Contains(body, "\n/deploy") {
 		t.Errorf("body = %q", body)
 	}
 	pr := &github.PullRequest{Title: "Subject", Body: body}
