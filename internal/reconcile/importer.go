@@ -508,7 +508,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			parentTip = pst.Revisions[len(pst.Revisions)-1].GitHubSHA
 		}
 	}
-	own, gerritParent, err := im.realParent(ctx, branch, h, parentHeads, parentTip)
+	own, gerritParent, side, err := im.realParent(ctx, branch, h, parentHeads, parentTip)
 	if err != nil {
 		return nil, err
 	}
@@ -677,16 +677,23 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	if err != nil {
 		return nil, err
 	}
+	if side && user != "" {
+		im.Logger.Info("the push merges in commits from beside the PR's own line: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", user)
+		user = ""
+	}
 	committer := im.Bridge
 	var author github.User // as the bridge: whoever pushed all of it, if one account did
-	if user != "" {
+	switch {
+	case user != "":
 		var acct gerrit.AccountInfo
 		if err := im.Gerrit.Do(ctx, http.MethodGet, "accounts/"+url.PathEscape(user), nil, &acct); err != nil {
 			return nil, fmt.Errorf("Gerrit account %s for @%s: %w", user, login, err)
 		}
 		committer = acct
-	} else if author, err = im.pushedBy(ctx, pr, h, gerritParent, parentTip); err != nil {
-		return nil, err
+	case !side: // with commits from beside it, not all theirs, whoever pushed it
+		if author, err = im.pushedBy(ctx, pr, h, gerritParent, parentTip); err != nil {
+			return nil, err
+		}
 	}
 
 	// Both moved since the last sync? Gerrit wins (design §5.3).
@@ -800,33 +807,48 @@ func gerritQuery(s string) string { return gerrit.QueryString(s) }
 // A layer that merged its parent's current head (GitHub's "Update branch")
 // sits on that head, and a bottom layer on its merge base with the target
 // branch, so the squash's diff is the layer's own either way.
-func (im *Importer) realParent(ctx context.Context, branch, h string, parentHeads map[string]string, parentTip string) ([]string, string, error) {
+//
+// side reports whether h also has commits beside those, merged in from
+// neither the target branch nor that head: code someone else chose
+// (GitHub's Update branch merges whatever the PR below has, which need
+// not be the version found here: eighth audit).
+func (im *Importer) realParent(ctx context.Context, branch, h string, parentHeads map[string]string, parentTip string) (own []string, parent string, side bool, err error) {
 	const maxCommits = 1000
 	target := "refs/remotes/gerrit/heads/" + branch
+	// beside reports whether h has more commits than own above below.
+	beside := func(own []string, below ...string) (bool, error) {
+		out, err := im.Mirror.Git(ctx, nil, append([]string{"rev-list", "--count", fmt.Sprintf("--max-count=%d", maxCommits+1), h, "--not"}, below...)...)
+		if err != nil {
+			return false, err
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+		return err != nil || n != len(own), nil
+	}
 	if ge := parentHeads[parentTip]; ge != "" {
 		if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", parentTip, h); err == nil {
 			out, err := im.Mirror.Git(ctx, nil, "rev-list", "--first-parent", fmt.Sprintf("--max-count=%d", maxCommits+1), h, "--not", parentTip, target)
 			if err != nil {
-				return nil, "", err
+				return nil, "", false, err
 			}
 			commits := strings.Fields(string(out))
 			if len(commits) > maxCommits {
-				return nil, "", &syncError{state: "failure", msg: fmt.Sprintf("More than %d commits: too many to import", maxCommits)}
+				return nil, "", false, &syncError{state: "failure", msg: fmt.Sprintf("More than %d commits: too many to import", maxCommits)}
 			}
-			return commits, ge, nil
+			side, err := beside(commits, parentTip, target)
+			return commits, ge, side, err
 		}
 	}
 	out, err := im.Mirror.Git(ctx, nil, "rev-list", "--first-parent", fmt.Sprintf("--max-count=%d", maxCommits+1), h, "--not", target)
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 	commits := strings.Fields(string(out))
 	if len(commits) > maxCommits {
-		return nil, "", &syncError{state: "failure", msg: fmt.Sprintf("More than %d commits: too many to import", maxCommits)}
+		return nil, "", false, &syncError{state: "failure", msg: fmt.Sprintf("More than %d commits: too many to import", maxCommits)}
 	}
 	if parentHeads == nil {
 		if len(commits) == 0 {
-			return nil, "", nil
+			return nil, "", false, nil
 		}
 		// The squash's parent must already be in Gerrit, or the upload
 		// would bring all its unreviewed ancestors along: the newest
@@ -834,16 +856,18 @@ func (im *Importer) realParent(ctx context.Context, branch, h string, parentHead
 		p, err := im.Mirror.Git(ctx, nil, "merge-base", h, target)
 		parent := strings.TrimSpace(string(p))
 		if err != nil || parent == "" {
-			return nil, "", &syncError{state: "failure", msg: "This PR's history does not start from " + branch + ": rebase it onto " + branch}
+			return nil, "", false, &syncError{state: "failure", msg: "This PR's history does not start from " + branch + ": rebase it onto " + branch}
 		}
-		return commits, parent, nil
+		side, err := beside(commits, target)
+		return commits, parent, side, err
 	}
 	for i, c := range commits {
 		if ge, ok := parentHeads[c]; ok {
-			return commits[:i], ge, nil
+			side, err := beside(commits[:i], c, target)
+			return commits[:i], ge, side, err
 		}
 	}
-	return nil, "", &syncError{state: "pending", msg: "Restack needed: this PR is not on top of any version of the PR below it that Gerrit knows"}
+	return nil, "", false, &syncError{state: "pending", msg: "Restack needed: this PR is not on top of any version of the PR below it that Gerrit knows"}
 }
 
 // prunePullRefs drops the mirror's copies of closed PRs' heads, so forks'

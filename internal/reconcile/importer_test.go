@@ -132,7 +132,7 @@ func TestRealParentIgnoresStaleMergeBase(t *testing.T) {
 	l2a := g.commit("l2.txt", "a\n", "l2 a")
 	l2b := g.commit("l2.txt", "b\n", "l2 b")
 	// Layer 1 was imported as Gerrit commit "G1" for GitHub head l1v1.
-	own, gp, err := im.realParent(context.Background(), "main", l2b, map[string]string{l1v1: "G1"}, "")
+	own, gp, _, err := im.realParent(context.Background(), "main", l2b, map[string]string{l1v1: "G1"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestRealParentIgnoresStaleMergeBase(t *testing.T) {
 		t.Errorf("realParent = %v, %s", own, gp)
 	}
 	// Unknown parent layer version: refuse rather than fold it in.
-	if _, _, err := im.realParent(context.Background(), "main", l2b, map[string]string{"other": "G9"}, ""); err == nil {
+	if _, _, _, err := im.realParent(context.Background(), "main", l2b, map[string]string{"other": "G9"}, ""); err == nil {
 		t.Error("expected restack-needed error")
 	}
 }
@@ -175,12 +175,12 @@ func TestRealParentMustBeInGerrit(t *testing.T) {
 	g.run("checkout", "-q", "--orphan", "other")
 	g.commit("x.txt", "1\n", "unrelated root")
 	h := g.commit("x.txt", "2\n", "unrelated tip")
-	if _, _, err := im.realParent(context.Background(), "main", h, nil, ""); err == nil {
+	if _, _, _, err := im.realParent(context.Background(), "main", h, nil, ""); err == nil {
 		t.Error("imported a PR whose history does not start from main")
 	}
 	g.run("checkout", "-q", "-b", "ok", "refs/remotes/gerrit/heads/main")
 	h = g.commit("y.txt", "1\n", "fine")
-	if own, p, err := im.realParent(context.Background(), "main", h, nil, ""); err != nil || len(own) != 1 || p != g.run("rev-parse", "refs/remotes/gerrit/heads/main") {
+	if own, p, _, err := im.realParent(context.Background(), "main", h, nil, ""); err != nil || len(own) != 1 || p != g.run("rev-parse", "refs/remotes/gerrit/heads/main") {
 		t.Errorf("realParent = %v, %s, %v", own, p, err)
 	}
 }
@@ -198,7 +198,7 @@ func TestRealParentAfterUpdateBranch(t *testing.T) {
 	g.run("checkout", "-q", "feature")
 	g.run("merge", "-q", "--no-edit", "main")
 	h := g.run("rev-parse", "HEAD")
-	own, p, err := im.realParent(context.Background(), "main", h, nil, "")
+	own, p, _, err := im.realParent(context.Background(), "main", h, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestRealParentAfterUpdateBranch(t *testing.T) {
 	g.run("merge", "-q", "--no-edit", "l1")
 	h2 := g.run("rev-parse", "HEAD")
 	heads := map[string]string{l1a: "G1a", l1b: "G1b"}
-	own, p, err = im.realParent(context.Background(), "main", h2, heads, l1b)
+	own, p, _, err = im.realParent(context.Background(), "main", h2, heads, l1b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestRealParentAfterUpdateBranch(t *testing.T) {
 		t.Errorf("stacked: parent %s, own %v; want G1b (layer 1's current head) and the merge plus l2", p, own)
 	}
 	// Without the merge, the parent is the version it was built on.
-	if _, p, _ = im.realParent(context.Background(), "main", h2+"^", heads, l1b); p != "G1a" {
+	if _, p, _, _ = im.realParent(context.Background(), "main", h2+"^", heads, l1b); p != "G1a" {
 		t.Errorf("unmerged: parent %s, want G1a", p)
 	}
 }

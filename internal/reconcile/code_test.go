@@ -939,6 +939,104 @@ func TestFirstUploadNeedsEveryPushTheAuthors(t *testing.T) {
 	}
 }
 
+// austin's Update branch of the layer above merges whatever the PR below
+// has: brt's push there, which the bridge uploaded as its own. If brt
+// pushes again before the bridge imports austin's layer, it is no longer on
+// top of the version Gerrit has, and the squash goes on an older one, with
+// brt's code in its diff: not austin's to upload (eighth audit).
+func TestUpdateBranchMergingWhatThePRBelowNoLongerHasIsTheBridges(t *testing.T) {
+	s, im, up, _, g, ids := gerritBornWorld(t, true)
+	ctx := context.Background()
+	for _, n := range []int{1, 2} {
+		ci := s.changes[n]
+		r := ci.Revisions[ci.CurrentRevision]
+		r.Commit.Author.Email, r.Commit.Committer.Email = "austin@example.com", "austin@example.com"
+		ci.Revisions[ci.CurrentRevision] = r
+	}
+	b2 := s.commit(g[0], "one.txt", "brt's code\n", "More")
+	s.push("github.git", b2, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = b2
+	s.webhookPush(im.Pushers, 10, "brt")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], " ") {
+		t.Fatalf("uploads = %v, want brt's push as the bridge", up.uploads)
+	}
+	// austin's Update branch of layer 2 merges b2.
+	s.git("work", "checkout", "-q", "--detach", g[1])
+	s.git("work", "merge", "-q", "--no-edit", b2)
+	m := s.git("work", "rev-parse", "HEAD")
+	s.push("github.git", m, "refs/heads/gerrit/"+ids[1])
+	s.pulls[20].Head.SHA = m
+	s.webhookPush(im.Pushers, 20, "austin")
+	// brt pushes to layer 1 again before the bridge imports.
+	b3 := s.commit(b2, "three.txt", "3\n", "Even more")
+	s.push("github.git", b3, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = b3
+	s.webhookPush(im.Pushers, 10, "brt")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	ps := s.changes[2].CurrentRevision
+	if last := up.uploads[len(up.uploads)-1]; !strings.HasPrefix(last, " ") || !strings.Contains(s.git("m.git", "diff", "--name-only", ps+"^", ps), "one.txt") {
+		t.Errorf("uploads = %v; want austin's layer, with brt's b2 in its diff, as the bridge's", up.uploads)
+	}
+	if author := s.git("m.git", "log", "-1", "--format=%ae", ps); strings.Contains(author, "austin") {
+		t.Errorf("authored by %s: not all austin's, whoever pushed it", author)
+	}
+}
+
+// A layer still on an older version of the PR below, which moved since,
+// is its uploader's to push to as before: only its own commits are above
+// that version.
+func TestPushOnAnOlderVersionOfThePRBelowIsTheUploaders(t *testing.T) {
+	s, im, up, _, g, ids := gerritBornWorld(t, true)
+	ctx := context.Background()
+	b2 := s.commit(g[0], "one.txt", "brt's code\n", "More")
+	s.push("github.git", b2, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = b2
+	s.webhookPush(im.Pushers, 10, "brt")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	f := s.commit(g[1], "two.txt", "2 fixed\n", "Fix")
+	s.push("github.git", f, "refs/heads/gerrit/"+ids[1])
+	s.pulls[20].Head.SHA = f
+	s.webhookPush(im.Pushers, 20, "austin")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 2 || !strings.HasPrefix(up.uploads[1], "austin ") {
+		t.Errorf("uploads = %v, want austin's fix as austin's", up.uploads)
+	}
+}
+
+// A push that merges in a branch from beside the target, someone else's,
+// brings their code: not the pusher's to upload as their own, though
+// they pushed it.
+func TestPushMergingInAnotherBranchIsTheBridges(t *testing.T) {
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	x := s.commit(m1, "x.txt", "brt's\n", "Theirs")
+	s.push("github.git", x, "refs/heads/brt-topic")
+	a := s.commit(m1, "a.txt", "a\n", "Mine")
+	s.git("work", "checkout", "-q", "--detach", a)
+	s.git("work", "merge", "-q", "--no-edit", x)
+	h := s.git("work", "rev-parse", "HEAD")
+	s.push("github.git", h, "refs/heads/topic")
+	s.pushed("o/r", "refs/heads/topic", h, "austin")
+	s.pr(60, "topic", h, "main", "austin")
+	if err := im.Import(context.Background(), "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], " ") {
+		t.Fatalf("uploads = %v, want one as the bridge", up.uploads)
+	}
+	if author := s.git("m.git", "log", "-1", "--format=%ae", strings.Fields(up.uploads[0])[0]); strings.Contains(author, "austin") {
+		t.Errorf("authored by %s: not all austin's, though austin pushed it", author)
+	}
+}
+
 // A force push replaces what its branch had: whoever pushed that is not in
 // the new head unless the head keeps some of it. A fork's main reused for
 // one PR after another, last pushed by the bridge (the old PR's Gerrit
