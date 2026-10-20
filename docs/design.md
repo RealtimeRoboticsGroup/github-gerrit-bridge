@@ -1132,7 +1132,10 @@ defenses, by threat:
   GitHub id. A commit someone else pushed in between, which the bridge
   did not get to or could not import ("Restack needed"), would otherwise
   ride on their next push or Update branch as their code (seventh
-  audit). Who pushed is only as GitHub
+  audit). A push that moves the code onto a new parent too is theirs only
+  on a parent a pure rebase of it could be on (below): not their Update
+  branch onto someone else's newer patch set of the change below
+  (seventh audit). Who pushed is only as GitHub
   says: the activity log of the PR's branch (`GET /repos/{repo}/activity`,
   the fork's for a fork PR), which outlives the bridge's restarts and
   covers webhooks it missed; or, for a push the log does not list yet, the

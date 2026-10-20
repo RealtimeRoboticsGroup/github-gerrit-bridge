@@ -953,6 +953,23 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		return "", login, nil
 	}
 	if pusher, ok := im.Identity.GerritUserFor(ctx, by); ok && strings.EqualFold(pusher, prev) {
+		if parent != rev.Commit.Parent() {
+			// It moved base's code onto a new parent too, whose code is
+			// built with it: their Update branch onto the change below's
+			// newer patch set, someone else's, say (seventh audit). As
+			// for a rebase of it, below.
+			if err := im.have(ctx, base, rev.Ref); err != nil {
+				return "", "", err
+			}
+			trusted, err := im.parentTrusted(ctx, parent, base, branch, prevID)
+			if err != nil {
+				return "", "", err
+			}
+			if !trusted {
+				im.Logger.Info("a push onto a parent the uploader did not upload: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
+				return "", login, nil
+			}
+		}
 		return pusher, login, nil
 	}
 	pure, err := im.pureRebase(ctx, base, rev.Ref, parent, h)
@@ -1151,14 +1168,23 @@ func sameGitHubUser(a, b github.User) bool {
 	return strings.EqualFold(a.Login, b.Login)
 }
 
+// have fetches Gerrit's ref, whose commit is commit, unless the mirror has
+// it.
+func (im *Importer) have(ctx context.Context, commit, ref string) error {
+	if _, err := im.Mirror.Git(ctx, nil, "cat-file", "-e", commit+"^{commit}"); err != nil {
+		if _, err := im.Mirror.Git(ctx, nil, "fetch", "--quiet", "origin", ref); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // pureRebase reports whether h's tree is exactly what rebasing commit
 // (Gerrit's ref) onto parent gives, with no conflicts: nothing in it is
 // the pusher's own.
 func (im *Importer) pureRebase(ctx context.Context, commit, ref, parent, h string) (bool, error) {
-	if _, err := im.Mirror.Git(ctx, nil, "cat-file", "-e", commit+"^{commit}"); err != nil {
-		if _, err := im.Mirror.Git(ctx, nil, "fetch", "--quiet", "origin", ref); err != nil {
-			return false, err
-		}
+	if err := im.have(ctx, commit, ref); err != nil {
+		return false, err
 	}
 	base, err := im.Mirror.Git(ctx, nil, "rev-parse", commit+"^")
 	if err != nil {

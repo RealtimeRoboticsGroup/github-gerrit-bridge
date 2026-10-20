@@ -2372,6 +2372,44 @@ func TestPureRebaseOntoSomeoneElsesParentIsTheBridges(t *testing.T) {
 	}
 }
 
+// A push is its pusher's own only on a parent a rebase of theirs could
+// be on too: austin's Update branch of his layer, onto brt's newer patch
+// set of the layer below, is the bridge's, as GitHub's Rebase would be
+// (seventh audit). Onto the branch's newer commit, it is his.
+func TestPushOntoSomeoneElsesParentIsTheBridges(t *testing.T) {
+	s, im, up, _, g, ids := gerritBornWorld(t, true)
+	ctx := context.Background()
+	r := s.changes[1].Revisions[g[0]]
+	r.Uploader = s.accounts["brt"]
+	r.Commit.Author.Email, r.Commit.Committer.Email = "brt@example.com", "brt@example.com" // brt's own commit
+	s.changes[1].Revisions[g[0]] = r
+	// brt's new code in the layer below, imported as his patch set 2.
+	b2 := s.commit(g[0], "one.txt", "brt's new code\n", "More")
+	s.push("github.git", b2, "refs/heads/gerrit/"+ids[0])
+	s.pulls[10].Head.SHA = b2
+	s.webhookPush(im.Pushers, 10, "brt")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], "brt ") {
+		t.Fatalf("uploads = %v, want brt's layer as brt", up.uploads)
+	}
+	// austin merges it into his layer and fixes something: not a pure
+	// rebase.
+	s.git("work", "checkout", "-q", "--detach", g[1])
+	s.git("work", "merge", "-q", "--no-edit", b2)
+	h := s.commit(s.git("work", "rev-parse", "HEAD"), "two.txt", "2 fixed\n", "Fix")
+	s.push("github.git", h, "refs/heads/gerrit/"+ids[1])
+	s.pulls[20].Head.SHA = h
+	s.webhookPush(im.Pushers, 20, "austin")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 2 || !strings.HasPrefix(up.uploads[1], " ") {
+		t.Errorf("uploads = %v, want austin's layer on brt's code as the bridge", up.uploads)
+	}
+}
+
 // exported adds sha as change n's next patch set, uploaded by user, as on
 // GitHub too.
 func (s *sites) exported(im *Importer, n int, sha, kind, user string) {
