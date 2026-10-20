@@ -71,8 +71,13 @@ func isAt(s string, m []int) bool {
 func forGitHub(s string) string { return noMentions(noMarkers(s)) }
 
 // forGerrit defuses text the bridge posts in Gerrit as itself (Gerrit
-// notifies @mentioned users too). Markers mean nothing in Gerrit.
-func forGerrit(s string) string { return noMentions(s) }
+// notifies @mentioned users too). Markers mean nothing in Gerrit; a
+// retest line, quoted, starts no CI, should the bridge's account ever be
+// trusted (seventh audit: CI's log showed hundreds of them refused only
+// because it was not).
+func forGerrit(s string) string {
+	return retestLine.ReplaceAllStringFunc(noMentions(s), func(l string) string { return "`" + strings.TrimSpace(l) + "`" })
+}
 
 var (
 	brokenMarker = regexp.MustCompile(`(?i)(<!--\s*/?bridge)` + zwj + `:`)

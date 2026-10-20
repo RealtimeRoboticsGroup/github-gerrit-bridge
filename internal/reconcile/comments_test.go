@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -1694,6 +1695,21 @@ func TestOldReviewDoesNotReplaceANewerGerritVote(t *testing.T) {
 		if v := e.g.labels["Code-Review"]["bobg"]; v != tc.want {
 			t.Errorf("%s, then %q in Gerrit (before %v, tag %q): Code-Review %+d, want %+d", tc.state, tc.msg, tc.before, tc.tag, v, tc.want)
 		}
+	}
+}
+
+// What the bridge posts in Gerrit as itself carries no retest line CI
+// would take: were its account ever trusted, any GitHub user's "retest"
+// would start CI with secrets (seventh audit).
+func TestBridgePostsCarryNoRetestLine(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.h.ics = append(e.h.ics, github.IssueComment{ID: 1, Body: "Please\nretest\n Retest\r\n", User: github.User{Login: "stranger"},
+		HTMLURL: "https://github.com/o/r/pull/1#issuecomment-1"})
+	e.sync(t)
+	ci := regexp.MustCompile(`(?m)^retest$`) // gerrit-buildkite's
+	gc := e.g.comments[len(e.g.comments)-1]
+	if gc.Author.AccountID != bridgeID || !strings.Contains(gc.Message, "Please") || retestLine.MatchString(gc.Message) || ci.MatchString(gc.Message) {
+		t.Errorf("posted by %d: %q", gc.Author.AccountID, gc.Message)
 	}
 }
 
