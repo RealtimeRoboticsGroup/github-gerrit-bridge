@@ -1038,6 +1038,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 	type batch struct {
 		ps       int
 		login    string         // GitHub author, posted as (Run-As)
+		author   string         // their Gerrit account, as its text was written for ("": the bridge)
 		labels   map[string]int // votes from a GitHub review
 		comments map[string][]gerrit.CommentInput
 		// plain is comments without fix suggestions (the suggestion
@@ -1074,7 +1075,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		k := batchKey(key, ps, login)
 		b := batches[k]
 		if b == nil {
-			b = &batch{ps: ps, login: login, comments: map[string][]gerrit.CommentInput{}, plain: map[string][]gerrit.CommentInput{}}
+			b = &batch{ps: ps, login: login, author: authors[login], comments: map[string][]gerrit.CommentInput{}, plain: map[string][]gerrit.CommentInput{}}
 			batches[k] = b
 			order = append(order, k)
 		}
@@ -1270,7 +1271,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			c.Logger.Info("dry run: would mirror GitHub comments to Gerrit", "change", n, "pr", pr, "batch", k, "files", len(b.comments))
 			continue
 		}
-		err := c.postBatch(ctx, n, b.login, b.ps, b.comments, b.plain, b.labels)
+		err := c.postBatch(ctx, n, b.login, b.author, b.ps, b.comments, b.plain, b.labels)
 		var ge *gerrit.Error
 		if errors.As(err, &ge) && (ge.Status == http.StatusBadRequest || ge.Status == http.StatusConflict || ge.Status == http.StatusRequestEntityTooLarge) {
 			// Gerrit will never take it (a change's comment limits, say):
@@ -1654,7 +1655,8 @@ func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnap
 			if !hr {
 				msg = "Unresolved on GitHub."
 			}
-			err := c.setReviewAs(ctx, resolver[t.GitHubThread], n, strconv.Itoa(last.PatchSet), gerrit.ReviewInput{
+			_, user := c.as(ctx, resolver[t.GitHubThread])
+			err := c.setReviewAs(ctx, resolver[t.GitHubThread], user, n, strconv.Itoa(last.PatchSet), gerrit.ReviewInput{
 				Comments: map[string][]gerrit.CommentInput{last.Path: {{
 					InReplyTo: last.ID, Line: last.Line, Range: last.Range, Side: last.Side,
 					Message: msg, Unresolved: &unresolved,
@@ -2052,14 +2054,18 @@ func (c *Comments) as(ctx context.Context, login string) (GerritAPI, string) {
 	return c.Gerrit, ""
 }
 
-// setReviewAs posts in as GitHub user login (Run-As), falling back to the
-// bridge if Gerrit refuses to let the bridge act for them.
-func (c *Comments) setReviewAs(ctx context.Context, login string, n int, rev string, in gerrit.ReviewInput) error {
-	g, user := c.as(ctx, login)
-	if user == "" || gerrit.AmbiguousUsername(user) {
+// setReviewAs posts in as GitHub user login's Gerrit account user (Run-As;
+// "": as the bridge), falling back to the bridge if Gerrit refuses to let
+// the bridge act for them. user is the account in was written for, looked
+// up once: looked up again, it could come back otherwise (a lookup error,
+// a rename), and words written to be its author's would be posted as the
+// bridge's own (sixth audit).
+func (c *Comments) setReviewAs(ctx context.Context, login, user string, n int, rev string, in gerrit.ReviewInput) error {
+	if user == "" || gerrit.AmbiguousUsername(user) || c.GerritAs == nil {
 		in.Tag, in.Labels = commentTag, nil
 		return c.Gerrit.SetReview(ctx, n, rev, in)
 	}
+	g := c.GerritAs(user)
 	in.Tag = mirrorTag
 	err := g.SetReview(ctx, n, rev, in)
 	var ge *gerrit.Error
@@ -2092,12 +2098,13 @@ func byBridgeFor(msg string) string {
 	return "(From GitHub; posted by the bridge.)\n\n" + forGerrit(msg)
 }
 
-// castVote sets labels as login, or Code-Review +1 if +2 is refused.
-func (c *Comments) castVote(ctx context.Context, login string, n int, rev string, labels map[string]int) {
-	err := c.setReviewAs(ctx, login, n, rev, gerrit.ReviewInput{Labels: labels})
+// castVote sets labels as login's account user, or Code-Review +1 if +2
+// is refused.
+func (c *Comments) castVote(ctx context.Context, login, user string, n int, rev string, labels map[string]int) {
+	err := c.setReviewAs(ctx, login, user, n, rev, gerrit.ReviewInput{Labels: labels})
 	var ge *gerrit.Error
 	if errors.As(err, &ge) && (ge.Status == http.StatusForbidden || ge.Status == http.StatusBadRequest) && labels["Code-Review"] == 2 {
-		err = c.setReviewAs(ctx, login, n, rev, gerrit.ReviewInput{Labels: map[string]int{"Code-Review": 1}})
+		err = c.setReviewAs(ctx, login, user, n, rev, gerrit.ReviewInput{Labels: map[string]int{"Code-Review": 1}})
 	}
 	if err != nil {
 		c.Logger.Warn("casting a vote without its comments", "change", n, "github_login", login, "err", err)
@@ -2108,18 +2115,18 @@ func (c *Comments) castVote(ctx context.Context, login string, n int, rev string
 // degrading gracefully: fix suggestions become text on sites without the
 // feature flag, and a vote the user may not give is lowered (+2 to +1)
 // or dropped, so the comments always get through.
-func (c *Comments) postBatch(ctx context.Context, n int, login string, ps int, comments, plain map[string][]gerrit.CommentInput, labels map[string]int) error {
+func (c *Comments) postBatch(ctx context.Context, n int, login, user string, ps int, comments, plain map[string][]gerrit.CommentInput, labels map[string]int) error {
 	rev := strconv.Itoa(ps)
 	// Not OmitDuplicateComments: claim already keeps a comment from being
 	// posted twice, and two GitHub comments may well say the same thing
 	// in the same place ("Done").
 	in := gerrit.ReviewInput{Comments: comments}
-	if _, user := c.as(ctx, login); user != "" {
+	if user != "" {
 		in.Labels = labels
 	}
 	want := in.Labels
 	for attempt := 0; ; attempt++ {
-		err := c.setReviewAs(ctx, login, n, rev, in)
+		err := c.setReviewAs(ctx, login, user, n, rev, in)
 		var ge *gerrit.Error
 		switch {
 		case err == nil:
@@ -2132,7 +2139,7 @@ func (c *Comments) postBatch(ctx context.Context, n int, login string, ps int, c
 			// (a change's comment limits, say): the vote alone, which it
 			// still takes, so nobody's vote is lost to someone else's
 			// comments. The caller records the comments as refused.
-			c.castVote(ctx, login, n, rev, want)
+			c.castVote(ctx, login, user, n, rev, want)
 			return err
 		case ge.Status == http.StatusConflict && len(in.Labels) > 0:
 			c.Logger.Info("Gerrit refused the vote (closed change?); posting the comment only", "change", n, "github_login", login, "err", err)

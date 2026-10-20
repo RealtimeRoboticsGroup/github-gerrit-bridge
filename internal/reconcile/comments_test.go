@@ -1608,6 +1608,24 @@ func TestFreshRetestWaitsBeforePostingAsItsAuthor(t *testing.T) {
 	}
 }
 
+// A batch is posted as the account its text was written for, looked up
+// once: looked up again, it could come back otherwise (a lookup error, a
+// rename), and the author's own words, written to be posted as them,
+// would be posted as the bridge's (sixth audit).
+func TestBatchIsPostedAsTheAccountItWasWrittenFor(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.c.Users = &Users{} // bob no longer maps to anyone
+	comments := map[string][]gerrit.CommentInput{"a.txt": {{Line: 3, Message: "cc @admin, from the bridge"}}}
+	if err := e.c.postBatch(context.Background(), 5, "bob", "bobg", 2, comments, comments, map[string]int{"Code-Review": 2}); err != nil {
+		t.Fatal(err)
+	}
+	gc := e.g.comments[len(e.g.comments)-1]
+	if gc.Author.Username != "bobg" || e.g.labels["Code-Review"]["bobg"] != 2 {
+		t.Errorf("posted as %q (votes %v), want as bobg, who it was written for", gc.Author.Username, e.g.labels)
+	}
+}
+
 // A dismissed approval's vote is withdrawn however it looks: Gerrit dates
 // a vote it copies to a new patch set by that patch set, as if given
 // again, and one dismissed while it was being mirrored is never mapped
