@@ -1356,11 +1356,17 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		if err != nil {
 			return err
 		}
+		at := time.Now()
 		if ch := s.Changes[a.Change]; ch != nil {
 			c.PRBudget.Take(ctx, ch.OwnerID)
 		}
 		c.Logger.Info("created PR", "change", a.Change, "pr", pr.Number, "url", pr.HTMLURL)
-		return c.link(ctx, s, a.Change, pr)
+		if err := c.link(ctx, s, a.Change, pr); err != nil {
+			return err
+		}
+		// Its head from the start: a review a minute on is about it,
+		// however busy the bridge is before it next reads the PR.
+		return noteHead(ctx, c.Store, a.Change, pr.Head.SHA, at)
 	case UpdatePR:
 		if u := a.Update; u.State == nil && u.Base == nil {
 			// Text only: wait if whoever changed it changed too many.

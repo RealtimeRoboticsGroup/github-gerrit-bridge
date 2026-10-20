@@ -1130,6 +1130,33 @@ func TestPushesEditsAndClosesOnlyAsThePinnedGitHubAccount(t *testing.T) {
 	}
 }
 
+// A PR the bridge makes has its head from the start: a review a minute
+// on is about it, however long the bridge takes to read the PR again (in
+// the rehearsal a periodic resync held the comment sync back three
+// minutes, and an approval did not count).
+func TestNewPRHasItsHeadFromTheStart(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	msg := "Feature\n\nChange-Id: " + cid(1) + "\n"
+	s.change(1, cid(1), s.commit(m0, "f.txt", "f\n", msg), msg, "NEW")
+	if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := store.Load(ctx, 1)
+	if st.State.PR == 0 {
+		t.Fatal("no PR made")
+	}
+	head := s.pulls[st.State.PR].Head.SHA
+	later := time.Now().Add(2 * time.Minute)
+	if got := headThroughout(st.Heads, later.Add(-minSeen), later); got != head {
+		t.Errorf("heads %+v: two minutes on, GitHub showed %q throughout the minute, want the PR's head %s", st.Heads, got, short(head))
+	}
+}
+
 // The importer records every head it sees a linked PR at, a known one
 // too: a branch put back on an older patch set's commit imports and
 // records nothing else, yet that is what GitHub then shows, and what a
