@@ -766,11 +766,20 @@ Configurable per label. The default:
 
 GitHub → Gerrit: `APPROVE` → +2 if the user has the right in Gerrit,
 otherwise +1. `REQUEST_CHANGES` → -1 (configurable to -2). A person's
-dismissal of an approval → the reviewer's Code-Review vote on the current
-patch set reset to 0, as them, if it is positive and was given no later
-than the dismissal (copied to a newer patch set included); one they gave
-again since stays (the owner's call, 2026-10-19). Whoever may dismiss
-reviews on GitHub may so withdraw a reviewer's approval.
+dismissal of an approval → the reviewer's positive Code-Review vote on the
+current patch set reset to 0, as them, unless they voted Code-Review up in
+Gerrit themselves since (the owner's call, 2026-10-19). Whoever may
+dismiss reviews on GitHub may so withdraw a reviewer's approval. Whether
+they voted again is read from their own change messages, not the vote's
+date: Gerrit dates a vote it copies to a new patch set by that patch set,
+so a patch set uploaded (by anyone) between the dismissal and the bridge
+seeing it would otherwise keep the vote (sixth audit). The review need not
+have been mapped (one dismissed while being mirrored never is, though its
+vote was cast). If Gerrit refuses the reset (anyone can fill a change up
+to its message limits), the bridge deletes the vote instead; if it cannot
+(Gerrit refuses that too, or the reviewer's login no longer maps to the
+account the review was mirrored as), it says so, once, on the PR and the
+change.
 
 A GitHub approval on a stack layer applies only to that layer's Gerrit
 change. This matches the semantics on both sides.

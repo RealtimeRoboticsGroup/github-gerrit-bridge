@@ -24,6 +24,7 @@ import (
 type GerritAPI interface {
 	ListComments(ctx context.Context, change int) ([]gerrit.CommentInfo, error)
 	SetReview(ctx context.Context, change int, revision string, in gerrit.ReviewInput) error
+	DeleteVote(ctx context.Context, change int, account, label string) error
 	GetChange(ctx context.Context, change int, opts ...string) (*gerrit.ChangeInfo, error)
 	FileContent(ctx context.Context, change int, revision, path string) ([]byte, error)
 	CommentURL(project string, change int, id string) string
@@ -1347,14 +1348,19 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 	for _, login := range sortedStringKeys(latest) {
 		rv := latest[login]
 		mc := m.byGitHub[ghKey(kindReviewBody, rv.ID)]
-		if c.mine(rv.User.Login) || mc == nil || strings.HasPrefix(mc.GerritID, "refused:") {
-			continue // not mirrored, or Gerrit would not take it: nothing to disagree with
+		if c.mine(rv.User.Login) {
+			continue
 		}
 		if rv.State == "DISMISSED" {
-			if err := c.dropDismissed(ctx, n, pr, rv, s, &dismissals); err != nil {
+			// Mirrored or not: one dismissed while it was being mirrored
+			// is never mapped, though its vote was cast (sixth audit).
+			if err := c.dropDismissed(ctx, n, pr, rv, mc, s, &dismissals); err != nil {
 				return err
 			}
 			continue
+		}
+		if mc == nil || strings.HasPrefix(mc.GerritID, "refused:") {
+			continue // not mirrored, or Gerrit would not take it: nothing to disagree with
 		}
 		user, ok := c.Users.GerritUser(ctx, rv.User.Login)
 		if !ok {
@@ -1390,17 +1396,33 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 // dropDismissed withdraws the Code-Review vote a GitHub approval cast once
 // someone (a person, not GitHub, a bot or the bridge) dismisses that
 // approval on GitHub (the owner's call, 2026-10-19): the reviewer's
-// positive vote on the current patch set,
-// given no later than the dismissal (copied to a new patch set, too), is
-// reset to 0, as them. One they gave again since is theirs.
-func (c *Comments) dropDismissed(ctx context.Context, n, pr int, rv github.Review, s *commentSnapshot, dismissals *map[int64]github.Dismissal) error {
+// positive vote on the current patch set is reset to 0, as them, unless
+// they voted for it again in Gerrit since. Gerrit dates a vote it copies
+// to a new patch set by that patch set, so whether they did is read from
+// their own change messages, which are never copied (sixth audit). Where
+// the bridge cannot withdraw it, it says so on the change and the PR.
+// mc is the review's mirror, if mapped.
+func (c *Comments) dropDismissed(ctx context.Context, n, pr int, rv github.Review, mc *state.Comment, s *commentSnapshot, dismissals *map[int64]github.Dismissal) error {
 	g, user := c.as(ctx, rv.User.Login)
-	if user == "" || gerrit.AmbiguousUsername(user) {
-		return nil // never voted
+	if gerrit.AmbiguousUsername(user) {
+		user = ""
+	}
+	reviewer := gerrit.AccountInfo{Username: user}
+	if user == "" {
+		// The login no longer maps to the account its review was
+		// mirrored as (renamed, deactivated): the vote is still theirs.
+		gc := (*gerrit.CommentInfo)(nil)
+		if mc != nil {
+			gc = s.byID[mc.GerritID]
+		}
+		if gc == nil || gc.Author.AccountID == c.BridgeAccount {
+			return nil // never voted
+		}
+		reviewer = gc.Author
 	}
 	var vote *gerrit.ApprovalInfo
 	for _, a := range s.labels["Code-Review"].All {
-		if strings.EqualFold(a.Username, user) && a.Value > 0 {
+		if sameAccount(a.AccountInfo, reviewer) && a.Value > 0 {
 			vote = &a
 		}
 	}
@@ -1415,32 +1437,89 @@ func (c *Comments) dropDismissed(ctx context.Context, n, pr int, rv github.Revie
 		*dismissals = ds
 	}
 	d, ok := (*dismissals)[rv.ID]
-	if !ok || d.State != "approved" || d.By == "" || d.Bot || d.Commit != "" || c.mine(d.By) {
+	if !ok || d.State != "approved" || d.Bot || d.Commit != "" || (d.By != "" && c.mine(d.By)) {
 		// Not a person's call (§6.4: GitHub's own stale-approval
 		// dismissals, on a push, leave the vote to Gerrit's copyCondition;
-		// the bridge's dismiss only votes already gone).
+		// the bridge's dismiss only votes already gone). Nobody named is
+		// a deleted account: still a person's.
 		return nil
 	}
-	if at, err := time.Parse("2006-01-02 15:04:05.999999999", vote.Date); err == nil && at.After(d.At) {
-		return nil // voted again since
+	for _, m := range s.messages {
+		at, err := time.Parse("2006-01-02 15:04:05.999999999", m.Date)
+		if err == nil && at.After(d.At) && sameAccount(m.Author, reviewer) && !isBridgeTag(m.Tag) && positiveCodeReview.MatchString(m.Message) {
+			return nil // voted again since
+		}
+	}
+	by := "@" + d.By
+	if d.By == "" {
+		by = "A deleted GitHub account"
 	}
 	if c.DryRun {
 		c.Logger.Info("dry run: would withdraw a dismissed approval's vote", "change", n, "pr", pr, "review", rv.ID, "user", user)
 		return nil
 	}
-	msg := fmt.Sprintf("Code-Review %s withdrawn: @%s dismissed this approval on GitHub.", voteString(vote.Value), d.By)
+	if user == "" {
+		return c.cannotWithdraw(ctx, n, pr, rv, s, vote, by, "the bridge no longer knows @"+rv.User.Login+"'s Gerrit account")
+	}
+	msg := fmt.Sprintf("Code-Review %s withdrawn: %s dismissed this approval on GitHub.", voteString(vote.Value), by)
 	err := g.SetReview(ctx, n, strconv.Itoa(s.current), gerrit.ReviewInput{Message: forGerrit(msg), Tag: mirrorTag, Labels: map[string]int{"Code-Review": 0}})
 	var ge *gerrit.Error
 	if errors.As(err, &ge) && ge.Status < 500 {
-		// Not the bridge's to undo as itself; it stops nothing else.
+		// Over the change's message limits, say, which anyone can fill
+		// up (sixth audit): deleting the vote, which Gerrit still takes.
+		c.Logger.Warn("Gerrit refused to reset a dismissed approval's vote; deleting it", "change", n, "user", user, "err", err)
+		err = g.DeleteVote(ctx, n, "self", "Code-Review")
+	}
+	if errors.As(err, &ge) && ge.Status < 500 {
 		c.Logger.Warn("Gerrit refused to withdraw a dismissed approval's vote", "change", n, "user", user, "err", err)
-		return nil
+		return c.cannotWithdraw(ctx, n, pr, rv, s, vote, by, "Gerrit refused")
 	}
 	if err != nil {
 		return fmt.Errorf("withdrawing %s's vote on change %d: %w", user, n, err)
 	}
 	c.Logger.Info("withdrew the vote of an approval dismissed on GitHub", "change", n, "pr", pr, "review", rv.ID, "user", user, "dismissed_by", d.By)
 	return nil
+}
+
+// sameAccount reports whether a and b are one Gerrit account: by id, if
+// both say, else by username.
+func sameAccount(a, b gerrit.AccountInfo) bool {
+	if a.AccountID != 0 && b.AccountID != 0 {
+		return a.AccountID == b.AccountID
+	}
+	return a.Username != "" && strings.EqualFold(a.Username, b.Username)
+}
+
+// positiveCodeReview matches the change message Gerrit writes when
+// someone votes Code-Review up ("Patch Set 3: Code-Review+2", with any
+// other labels).
+var positiveCodeReview = regexp.MustCompile(`\APatch Set \d+:(?: [^ \n]+)*? Code-Review\+[1-9]`)
+
+// cannotWithdraw says, once, on change n and its PR, that the vote of
+// dismissed review rv still stands, and why: whoever submits must know.
+// Gerrit refusing the message (the change's limits, again) stops nothing
+// else.
+func (c *Comments) cannotWithdraw(ctx context.Context, n, pr int, rv github.Review, s *commentSnapshot, vote *gerrit.ApprovalInfo, by, why string) error {
+	marker := fmt.Sprintf("(GitHub review %d)", rv.ID)
+	msg := fmt.Sprintf("%s dismissed @%s's approval on GitHub, but the bridge could not withdraw its Code-Review %s in Gerrit: %s. Remove the vote in Gerrit if it should not count. %s",
+		by, rv.User.Login, voteString(vote.Value), why, marker)
+	if !slices.ContainsFunc(s.ics, func(ic github.IssueComment) bool { return c.mine(ic.User.Login) && strings.Contains(ic.Body, marker) }) {
+		if _, err := c.GitHub.CreateIssueComment(ctx, pr, forGitHub(msg)+"\n\n"+noticeMarker); err != nil {
+			return err
+		}
+	}
+	if slices.ContainsFunc(s.messages, func(m gerrit.ChangeMessage) bool {
+		return m.Author.AccountID == c.BridgeAccount && strings.Contains(m.Message, marker)
+	}) {
+		return nil
+	}
+	err := c.Gerrit.SetReview(ctx, n, strconv.Itoa(s.current), gerrit.ReviewInput{Message: forGerrit(msg), Tag: commentTag})
+	var ge *gerrit.Error
+	if errors.As(err, &ge) && ge.Status < 500 {
+		c.Logger.Warn("Gerrit refused a notice", "change", n, "err", err)
+		return nil
+	}
+	return err
 }
 
 // --- resolution ---

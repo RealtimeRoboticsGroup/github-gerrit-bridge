@@ -437,6 +437,13 @@ func (c *Client) SetReview(ctx context.Context, change int, revision string, in 
 	return c.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/revisions/%s/review", change, url.PathEscape(revision)), in, nil)
 }
 
+// DeleteVote removes account's vote on label from change's current patch
+// set. Gerrit takes it even where a change's message limits refuse a
+// review, which anyone can bring about by commenting.
+func (c *Client) DeleteVote(ctx context.Context, change int, account, label string) error {
+	return c.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/reviewers/%s/votes/%s/delete", change, url.PathEscape(account), url.PathEscape(label)), struct{}{}, nil)
+}
+
 // GetChange returns one change with the given o= options.
 func (c *Client) GetChange(ctx context.Context, change int, opts ...string) (*ChangeInfo, error) {
 	v := url.Values{}

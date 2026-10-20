@@ -33,6 +33,9 @@ type fakeGerrit struct {
 	votes       []string
 	labels      map[string]map[string]int
 	refuseRunAs bool
+	// refuseReview makes SetReview as anyone but the bridge refuse (400)
+	// everything, as over a change's message limits.
+	refuseReview bool
 	// refuse makes SetReview refuse (400) comments containing it.
 	refuse string
 	// closed makes SetReview refuse (409) votes, as on a closed change.
@@ -84,13 +87,39 @@ func (f *fakeGerrit) SetReview(ctx context.Context, n int, rev string, in gerrit
 	return f.setReview(ctx, gerrit.AccountInfo{AccountID: bridgeID, Name: "GitHub Bridge"}, n, rev, in)
 }
 
+func (f *fakeGerrit) DeleteVote(ctx context.Context, n int, account, label string) error {
+	return f.deleteVote(gerrit.AccountInfo{AccountID: bridgeID}, account, label)
+}
+
+func (f *fakeGerrit) deleteVote(author gerrit.AccountInfo, account, label string) error {
+	if account == "self" {
+		account = author.Username
+	}
+	if f.labels[label][account] == 0 {
+		return &gerrit.Error{Status: 404, Body: "Not found"}
+	}
+	f.votes = append(f.votes, fmt.Sprintf("%s:%s deleted", account, label))
+	f.vote(account, label, 0)
+	return nil
+}
+
 // fakeAs is the fake Gerrit acting as another user (Run-As).
 type fakeAs struct {
 	*fakeGerrit
 	user gerrit.AccountInfo
 }
 
+func (a fakeAs) DeleteVote(ctx context.Context, n int, account, label string) error {
+	if a.refuseRunAs {
+		return &gerrit.Error{Status: 403, Body: "not permitted to run as"}
+	}
+	return a.deleteVote(a.user, account, label)
+}
+
 func (a fakeAs) SetReview(ctx context.Context, n int, rev string, in gerrit.ReviewInput) error {
+	if a.refuseReview {
+		return &gerrit.Error{Status: 400, Body: "too many messages"}
+	}
 	if a.refuseRunAs {
 		return &gerrit.Error{Status: 403, Body: "not permitted to run as"}
 	}
@@ -126,6 +155,20 @@ func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ i
 	ts := f.tick()
 	var ps int
 	fmt.Sscan(rev, &ps)
+	if in.Message != "" || len(in.Labels) > 0 {
+		// Gerrit's change message for the review: its votes, then its text.
+		head := fmt.Sprintf("Patch Set %d:", ps)
+		for _, l := range slices.Sorted(maps.Keys(in.Labels)) {
+			if v := in.Labels[l]; v == 0 {
+				head += " -" + l
+			} else {
+				head += fmt.Sprintf(" %s%+d", l, v)
+			}
+		}
+		f.nextID++
+		f.messages = append(f.messages, gerrit.ChangeMessage{ID: fmt.Sprintf("bm%d", f.nextID), Author: author, Tag: in.Tag, Date: ts,
+			RevisionNumber: ps, Message: strings.TrimSpace(head + "\n\n" + in.Message)})
+	}
 	for path, cs := range in.Comments {
 		for _, ci := range cs {
 			f.nextID++
@@ -1443,7 +1486,10 @@ func TestDismissedApprovalWithdrawsItsVote(t *testing.T) {
 	}
 	e.settled(t)
 	// bob approves again in Gerrit: his.
-	e.g.vote("bobg", "Code-Review", 2)
+	bobg := fakeAs{e.g, gerrit.AccountInfo{AccountID: 7, Username: "bobg"}}
+	if err := bobg.SetReview(context.Background(), 1, "2", gerrit.ReviewInput{Labels: map[string]int{"Code-Review": 2}}); err != nil {
+		t.Fatal(err)
+	}
 	e.sync(t)
 	if e.g.labels["Code-Review"]["bobg"] != 2 {
 		t.Errorf("bob's new vote was withdrawn too")
@@ -1473,6 +1519,132 @@ func TestDismissedApprovalWithdrawsItsVote(t *testing.T) {
 	e.sync(t)
 	if e.g.labels["Code-Review"]["bobg"] != 2 {
 		t.Errorf("a dismissed change request withdrew bob's +2")
+	}
+}
+
+// A dismissed approval's vote is withdrawn however it looks: Gerrit dates
+// a vote it copies to a new patch set by that patch set, as if given
+// again, and one dismissed while it was being mirrored is never mapped
+// (sixth audit). Only the reviewer's own vote in Gerrit since keeps it.
+func TestDismissedApprovalsCopiedOrUnmappedVoteIsWithdrawn(t *testing.T) {
+	approve := func(e *commentsEnv) {
+		e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+			HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+	}
+	// Copied to a new patch set after the dismissal; and the bridge's own
+	// post of a GitHub vote, which may land after it, is not bob's again.
+	// bob's own vote in Gerrit before the dismissal, and a comment of his
+	// after it, do not keep it either.
+	e := newCommentsEnv(t)
+	e.runAs()
+	approve(e)
+	e.sync(t)
+	bobg := fakeAs{e.g, gerrit.AccountInfo{AccountID: 7, Username: "bobg"}}
+	if err := bobg.SetReview(context.Background(), 1, "2", gerrit.ReviewInput{Labels: map[string]int{"Code-Review": 2}}); err != nil {
+		t.Fatal(err)
+	}
+	e.h.dismiss(70, "maint", e.g.now())
+	e.g.voted["Code-Review/bobg"] = e.g.tick()
+	for _, in := range []gerrit.ReviewInput{{Labels: map[string]int{"Code-Review": 2}, Tag: mirrorTag}, {Message: "Code-Review+2 still?"}} {
+		if err := bobg.SetReview(context.Background(), 1, "2", in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.sync(t)
+	if v := e.g.labels["Code-Review"]["bobg"]; v != 0 {
+		t.Errorf("copied after the dismissal: Code-Review %+d stands", v)
+	}
+	// Dismissed between the vote's post and its mapping.
+	e = newCommentsEnv(t)
+	e.runAs()
+	approve(e)
+	lists := 0
+	e.g.onList = func() {
+		if lists++; lists == 2 {
+			e.h.dismiss(70, "maint", e.g.now())
+		}
+	}
+	e.sync(t)
+	e.g.onList = nil
+	if !slices.Contains(e.g.votes, "bobg:Code-Review=2") {
+		t.Fatalf("votes %v: none was cast", e.g.votes)
+	}
+	e.sync(t)
+	if v := e.g.labels["Code-Review"]["bobg"]; v != 0 {
+		t.Errorf("dismissed while mirrored: Code-Review %+d stands", v)
+	}
+	// Its text refused by Gerrit (the change's limits), so cast alone.
+	e = newCommentsEnv(t)
+	e.runAs()
+	e.g.refuse = "Approved on GitHub"
+	approve(e)
+	e.sync(t)
+	if e.g.labels["Code-Review"]["bobg"] != 2 {
+		t.Fatalf("votes = %v: none was cast", e.g.labels)
+	}
+	e.h.dismiss(70, "maint", e.g.now())
+	e.sync(t)
+	if v := e.g.labels["Code-Review"]["bobg"]; v != 0 {
+		t.Errorf("text refused: Code-Review %+d stands", v)
+	}
+	// Dismissed by an account since deleted: still a person's call.
+	e = newCommentsEnv(t)
+	e.runAs()
+	approve(e)
+	e.sync(t)
+	e.h.dismiss(70, "", e.g.now())
+	e.sync(t)
+	if v := e.g.labels["Code-Review"]["bobg"]; v != 0 {
+		t.Errorf("dismissed by a deleted account: Code-Review %+d stands", v)
+	}
+}
+
+// A dismissed approval's vote Gerrit will not reset (anyone can fill a
+// change up to its message limits) is deleted. One the bridge cannot
+// withdraw (Gerrit refuses that too, or the reviewer's login no longer
+// maps to the account it voted as) is said to stand, once, on the PR and
+// the change.
+func TestDismissedApprovalsVoteThatStaysIsSaid(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+	e.sync(t)
+	e.g.refuseReview = true
+	e.h.dismiss(70, "maint", e.g.now())
+	e.sync(t)
+	if v := e.g.labels["Code-Review"]["bobg"]; v != 0 || e.g.votes[len(e.g.votes)-1] != "bobg:Code-Review deleted" {
+		t.Errorf("over the change's limits: Code-Review %+d stands (votes %v)", v, e.g.votes)
+	}
+	for _, why := range []string{"refused", "unmapped"} {
+		e := newCommentsEnv(t)
+		e.c.BridgeLogin = "bridge"
+		e.runAs()
+		e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+			HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+		e.sync(t)
+		if why == "refused" {
+			e.g.refuseRunAs = true
+		} else {
+			e.c.Users = &Users{}
+		}
+		e.h.dismiss(70, "maint", e.g.now())
+		posts := e.h.posts
+		e.sync(t)
+		if e.g.labels["Code-Review"]["bobg"] != 2 {
+			t.Fatalf("%s: votes %v", why, e.g.labels)
+		}
+		said := 0
+		for _, ic := range e.h.ics {
+			if strings.Contains(ic.Body, "could not withdraw") {
+				said++
+			}
+		}
+		last := e.g.messages[len(e.g.messages)-1]
+		if said != 1 || e.h.posts != posts+1 || last.Author.AccountID != bridgeID || !strings.Contains(last.Message, "could not withdraw its Code-Review +2") {
+			t.Errorf("%s: said %d times on GitHub (%d posts); Gerrit's last message %+v", why, said, e.h.posts-posts, last)
+		}
+		e.settled(t)
 	}
 }
 
