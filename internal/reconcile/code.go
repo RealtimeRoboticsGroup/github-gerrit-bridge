@@ -658,7 +658,9 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]bool)
 			s.PRs[pr.Number] = pr
 		}
 	}
-	c.markUnlinked(ctx, s, repoName, byNumber)
+	if err := c.markUnlinked(ctx, s, repoName, byNumber); err != nil {
+		return nil, err
+	}
 	for n, st := range s.State {
 		if pr := st.State.PR; pr != 0 && s.PRs[pr] == nil && s.Changes[n] != nil {
 			got, err := c.GitHub.GetPull(ctx, pr)
@@ -717,13 +719,27 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]bool)
 	return s, nil
 }
 
-// markUnlinked sets s.Unlinked, given repo's open PRs by number.
-func (c *Code) markUnlinked(ctx context.Context, s *Snapshot, repo string, open map[int]*github.PullRequest) {
+// markUnlinked sets s.Unlinked, given repo's open PRs by number. The
+// trailer that counts is patch set 1's, which its owner uploaded: anyone
+// may add a later patch set with one naming the owner's own open PR, and
+// so hide their change (fifth audit).
+func (c *Code) markUnlinked(ctx context.Context, s *Snapshot, repo string, open map[int]*github.PullRequest) error {
 	s.Unlinked = map[int]bool{}
-	for n, ch := range s.Changes {
+	for _, n := range sortedKeys(s.Changes) {
+		ch := s.Changes[n]
 		num, ok := importedFrom(ch.Message, repo)
 		if st := s.State[n]; !ok || (st != nil && st.State.PR != 0) {
 			continue
+		}
+		if ch.PatchSet != 1 {
+			ci, err := c.Gerrit.GetChange(ctx, n, "ALL_REVISIONS", "ALL_COMMITS")
+			if err != nil {
+				return err
+			}
+			first, ok := revisionsByNumber(ci)[1]
+			if n1, ok1 := importedFrom(first.Commit.Message, repo); !ok || !ok1 || n1 != num {
+				continue
+			}
 		}
 		if ch.OwnerID != 0 && ch.OwnerID == c.BridgeAccount {
 			s.Unlinked[n] = true
@@ -732,6 +748,7 @@ func (c *Code) markUnlinked(ctx context.Context, s *Snapshot, repo string, open 
 			s.Unlinked[n] = ok && strings.EqualFold(author, ch.Owner)
 		}
 	}
+	return nil
 }
 
 // observeHistory fills in HasParent and SameTree for changes whose GitHub

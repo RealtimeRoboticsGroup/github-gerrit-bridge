@@ -879,21 +879,32 @@ func TestSquattedChangeIDFallsBackToTheKeyedOne(t *testing.T) {
 // to someone's change, which kept it off GitHub (fourth audit).
 func TestUnlinkedImportNeedsItsOwner(t *testing.T) {
 	ctx := context.Background()
-	c := &Code{BridgeAccount: 1, Identity: &Users{Overrides: map[string]string{"austin": "austin", "brt": "brt"}}}
+	sites := newSites(t)
+	c, _ := sites.code(ctx)
+	c.BridgeAccount = 1
 	open := map[int]*github.PullRequest{7: {Number: 7, User: github.User{Login: "austin"}}}
 	trailer := "T\n\nBody.\n\nSigned-off-by: A <a@example.com>\nGitHub-PR: https://github.com/o/r/pull/7\nChange-Id: I1\n"
 	s := &Snapshot{State: map[int]*state.Change{5: {State: state.ChangeState{PR: 70}}}, Changes: map[int]*GerritChange{
-		1: {Message: trailer, OwnerID: 1, Owner: "bridge"},
-		2: {Message: trailer, OwnerID: 5, Owner: "austin"},
-		3: {Message: trailer, OwnerID: 6, Owner: "brt"},                                                                                            // someone's own change
-		4: {Message: "T\n\nGitHub-PR: https://github.com/o/r/pull/7\n\nChange-Id: I1\n", OwnerID: 1, Owner: "bridge"},                              // not the trailer
-		5: {Message: trailer, OwnerID: 1, Owner: "bridge"},                                                                                         // linked
-		6: {Message: strings.Replace(trailer, "/7", "/8", 1), OwnerID: 5, Owner: "austin"},                                                         // no such open PR
-		7: {Message: strings.Replace(trailer, "o/r", "x/y", 1), OwnerID: 1, Owner: "bridge"},                                                       // another repository's
-		8: {Message: strings.Replace(trailer, "Change-Id", "GitHub-PR: https://github.com/o/r/pull/7\nChange-Id", 1), OwnerID: 1, Owner: "bridge"}, // two
+		1: {Message: trailer, OwnerID: 1, Owner: "bridge", PatchSet: 1},
+		2: {Message: trailer, OwnerID: 5, Owner: "austin", PatchSet: 1},
+		3: {Message: trailer, OwnerID: 6, Owner: "brt", PatchSet: 1},                                                                                            // someone's own change
+		4: {Message: "T\n\nGitHub-PR: https://github.com/o/r/pull/7\n\nChange-Id: I1\n", OwnerID: 1, Owner: "bridge", PatchSet: 1},                              // not the trailer
+		5: {Message: trailer, OwnerID: 1, Owner: "bridge", PatchSet: 1},                                                                                         // linked
+		6: {Message: strings.Replace(trailer, "/7", "/8", 1), OwnerID: 5, Owner: "austin", PatchSet: 1},                                                         // no such open PR
+		7: {Message: strings.Replace(trailer, "o/r", "x/y", 1), OwnerID: 1, Owner: "bridge", PatchSet: 1},                                                       // another repository's
+		8: {Message: strings.Replace(trailer, "Change-Id", "GitHub-PR: https://github.com/o/r/pull/7\nChange-Id", 1), OwnerID: 1, Owner: "bridge", PatchSet: 1}, // two
 	}}
-	c.markUnlinked(ctx, s, "o/r", open)
-	if want := map[int]bool{1: true, 2: true}; !reflect.DeepEqual(trueKeys(s.Unlinked), want) {
+	// A later patch set's trailer counts only if patch set 1, its owner's,
+	// has it too (fifth audit: anyone may add one).
+	for n, first := range map[int]string{13: "T\n\nChange-Id: I1\n", 14: trailer} {
+		sites.changes[n] = &gerrit.ChangeInfo{Number: n, Revisions: map[string]gerrit.RevisionInfo{
+			"a": {Number: 1, Commit: gerrit.CommitInfo{Message: first}}, "b": {Number: 2, Commit: gerrit.CommitInfo{Message: trailer}}}}
+		s.Changes[n] = &GerritChange{Message: trailer, OwnerID: 5, Owner: "austin", PatchSet: 2}
+	}
+	if err := c.markUnlinked(ctx, s, "o/r", open); err != nil {
+		t.Fatal(err)
+	}
+	if want := map[int]bool{1: true, 2: true, 14: true}; !reflect.DeepEqual(trueKeys(s.Unlinked), want) {
 		t.Errorf("unlinked %v, want %v", trueKeys(s.Unlinked), want)
 	}
 	if got := prBodyForMessage("Mine.\nGitHub-PR: https://github.com/o/r/pull/9\n"); got != "Mine." {
