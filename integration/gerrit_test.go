@@ -478,6 +478,30 @@ func TestRunAsAndUsernameMatching(t *testing.T) {
 	if !voted {
 		t.Errorf("Code-Review votes = %+v, want alice +1 tagged as a mirror", ch.Labels["Code-Review"].All)
 	}
+	// Who voted again since a dismissal is read from change messages, as
+	// Gerrit words them (Comments.dropDismissed): by the voter's account,
+	// with the review's tag.
+	ch, err = srv.Admin.GetChange(ctx, n, "MESSAGES", "DETAILED_ACCOUNTS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(ch.Messages, func(m gerrit.ChangeMessage) bool {
+		return m.Author.Username == "alice" && m.Author.AccountID != 0 && m.Tag == "github-bridge:mirror" && strings.HasPrefix(m.Message, "Patch Set 1: Code-Review+1")
+	}) {
+		t.Errorf("messages = %+v, want alice's tagged Patch Set 1: Code-Review+1", ch.Messages)
+	}
+	// A vote that cannot be reset is deleted as its voter (sixth audit).
+	if err := bridge.As("alice").DeleteVote(ctx, n, "self", "Code-Review"); err != nil {
+		t.Fatalf("Run-As vote delete: %v", err)
+	}
+	if ch, err = srv.Admin.GetChange(ctx, n, "DETAILED_LABELS", "DETAILED_ACCOUNTS"); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range ch.Labels["Code-Review"].All {
+		if a.Username == "alice" && a.Value != 0 {
+			t.Errorf("alice's Code-Review %+d stands after deleting it", a.Value)
+		}
+	}
 }
 
 // The audit's premise (design §7.1), on a real Gerrit: X-Gerrit-RunAs
