@@ -213,7 +213,9 @@ func (c *Checks) CheckUntrusted(ctx context.Context, account int) error {
 // someone may add it, or a group it is in, while the bridge runs (sixth
 // audit). Each check reads the group afresh, not IsTrusted's 5-minute
 // answer (seventh audit). A group it cannot read for now waits for the
-// next check, but not for longer than maxUnread checks.
+// next check, but not for longer than maxUnread checks. It returns nil
+// only once ctx ends: a group readable again, without the account, is
+// watched on (eighth audit: the watch ended there).
 func (c *Checks) WatchUntrusted(ctx context.Context, account int, every time.Duration) error {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -228,7 +230,10 @@ func (c *Checks) WatchUntrusted(ctx context.Context, account int, every time.Dur
 			unread = 0
 		}
 		if (trusted && known) || unread > maxUnread {
-			return c.CheckUntrusted(ctx, account)
+			if err := c.CheckUntrusted(ctx, account); err != nil {
+				return err
+			}
+			unread = 0
 		}
 	}
 }

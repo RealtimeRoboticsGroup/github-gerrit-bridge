@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -276,4 +277,49 @@ type failingGroups struct{ *checksFakes }
 
 func (failingGroups) GroupMembers(context.Context, string) ([]gerrit.AccountInfo, error) {
 	return nil, errors.New("no such group")
+}
+
+// The watch goes on after the trusted group could not be read for a
+// while and then could, without the bridge in it: it ended there, and the
+// bridge ran unwatched (eighth audit).
+func TestWatchGoesOnAfterAnOutage(t *testing.T) {
+	g := &flakyGroup{fail: maxUnread + 1, members: []gerrit.AccountInfo{{AccountID: 5}}}
+	c := &Checks{Gerrit: g, TrustedGroup: "Verified Users", Logger: slog.Default()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.WatchUntrusted(ctx, 9, 5*time.Millisecond) }()
+	select {
+	case err := <-done:
+		if err == nil && ctx.Err() == nil {
+			t.Errorf("WatchUntrusted returned nil after the group came back: the bridge is no longer watched")
+		}
+		return
+	case <-time.After(500 * time.Millisecond):
+	}
+	// Still watching: the bridge joins the group.
+	g.mu.Lock()
+	g.members = append(g.members, gerrit.AccountInfo{AccountID: 9})
+	g.mu.Unlock()
+	if err := <-done; err == nil {
+		t.Errorf("bridge joined the trusted group and was not stopped")
+	}
+}
+
+type flakyGroup struct {
+	checksFakes
+	mu      sync.Mutex
+	fail    int
+	calls   int
+	members []gerrit.AccountInfo
+}
+
+func (f *flakyGroup) GroupMembers(context.Context, string) ([]gerrit.AccountInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.calls <= f.fail {
+		return nil, errors.New("503")
+	}
+	return slices.Clone(f.members), nil
 }
