@@ -1209,11 +1209,48 @@ func (im *Importer) pushedBy(ctx context.Context, pr *github.PullRequest, h stri
 		}
 		by = p.Actor
 		if im.covered(ctx, h, p.Before, had...) {
+			if im.carriesOthers(ctx, pushes, repo, ref, h, by, had...) {
+				return github.User{}, nil
+			}
 			return by, nil
 		}
 		at = p.Before
 	}
 	return github.User{}, nil
+}
+
+// carriesOthers reports whether h has a commit beyond had that someone
+// other than by pushed to the branch, as the activity log or webhooks
+// say: theirs, though by's push brought it back. They pushed it, by
+// fetched it, they reset the branch, and by pushed on top of it: the walk
+// back from h never meets their push (eighth audit). If what h has is not
+// known, it may.
+func (im *Importer) carriesOthers(ctx context.Context, pushes []github.Push, repo, ref, h string, by github.User, had ...string) bool {
+	if im.Pushers != nil {
+		pushes = append(slices.Clone(pushes), im.Pushers.Pushes(repo, ref)...)
+	}
+	theirs := map[string]bool{}
+	for _, p := range pushes {
+		if !sameGitHubUser(p.Actor, by) {
+			theirs[p.After] = true
+		}
+	}
+	if len(theirs) == 0 {
+		return false
+	}
+	const max = 10000
+	args := []string{"rev-list", fmt.Sprintf("--max-count=%d", max+1), h, "--not"}
+	for _, c := range had {
+		if c != "" {
+			args = append(args, c)
+		}
+	}
+	out, err := im.Mirror.Git(ctx, nil, args...)
+	commits := strings.Fields(string(out))
+	if err != nil || len(commits) > max {
+		return true
+	}
+	return slices.ContainsFunc(commits, func(c string) bool { return theirs[c] })
 }
 
 // covered reports whether a push from before leaves h none of the code

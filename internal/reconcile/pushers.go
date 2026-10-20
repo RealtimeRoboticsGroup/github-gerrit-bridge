@@ -57,6 +57,19 @@ func (p *Pushers) Lookup(repo, ref, sha string) (github.Push, bool) {
 	return r, ok
 }
 
+// Pushes returns the pushes webhooks said moved repo's ref.
+func (p *Pushers) Pushes(repo, ref string) []github.Push {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []github.Push
+	for _, k := range p.order {
+		if r, ok := p.byPush[k]; ok && k.repo == strings.ToLower(repo) && k.ref == ref {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // FromDelivery records the push in push and pull_request synchronize
 // deliveries: nothing else says who pushed. Not "opened" or "reopened":
 // anyone may open a PR from someone else's branch (fourth audit), and

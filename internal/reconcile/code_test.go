@@ -1186,6 +1186,47 @@ func TestKeepsParentsNeedsParents(t *testing.T) {
 	}
 }
 
+// brt pushes x to austin's branch; austin fetches it; brt resets the
+// branch to austin's patch set; austin pushes a fix on top of x. Walking
+// back from the head meets only austin's push, from the commit the bridge
+// last imported, yet x is brt's (eighth audit). The activity log says so,
+// or where it lags, a webhook.
+func TestPushOverAResetStrangersCommitIsTheBridges(t *testing.T) {
+	for _, webhook := range []bool{false, true} {
+		s, im, up, _, g, ids := gerritBornWorld(t, false)
+		ref := "refs/heads/gerrit/" + ids[0]
+		x := s.commit(g[0], "x.txt", "brt's code\n", "Harmless")
+		s.push("github.git", x, ref)
+		if webhook {
+			im.Pushers.Record("o/r", ref, g[0], x, github.User{Login: "brt", ID: 2})
+		} else {
+			s.pushed("o/r", ref, x, "brt")
+		}
+		s.push("github.git", g[0], ref)
+		s.pushed("o/r", ref, g[0], "brt")
+		h := s.commit(x, "one.txt", "1 fixed\n", "Fix")
+		s.push("github.git", h, ref)
+		s.pushed("o/r", ref, h, "austin")
+		s.pulls[10].Head.SHA = h
+		if err := im.Import(context.Background(), "main"); err != nil {
+			t.Fatal(err)
+		}
+		if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], " ") {
+			t.Errorf("webhook %v: uploads = %v, want brt's x in a push as the bridge's", webhook, up.uploads)
+		}
+	}
+}
+
+// What the head has beyond what is accounted for must be known to say
+// none of it is someone else's.
+func TestCarriesOthersFailsClosed(t *testing.T) {
+	_, im, _, m1, _, _ := gerritBornWorld(t, false)
+	brt := []github.Push{{After: m1, Actor: github.User{Login: "brt", ID: 2}}}
+	if !im.carriesOthers(context.Background(), brt, "o/r", "refs/heads/x", m1, github.User{Login: "austin", ID: 1}, strings.Repeat("0", 39)+"1") {
+		t.Error("an unknown commit to count from: carries nobody's, want maybe someone's")
+	}
+}
+
 // A force push replaces what its branch had: whoever pushed that is not in
 // the new head unless the head keeps some of it. A fork's main reused for
 // one PR after another, last pushed by the bridge (the old PR's Gerrit
