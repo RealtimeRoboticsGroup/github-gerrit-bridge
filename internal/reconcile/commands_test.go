@@ -324,3 +324,21 @@ func TestWhatWaitsHoldsUpNothingElse(t *testing.T) {
 		t.Errorf("err %v, submits %v: want the retest to wait and the submit run", err, sub.calls)
 	}
 }
+
+// /submit runs as the commenter's Gerrit account only if GitHub's numeric
+// id for them is the one it is pinned to (sixth audit).
+func TestSubmitOnlyAsThePinnedGitHubAccount(t *testing.T) {
+	for _, id := range []int64{1, 2} {
+		c, h, sub := newCommands(t)
+		users := c.Identity.(*Users)
+		users.Pins = &memPins{ids: &state.Identities{ByUser: map[string]state.Identity{}}}
+		users.GitHub = fakeIDs{"austinschuh": 1}
+		h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: id}})
+		if err := c.Run(context.Background(), 5); err != nil {
+			t.Fatal(err)
+		}
+		if submitted := len(sub.calls) == 1; submitted != (id == 1) {
+			t.Errorf("GitHub id %d: submitted %v", id, submitted)
+		}
+	}
+}

@@ -747,7 +747,7 @@ func (c *Code) markUnlinked(ctx context.Context, s *Snapshot, repo string, open 
 		if ch.OwnerID != 0 && ch.OwnerID == c.BridgeAccount {
 			s.Unlinked[n] = true
 		} else if pr := open[num]; pr != nil && c.Identity != nil {
-			author, ok := c.Identity.GerritUser(ctx, pr.User.Login)
+			author, ok := c.Identity.GerritUserFor(ctx, pr.User)
 			s.Unlinked[n] = ok && strings.EqualFold(author, ch.Owner)
 		}
 	}

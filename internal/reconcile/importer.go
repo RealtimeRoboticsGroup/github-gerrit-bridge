@@ -592,7 +592,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			im.Logger.Warn("adopted a change uploaded for a PR whose link was lost", "pr", pr.Number, "change", cur.Number)
 			return nil, &syncError{state: "pending", msg: fmt.Sprintf("Linked to Gerrit change %d", cur.Number), retry: true}
 		}
-		if author, ok := im.Identity.GerritUser(ctx, pr.User.Login); !fromCommits || (ok && strings.EqualFold(cur.Owner.Username, author) && cur.Owner.AccountID != im.Bridge.AccountID) {
+		if author, ok := im.Identity.GerritUserFor(ctx, pr.User); !fromCommits || (ok && strings.EqualFold(cur.Owner.Username, author) && cur.Owner.AccountID != im.Bridge.AccountID) {
 			break // the author's own change: theirs to sort out
 		}
 		// Someone else's change has the Change-Id of this PR's commits,
@@ -974,7 +974,7 @@ func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h
 	if !im.Uploader.CanActAs() {
 		return "", "", nil
 	}
-	author, ok := im.Identity.GerritUser(ctx, pr.User.Login)
+	author, ok := im.Identity.GerritUserFor(ctx, pr.User)
 	if !ok {
 		return "", pr.User.Login, nil
 	}

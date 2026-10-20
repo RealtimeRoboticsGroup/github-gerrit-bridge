@@ -1051,6 +1051,18 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 	// asAuthor reports whether login's comments are posted as their
 	// Gerrit account.
 	authors := map[string]string{}
+	// GitHub's numeric ids for the logins: a login names one account at
+	// a time, the same in every answer.
+	ids := map[string]int64{}
+	for _, rc := range s.rcs {
+		ids[rc.User.Login] = rc.User.ID
+	}
+	for _, ic := range s.ics {
+		ids[ic.User.Login] = ic.User.ID
+	}
+	for _, rv := range s.reviews {
+		ids[rv.User.Login] = rv.User.ID
+	}
 	asAuthor := func(login string) bool {
 		if login == "" {
 			return false
@@ -1058,7 +1070,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		if u, ok := authors[login]; ok {
 			return u != ""
 		}
-		_, u := c.as(ctx, login)
+		_, u := c.asUser(ctx, github.User{Login: login, ID: ids[login]})
 		authors[login] = u
 		return u != ""
 	}
@@ -1423,7 +1435,7 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 		if mc == nil || strings.HasPrefix(mc.GerritID, "refused:") {
 			continue // not mirrored, or Gerrit would not take it: nothing to disagree with
 		}
-		user, ok := c.Users.GerritUser(ctx, rv.User.Login)
+		user, ok := c.Users.GerritUserFor(ctx, rv.User)
 		if !ok {
 			continue // never voted: the review is only text in Gerrit
 		}
@@ -1464,7 +1476,7 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 // the bridge cannot withdraw it, it says so on the change and the PR.
 // mc is the review's mirror, if mapped.
 func (c *Comments) dropDismissed(ctx context.Context, n, pr int, rv github.Review, mc *state.Comment, s *commentSnapshot, dismissals *map[int64]github.Dismissal) error {
-	g, user := c.as(ctx, rv.User.Login)
+	g, user := c.asUser(ctx, rv.User)
 	if gerrit.AmbiguousUsername(user) {
 		user = ""
 	}
@@ -2045,10 +2057,16 @@ func (c *Comments) bridgePost(gc *gerrit.CommentInfo) bool {
 // their own account if they have one and Run-As is set up, else the
 // bridge's.
 func (c *Comments) as(ctx context.Context, login string) (GerritAPI, string) {
-	if c.GerritAs == nil || c.Users == nil {
+	return c.asUser(ctx, github.User{Login: login})
+}
+
+// asUser is as, for a GitHub account whose numeric id may be known
+// (Users.GerritUserFor).
+func (c *Comments) asUser(ctx context.Context, gh github.User) (GerritAPI, string) {
+	if c.GerritAs == nil || c.Users == nil || gh.Login == "" {
 		return c.Gerrit, ""
 	}
-	if user, ok := c.Users.GerritUser(ctx, login); ok {
+	if user, ok := c.Users.GerritUserFor(ctx, gh); ok {
 		return c.GerritAs(user), user
 	}
 	return c.Gerrit, ""

@@ -13,12 +13,16 @@ import (
 	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
 // Identity maps GitHub logins to Gerrit usernames (design §7).
 type Identity interface {
 	GerritUser(ctx context.Context, githubLogin string) (string, bool)
+	// GerritUserFor is GerritUser for a GitHub account whose numeric id
+	// is known, as REST says who did something.
+	GerritUserFor(ctx context.Context, gh github.User) (string, bool)
 }
 
 // UserQuerier finds Gerrit accounts.
@@ -144,6 +148,8 @@ type cachedUser struct {
 	user string
 	ok   bool
 	at   time.Time
+	// id is the GitHub account checked against the pin (0 without pins).
+	id int64
 }
 
 // userCacheTTL bounds how long a lookup (including "no account") is reused:
@@ -227,8 +233,9 @@ func (u *Users) GerritUser(ctx context.Context, login string) (string, bool) {
 	u.mu.Unlock()
 
 	user, account, ok, err := u.lookup(ctx, login)
+	var id int64
 	if err == nil && ok && u.Pins != nil {
-		ok, err = u.pinned(ctx, login, user, account)
+		ok, id, err = u.pinned(ctx, login, user, account)
 	} else if err == nil && ok && account != 0 && u.overrideFor(user) != "" {
 		// Without pins, nothing tells an override's GitHub account
 		// from whoever registers the Gerrit username on GitHub.
@@ -249,9 +256,40 @@ func (u *Users) GerritUser(ctx context.Context, login string) (string, bool) {
 	if u.cache == nil {
 		u.cache = map[string]cachedUser{}
 	}
-	u.cache[key] = cachedUser{user: user, ok: ok, at: time.Now()}
+	u.cache[key] = cachedUser{user: user, ok: ok, at: time.Now(), id: id}
 	u.mu.Unlock()
 	return user, ok
+}
+
+// GerritUserFor implements Identity. A login is only a name, which a
+// rename frees for someone else to take, and a lookup by it is reused for
+// a while: with pins, the account is gh's only if gh's numeric id is the
+// one checked against its pin, looked up afresh if the cached one was
+// someone else's (sixth audit: within the cache's two minutes, whoever
+// took a renamed trusted user's login acted as them).
+func (u *Users) GerritUserFor(ctx context.Context, gh github.User) (string, bool) {
+	user, ok := u.GerritUser(ctx, gh.Login)
+	if !ok || gh.ID == 0 || u.Pins == nil || u.cachedID(gh.Login) == gh.ID {
+		return user, ok
+	}
+	u.mu.Lock()
+	delete(u.cache, strings.ToLower(gh.Login))
+	u.mu.Unlock()
+	if user, ok = u.GerritUser(ctx, gh.Login); ok && u.cachedID(gh.Login) == gh.ID {
+		return user, true
+	}
+	if ok && u.Logger != nil {
+		u.Logger.Warn("GitHub account is not the one its login was pinned as (renamed just now?); not acting as it",
+			"github_login", gh.Login, "github_id", gh.ID, "gerrit_user", user)
+	}
+	return "", false
+}
+
+// cachedID is the GitHub id login's cached lookup checked.
+func (u *Users) cachedID(login string) int64 {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.cache[strings.ToLower(login)].id
 }
 
 // lookup finds login's Gerrit account by override or username. account is
@@ -343,11 +381,17 @@ type registeredLooker interface {
 // GitHub account must be older than the Gerrit account: one created after
 // it cannot be the account it was registered with, so it is someone who
 // took the login of an account the bridge had not yet seen.
-func (u *Users) pinned(ctx context.Context, login, user string, account int) (bool, error) {
+func (u *Users) pinned(ctx context.Context, login, user string, account int) (ok bool, id int64, err error) {
 	id, created, err := u.GitHub.UserID(ctx, login)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
+	ok, err = u.pin(ctx, login, user, account, id, created)
+	return ok, id, err
+}
+
+// pin is pinned, for login's GitHub account id, created then.
+func (u *Users) pin(ctx context.Context, login, user string, account int, id int64, created time.Time) (bool, error) {
 	u.pinMu.Lock()
 	defer u.pinMu.Unlock()
 	for range 3 {

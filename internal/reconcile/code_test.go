@@ -883,6 +883,29 @@ func TestSquattedChangeIDFallsBackToTheKeyedOne(t *testing.T) {
 	}
 }
 
+// A PR's first upload is its author's only if GitHub's numeric id for them
+// is the one their Gerrit account is pinned to: not whoever took a renamed
+// user's login moments ago (sixth audit).
+func TestFirstUploadOnlyAsThePinnedGitHubAccount(t *testing.T) {
+	for _, id := range []int64{1, 2} {
+		s, im, up, m1, _, _ := gerritBornWorld(t, false)
+		users := im.Identity.(*Users)
+		users.Pins = &memPins{ids: &state.Identities{ByUser: map[string]state.Identity{}}}
+		users.GitHub = fakeIDs{"austin": 1}
+		h := s.commit(m1, "new.txt", "n\n", "New")
+		s.push("github.git", h, "refs/heads/topic")
+		s.pr(60, "topic", h, "main", "austin").User.ID = id
+		s.pushed("o/r", "refs/heads/topic", h, "austin")
+		if err := im.Import(context.Background(), "main"); err != nil {
+			t.Fatal(err)
+		}
+		want := map[int64]string{1: "austin", 2: ""}[id]
+		if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], want+" ") {
+			t.Errorf("GitHub id %d: uploads = %v, want one as %q", id, up.uploads, want)
+		}
+	}
+}
+
 // A PR's Change-Id is public: someone uploading a change with it between
 // the bridge's look and its upload gets the upload as their patch set,
 // which is not linked to the PR (sixth audit). The next import finds the

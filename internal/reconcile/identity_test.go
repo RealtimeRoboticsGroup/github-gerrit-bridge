@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
@@ -150,6 +151,32 @@ func TestUsersPinGitHubIDs(t *testing.T) {
 	u.cache = nil
 	if _, ok := u.GerritUser(ctx, "alice"); ok {
 		t.Error("deleted GitHub account still maps")
+	}
+}
+
+// A lookup by login is reused for a while, but GitHub says by numeric id
+// who did something: whoever took a renamed user's login just now is not
+// them, cached or not (sixth audit).
+func TestUsersCheckTheGitHubIDTheyAreGiven(t *testing.T) {
+	ids := fakeIDs{"alice": 1}
+	pins := &memPins{ids: &state.Identities{ByUser: map[string]state.Identity{}}}
+	u := &Users{Gerrit: fakeAccounts{users: []string{"alice"}}, Pins: pins, GitHub: ids}
+	ctx := context.Background()
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice", ID: 1}); !ok || user != "alice" {
+		t.Fatalf("alice = %q %v", user, ok)
+	}
+	ids["alice"] = 2 // alice renamed; someone else took the login
+	if user, ok := u.GerritUser(ctx, "alice"); !ok || user != "alice" {
+		t.Fatalf("by login, cached: %q %v (the window this closes)", user, ok)
+	}
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice", ID: 2}); ok {
+		t.Errorf("the login's new holder acts as %q", user)
+	}
+	// Nor while GitHub's answer for the login is still the old holder's.
+	ids["alice"] = 1
+	u.cache = nil
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "alice", ID: 2}); ok {
+		t.Errorf("an account GitHub's lookup does not name acts as %q", user)
 	}
 }
 

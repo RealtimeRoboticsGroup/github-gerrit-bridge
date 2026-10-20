@@ -1626,6 +1626,25 @@ func TestBatchIsPostedAsTheAccountItWasWrittenFor(t *testing.T) {
 	}
 }
 
+// A review votes as its author's Gerrit account only if GitHub's numeric
+// id for them is the one the account is pinned to: not the account that
+// took a renamed reviewer's login moments ago (sixth audit).
+func TestReviewVotesOnlyAsThePinnedGitHubAccount(t *testing.T) {
+	for _, id := range []int64{1, 2} {
+		e := newCommentsEnv(t)
+		e.runAs()
+		users := e.c.Users.(*Users)
+		users.Pins = &memPins{ids: &state.Identities{ByUser: map[string]state.Identity{}}}
+		users.GitHub = fakeIDs{"bob": 1}
+		e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob", ID: id},
+			HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+		e.sync(t)
+		if voted := e.g.labels["Code-Review"]["bobg"] == 2; voted != (id == 1) {
+			t.Errorf("GitHub id %d: voted %v", id, voted)
+		}
+	}
+}
+
 // A dismissed approval's vote is withdrawn however it looks: Gerrit dates
 // a vote it copies to a new patch set by that patch set, as if given
 // again, and one dismissed while it was being mirrored is never mapped

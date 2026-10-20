@@ -213,7 +213,7 @@ func latest(a, b time.Time) time.Time {
 }
 
 func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment) string {
-	user, ok := c.Identity.GerritUser(ctx, ic.User.Login)
+	user, ok := c.Identity.GerritUserFor(ctx, ic.User)
 	if !ok {
 		return fmt.Sprintf("@%s: `/submit` needs a linked Gerrit account, and yours is not linked. "+
 			"Ask an admin to add you to the bridge's identity map, or submit in Gerrit.", ic.User.Login)
