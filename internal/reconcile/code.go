@@ -234,12 +234,30 @@ var withheldPaths = []string{".github", "CODEOWNERS", "docs/CODEOWNERS"}
 const withheldWhat = ".github/ or CODEOWNERS"
 
 // changesConfig reports whether commit has files under withheldPaths
-// that branch's tip does not have as they are (an old base counts: it
-// would bring back what the branch has changed since), or, with history,
-// any commit of it not on branch changes them (a change below it, say,
-// even if a later one changes them back: it would be pushed too, as the
-// base of this one's PR). Neither needs a merge base.
+// that branch's tip, or the default branch's, does not have as they are
+// (an old base counts: it would bring back what the branch has changed
+// since), or, with history, any commit of it not on either changes them
+// (a change below it, say, even if a later one changes them back: it
+// would be pushed too, as the base of this one's PR). Neither needs a
+// merge base. The default branch's workflows are the ones the site vets
+// (§9.1); another branch's, an old release's or one pushed without
+// review, need not keep away from bridge branches, so a change targeting
+// it runs them as it is (eighth audit).
 func (c *Code) changesConfig(ctx context.Context, branch, commit string, history bool) (bool, error) {
+	for i, b := range []string{branch, c.DefaultBranch} {
+		if b == "" || (i > 0 && b == branch) {
+			continue
+		}
+		w, err := c.changesConfigOf(ctx, b, commit, history)
+		if err != nil || w {
+			return w, err
+		}
+	}
+	return false, nil
+}
+
+// changesConfigOf is changesConfig for one branch.
+func (c *Code) changesConfigOf(ctx context.Context, branch, commit string, history bool) (bool, error) {
 	tip, err := c.Mirror.Git(ctx, nil, "rev-parse", "--verify", "refs/remotes/gerrit/heads/"+branch+"^{commit}")
 	if err != nil {
 		return false, err
@@ -572,6 +590,10 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]bool)
 	}
 
 	refspecs := []string{"+refs/heads/" + branch + ":refs/remotes/gerrit/heads/" + branch}
+	if c.DefaultBranch != "" && c.DefaultBranch != branch {
+		// What withhold compares with too.
+		refspecs = append(refspecs, "+refs/heads/"+c.DefaultBranch+":refs/remotes/gerrit/heads/"+c.DefaultBranch)
+	}
 	for _, ci := range infos {
 		rev, ok := ci.Current()
 		if !ok {

