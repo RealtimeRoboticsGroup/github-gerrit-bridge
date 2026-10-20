@@ -1311,13 +1311,16 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		if err != nil {
 			return err
 		}
-		failed := map[string]bool{} // forks that refused
+		failed := map[string]bool{}      // forks that refused
+		pushed := map[string]time.Time{} // when each push was done
 		for _, url := range urls {
 			if len(specs[url]) == 0 {
 				continue
 			}
 			args := append([]string{"push", "--porcelain", "--atomic", url}, specs[url]...)
-			if out, err := c.Mirror.GitEnv(ctx, env, nil, args...); err != nil {
+			out, err := c.Mirror.GitEnv(ctx, env, nil, args...)
+			pushed[url] = time.Now()
+			if err != nil {
 				if url == c.GitHubURL {
 					return fmt.Errorf("%w\n%s", err, out) // first: nothing pushed
 				}
@@ -1339,6 +1342,13 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			err := c.updateState(ctx, ap.Change, fmt.Sprintf("Export patch set %d to %s", ap.PatchSet, name), func(st *state.Change) {
 				st.Revisions = append(st.Revisions, state.Revision{PatchSet: ap.PatchSet, GerritSHA: ap.Revision,
 					GitHubSHA: commit, Tree: tree, ParentTree: parentTree, At: time.Now()})
+				if st.State.PR != 0 {
+					// The PR's head from the push on: a review a minute
+					// on is about it, however long before a sync reads the
+					// PR (in the rehearsal, a review of a rebase was not
+					// counted).
+					st.Heads = withHead(st.Heads, commit, pushed[urlOf[name]])
+				}
 			})
 			if err != nil {
 				return err

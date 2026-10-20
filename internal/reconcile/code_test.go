@@ -1157,6 +1157,39 @@ func TestNewPRHasItsHeadFromTheStart(t *testing.T) {
 	}
 }
 
+// So does a new patch set the bridge pushes to it: a review of a rebase a
+// minute on is about it (in the rehearsal, a sync read the PR half a
+// minute after the push, and the review did not count).
+func TestPushedPatchSetIsThePRsHeadFromThePush(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	msg := "Feature\n\nChange-Id: " + cid(1) + "\n"
+	ci := s.change(1, cid(1), s.commit(m0, "f.txt", "f\n", msg), msg, "NEW")
+	if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	ps2 := s.commit(m0, "f.txt", "f, better\n", msg)
+	ci.Revisions[ps2] = gerritRev(ci.Revisions[ci.CurrentRevision], 2)
+	ci.CurrentRevision = ps2
+	s.push("gerrit.git", ps2, ci.Revisions[ps2].Ref)
+	if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+	st, _ := store.Load(ctx, 1)
+	head := s.ref("github.git", "refs/heads/"+st.State.HeadBranch)
+	if len(st.Revisions) != 2 || st.Revisions[1].GitHubSHA != head {
+		t.Fatalf("revisions %+v, want patch set 2 pushed as %s", st.Revisions, short(head))
+	}
+	if got := headThroughout(st.Heads, after, after.Add(minSeen)); got != head {
+		t.Errorf("heads %+v: a minute after the push GitHub showed %q throughout, want %s", st.Heads, got, short(head))
+	}
+}
+
 // A head goes in by when GitHub was read: an upload takes a while, and a
 // comment sync may see the PR move meanwhile. Recorded as of the upload's
 // end, the importer's head would hide that move: the PR back at an older
