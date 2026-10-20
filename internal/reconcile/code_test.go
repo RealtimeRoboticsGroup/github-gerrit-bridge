@@ -3297,6 +3297,29 @@ func TestOneChangeGitHubRefusesWaitsAlone(t *testing.T) {
 	}
 }
 
+// Anyone may open a PR from main: a status on its head is one on main's
+// tip, for everyone (eighth audit).
+func TestPRFromMainLeavesMainsTipAlone(t *testing.T) {
+	s, im, _, m1, _, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	s.pr(99, "main", m1, "gerrit/"+ids[0], "stranger")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.statuses[m1]) != 0 {
+		t.Errorf("a stranger's PR put statuses on the default branch's tip: %+v", s.statuses[m1])
+	}
+	// Nor from a branch of theirs that is at main's tip.
+	s.push("github.git", m1, "refs/heads/feature")
+	s.pr(98, "feature", m1, "main", "stranger")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.statuses[m1]) != 0 {
+		t.Errorf("a stranger's PR at main's tip put statuses on it: %+v", s.statuses[m1])
+	}
+}
+
 // A mirrored change made private (or deleted) is one the bridge can no
 // longer see: its PR closes, and the rest of the branch goes on (eighth
 // audit: any owner's toggle stopped it).

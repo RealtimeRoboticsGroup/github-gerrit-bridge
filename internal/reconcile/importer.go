@@ -254,7 +254,9 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 				}
 			}
 			if owned {
-				im.setSync(ctx, pr, "failure", "Branch "+key+" belongs to Gerrit; open the PR from a branch of your own", "")
+				// Not said on the PR's head, which is that branch's tip, for
+				// everyone: anyone may open a PR from main (eighth audit).
+				im.Logger.Info("not importing a PR from a branch Gerrit owns", "pr", pr.Number, "branch", key)
 				continue
 			}
 		}
@@ -448,6 +450,12 @@ func (im *Importer) setSync(ctx context.Context, pr *github.PullRequest, state, 
 	same := im.lastSync[pr.Number] == key
 	im.mu.Unlock()
 	if same {
+		return false
+	}
+	if out, _ := im.Mirror.Git(ctx, nil, "for-each-ref", "--count=1", "--contains", pr.Head.SHA, "refs/remotes/gerrit/heads/"); len(out) > 0 {
+		// A commit on Gerrit's branch (anyone may open a PR from main):
+		// a status on it is on everyone's, not this PR's (eighth audit).
+		im.Logger.Info("not setting gerrit/sync on a commit on Gerrit's branch", "pr", pr.Number, "state", state, "description", desc)
 		return false
 	}
 	if !im.DryRun {
