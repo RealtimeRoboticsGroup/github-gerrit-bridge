@@ -636,14 +636,13 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			}
 		}
 		if st.State.Origin == "github" {
-			// A patch set someone else uploaded in Gerrit never reached
-			// the PR (Code.markForeign): the push is not racing it.
+			// A patch set someone else uploaded in Gerrit, or whose code
+			// is someone else's below it, never reached the PR
+			// (Code.markForeign): the push is not racing it, and it is
+			// not restored over the push either (fifth audit: restored as
+			// the bridge's, it reached the author's branch).
 			rev, _ := cur.Current()
-			real := 0
-			if rev.RealUploader != nil {
-				real = rev.RealUploader.AccountID
-			}
-			ok, _ := mayPushToAuthor(ctx, im.Trusted, im.Bridge.AccountID, cur.Owner.AccountID, rev.Uploader.AccountID, real)
+			ok, _ := authorsCode(ctx, im.Trusted, im.Bridge.AccountID, cur.Owner.AccountID, revisionsByNumber(cur), rev.Number)
 			foreign = !ok
 		}
 		message = cur.Revisions[base].Commit.Message

@@ -403,27 +403,15 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 			continue
 		}
 		ok, known := mayPushToAuthor(ctx, c.Trusted, c.BridgeAccount, ch.OwnerID, ch.UploaderID, ch.RealUploaderID)
-		if ok && ch.Kind != "" && ch.Kind != "REWORK" {
+		if ok && ch.Kind != "REWORK" {
 			// A message edit or rebase: whose code, and parent, is it?
-			ci, err := c.Gerrit.GetChange(ctx, n, "ALL_REVISIONS")
+			ci, err := c.Gerrit.GetChange(ctx, n, "ALL_REVISIONS", "ALL_COMMITS")
 			if err != nil {
 				c.Logger.Warn("cannot read a change's patch sets; not pushing its latest", "change", n, "err", err)
 				s.Foreign[n] = true
 				continue
 			}
-			revs := map[int]gerrit.RevisionInfo{}
-			for _, r := range ci.Revisions {
-				revs[r.Number] = r
-			}
-			ok = codeFrom(revs, ch.PatchSet, func(r gerrit.RevisionInfo) bool {
-				real := 0
-				if r.RealUploader != nil {
-					real = r.RealUploader.AccountID
-				}
-				a, k := mayPushToAuthor(ctx, c.Trusted, c.BridgeAccount, ch.OwnerID, r.Uploader.AccountID, real)
-				known = known && k
-				return a
-			})
+			ok, known = authorsCode(ctx, c.Trusted, c.BridgeAccount, ch.OwnerID, revisionsByNumber(ci), ch.PatchSet)
 		}
 		if ok {
 			continue
@@ -451,9 +439,20 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 // decides it: walking down past commit-message edits, whoever made them,
 // the first patch set that is not one chose the code's parent, so allowed
 // must hold for it; and if it is a rebase, for the last rework below it
-// too, whose diff it is.
+// too, whose diff it is. A message edit onto another parent commit (same
+// files: Gerrit compares parents' trees) chose that parent too, and a kind
+// this does not know is nobody's (fifth audit).
 func codeFrom(revs map[int]gerrit.RevisionInfo, ps int, allowed func(gerrit.RevisionInfo) bool) bool {
 	parentChosen := false
+	choose := func(r gerrit.RevisionInfo) bool {
+		if !parentChosen {
+			if !allowed(r) {
+				return false
+			}
+			parentChosen = true
+		}
+		return true
+	}
 	for ; ps >= 1; ps-- {
 		r, ok := revs[ps]
 		if !ok {
@@ -461,19 +460,50 @@ func codeFrom(revs map[int]gerrit.RevisionInfo, ps int, allowed func(gerrit.Revi
 		}
 		switch r.Kind {
 		case "NO_CODE_CHANGE", "NO_CHANGE":
-			continue
-		case "TRIVIAL_REBASE", "TRIVIAL_REBASE_WITH_MESSAGE_UPDATE", "MERGE_FIRST_PARENT_UPDATE":
-			if !parentChosen {
-				if !allowed(r) {
-					return false
-				}
-				parentChosen = true
+			if below, ok := revs[ps-1]; ok && below.Commit.Parent() != r.Commit.Parent() && !choose(r) {
+				return false
 			}
-			continue
+			continue // only the message changed: the code is below's
+		case "TRIVIAL_REBASE", "TRIVIAL_REBASE_WITH_MESSAGE_UPDATE", "MERGE_FIRST_PARENT_UPDATE":
+			if !choose(r) {
+				return false
+			}
+			continue // the same diff: whose is it?
+		case "REWORK":
+			return allowed(r)
 		}
-		return allowed(r) // REWORK, or a kind this does not know
+		return false
 	}
 	return false
+}
+
+// revisionsByNumber is ci's revisions by patch set number.
+func revisionsByNumber(ci *gerrit.ChangeInfo) map[int]gerrit.RevisionInfo {
+	revs := map[int]gerrit.RevisionInfo{}
+	for _, r := range ci.Revisions {
+		revs[r.Number] = r
+	}
+	return revs
+}
+
+// authorsCode reports whether patch set ps of revs, a GitHub-born
+// change's whose owner is owner, may reach its author's branch: its
+// uploader may push there (its message is theirs), and so may whoever is
+// responsible for its code (codeFrom). known is false if CI's trusted
+// group could not be read. markForeign and the importer ask the same.
+func authorsCode(ctx context.Context, trusted func(context.Context, int) (bool, bool), bridge, owner int, revs map[int]gerrit.RevisionInfo, ps int) (ok, known bool) {
+	known = true
+	allowed := func(r gerrit.RevisionInfo) bool {
+		real := 0
+		if r.RealUploader != nil {
+			real = r.RealUploader.AccountID
+		}
+		a, k := mayPushToAuthor(ctx, trusted, bridge, owner, r.Uploader.AccountID, real)
+		known = known && k
+		return a
+	}
+	cur, found := revs[ps]
+	return found && allowed(cur) && codeFrom(revs, ps, allowed), known
 }
 
 // observe gathers a Snapshot for branch from Gerrit, the mirror, GitHub

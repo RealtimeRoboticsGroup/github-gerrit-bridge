@@ -2252,6 +2252,59 @@ func TestNewPRsWithinTheOwnersBudget(t *testing.T) {
 
 // Gerrit lets anyone add a patch set to any change; only the owner's, the
 // bridge's and trusted members' reach a PR author's branch.
+// When both sides moved, Gerrit's newer patch set is restored over the
+// imported push, as the bridge, and so reaches the author's branch: never
+// one whose code is someone else's below the owner's message edit (fifth
+// audit), which the importer now judges as markForeign does.
+func TestGerritWinsNeverRestoresForeignCode(t *testing.T) {
+	for _, foreign := range []bool{true, false} {
+		s, im, up, m1, g, ids := gerritBornWorld(t, false)
+		ctx := context.Background()
+		st, _ := im.Store.Load(ctx, 1)
+		st.State.Origin, st.State.HeadBranch = "github", "feature"
+		if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+			t.Fatal(err)
+		}
+		ci := s.changes[1]
+		ci.Owner = s.accounts["austin"]
+		first := ci.Revisions[g[0]]
+		first.Kind, first.Uploader = "REWORK", s.accounts["austin"]
+		ci.Revisions[g[0]] = first
+		who := gerrit.AccountInfo{AccountID: 9, Username: "mallory"}
+		if !foreign {
+			who = s.accounts["austin"]
+		}
+		code := s.commit(g[0], "one.txt", "theirs\n", "Their message\n\nChange-Id: "+ids[0]+"\n")
+		s.push("gerrit.git", code, "refs/changes/01/1/2")
+		ci.Revisions[code] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Ref: "refs/changes/01/1/2", Uploader: who,
+			Commit: gerrit.CommitInfo{Message: "Their message\n\nChange-Id: " + ids[0] + "\n"}}
+		// The owner fixes the message in Gerrit: same files.
+		edit := s.commit(g[0], "one.txt", "theirs\n", "Fixed message\n\nChange-Id: "+ids[0]+"\n")
+		s.push("gerrit.git", edit, "refs/changes/01/1/3")
+		ci.Revisions[edit] = gerrit.RevisionInfo{Number: 3, Kind: "NO_CODE_CHANGE", Ref: "refs/changes/01/1/3", Uploader: s.accounts["austin"],
+			Commit: gerrit.CommitInfo{Message: "Fixed message\n\nChange-Id: " + ids[0] + "\n"}}
+		ci.CurrentRevision = edit
+		// And the author pushes meanwhile.
+		s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
+		h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
+		s.push("github.git", h, "refs/heads/feature")
+		s.pulls[10].Head.SHA = h
+		s.webhookPush(im.Pushers, 10, "austin")
+		if err := im.Import(ctx, "main"); err != nil {
+			t.Fatal(err)
+		}
+		restored := false
+		for _, u := range up.uploads {
+			if c := strings.Fields(u)[0]; strings.HasPrefix(u, " ") && s.git("m.git", "rev-parse", c+"^{tree}") == s.git("work", "rev-parse", code+"^{tree}") {
+				restored = true
+			}
+		}
+		if restored == foreign {
+			t.Errorf("foreign code %v: restored %v (uploads %v)", foreign, restored, up.uploads)
+		}
+	}
+}
+
 // The owner's commit-message edit or rebase of someone else's patch set
 // carries that one's code: it is not pushed to the author's branch either
 // (fourth audit), as gerrit-buildkite would not build it.
@@ -2287,10 +2340,40 @@ func TestForeignCodeBelowAnEditOrRebase(t *testing.T) {
 		"c": {Number: 3, Kind: "NO_CODE_CHANGE", Uploader: gerrit.AccountInfo{AccountID: 5}}}}
 	snap.State[8] = &state.Change{State: state.ChangeState{Change: 8, Origin: "github"}}
 	s.save(ctx, store, 8, snap.State[8])
+	// A kind this does not know is nobody's; a message edit onto another
+	// parent commit (Gerrit compares parents' trees) chose that parent;
+	// and a patch set whose kind is not said is walked, not taken on trust.
+	parent := func(sha string) gerrit.CommitInfo {
+		var ci gerrit.CommitInfo
+		ci.Parents = append(ci.Parents, struct {
+			Commit string `json:"commit"`
+		}{sha})
+		return ci
+	}
+	for n, revs := range map[int]map[string]gerrit.RevisionInfo{
+		9: {"a": {Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 5}},
+			"b": {Number: 2, Kind: "SOME_NEW_KIND", Uploader: gerrit.AccountInfo{AccountID: 5}}},
+		10: {"a": {Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 5}, Commit: parent("p1")},
+			"b": {Number: 2, Kind: "NO_CODE_CHANGE", Uploader: gerrit.AccountInfo{AccountID: 9}, Commit: parent("strangers")},
+			"c": {Number: 3, Kind: "NO_CODE_CHANGE", Uploader: gerrit.AccountInfo{AccountID: 5}, Commit: parent("strangers")}},
+		11: {"a": {Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 5}, Commit: parent("p1")},
+			"b": {Number: 2, Kind: "NO_CODE_CHANGE", Uploader: gerrit.AccountInfo{AccountID: 9}, Commit: parent("p1")},
+			"c": {Number: 3, Kind: "NO_CODE_CHANGE", Uploader: gerrit.AccountInfo{AccountID: 5}, Commit: parent("p1")}},
+	} {
+		top := len(revs)
+		kind := revs[string(rune('a'+top-1))].Kind
+		snap.Changes[n] = &GerritChange{Number: n, Status: "NEW", Revision: "x", PatchSet: top, OwnerID: 5, UploaderID: 5, Kind: kind}
+		s.changes[n] = &gerrit.ChangeInfo{Number: n, Revisions: revs}
+		snap.State[n] = &state.Change{State: state.ChangeState{Change: n, Origin: "github"}}
+		s.save(ctx, store, n, snap.State[n])
+	}
+	snap.Changes[12] = &GerritChange{Number: 12, Status: "NEW", Revision: "x", PatchSet: 1, OwnerID: 5, UploaderID: 5} // kind unknown, unreadable
+	snap.State[12] = &state.Change{State: state.ChangeState{Change: 12, Origin: "github"}}
+	s.save(ctx, store, 12, snap.State[12])
 	if err := c.markForeign(ctx, snap); err != nil {
 		t.Fatal(err)
 	}
-	if want := map[int]bool{1: true, 2: true, 3: true, 7: true, 8: true}; !reflect.DeepEqual(snap.Foreign, want) {
+	if want := map[int]bool{1: true, 2: true, 3: true, 7: true, 8: true, 9: true, 10: true, 12: true}; !reflect.DeepEqual(snap.Foreign, want) {
 		t.Errorf("foreign = %v, want %v", snap.Foreign, want)
 	}
 }
@@ -2312,7 +2395,7 @@ func TestForeignPatchSetsAreMarked(t *testing.T) {
 		6: {5, 1, 0}, // the bridge's (an import)
 	} {
 		snap.Changes[n] = &GerritChange{Number: n, Status: "NEW", Revision: fmt.Sprintf("r%d", n), PatchSet: 2,
-			OwnerID: ids[0], UploaderID: ids[1], RealUploaderID: ids[2]}
+			OwnerID: ids[0], UploaderID: ids[1], RealUploaderID: ids[2], Kind: "REWORK"}
 		origin := "github"
 		if n == 5 {
 			origin = "gerrit"
@@ -2418,7 +2501,7 @@ func TestObserveMarksForeignPatchSets(t *testing.T) {
 	ps2 := s.commit(m0, "b.txt", "theirs\n", "Mine\n\nChange-Id: "+cid(1)+"\n")
 	ci := s.change(1, cid(1), ps1, "Mine", "NEW")
 	ci.Owner = gerrit.AccountInfo{AccountID: 5, Username: "brt"}
-	ps2Rev := gerrit.RevisionInfo{Number: 2, Ref: "refs/changes/01/1/2", Uploader: gerrit.AccountInfo{AccountID: 9, Username: "mallory"}}
+	ps2Rev := gerrit.RevisionInfo{Number: 2, Ref: "refs/changes/01/1/2", Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 9, Username: "mallory"}}
 	ps2Rev.Commit.Parents = append(ps2Rev.Commit.Parents, struct {
 		Commit string `json:"commit"`
 	}{m0})
