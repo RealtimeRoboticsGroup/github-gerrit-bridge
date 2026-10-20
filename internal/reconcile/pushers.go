@@ -8,13 +8,14 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 )
 
-// Pushers remembers who pushed each GitHub commit to each branch, from
-// webhooks, so a new patch set imported from GitHub is uploaded as the
-// person who pushed it (design §5.2), not the PR's author. It backs up
-// GitHub's activity log, which can lag a push by a little.
+// Pushers remembers who pushed each GitHub commit to each branch, and
+// from what, from webhooks, so a new patch set imported from GitHub is
+// uploaded as the person who pushed it (design §5.2), not the PR's
+// author. It backs up GitHub's activity log, which can lag a push by a
+// little.
 type Pushers struct {
 	mu     sync.Mutex
-	byPush map[push]string
+	byPush map[push]github.Push
 	order  []push
 }
 
@@ -24,18 +25,18 @@ type push struct{ repo, ref, sha string }
 
 const maxPushers = 10000
 
-// Record notes that login pushed sha to repo's ref. The latest push
-// wins, as in GitHub's activity log. Forgetting the oldest only makes
-// Lookup say nobody, which leaves the upload to the bridge.
-func (p *Pushers) Record(repo, ref, sha, login string) {
-	if repo == "" || ref == "" || sha == "" || login == "" {
+// Record notes that actor moved repo's ref from before to after. The
+// latest push wins, as in GitHub's activity log. Forgetting the oldest
+// only makes Lookup say nobody, which leaves the upload to the bridge.
+func (p *Pushers) Record(repo, ref, before, after string, actor github.User) {
+	if repo == "" || ref == "" || after == "" || actor.Login == "" {
 		return
 	}
-	k := push{strings.ToLower(repo), ref, sha}
+	k := push{strings.ToLower(repo), ref, after}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.byPush == nil {
-		p.byPush = map[push]string{}
+		p.byPush = map[push]github.Push{}
 	}
 	if _, ok := p.byPush[k]; !ok {
 		p.order = append(p.order, k)
@@ -44,27 +45,28 @@ func (p *Pushers) Record(repo, ref, sha, login string) {
 			p.order = p.order[1:]
 		}
 	}
-	p.byPush[k] = login
+	p.byPush[k] = github.Push{Before: before, After: after, Actor: actor}
 }
 
-// Lookup returns who pushed sha to repo's ref, if a webhook said.
-func (p *Pushers) Lookup(repo, ref, sha string) string {
+// Lookup returns the push that moved repo's ref to sha, if a webhook
+// said.
+func (p *Pushers) Lookup(repo, ref, sha string) (github.Push, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.byPush[push{strings.ToLower(repo), ref, sha}]
+	r, ok := p.byPush[push{strings.ToLower(repo), ref, sha}]
+	return r, ok
 }
 
-// FromDelivery records the pusher in push and pull_request synchronize
+// FromDelivery records the push in push and pull_request synchronize
 // deliveries: nothing else says who pushed. Not "opened" or "reopened":
 // anyone may open a PR from someone else's branch (fourth audit), and
 // reopening pushes nothing.
 func (p *Pushers) FromDelivery(d *github.Delivery) {
 	var payload struct {
-		Sender struct {
-			Login string `json:"login"`
-		} `json:"sender"`
-		Ref        string `json:"ref"`
-		After      string `json:"after"`
+		Sender     github.User `json:"sender"`
+		Ref        string      `json:"ref"`
+		Before     string      `json:"before"`
+		After      string      `json:"after"`
 		Repository struct {
 			FullName string `json:"full_name"`
 		} `json:"repository"`
@@ -83,14 +85,14 @@ func (p *Pushers) FromDelivery(d *github.Delivery) {
 	}
 	switch {
 	case d.Event == "push":
-		p.Record(payload.Repository.FullName, payload.Ref, payload.After, payload.Sender.Login)
+		p.Record(payload.Repository.FullName, payload.Ref, payload.Before, payload.After, payload.Sender)
 	case d.Event == "pull_request" && d.Action == "synchronize":
 		// A fork's pushes send no push webhook here; this one does. What
 		// was pushed is after: the PR's head, read when the delivery was
 		// built, may already be a later push's (sixth audit).
 		head := payload.PullRequest.Head
 		if head.Ref != "" {
-			p.Record(head.Repo.FullName, "refs/heads/"+head.Ref, payload.After, payload.Sender.Login)
+			p.Record(head.Repo.FullName, "refs/heads/"+head.Ref, payload.Before, payload.After, payload.Sender)
 		}
 	}
 }

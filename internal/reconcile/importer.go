@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -612,6 +613,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	}
 	message := "" // the commit message, if not built from the PR
 	base := ""    // the patch set GitHub last had: the push builds on it
+	baseGH := ""  // the GitHub commit it was
 	foreign := false
 	if later {
 		if cur == nil {
@@ -632,7 +634,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		base = cur.CurrentRevision
 		for _, r := range st.Revisions {
 			if _, ok := cur.Revisions[r.GerritSHA]; ok && r.GitHubSHA != "" {
-				base = r.GerritSHA
+				base, baseGH = r.GerritSHA, r.GitHubSHA
 			}
 		}
 		if st.State.Origin == "github" {
@@ -651,7 +653,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		}
 	}
 
-	user, login, err := im.uploader(ctx, pr, cur, base, h, gerritParent, branch)
+	user, login, err := im.uploader(ctx, pr, cur, base, baseGH, h, gerritParent, parentTip, branch)
 	if err != nil {
 		return nil, err
 	}
@@ -899,18 +901,20 @@ func (im *Importer) checkSize(ctx context.Context, h, parent, parentTip string) 
 // GitHub button (Update branch, Commit suggestion) on someone else's PR.
 //
 // The first upload decides the owner, so it is the PR's author's, if they
-// pushed its head too: anyone may open a PR from someone else's branch
-// (a maintainer from a stranger's fork, say), and a branch may move
-// before the bridge sees the PR. A later one is the pusher's (as GitHub says; never guessed) if they uploaded
-// base, the patch set GitHub last had, too. A pure rebase of base is
-// uploaded on behalf of its uploader, as Gerrit's own rebase is. Anything
-// else is the bridge's, and needs a trusted reviewer to start CI.
-func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *gerrit.ChangeInfo, base, h, parent, branch string) (user, login string, err error) {
+// pushed everything in its head too: anyone may open a PR from someone
+// else's branch (a maintainer from a stranger's fork, say), and a branch
+// may move before the bridge sees the PR. A later one is the pusher's
+// (as GitHub says; never guessed) if they uploaded base, the patch set
+// GitHub last had (baseGH), too, and pushed everything since. A pure
+// rebase of base is uploaded on behalf of its uploader, as Gerrit's own
+// rebase is. Anything else is the bridge's, and needs a trusted reviewer
+// to start CI.
+func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *gerrit.ChangeInfo, base, baseGH, h, parent, parentTip, branch string) (user, login string, err error) {
 	if !im.Uploader.CanActAs() {
 		return "", "", nil
 	}
 	if base == "" {
-		return im.firstUploader(ctx, pr, h)
+		return im.firstUploader(ctx, pr, h, parent, parentTip)
 	}
 	rev := cur.Revisions[base]
 	prev := rev.Uploader.Username
@@ -922,9 +926,11 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 	if prev == "" {
 		return "", "", nil // the bridge's already: nothing to lose
 	}
-	if login, err = im.pusher(ctx, pr, h); err != nil {
+	by, err := im.pushedBy(ctx, pr, h, func(before string) bool { return made(before) || before == baseGH })
+	if err != nil {
 		return "", "", err
 	}
+	login = by.Login
 	if !codeFrom(revisionsByNumber(cur), rev.Number, func(r gerrit.RevisionInfo) bool { return ownUploadBy(r, prev, im.Bridge.AccountID) }) {
 		// The push builds on base, whose code, or parent, is not prev's
 		// own: their rebase or web edit of someone else's patch set, say,
@@ -933,7 +939,7 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		im.Logger.Info("the patch set below is not its uploader's own code: the bridge uploads the push", "pr", pr.Number, "pusher", login, "uploader", prev)
 		return "", login, nil
 	}
-	if pusher, _ := im.Identity.GerritUser(ctx, login); strings.EqualFold(pusher, prev) {
+	if pusher, ok := im.Identity.GerritUserFor(ctx, by); ok && strings.EqualFold(pusher, prev) {
 		return pusher, login, nil
 	}
 	pure, err := im.pureRebase(ctx, base, rev.Ref, parent, h)
@@ -955,7 +961,7 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		im.Logger.Info("rebase onto a parent the uploader did not upload: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
 		return "", login, nil
 	}
-	im.Logger.Info("someone else's push: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
+	im.Logger.Info("someone else's push, or pushes: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
 	return "", login, nil
 }
 
@@ -968,9 +974,11 @@ func ownUploadBy(r gerrit.RevisionInfo, user string, bridge int) bool {
 		(r.RealUploader == nil || r.RealUploader.AccountID == r.Uploader.AccountID) && (r.Kind != "REWORK" || r.Commit.Own())
 }
 
-// firstUploader is who uploads pr's first patch set, h, as above: its
-// author if they pushed h, else the bridge (""). login is the pusher.
-func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h string) (user, login string, err error) {
+// firstUploader is who uploads pr's first patch set, h, onto parent, as
+// above: its author if they pushed everything in it (since the branch was
+// made, or was at code parent or parentTip, the PR below's head, has
+// already), else the bridge (""). login is the pusher.
+func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h, parent, parentTip string) (user, login string, err error) {
 	if !im.Uploader.CanActAs() {
 		return "", "", nil
 	}
@@ -978,17 +986,29 @@ func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h
 	if !ok {
 		return "", pr.User.Login, nil
 	}
-	if login, err = im.pusher(ctx, pr, h); err != nil {
+	by, err := im.pushedBy(ctx, pr, h, func(before string) bool {
+		if made(before) {
+			return true
+		}
+		for _, had := range []string{parent, parentTip} {
+			if _, err := im.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", before, had); had != "" && err == nil {
+				return true
+			}
+		}
+		return false
+	})
+	if err != nil {
 		return "", "", err
 	}
+	login = by.Login
 	if login == "" && time.Since(pr.CreatedAt) < pusherWait {
 		// GitHub's activity log can lag a push by a little, and a
 		// fork's push sends no webhook here: decided on a guess, the
 		// change would be the bridge's for good.
 		return "", "", &syncError{state: "pending", msg: "Waiting for GitHub to say who pushed it", retry: true}
 	}
-	if pusher, _ := im.Identity.GerritUser(ctx, login); !strings.EqualFold(pusher, author) {
-		im.Logger.Info("first push not the PR author's (as GitHub says): the bridge uploads it", "pr", pr.Number, "author", pr.User.Login, "pusher", login)
+	if pusher, ok := im.Identity.GerritUserFor(ctx, by); !ok || !strings.EqualFold(pusher, author) {
+		im.Logger.Info("not every push in it the PR author's (as GitHub says): the bridge uploads it", "pr", pr.Number, "author", pr.User.Login, "pusher", login)
 		return "", login, nil
 	}
 	return author, pr.User.Login, nil
@@ -1047,24 +1067,66 @@ func (im *Importer) derivedChangeID(pr *github.PullRequest) string {
 // GitHub to say who pushed its head.
 const pusherWait = 10 * time.Minute
 
-// pusher says who pushed h to pr's branch: GitHub's activity log for that
-// branch (in the fork, for a fork's PR), which outlives the bridge's
-// restarts and covers webhooks it missed; or, if the log does not list it
-// yet, the webhook for that push to that branch. "" if neither says.
-func (im *Importer) pusher(ctx context.Context, pr *github.PullRequest, h string) (string, error) {
+// maxPushes bounds the pushes pushedBy follows back.
+const maxPushes = 300
+
+// pushedBy is who pushed pr's head h, and everything since its branch was
+// at a commit done says is accounted for: walking back from h through the
+// pushes to the branch, as GitHub's activity log lists them (or, where it
+// lags, webhooks said), each from the commit the one below moved it to,
+// all by one GitHub account. Nobody (a zero User) if someone else pushed
+// one of them (a commit the bridge never imported, which the next push
+// would carry, say: seventh audit), or if a push is not known.
+func (im *Importer) pushedBy(ctx context.Context, pr *github.PullRequest, h string, done func(before string) bool) (github.User, error) {
 	repo := im.GitHub.Owner + "/" + im.GitHub.Repo
 	if pr.Head.Repo != nil && pr.Head.Repo.FullName != "" {
 		repo = pr.Head.Repo.FullName
 	}
 	ref := "refs/heads/" + pr.Head.Ref
-	login, err := im.GitHub.Pusher(ctx, repo, ref, h)
+	pushes, err := im.GitHub.Pushes(ctx, repo, ref)
 	if err != nil {
-		return "", fmt.Errorf("who pushed %s to #%d: %w", short(h), pr.Number, err)
+		return github.User{}, fmt.Errorf("who pushed %s to #%d: %w", short(h), pr.Number, err)
 	}
-	if login == "" && im.Pushers != nil {
-		login = im.Pushers.Lookup(repo, ref, h)
+	var by github.User
+	at, older := h, 0 // pushes[older:] came before the last one followed
+	for range maxPushes {
+		var p github.Push
+		found := false
+		for i := older; i < len(pushes) && !found; i++ {
+			if pushes[i].After == at {
+				p, older, found = pushes[i], i+1, true
+			}
+		}
+		if !found && im.Pushers != nil && !slices.ContainsFunc(pushes[:older], func(p github.Push) bool { return p.After == at }) {
+			// Not listed yet (a webhook said), unless it was listed
+			// later than the push followed: then which came first?
+			p, found = im.Pushers.Lookup(repo, ref, at)
+		}
+		if !found || p.Actor.Login == "" || (by.Login != "" && !sameGitHubUser(by, p.Actor)) {
+			return github.User{}, nil
+		}
+		by = p.Actor
+		if done(p.Before) {
+			return by, nil
+		}
+		at = p.Before
 	}
-	return login, nil
+	return github.User{}, nil
+}
+
+// made reports whether a push from before made its branch: everything in
+// it was pushed then.
+func made(before string) bool {
+	return before != "" && strings.Trim(before, "0") == ""
+}
+
+// sameGitHubUser reports whether a and b are one GitHub account: by id,
+// where both say it.
+func sameGitHubUser(a, b github.User) bool {
+	if a.ID != 0 && b.ID != 0 {
+		return a.ID == b.ID
+	}
+	return strings.EqualFold(a.Login, b.Login)
 }
 
 // pureRebase reports whether h's tree is exactly what rebasing commit
@@ -1284,7 +1346,7 @@ func (im *Importer) ownUpload(ctx context.Context, cur *gerrit.ChangeInfo, pr *g
 		if r.Uploader.AccountID == im.Bridge.AccountID {
 			return true, nil
 		}
-		user, _, err := im.firstUploader(ctx, pr, h)
+		user, _, err := im.firstUploader(ctx, pr, h, r.Commit.Parent(), "")
 		if err != nil {
 			return false, err
 		}

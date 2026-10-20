@@ -275,9 +275,9 @@ func TestPushersFromWebhooks(t *testing.T) {
 	// What a synchronize pushed is its after: the PR's head may already
 	// be a later push's.
 	r.Delivery(&github.Delivery{Event: "pull_request", Action: "synchronize", PR: 3,
-		Payload: []byte(`{"sender":{"login":"bob"},"after":"abc","pull_request":{"number":3,` + head("b", "later") + `}}`)})
+		Payload: []byte(`{"sender":{"login":"bob","id":2},"before":"aaa","after":"abc","pull_request":{"number":3,` + head("b", "later") + `}}`)})
 	r.Delivery(&github.Delivery{Event: "push",
-		Payload: []byte(`{"sender":{"login":"carol"},"after":"def","ref":"refs/heads/x","repository":{"full_name":"O/R"}}`)})
+		Payload: []byte(`{"sender":{"login":"carol","id":3},"before":"ddd","after":"def","ref":"refs/heads/x","repository":{"full_name":"O/R"}}`)})
 	r.Delivery(&github.Delivery{Event: "pull_request", Action: "edited", PR: 3,
 		Payload: []byte(`{"sender":{"login":"mallory"},"pull_request":{"number":3,` + head("b", "abc") + `}}`)})
 	// Opening or reopening a PR is not pushing its head (anyone may open
@@ -289,29 +289,36 @@ func TestPushersFromWebhooks(t *testing.T) {
 		Payload: []byte(`{"sender":{"login":"maint"},"pull_request":{"number":4,` + head("g", "ghi") + `}}`)})
 	r.Delivery(&github.Delivery{Event: "push",
 		Payload: []byte(`{"sender":{"login":"maint"},"after":"abc","ref":"refs/heads/test-it","repository":{"full_name":"fork/r"}}`)})
-	for _, c := range []struct{ repo, ref, sha, want string }{
-		{"fork/r", "refs/heads/b", "abc", "bob"},
-		{"o/r", "refs/heads/x", "def", "carol"},
-		{"fork/r", "refs/heads/g", "ghi", ""},
-		{"fork/r", "refs/heads/test-it", "abc", "maint"},
-		{"o/r", "refs/heads/b", "abc", ""},
-		{"fork/r", "refs/heads/b", "later", ""},
+	for _, c := range []struct {
+		repo, ref, sha string
+		want           github.Push
+	}{
+		{"fork/r", "refs/heads/b", "abc", github.Push{Before: "aaa", After: "abc", Actor: github.User{Login: "bob", ID: 2}}},
+		{"o/r", "refs/heads/x", "def", github.Push{Before: "ddd", After: "def", Actor: github.User{Login: "carol", ID: 3}}},
+		{"fork/r", "refs/heads/g", "ghi", github.Push{}},
+		{"fork/r", "refs/heads/test-it", "abc", github.Push{After: "abc", Actor: github.User{Login: "maint"}}},
+		{"o/r", "refs/heads/b", "abc", github.Push{}},
+		{"fork/r", "refs/heads/b", "later", github.Push{}},
 	} {
-		if got := r.Pushers.Lookup(c.repo, c.ref, c.sha); got != c.want {
-			t.Errorf("%s %s %s: %q, want %q", c.repo, c.ref, c.sha, got, c.want)
+		if got, ok := r.Pushers.Lookup(c.repo, c.ref, c.sha); got != c.want || ok != (c.want != github.Push{}) {
+			t.Errorf("%s %s %s: %+v %v, want %+v", c.repo, c.ref, c.sha, got, ok, c.want)
 		}
 	}
 	p := &Pushers{}
-	for i := range maxPushers + 10 {
-		p.Record("o/r", "refs/heads/x", fmt.Sprint(i), "x")
+	pusher := func(sha string) string {
+		got, _ := p.Lookup("o/r", "refs/heads/x", sha)
+		return got.Actor.Login
 	}
-	if p.Lookup("o/r", "refs/heads/x", "0") != "" || p.Lookup("o/r", "refs/heads/x", fmt.Sprint(maxPushers+9)) != "x" || len(p.byPush) != maxPushers || len(p.order) != maxPushers {
+	for i := range maxPushers + 10 {
+		p.Record("o/r", "refs/heads/x", "", fmt.Sprint(i), github.User{Login: "x"})
+	}
+	if pusher("0") != "" || pusher(fmt.Sprint(maxPushers+9)) != "x" || len(p.byPush) != maxPushers || len(p.order) != maxPushers {
 		t.Error("pusher log not bounded")
 	}
 	// The latest push wins, as in GitHub's activity log, and takes no
 	// more room.
-	p.Record("o/r", "refs/heads/x", fmt.Sprint(maxPushers+9), "y")
-	if p.Lookup("o/r", "refs/heads/x", fmt.Sprint(maxPushers+9)) != "y" || p.Lookup("o/r", "refs/heads/x", "10") != "x" {
+	p.Record("o/r", "refs/heads/x", "", fmt.Sprint(maxPushers+9), github.User{Login: "y"})
+	if pusher(fmt.Sprint(maxPushers+9)) != "y" || pusher("10") != "x" {
 		t.Error("a second push of the same commit to the same branch was not its pusher's")
 	}
 }

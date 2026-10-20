@@ -144,29 +144,42 @@ func SplitHeadKey(key string) (repo, branch string, ok bool) {
 	return strings.Cut(key, ":")
 }
 
-// Pusher returns who most recently moved branch ref (refs/heads/...) of
-// repo (owner/name) to sha, from GitHub's activity log: pushes, force
-// pushes and branch creations, by whoever did them, kept by GitHub across
-// the bridge's restarts. It returns "" if the log does not say (too old,
-// or not listed yet). Only the newest few hundred entries are searched.
-func (c *Client) Pusher(ctx context.Context, repo, ref, sha string) (string, error) {
+// Push is a push to a branch: Actor moved it from Before to After (a
+// creation is from 000…, a deletion to it).
+type Push struct {
+	Before, After string
+	Actor         User
+}
+
+// Pushes lists the newest few hundred pushes to branch ref
+// (refs/heads/...) of repo (owner/name), newest first, from GitHub's
+// activity log: pushes, force pushes and branch creations and deletions,
+// by whoever did them, kept by GitHub across the bridge's restarts. It
+// can lag a push by a little.
+func (c *Client) Pushes(ctx context.Context, repo, ref string) ([]Push, error) {
+	var pushes []Push
 	next := "/repos/" + repo + "/activity?per_page=100&ref=" + url.QueryEscape(ref)
 	for page := 0; page < 3 && next != ""; page++ {
 		var acts []struct {
-			After string `json:"after"`
-			Ref   string `json:"ref"`
-			Actor *User  `json:"actor"`
+			Before string `json:"before"`
+			After  string `json:"after"`
+			Ref    string `json:"ref"`
+			Actor  *User  `json:"actor"`
 		}
 		resp, err := c.Do(ctx, http.MethodGet, next, nil, &acts)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		for _, a := range acts { // newest first
-			if a.After == sha && a.Ref == ref && a.Actor != nil { // deletions have after 000…
-				return a.Actor.Login, nil
+		for _, a := range acts {
+			if a.Ref == ref {
+				p := Push{Before: a.Before, After: a.After}
+				if a.Actor != nil {
+					p.Actor = *a.Actor
+				}
+				pushes = append(pushes, p)
 			}
 		}
 		next = nextLink(resp.Header.Get("Link"))
 	}
-	return "", nil
+	return pushes, nil
 }

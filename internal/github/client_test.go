@@ -268,24 +268,28 @@ func TestGraphQLAndDraft(t *testing.T) {
 	}
 }
 
-func TestPusher(t *testing.T) {
+func TestPushes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/brt/fork/activity" || r.URL.Query().Get("ref") != "refs/heads/main" {
 			http.NotFound(w, r)
 			return
 		}
 		fmt.Fprint(w, `[
- {"ref":"refs/heads/main","after":"0000000000000000000000000000000000000000","activity_type":"branch_deletion","actor":{"login":"x"}},
- {"ref":"refs/heads/main","after":"bbb","activity_type":"force_push","actor":{"login":"maintainer"}},
- {"ref":"refs/heads/main","after":"aaa","activity_type":"push","actor":{"login":"brt"}}]`)
+ {"ref":"refs/heads/main","before":"bbb","after":"0000000000000000000000000000000000000000","activity_type":"branch_deletion","actor":{"login":"x","id":3}},
+ {"ref":"refs/heads/main","before":"aaa","after":"bbb","activity_type":"force_push","actor":{"login":"maintainer","id":2}},
+ {"ref":"refs/heads/other","before":"aaa","after":"ccc","activity_type":"push","actor":{"login":"brt","id":1}},
+ {"ref":"refs/heads/main","before":"0000000000000000000000000000000000000000","after":"aaa","activity_type":"branch_creation","actor":{"login":"brt","id":1}}]`)
 	}))
 	defer srv.Close()
 	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
-	ctx := context.Background()
-	for sha, want := range map[string]string{"aaa": "brt", "bbb": "maintainer", "ccc": ""} {
-		if got, err := c.Pusher(ctx, "brt/fork", "refs/heads/main", sha); err != nil || got != want {
-			t.Errorf("Pusher(%s) = %q, %v; want %q", sha, got, err, want)
-		}
+	got, err := c.Pushes(context.Background(), "brt/fork", "refs/heads/main")
+	want := []Push{
+		{Before: "bbb", After: "0000000000000000000000000000000000000000", Actor: User{Login: "x", ID: 3}},
+		{Before: "aaa", After: "bbb", Actor: User{Login: "maintainer", ID: 2}},
+		{Before: "0000000000000000000000000000000000000000", After: "aaa", Actor: User{Login: "brt", ID: 1}},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("Pushes = %+v, %v; want %+v", got, err, want)
 	}
 }
 

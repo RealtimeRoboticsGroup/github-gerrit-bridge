@@ -1086,9 +1086,12 @@ defenses, by threat:
 - **Who uploaded.** CI trusts the uploader, so nobody is made the
   uploader of code they did not write or vouch for, however casually they
   clicked a GitHub button on someone else's PR (audit 2026-10-18). The
-  first upload is the PR author's, if GitHub says they pushed its head
-  (anyone may open a PR from someone else's branch, and a branch may
-  move before the bridge sees the PR; third audit); for its first ten
+  first upload is the PR author's, if GitHub says they pushed its head,
+  and every push to its branch before it since the branch was made or
+  was at code the target branch already has (anyone may open a PR from
+  someone else's branch, and a branch may move before the bridge sees
+  the PR; third audit; or someone else may have pushed to it first:
+  seventh audit); for its first ten
   minutes a PR whose pusher GitHub does not name yet waits, since a
   fork's push sends no webhook and the activity log can lag. A later push builds on the patch set
   GitHub last had (not a newer one only Gerrit has, such as someone
@@ -1097,7 +1100,13 @@ defenses, by threat:
   it (every patch set that chose its parent or made its diff uploaded by
   them, none on their behalf, and its REWORK their own commit, author =
   committer: not their message edit, rebase, web edit or cherry-pick of
-  someone else's; sixth audit), and only as GitHub
+  someone else's; sixth audit), and only if they pushed everything
+  since GitHub had that patch set: following each push back to the one
+  it built on, every push from that commit to the head is theirs, by
+  GitHub id. A commit someone else pushed in between, which the bridge
+  did not get to or could not import ("Restack needed"), would otherwise
+  ride on their next push or Update branch as their code (seventh
+  audit). Who pushed is only as GitHub
   says: the activity log of the PR's branch (`GET /repos/{repo}/activity`,
   the fork's for a fork PR), which outlives the bridge's restarts and
   covers webhooks it missed; or, for a push the log does not list yet, the

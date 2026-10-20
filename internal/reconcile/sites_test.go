@@ -50,7 +50,9 @@ type sites struct {
 	statuses map[string][]github.Status // sha -> statuses
 	// pushLog is GitHub's activity log per "owner/repo refs/heads/x",
 	// oldest first.
-	pushLog  map[string][]pushEntry
+	pushLog map[string][]pushEntry
+	// moved is the last push to each ref: from, to.
+	moved    map[string][2]string
 	unstacks []int
 	stacks   []*github.Stack           // made with POST /stacks, as GitHub would
 	activity map[int]github.PRActivity // what Activity returns per PR
@@ -173,7 +175,30 @@ func (s *sites) commit(parent, file, content, msg string) string {
 // push force-pushes commit to ref in gerrit.git or github.git.
 func (s *sites) push(repo, commit, ref string) {
 	s.t.Helper()
+	was, err := exec.Command("git", "-C", filepath.Join(s.dir, repo), "rev-parse", "--verify", "--quiet", ref).Output()
+	if err != nil {
+		was = []byte(zeroSHA)
+	}
 	s.git("work", "push", "-q", "-f", filepath.Join(s.dir, repo), commit+":"+ref)
+	if s.moved == nil {
+		s.moved = map[string][2]string{}
+	}
+	s.moved[ref] = [2]string{strings.TrimSpace(string(was)), commit}
+}
+
+const zeroSHA = "0000000000000000000000000000000000000000"
+
+// before is what the push of sha to ref, logged now, was from: what
+// push moved ref from, if it moved it to sha, else the push logged before
+// (or nothing: a creation).
+func (s *sites) before(repo, ref, sha string) string {
+	if m, ok := s.moved[ref]; ok && m[1] == sha {
+		return m[0]
+	}
+	if log := s.pushLog[repo+" "+ref]; len(log) > 0 {
+		return log[len(log)-1].sha
+	}
+	return zeroSHA
 }
 
 func (s *sites) ref(repo, ref string) string {
@@ -267,7 +292,8 @@ func (s *sites) createStack(w http.ResponseWriter, r *http.Request) {
 // to its branch.
 func (s *sites) webhookPush(p *Pushers, n int, login string) {
 	pr := s.pulls[n]
-	p.Record(pr.Head.Repo.FullName, "refs/heads/"+pr.Head.Ref, pr.Head.SHA, login)
+	ref := "refs/heads/" + pr.Head.Ref
+	p.Record(pr.Head.Repo.FullName, ref, s.before(pr.Head.Repo.FullName, ref, pr.Head.SHA), pr.Head.SHA, github.User{Login: login})
 }
 
 // ghEvent records that login closed or reopened PR n, a minute after the
@@ -442,7 +468,7 @@ func (s *sites) account(w http.ResponseWriter, r *http.Request) {
 	s.json(w, a, true)
 }
 
-type pushEntry struct{ sha, actor, kind string }
+type pushEntry struct{ before, sha, actor, kind string }
 
 // pushed logs that actor pushed sha to ref of repo, as GitHub's activity
 // log would.
@@ -450,7 +476,7 @@ func (s *sites) pushed(repo, ref, sha, actor string) {
 	if s.pushLog == nil {
 		s.pushLog = map[string][]pushEntry{}
 	}
-	s.pushLog[repo+" "+ref] = append(s.pushLog[repo+" "+ref], pushEntry{sha, actor, "push"})
+	s.pushLog[repo+" "+ref] = append(s.pushLog[repo+" "+ref], pushEntry{s.before(repo, ref, sha), sha, actor, "push"})
 }
 
 func (s *sites) activityLog(w http.ResponseWriter, r *http.Request) {
@@ -459,7 +485,7 @@ func (s *sites) activityLog(w http.ResponseWriter, r *http.Request) {
 	log := s.pushLog[repo+" "+ref]
 	var out []map[string]any
 	for i := len(log) - 1; i >= 0; i-- { // newest first
-		out = append(out, map[string]any{"ref": ref, "after": log[i].sha, "activity_type": log[i].kind,
+		out = append(out, map[string]any{"ref": ref, "before": log[i].before, "after": log[i].sha, "activity_type": log[i].kind,
 			"actor": map[string]string{"login": log[i].actor}})
 	}
 	s.mu.Unlock()

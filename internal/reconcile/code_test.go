@@ -906,6 +906,111 @@ func TestFirstUploadOnlyAsThePinnedGitHubAccount(t *testing.T) {
 	}
 }
 
+// A PR's first upload is its author's only if they pushed everything on
+// its branch, since it was made or was at code the target branch has:
+// not their push on top of a commit someone else pushed there (seventh
+// audit).
+func TestFirstUploadNeedsEveryPushTheAuthors(t *testing.T) {
+	for _, tc := range []struct{ first, want string }{
+		{"brt", ""},
+		{"austin", "austin"},
+		{"", "austin"}, // a fork's branch, made at main when it was forked: no push says so
+	} {
+		s, im, up, m1, _, _ := gerritBornWorld(t, false)
+		x := m1
+		if tc.first != "" {
+			x = s.commit(m1, "x.txt", "x\n", "Theirs")
+			s.push("github.git", x, "refs/heads/topic")
+			s.pushed("o/r", "refs/heads/topic", x, tc.first)
+		}
+		h := s.commit(x, "new.txt", "n\n", "New")
+		s.push("github.git", h, "refs/heads/topic")
+		s.pushed("o/r", "refs/heads/topic", h, "austin")
+		if tc.first == "" {
+			s.pushLog["o/r refs/heads/topic"][0].before = m1
+		}
+		s.pr(60, "topic", h, "main", "austin")
+		if err := im.Import(context.Background(), "main"); err != nil {
+			t.Fatal(err)
+		}
+		if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], tc.want+" ") {
+			t.Errorf("first push %q: uploads = %v, want one as %q", tc.first, up.uploads, tc.want)
+		}
+	}
+}
+
+// A later push is its pusher's only if they pushed everything since the
+// commit GitHub had when the bridge last imported. A commit someone else
+// pushed in between, which the bridge did not get to (or could not
+// import), would otherwise ride on it as the pusher's own code: brt's
+// push to austin's branch, then austin's Commit suggestion on top before
+// the bridge reconciles (seventh audit). A webhook stands in for the
+// activity log where it lags.
+func TestPushIsThePushersOnlyIfEveryPushSinceIsTheirs(t *testing.T) {
+	for _, tc := range []struct {
+		first, second string
+		webhook       bool
+		want          string
+	}{
+		{"brt", "austin", false, ""},
+		{"brt", "austin", true, ""},
+		{"austin", "austin", false, "austin"},
+		{"austin", "austin", true, "austin"},
+		{"austin", "", false, ""}, // by an account since deleted
+	} {
+		s, im, up, _, g, ids := gerritBornWorld(t, false)
+		ref := "refs/heads/gerrit/" + ids[0]
+		x := s.commit(g[0], "x.txt", "x\n", "First")
+		s.push("github.git", x, ref)
+		s.pushed("o/r", ref, x, tc.first)
+		h := s.commit(x, "one.txt", "1 fixed\n", "Apply suggestion")
+		s.push("github.git", h, ref)
+		s.pulls[10].Head.SHA = h
+		if tc.webhook {
+			s.webhookPush(im.Pushers, 10, tc.second)
+		} else {
+			s.pushed("o/r", ref, h, tc.second)
+		}
+		if err := im.Import(context.Background(), "main"); err != nil {
+			t.Fatal(err)
+		}
+		if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], tc.want+" ") {
+			t.Errorf("pushes by %q then %q (webhook %v): uploads = %v, want one as %q", tc.first, tc.second, tc.webhook, up.uploads, tc.want)
+		}
+	}
+}
+
+// The same when the bridge could not import the push in between: brt
+// pushes to the top of austin's stack on main, not on the layer below
+// ("Restack needed"), and austin's Update branch merges the layer below
+// into it (seventh audit).
+func TestUpdateBranchOverSomeoneElsesPushIsTheBridges(t *testing.T) {
+	s, im, up, _, g, ids := gerritBornWorld(t, true)
+	ctx := context.Background()
+	brt := s.commit(s.git("work", "rev-parse", g[0]+"^"), "brt.txt", "brt's\n", "Harmless")
+	s.push("github.git", brt, "refs/heads/gerrit/"+ids[1])
+	s.pulls[20].Head.SHA = brt
+	s.webhookPush(im.Pushers, 20, "brt")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Logf("import: %v", err)
+	}
+	if len(up.uploads) != 0 {
+		t.Fatalf("uploads = %v; want brt's push to wait", up.uploads)
+	}
+	s.git("work", "checkout", "-q", "--detach", brt)
+	s.git("work", "merge", "-q", "--no-edit", g[0])
+	h := s.git("work", "rev-parse", "HEAD")
+	s.push("github.git", h, "refs/heads/gerrit/"+ids[1])
+	s.pulls[20].Head.SHA = h
+	s.webhookPush(im.Pushers, 20, "austin")
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], " ") {
+		t.Errorf("uploads = %v, want one as the bridge", up.uploads)
+	}
+}
+
 // A PR's Change-Id is public: someone uploading a change with it between
 // the bridge's look and its upload gets the upload as their patch set,
 // which is not linked to the PR (sixth audit). The next import finds the
