@@ -1506,6 +1506,25 @@ func TestDismissalDoesNotWithdrawAVetoGivenMeanwhile(t *testing.T) {
 	}
 }
 
+// A change request that cast no vote (on a commit Gerrit lacks, or only
+// just pushed) is not dismissed for disagreeing with the reviewer's
+// older +2: their objection would be gone from both sides (seventh
+// audit).
+func TestUncountedChangeRequestIsNotDismissed(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+	e.sync(t)
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 71, State: "CHANGES_REQUESTED", CommitID: "unimported", User: github.User{Login: "bob"},
+		Body: "Wait, no.", HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-71", SubmittedAt: time.Now()})
+	e.sync(t)
+	e.settled(t)
+	if e.g.labels["Code-Review"]["bobg"] != 2 || len(e.h.dismissed) != 0 {
+		t.Errorf("votes %v, dismissed %v; want bob's +2 and his change request both standing", e.g.labels, e.h.dismissed)
+	}
+}
+
 // Design §6.4: GitHub shows what Gerrit counts. An approval whose vote
 // was changed in Gerrit, or reset by a new patch set, is dismissed.
 func TestStaleApprovalIsDismissed(t *testing.T) {

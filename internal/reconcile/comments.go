@@ -1259,9 +1259,9 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		if vote && !known {
 			// GitHub showed code Gerrit does not have (say a push not
 			// imported yet): a vote would land on code nobody reviewed.
-			body = "Not counted as a vote: it was made on a commit that is not a patch set in Gerrit.\n\n" + body
+			body = notCounted + " it was made on a commit that is not a patch set in Gerrit.\n\n" + body
 		} else if vote && early {
-			body = "Not counted as a vote: it was made on a commit that reached GitHub less than a minute before it. Review it again to count it.\n\n" + body
+			body = notCounted + " it was made on a commit that reached GitHub less than a minute before it. Review it again to count it.\n\n" + body
 		}
 		login := rv.User.Login
 		if ps == 0 {
@@ -1271,7 +1271,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 			// Edited by someone else: not as the author, and no vote.
 			login = ""
 			if vote {
-				body = "Not counted as a vote: someone other than its author edited it.\n\n" + body
+				body = notCounted + " someone other than its author edited it.\n\n" + body
 			}
 		}
 		// Mirrored late (the bridge was busy, or down), it is older than
@@ -1280,7 +1280,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		since := vote && known && !early && login != "" && asAuthor(login) &&
 			s.votedSince(gerrit.AccountInfo{Username: authors[login]}, rv.SubmittedAt, anyCodeReview)
 		if since {
-			body = "Not counted as a vote: its author has voted in Gerrit since.\n\n" + body
+			body = notCounted + " its author has voted in Gerrit since.\n\n" + body
 		}
 		if login != "" && c.bodyTooFresh(s, "review/"+strconv.FormatInt(rv.ID, 10), rv.SubmittedAt, rv.Body) {
 			continue
@@ -1479,6 +1479,13 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 		if mc == nil || strings.HasPrefix(mc.GerritID, "refused:") {
 			continue // not mirrored, or Gerrit would not take it: nothing to disagree with
 		}
+		if gc := s.byID[mc.GerritID]; rv.State == "CHANGES_REQUESTED" && gc != nil && strings.Contains(gc.Message, notCounted) {
+			// It cast no vote (made on a commit only just pushed, say):
+			// dismissed for disagreeing with the reviewer's older +2,
+			// their objection would be gone from both sides (seventh
+			// audit). Gerrit has its text, saying it was not counted.
+			continue
+		}
 		user, ok := c.Users.GerritUserFor(ctx, rv.User)
 		if !ok {
 			continue // never voted: the review is only text in Gerrit
@@ -1620,6 +1627,9 @@ func sameAccount(a, b gerrit.AccountInfo) bool {
 	}
 	return a.Username != "" && strings.EqualFold(a.Username, b.Username)
 }
+
+// notCounted begins the Gerrit text of a review that cast no vote.
+const notCounted = "Not counted as a vote:"
 
 // positiveCodeReview matches the change message Gerrit writes when
 // someone votes Code-Review up ("Patch Set 3: Code-Review+2", with any
