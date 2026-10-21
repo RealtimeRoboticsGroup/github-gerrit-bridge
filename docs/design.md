@@ -1153,7 +1153,10 @@ defenses, by threat:
   must hold every parent of the patch set it builds on, or be a newer
   patch set of that parent's change: else an abandoned or retargeted
   change below, or a merge's other parent, is folded into its diff
-  (eighth audit). Who pushed is only as GitHub
+  (eighth audit). Someone else's commits that never went to this branch
+  (a co-worker's, fetched from their own and built on) are the pusher's:
+  pushing them is vouching for them (the owner's call, 2026-10-20).
+  Who pushed is only as GitHub
   says: the activity log of the PR's branch (`GET /repos/{repo}/activity`,
   the fork's for a fork PR), which outlives the bridge's restarts and
   covers webhooks it missed; or, for a push the log does not list yet, the
@@ -1652,15 +1655,15 @@ Abandon and Toggle Work In Progress for Administrators.
   which their Rebase then puts under it: seventh audit). So a trusted
   user's rework of a change on the parent a stranger first chose, their
   amend of a stranger's commit, a commit with another of their emails,
-  or anything on a stranger's patch set needs a `retest`. Run it with
-  `-gerrit_url` (https) and `-http_password_file` for its account: over
-  SSH it cannot see a commit's committer, so a stranger's commit naming a
-  trusted user as its author, pushed as it is by someone who may forge
-  committers, is trusted (eighth audit); nor tell what a branch holds,
-  so a change on a merge commit Gerrit made at submit, or on a commit
-  pushed straight to the branch, needs a `retest`. Run it too with `-webhook_token`, now required (a forged
-  webhook reporting a build as passed would be Verified), and `-listen`
-  on an address only Buildkite reaches.
+  or anything on a stranger's patch set needs a `retest`. It now needs
+  `-gerrit_url` (https) and `-http_password_file`, an HTTP password for
+  its account (on AOS, `realtimeroboticsbot`), and will not start
+  without them: it reads patch sets over REST only. Over
+  SSH it could not see a commit's committer, so a stranger's commit
+  naming a trusted user as its author, pushed as it is by someone who
+  may forge committers, was trusted (eighth audit). It also needs
+  `-webhook_token` (a forged webhook reporting a build as passed would be
+  Verified), and `-listen` on an address only Buildkite reaches.
 - **Administrators' `abandon` and `toggleWipState`** on the bridged
   project's `refs/heads/*` (Administrate Server is not applied through
   Run-As), not on All-Projects.
