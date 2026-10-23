@@ -105,6 +105,7 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("GET /repos/o/r/issues/{n}/events", s.issueEvents)
 	mux.HandleFunc("POST /repos/o/r/issues/{n}/comments", s.createComment)
 	mux.HandleFunc("POST /repos/o/r/statuses/{sha}", s.createStatus)
+	mux.HandleFunc("GET /repos/o/r/commits/{sha}/status", s.combinedStatus)
 	mux.HandleFunc("POST /repos/o/r/stacks/{n}/unstack", s.unstack)
 	mux.HandleFunc("GET /repos/o/r/stacks", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
@@ -562,6 +563,23 @@ func (s *sites) createComment(w http.ResponseWriter, r *http.Request) {
 	s.comments[n] = append(s.comments[n], in.Body)
 	s.nextID++
 	s.json(w, github.IssueComment{ID: s.nextID, Body: in.Body}, false)
+}
+
+// combinedStatus answers GitHub's combined status: the latest of each
+// context.
+func (s *sites) combinedStatus(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	latest := []github.Status{}
+	seen := map[string]bool{}
+	all := s.statuses[r.PathValue("sha")]
+	for i := len(all) - 1; i >= 0; i-- {
+		if !seen[all[i].Context] {
+			seen[all[i].Context] = true
+			latest = append(latest, all[i])
+		}
+	}
+	s.json(w, map[string]any{"statuses": latest}, false)
 }
 
 func (s *sites) createStatus(w http.ResponseWriter, r *http.Request) {

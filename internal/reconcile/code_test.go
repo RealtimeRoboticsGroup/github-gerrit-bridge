@@ -1640,6 +1640,59 @@ func TestImporterRecordsAHeadThatWentBack(t *testing.T) {
 	}
 }
 
+// After a restart, which forgets what gerrit/sync it set, the importer
+// reads what GitHub shows rather than setting it again: each post is
+// another line of the commit's public history, and the slowest call an
+// import makes. Not if GitHub shows something else.
+func TestSyncStatusIsNotSetAgainAfterARestart(t *testing.T) {
+	s, im, up, m1, g, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	st, _ := im.Store.Load(ctx, 1)
+	st.State.Origin, st.State.HeadBranch = "github", "feature"
+	if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+		t.Fatal(err)
+	}
+	s.changes[1].Owner = s.accounts["austin"]
+	s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
+	h2 := s.commit(s.rebase(g[0], m1), "one.txt", "new code\n", "More")
+	s.push("github.git", h2, "refs/heads/feature")
+	s.pulls[10].Head.SHA = h2
+	s.webhookPush(im.Pushers, 10, "austin")
+	if err := im.Import(ctx, "main"); err != nil || len(up.uploads) != 1 {
+		t.Fatalf("err %v, uploads %v", err, up.uploads)
+	}
+	syncs := func() (out []github.Status) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, st := range s.statuses[h2] {
+			if st.Context == SyncStatus {
+				out = append(out, st)
+			}
+		}
+		return out
+	}
+	if n := len(syncs()); n != 1 {
+		t.Fatalf("%d gerrit/sync statuses after the import", n)
+	}
+	im.lastSync = nil // a restart
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if sts := syncs(); len(sts) != 1 {
+		t.Errorf("gerrit/sync set again after a restart: %+v", sts)
+	}
+	s.mu.Lock()
+	s.statuses[h2] = append(s.statuses[h2], github.Status{Context: SyncStatus, State: "failure", Description: "forged"})
+	s.mu.Unlock()
+	im.lastSync = nil
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if sts := syncs(); len(sts) != 3 || sts[2].State != "success" {
+		t.Errorf("gerrit/sync not set right again over another: %+v", sts)
+	}
+}
+
 // A later upload as the bridge is the author's only while they pushed
 // everything on the branch: after a maintainer's Update branch on it,
 // neither the PR's author nor the maintainer is the author of the whole,

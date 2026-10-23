@@ -458,6 +458,15 @@ func (im *Importer) setSync(ctx context.Context, pr *github.PullRequest, state, 
 		im.Logger.Info("not setting gerrit/sync on a commit on Gerrit's branch", "pr", pr.Number, "state", state, "description", desc)
 		return false
 	}
+	if im.hasSync(ctx, pr.Head.SHA, state, desc, url) {
+		// Said already (before a restart, which forgets lastSync): each
+		// post is another line in the commit's public status history,
+		// and the slowest call an import makes.
+		im.mu.Lock()
+		im.lastSync[pr.Number] = key
+		im.mu.Unlock()
+		return false
+	}
 	if !im.DryRun {
 		err := im.GitHub.CreateStatus(ctx, pr.Head.SHA, github.Status{State: state, Description: desc, TargetURL: url, Context: SyncStatus})
 		if err != nil {
@@ -469,6 +478,21 @@ func (im *Importer) setSync(ctx context.Context, pr *github.PullRequest, state, 
 	im.lastSync[pr.Number] = key
 	im.mu.Unlock()
 	return true
+}
+
+// hasSync reports whether commit sha's gerrit/sync status says state,
+// desc and url already.
+func (im *Importer) hasSync(ctx context.Context, sha, state, desc, url string) bool {
+	sts, err := im.GitHub.Statuses(ctx, sha)
+	if err != nil {
+		return false
+	}
+	for _, st := range sts { // the latest of each context
+		if st.Context == SyncStatus {
+			return st.State == state && st.Description == desc && st.TargetURL == url
+		}
+	}
+	return false
 }
 
 // knownHeads maps GitHub commits of change n's revisions to Gerrit commits.
