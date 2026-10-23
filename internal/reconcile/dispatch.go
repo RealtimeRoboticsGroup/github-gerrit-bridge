@@ -3,12 +3,14 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 // Dispatcher routes each key to the code mirror or comment sync. Both take
@@ -75,7 +77,9 @@ func (d *Dispatcher) Reconcile(ctx context.Context, k Key) error {
 		if err != nil || st.State.PR == 0 {
 			return err
 		}
+		wait := trace.Region(ctx, "wait for branch "+st.State.Branch+", alone, first")
 		defer d.Code.lockUrgent(st.State.Branch)()
+		wait()
 		return d.Code.PrepareSubmit(ctx, k.Merged)
 	case k.PR != 0, k.PRComments != 0:
 		pr := max(k.PR, k.PRComments)
@@ -123,7 +127,10 @@ func (d *Dispatcher) syncComments(ctx context.Context, n int) error {
 	}
 	// A /submit is due: it runs with the branch to itself (PrepareSubmit
 	// moves PRs and their bases), reading everything again.
+	wait := trace.Region(ctx, "wait for branch "+st.State.Branch+", alone, for a command")
 	defer d.Code.lock(st.State.Branch)()
+	wait()
+	defer trace.Region(ctx, "commands")()
 	if err := d.Commands.Run(ctx, n); errors.As(err, new(*errLater)) {
 		return waitFor(max(laterOf(err), laterOf(later)))
 	} else if err != nil {
@@ -135,18 +142,27 @@ func (d *Dispatcher) syncComments(ctx context.Context, n int) error {
 // syncShared syncs change n's comments, commands and checks with branch
 // shared. alone says a command needs it alone (errNeedsBranch).
 func (d *Dispatcher) syncShared(ctx context.Context, n int, branch string) (later error, alone bool, err error) {
+	wait := trace.Region(ctx, "wait for branch "+branch+", shared")
 	defer d.Code.rlock(branch)()
+	wait()
+	wait = trace.Region(ctx, fmt.Sprintf("wait for change %d", n))
 	defer d.changeLock(n)()
+	wait()
 	// What waits (errLater) does not hold up the rest.
 	var l *errLater
+	end := trace.Region(ctx, "comments")
 	read, err := d.Comments.sync(ctx, n)
+	end()
 	if errors.As(err, &l) {
 		later = err
 	} else if err != nil {
 		return nil, false, err
 	}
 	if d.Commands != nil {
-		if err := d.Commands.run(ctx, n, false, read); errors.Is(err, errNeedsBranch) {
+		end := trace.Region(ctx, "commands")
+		err := d.Commands.run(ctx, n, false, read)
+		end()
+		if errors.Is(err, errNeedsBranch) {
 			alone = true
 		} else if errors.As(err, &l) {
 			later = waitFor(max(l.after, laterOf(later)))
@@ -156,7 +172,10 @@ func (d *Dispatcher) syncShared(ctx context.Context, n int, branch string) (late
 	}
 	// Votes and CI results arrive as replies, so they ride along.
 	if d.Checks != nil {
-		if err := d.Checks.Sync(ctx, n); err != nil {
+		end := trace.Region(ctx, "checks")
+		err := d.Checks.Sync(ctx, n)
+		end()
+		if err != nil {
 			return nil, false, err
 		}
 	}

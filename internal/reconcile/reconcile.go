@@ -20,6 +20,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/events"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/queue"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 // Key is a unit of reconciliation. Exactly one field is set.
@@ -240,6 +241,9 @@ func reconcileOne(ctx context.Context, q *queue.Queue[Key], rec Reconciler, k Ke
 			q.Retry(k)
 		}
 	}()
+	t := trace.New()
+	q.Attach(k, t)
+	ctx = trace.With(ctx, t)
 	start := time.Now()
 	err := rec.Reconcile(ctx, k)
 	// Merges race replication (15s on AOS): slow or late runs are worth

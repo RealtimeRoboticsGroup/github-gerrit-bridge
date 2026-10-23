@@ -30,7 +30,10 @@ type Queue[K comparable] struct {
 	queuedAt   map[K]time.Time // when a dirty key was first added
 	waited     map[K]time.Duration
 	errs       map[K]string // last error of a key that is failing
-	recent     []Entry[K]   // the last runs, oldest first (Snapshot)
+	details    map[K]any    // what a running key's run attached (Attach)
+	ids        map[K]uint64 // a running key's run id
+	lastID     uint64
+	recent     []Entry[K] // the last runs, oldest first (Snapshot)
 	shutdown   bool
 
 	// MinRetry and MaxRetry bound the exponential backoff used by Retry.
@@ -59,6 +62,8 @@ func New[K comparable]() *Queue[K] {
 		queuedAt:   map[K]time.Time{},
 		waited:     map[K]time.Duration{},
 		errs:       map[K]string{},
+		details:    map[K]any{},
+		ids:        map[K]uint64{},
 		MinRetry:   time.Second,
 		MaxRetry:   5 * time.Minute,
 	}
@@ -189,6 +194,16 @@ func (q *Queue[K]) Forget(k K) {
 	delete(q.errs, k)
 }
 
+// Attach keeps d (a trace of the run, say) with k's current run, for
+// Snapshot: while it runs, and among the recent runs after.
+func (q *Queue[K]) Attach(k K, d any) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if _, ok := q.processing[k]; ok {
+		q.details[k] = d
+	}
+}
+
 // Failed records why k's last run failed, for Snapshot, until Forget.
 func (q *Queue[K]) Failed(k K, err string) {
 	q.mu.Lock()
@@ -264,6 +279,8 @@ func (q *Queue[K]) hand(k K) K {
 	q.started[k] = time.Now()
 	q.waited[k] = q.started[k].Sub(q.queuedAt[k])
 	delete(q.queuedAt, k)
+	q.lastID++
+	q.ids[k] = q.lastID
 	return k
 }
 
@@ -281,13 +298,15 @@ func (q *Queue[K]) Done(k K) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if start, ok := q.started[k]; ok {
-		q.recent = append(q.recent, Entry[K]{Key: k, At: start, Waited: q.waited[k], Took: time.Since(start), Err: q.errs[k]})
+		q.recent = append(q.recent, Entry[K]{Key: k, ID: q.ids[k], At: start, Waited: q.waited[k], Took: time.Since(start), Err: q.errs[k], Detail: q.details[k]})
 		if len(q.recent) > maxRecent {
 			q.recent = slices.Delete(q.recent, 0, len(q.recent)-maxRecent)
 		}
 	}
 	delete(q.processing, k)
 	delete(q.waited, k)
+	delete(q.details, k)
+	delete(q.ids, k)
 	// started stays: it is k's last start, which throttles Adds that come
 	// after this run as well as those during it. Entries are forgotten
 	// once MinInterval has passed (wait), or swept here.
@@ -329,7 +348,9 @@ const maxRecent = 100
 // Entry is one key in a Snapshot. At is when it started (running, or a
 // recent run) or was first added (waiting or held).
 type Entry[K comparable] struct {
-	Key    K
+	Key K
+	// ID names a run (running, recent): each run of a key has its own.
+	ID     uint64
 	At     time.Time
 	Waited time.Duration // before it started (running, recent)
 	Took   time.Duration // recent
@@ -341,6 +362,8 @@ type Entry[K comparable] struct {
 	// Failures and Err: consecutive failed runs, and the last one's error.
 	Failures int
 	Err      string
+	// Detail is what the run attached (Attach).
+	Detail any
 }
 
 // Snapshot is what the queue is doing.
@@ -362,7 +385,7 @@ func (q *Queue[K]) Snapshot() Snapshot[K] {
 		return e
 	}
 	for k := range q.processing {
-		s.Running = append(s.Running, fail(Entry[K]{Key: k, At: q.started[k], Waited: q.waited[k]}))
+		s.Running = append(s.Running, fail(Entry[K]{Key: k, ID: q.ids[k], At: q.started[k], Waited: q.waited[k], Detail: q.details[k]}))
 	}
 	slices.SortFunc(s.Running, func(a, b Entry[K]) int { return a.At.Compare(b.At) })
 	inLine := map[K]bool{}

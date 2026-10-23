@@ -19,6 +19,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 // LinkTag tags the Gerrit change message that links a change to its PR.
@@ -176,7 +177,9 @@ const maxPasses = 5
 // Reconcile mirrors the target branch named by k.Branch.
 func (c *Code) Reconcile(ctx context.Context, k Key) error {
 	branch := k.Branch
+	wait := trace.Region(ctx, "wait for branch "+branch+", alone")
 	defer c.lock(branch)()
+	wait()
 	// An import that failed (or wants a retry) does not hold back the
 	// export of everything else; its error comes back at the end, so the
 	// branch is tried again.
@@ -184,11 +187,15 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 	if c.Importer != nil {
 		c.Importer.link = c.linkPR
 		c.Importer.onImported = c.exported
-		if err := c.Importer.Import(ctx, branch); err != nil {
+		end := trace.Region(ctx, "import")
+		err := c.Importer.Import(ctx, branch)
+		end()
+		if err != nil {
 			importErr = fmt.Errorf("importing GitHub PRs for %s: %w", branch, err)
 			c.Logger.Warn("import incomplete; exporting anyway", "branch", branch, "err", err)
 		}
 	}
+	defer trace.Region(ctx, "export")()
 	return cmp.Or(c.export(ctx, branch), importErr)
 }
 
@@ -198,7 +205,9 @@ func (c *Code) export(ctx context.Context, branch string) error {
 	skip := newSkips()          // what GitHub refused
 	refused := map[int]string{} // changes whose push is refused: by the guard (""), or by GitHub
 	for pass := 0; pass < maxPasses; pass++ {
+		end := trace.Region(ctx, fmt.Sprintf("observe (pass %d)", pass+1))
 		snap, err := c.observe(ctx, branch, refused)
+		end()
 		if err != nil {
 			return fmt.Errorf("observing %s: %w", branch, err)
 		}
@@ -230,6 +239,7 @@ func (c *Code) export(ctx context.Context, branch string) error {
 				c.Logger.Info("in sync", "branch", branch, "changes", len(plan.Desired))
 				return nil
 			}
+			defer trace.Region(ctx, "record")()
 			return c.record(ctx, snap, plan, skip)
 		}
 		for _, a := range plan.Actions {
@@ -250,7 +260,10 @@ func (c *Code) export(ctx context.Context, branch string) error {
 			}
 			continue
 		}
-		if err := c.apply(ctx, snap, plan, skip); err != nil {
+		end = trace.Region(ctx, fmt.Sprintf("apply %d actions", len(plan.Actions)))
+		err = c.apply(ctx, snap, plan, skip)
+		end()
+		if err != nil {
 			var gr *githubRefused
 			if !errors.As(err, &gr) {
 				return err

@@ -32,6 +32,7 @@ go_library(
         "//internal/gitmirror",
         "//internal/queue",
         "//internal/state",
+        "//internal/trace",
     ],
 )
 
@@ -62,5 +63,6 @@ go_test(
         "//internal/gitmirror",
         "//internal/queue",
         "//internal/state",
+        "//internal/trace",
     ],
 )

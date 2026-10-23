@@ -22,6 +22,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 // Importer turns pull requests opened on GitHub into Gerrit changes, one
@@ -397,7 +398,9 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 			im.setSync(ctx, l.pr, "pending", fmt.Sprintf("Waiting for PR #%d to import", l.parent.pr.Number), "")
 			continue
 		}
+		end := trace.Region(ctx, fmt.Sprintf("import PR #%d", l.pr.Number))
 		res, err := im.importLayer(ctx, branch, l, done)
+		end()
 		if err != nil {
 			var se *syncError
 			changed := false

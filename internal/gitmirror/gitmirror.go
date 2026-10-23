@@ -19,6 +19,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 // Repo is a bare repository with one remote, "origin".
@@ -168,8 +170,15 @@ func (r *Repo) GitEnv(ctx context.Context, env []string, stdin []byte, args ...s
 	if err != nil && ctx.Err() != nil && cmd.Process != nil {
 		r.dropKeep(cmd.Process.Pid)
 	}
+	// Arguments only: config and environment carry credentials.
+	if tr := trace.From(ctx); tr != nil {
+		what := "git " + strings.Join(args, " ")
+		if len(what) > 300 {
+			what = what[:300] + "…"
+		}
+		tr.Add(start, time.Since(start), what, err)
+	}
 	if r.Logger != nil {
-		// Arguments only: config and environment carry credentials.
 		r.Logger.Debug("git", "args", strings.Join(args, " "), "took", time.Since(start).Round(time.Millisecond), "err", err)
 	}
 	if err != nil {

@@ -5,7 +5,10 @@ package httplog
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 // Transport logs each request it makes through Base (or
@@ -25,6 +28,16 @@ func (t *Transport) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	start := time.Now()
 	resp, err := base.RoundTrip(r)
+	if tr := trace.From(r.Context()); tr != nil {
+		what := t.Name + " " + r.Method + " " + r.URL.Path
+		if r.URL.RawQuery != "" {
+			what += "?" + r.URL.RawQuery
+		}
+		if resp != nil {
+			what += " → " + strconv.Itoa(resp.StatusCode)
+		}
+		tr.Add(start, time.Since(start), what, err)
+	}
 	if t.Logger != nil && t.Logger.Enabled(r.Context(), slog.LevelDebug) {
 		status := 0
 		if resp != nil {

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 func TestParsePorcelain(t *testing.T) {
@@ -56,6 +58,23 @@ func TestInitIdempotentAndRevParse(t *testing.T) {
 	}
 	if v, err := r.RevParse(ctx, "refs/heads/nope"); v != "" || err != nil {
 		t.Errorf("RevParse missing = %q, %v", v, err)
+	}
+}
+
+// A git command in a run's context is a span of its trace: its
+// arguments, not its config or environment.
+func TestGitTraces(t *testing.T) {
+	tr := trace.New()
+	ctx := trace.With(context.Background(), tr)
+	r := &Repo{Dir: filepath.Join(t.TempDir(), "m.git"), Remote: "/a"}
+	if err := r.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r.Git(ctx, nil, "rev-parse", "--is-bare-repository")
+	r.Git(ctx, nil, "rev-parse", "nonesuch")
+	spans, _ := tr.Spans()
+	if len(spans) != 2 || spans[0].What != "git rev-parse --is-bare-repository" || spans[0].Err != "" || spans[1].Err == "" {
+		t.Errorf("spans %+v", spans)
 	}
 }
 

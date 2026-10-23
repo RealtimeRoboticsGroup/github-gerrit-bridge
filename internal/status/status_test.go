@@ -1,12 +1,16 @@
 package status
 
 import (
+	"context"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/queue"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 type fixed queue.Snapshot[string]
@@ -57,5 +61,55 @@ func TestPage(t *testing.T) {
 	}
 	if got := w.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'none'") {
 		t.Errorf("CSP %q", got)
+	}
+}
+
+// Each running or recent run with a trace links its timeline, which shows
+// its spans in order, nested, with where the time went; others are not
+// found.
+func TestRunTimeline(t *testing.T) {
+	now := time.Now()
+	tr := trace.New()
+	ctx := trace.With(context.Background(), tr)
+	wait := trace.Region(ctx, "wait for branch main, shared")
+	wait()
+	end := trace.Region(ctx, "comments")
+	tr.Add(time.Now(), 200*time.Millisecond, "github GET /repos/o/r/pulls/7/comments → 304", nil)
+	tr.Add(time.Now(), 800*time.Millisecond, "github POST /repos/o/r/statuses/abc → 201", nil)
+	tr.Add(time.Now(), time.Millisecond, "git fetch <script>", errors.New("exit status 1"))
+	end()
+	h := &Handler[string]{
+		Queue: fixed{Recent: []queue.Entry[string]{
+			{Key: "comments/7", ID: 42, At: now, Took: 2 * time.Second, Detail: tr},
+			{Key: "pr/8", ID: 43, At: now},
+		}},
+		Name: func(k string) string { return k },
+	}
+	get := func(path string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		return w
+	}
+	if body := get("/").Body.String(); !strings.Contains(body, `href="run/42"`) || strings.Contains(body, `href="run/43"`) {
+		t.Errorf("overview links: %s", body)
+	}
+	w := get("/run/42")
+	body := w.Body.String()
+	for _, want := range []string{"comments/7", "took 2s", "wait for branch main, shared", "pulls/7/comments → 304",
+		"GitHub reads", "GitHub writes", "800ms", "git commands", "exit status 1", "&lt;script&gt;", `class="bar wait"`, "padding-left:14px"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("timeline lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "<script>") {
+		t.Error("a span was not escaped")
+	}
+	if i, j := strings.Index(body, "pulls/7/comments"), strings.Index(body, "statuses/abc"); i < 0 || j < i {
+		t.Error("spans out of order")
+	}
+	for _, path := range []string{"/run/43", "/run/99", "/other"} {
+		if w := get(path); w.Code != http.StatusNotFound {
+			t.Errorf("%s: %d", path, w.Code)
+		}
 	}
 }

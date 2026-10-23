@@ -13,6 +13,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit/events"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/queue"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 func drain(q *queue.Queue[Key]) []string {
@@ -240,10 +241,14 @@ func TestWorkRetries(t *testing.T) {
 	if f.calls[Key{Comments: 1}] != 2 || f.calls[Key{Comments: 2}] != 2 || f.calls[Key{Comments: 3}] != 1 {
 		t.Errorf("calls = %v; want an error and a panic each retried once", f.calls)
 	}
-	// The status page shows why each failed run failed.
+	// The status page shows why each failed run failed, and each run's
+	// timeline.
 	errs := map[Key][]string{}
 	for _, e := range q.Snapshot().Recent {
 		errs[e.Key] = append(errs[e.Key], e.Err)
+		if _, ok := e.Detail.(*trace.Trace); !ok {
+			t.Errorf("run of %v has no trace", e.Key)
+		}
 	}
 	if !slices.Contains(errs[Key{Comments: 1}], "transient") || !slices.Contains(errs[Key{Comments: 2}], "panic: bug") {
 		t.Errorf("recent runs' errors %q", errs)

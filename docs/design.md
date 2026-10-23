@@ -1528,7 +1528,13 @@ Known gaps:
   running and for how long, what waits in the order workers take it
   (resync keys marked), what is held back (running and dirty again, or
   throttled), what is failing with its last error, and the last 100 runs
-  with how long each waited and took. It refreshes every 5 s.
+  with how long each waited and took. It refreshes every 5 s. Each
+  running or recent run links a timeline: every Gerrit and GitHub
+  request (method, path, query and status; never headers), git command
+  (its arguments; credentials are in config and the environment), lock
+  wait and phase (import, observe, apply, each PR imported, each comment
+  sync pass), nested and drawn to scale, with totals of where the time
+  went. Only those runs' traces are kept, at most 1000 spans each.
 - Rate limits: GitHub ETag conditional requests (as built 2026-10-19:
   every GET is revalidated with `If-None-Match`, and GitHub's 304s, which
   do not count against the rate limit, are answered from an in-memory

@@ -20,6 +20,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 // GerritAPI is what comment sync needs from Gerrit.
@@ -298,7 +299,9 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 		if pass == 4 {
 			return fmt.Errorf("comments on change %d did not settle", n)
 		}
+		end := trace.Region(ctx, fmt.Sprintf("read (pass %d)", pass+1))
 		snap, err := c.observe(ctx, n, pr, st)
+		end()
 		if err != nil {
 			return err
 		}

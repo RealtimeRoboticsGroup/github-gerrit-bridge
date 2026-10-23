@@ -395,6 +395,23 @@ func TestSnapshot(t *testing.T) {
 		t.Errorf("%d recent runs kept", n)
 	}
 
+	// What a run attaches stays with that run, and each run has its id.
+	q = New[string]()
+	q.Add("k")
+	q.Get()
+	q.Attach("k", "first")
+	if r := q.Snapshot().Running; len(r) != 1 || r[0].Detail != "first" || r[0].ID == 0 {
+		t.Errorf("running %+v", r)
+	}
+	q.Done("k")
+	q.Attach("k", "late") // not running: kept nowhere
+	q.Add("k")
+	q.Get()
+	q.Done("k")
+	if r := q.Snapshot().Recent; len(r) != 2 || r[0].Detail != nil || r[1].Detail != "first" || r[0].ID == r[1].ID {
+		t.Errorf("recent %+v", r)
+	}
+
 	// A run that succeeds after a failure shows no error.
 	q = New[string]()
 	q.Add("k")

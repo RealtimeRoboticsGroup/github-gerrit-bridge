@@ -5,10 +5,12 @@ go_library(
     srcs = ["gitmirror.go"],
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror",
     visibility = ["//:__subpackages__"],
+    deps = ["//internal/trace"],
 )
 
 go_test(
     name = "gitmirror_test",
     srcs = ["gitmirror_test.go"],
     embed = [":gitmirror"],
+    deps = ["//internal/trace"],
 )

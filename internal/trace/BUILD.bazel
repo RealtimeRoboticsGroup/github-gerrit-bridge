@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "trace",
+    srcs = ["trace.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/trace",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "trace_test",
+    srcs = ["trace_test.go"],
+    embed = [":trace"],
+)

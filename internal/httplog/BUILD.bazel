@@ -5,10 +5,12 @@ go_library(
     srcs = ["httplog.go"],
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/httplog",
     visibility = ["//:__subpackages__"],
+    deps = ["//internal/trace"],
 )
 
 go_test(
     name = "httplog_test",
     srcs = ["httplog_test.go"],
     embed = [":httplog"],
+    deps = ["//internal/trace"],
 )
