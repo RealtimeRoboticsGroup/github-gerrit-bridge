@@ -122,3 +122,33 @@ func TestSubmitRunsWithTheBranchAlone(t *testing.T) {
 		t.Errorf("submits %v, with the branch alone %v", sub.calls, sub.alone)
 	}
 }
+
+// Commands run on the comment sync's read of the PR, not a read of their
+// own (a /submit's, with the branch alone, reads everything again:
+// TestSubmitRunsWithTheBranchAlone).
+func TestCommandsReuseTheCommentSyncsRead(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	e.c.Now = func() time.Time { return now }
+	sub := &fakeSubmitter{}
+	d := &Dispatcher{Code: &Code{}, Comments: e.c, Store: e.st, Logger: slog.Default(),
+		Commands: &Commands{GitHub: e.h, Submitter: sub, Store: e.st, Identity: &Users{Overrides: map[string]string{"AustinSchuh": "alice"}},
+			BridgeLogin: "bridge", Logger: slog.Default(), Now: func() time.Time { return now }}}
+	ctx := context.Background()
+	if err := d.Reconcile(ctx, Key{Comments: 5}); err != nil {
+		t.Fatal(err)
+	}
+	quiet := e.h.issueListings
+	e.h.issueListings = 0
+	if err := e.c.Sync(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	if e.h.issueListings != quiet {
+		t.Errorf("a sync with no commands listed issue comments %d times; the comment sync alone, %d", quiet, e.h.issueListings)
+	}
+	e.h.ics = append(e.h.ics, github.IssueComment{ID: 2, Body: "/submit", User: github.User{Login: "AustinSchuh"}, CreatedAt: now.Add(-time.Hour)})
+	if err := d.Reconcile(ctx, Key{Comments: 5}); err != nil || len(sub.calls) != 1 {
+		t.Fatalf("err %v, submits %v", err, sub.calls)
+	}
+}

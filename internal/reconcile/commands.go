@@ -133,40 +133,23 @@ var errNeedsBranch = errors.New("a command needs the branch alone")
 
 // Run handles new commands on change n's PR. The caller holds its branch
 // alone.
-func (c *Commands) Run(ctx context.Context, n int) error { return c.run(ctx, n, true) }
+func (c *Commands) Run(ctx context.Context, n int) error { return c.run(ctx, n, true, nil) }
 
 // run is Run; holding the branch only shared (not alone), it stops with
-// errNeedsBranch before running a command.
-func (c *Commands) run(ctx context.Context, n int, alone bool) error {
+// errNeedsBranch before running a command. With read, a comment sync's
+// read of the PR moments ago, it reads none of it again.
+func (c *Commands) run(ctx context.Context, n int, alone bool, read *prRead) error {
 	st, err := c.Store.Load(ctx, n)
 	if err != nil || st.State.PR == 0 || st.State.Lifecycle != "NEW" {
 		return err
 	}
 	pr := st.State.PR
-	ics, err := c.GitHub.ListIssueComments(ctx, pr)
-	if err != nil {
-		return err
-	}
-	edits, err := c.GitHub.Edits(ctx, pr)
-	if err != nil {
-		return err
-	}
-	// What GitHub has now, read after the comments (state.Head).
-	p, err := c.GitHub.GetPull(ctx, pr)
-	if err != nil {
-		return err
-	}
-	at := c.now()
-	if !slices.Equal(withHead(st.Heads, p.Head.SHA, at), st.Heads) && !c.DryRun {
-		if err := noteHead(ctx, c.Store, n, p.Head.SHA, at); err != nil {
+	if read == nil || read.pull == nil || read.pull.Number != pr {
+		if read, err = c.read(ctx, n, pr, st); err != nil {
 			return err
 		}
 	}
-	heads, err := withPushes(ctx, c.GitHub, p, st.Heads)
-	if err != nil {
-		return err
-	}
-	heads = withHead(heads, p.Head.SHA, at)
+	ics, edits, heads := read.ics, read.edits, read.heads
 	// Handled: recorded in state, or (from before that was kept, or a
 	// crash before it was saved) named by the bridge's own unedited reply.
 	// Anyone with write access can edit the bridge's replies: an edited
@@ -231,6 +214,35 @@ func (c *Commands) run(ctx context.Context, n int, alone bool) error {
 		}
 	}
 	return waitFor(wait)
+}
+
+// read reads change n's PR pr as a comment sync does (prRead), noting
+// its head.
+func (c *Commands) read(ctx context.Context, n, pr int, st *state.Change) (*prRead, error) {
+	ics, err := c.GitHub.ListIssueComments(ctx, pr)
+	if err != nil {
+		return nil, err
+	}
+	edits, err := c.GitHub.Edits(ctx, pr)
+	if err != nil {
+		return nil, err
+	}
+	// What GitHub has now, read after the comments (state.Head).
+	p, err := c.GitHub.GetPull(ctx, pr)
+	if err != nil {
+		return nil, err
+	}
+	at := c.now()
+	if !slices.Equal(withHead(st.Heads, p.Head.SHA, at), st.Heads) && !c.DryRun {
+		if err := noteHead(ctx, c.Store, n, p.Head.SHA, at); err != nil {
+			return nil, err
+		}
+	}
+	heads, err := withPushes(ctx, c.GitHub, p, st.Heads)
+	if err != nil {
+		return nil, err
+	}
+	return &prRead{ics: ics, edits: edits, pull: p, heads: withHead(heads, p.Head.SHA, at), at: at}, nil
 }
 
 // lastChanged is when ic was posted or last updated.

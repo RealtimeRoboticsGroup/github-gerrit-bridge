@@ -139,13 +139,14 @@ func (d *Dispatcher) syncShared(ctx context.Context, n int, branch string) (late
 	defer d.changeLock(n)()
 	// What waits (errLater) does not hold up the rest.
 	var l *errLater
-	if err := d.Comments.Sync(ctx, n); errors.As(err, &l) {
+	read, err := d.Comments.sync(ctx, n)
+	if errors.As(err, &l) {
 		later = err
 	} else if err != nil {
 		return nil, false, err
 	}
 	if d.Commands != nil {
-		if err := d.Commands.run(ctx, n, false); errors.Is(err, errNeedsBranch) {
+		if err := d.Commands.run(ctx, n, false, read); errors.Is(err, errNeedsBranch) {
 			alone = true
 		} else if errors.As(err, &l) {
 			later = waitFor(max(l.after, laterOf(later)))

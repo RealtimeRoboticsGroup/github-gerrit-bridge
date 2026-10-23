@@ -341,6 +341,7 @@ type fakeLists struct {
 	items   map[string]int // list path suffix -> item count
 	noETag  bool
 	queries map[string]int
+	rest    int // REST requests
 }
 
 func (f *fakeLists) handler(w http.ResponseWriter, r *http.Request) {
@@ -357,6 +358,7 @@ func (f *fakeLists) handler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":{"repository":{"pullRequest":{}}}}`)
 		return
 	}
+	f.rest++
 	suffix := strings.TrimPrefix(r.URL.Path, "/repos/o/r/")
 	etag := fmt.Sprintf(`"%s-%d"`, suffix, f.version[suffix])
 	if !f.noETag {
@@ -428,6 +430,69 @@ func TestGraphQLAnswersVouchedByREST(t *testing.T) {
 	call()
 	call()
 	want(8, 4, 9)
+}
+
+// The lists behind an answer need not be read again before it if the
+// caller read them moments ago; they are always read again after it,
+// and a read older than readMoments does not count.
+func TestVouchedTakesListsReadMomentsAgo(t *testing.T) {
+	f := &fakeLists{version: map[string]int{}, items: map[string]int{"pulls/1/comments": 1}, queries: map[string]int{}}
+	srv := httptest.NewServer(http.HandlerFunc(f.handler))
+	defer srv.Close()
+	now := time.Now()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r", now: func() time.Time { return now }}
+	ctx := context.Background()
+	if _, err := c.ListIssueComments(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ListReviewComments(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	f.rest = 0
+	if _, err := c.Edits(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if f.rest != 2 {
+		t.Errorf("%d REST reads for edits after the lists were read: want the 2 after its query", f.rest)
+	}
+	f.rest = 0
+	if _, err := c.ReviewThreads(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if f.rest != 0 || f.queries["threads"] != 1 {
+		t.Errorf("threads: %d REST reads, %v", f.rest, f.queries)
+	}
+	now = now.Add(readMoments + time.Second)
+	f.rest = 0
+	if _, err := c.Edits(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if f.rest != 4 {
+		t.Errorf("%d REST reads for edits with the lists read long ago: want 4", f.rest)
+	}
+	// A read GitHub answers 304 counts as read then.
+	now = now.Add(readMoments + time.Second)
+	c.ListIssueComments(ctx, 1)
+	c.ListReviewComments(ctx, 1)
+	f.rest = 0
+	if _, err := c.Edits(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if f.rest != 2 {
+		t.Errorf("%d REST reads for edits after the lists were confirmed unchanged: want 2", f.rest)
+	}
+	// What changed since is seen: the caller's own read of it is newer.
+	f.version["issues/1/comments"]++
+	if _, err := c.ListIssueComments(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	before := f.queries["edits"]
+	if _, err := c.Edits(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if f.queries["edits"] == before {
+		t.Error("edits reused after the comments changed")
+	}
 }
 
 // An answer is reused only once it came twice alike for the same lists:

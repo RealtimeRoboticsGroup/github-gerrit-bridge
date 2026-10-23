@@ -230,6 +230,8 @@ func (f *fakeGerrit) user(id, path string, ps, line int, msg, inReplyTo string, 
 }
 
 type fakeGitHub struct {
+	// issueListings counts ListIssueComments calls.
+	issueListings int
 	// refuse makes CreateIssueComment refuse (422) bodies containing it.
 	refuse string
 	// pushes is the activity log of the PR's branch, newest first.
@@ -325,6 +327,7 @@ func (f *fakeGitHub) ListReviews(context.Context, int) ([]github.Review, error) 
 	return out, nil
 }
 func (f *fakeGitHub) ListIssueComments(context.Context, int) ([]github.IssueComment, error) {
+	f.issueListings++
 	out := append([]github.IssueComment(nil), f.ics...)
 	for i := range out {
 		if out[i].CreatedAt.IsZero() {

@@ -58,6 +58,8 @@ type cached struct {
 	// added, the page still answers 304, and its cached Link would hide
 	// the new next page. Such a page is always fetched in full.
 	fullLast bool
+	// checked is when GitHub last confirmed it (200 or 304).
+	checked time.Time
 }
 
 // fullLastPage reports whether body, the answer to GET u, is a JSON
@@ -110,7 +112,7 @@ func (c *Client) cacheGet(u string, resp *http.Response, body []byte) {
 	} else {
 		c.etagOrder = append(c.etagOrder, u)
 	}
-	c.etags[u] = &cached{etag: etag, header: resp.Header.Clone(), body: body, fullLast: fullLastPage(u, resp.Header, body)}
+	c.etags[u] = &cached{etag: etag, header: resp.Header.Clone(), body: body, fullLast: fullLastPage(u, resp.Header, body), checked: c.clock()}
 	c.etagBytes += len(body)
 	// Oldest first, until within both bounds (never the entry just made).
 	for len(c.etagOrder) > 1 && (len(c.etagOrder) > maxCachedResponses || c.etagBytes > maxCachedBytes) {
@@ -187,17 +189,9 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) (*htt
 			return nil, err
 		}
 	}
-	base := c.BaseURL
-	if base == "" {
-		base = DefaultBaseURL
-	}
-	u := path
-	if !strings.HasPrefix(path, "https://") && !strings.HasPrefix(path, "http://") {
-		u = strings.TrimRight(base, "/") + path
-	} else if !sameOrigin(u, base) {
-		// Absolute URLs come from GitHub's Link headers: the token goes
-		// to GitHub only.
-		return nil, fmt.Errorf("github: refusing to send the token to %s", u)
+	u, err := c.url(path)
+	if err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(body))
 	if err != nil {
@@ -243,6 +237,11 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) (*htt
 		// Unchanged: the cached answer, with its headers (Link, for
 		// paging).
 		resp.StatusCode, resp.Header, b = http.StatusOK, prev.header.Clone(), prev.body
+		c.mu.Lock()
+		if e := c.etags[u]; e != nil {
+			e.checked = c.clock()
+		}
+		c.mu.Unlock()
 	case method == http.MethodGet && resp.StatusCode == http.StatusOK:
 		c.cacheGet(u, resp, b)
 	}
@@ -265,6 +264,40 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) (*htt
 		}
 	}
 	return resp, nil
+}
+
+// url is where path (relative to BaseURL, or absolute) is.
+func (c *Client) url(path string) (string, error) {
+	base := c.BaseURL
+	if base == "" {
+		base = DefaultBaseURL
+	}
+	if !strings.HasPrefix(path, "https://") && !strings.HasPrefix(path, "http://") {
+		return strings.TrimRight(base, "/") + path, nil
+	}
+	if !sameOrigin(path, base) {
+		// Absolute URLs come from GitHub's Link headers: the token goes
+		// to GitHub only.
+		return "", fmt.Errorf("github: refusing to send the token to %s", path)
+	}
+	return path, nil
+}
+
+// recent is the cached answer to GET path if GitHub confirmed it within
+// d, else nil.
+func (c *Client) recent(path string, d time.Duration) *cached {
+	u, err := c.url(path)
+	if err != nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e := c.etags[u]
+	if e == nil || e.checked.IsZero() || c.clock().Sub(e.checked) > d {
+		return nil
+	}
+	cp := *e
+	return &cp
 }
 
 func (c *Client) recordRate(h http.Header) {

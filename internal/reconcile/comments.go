@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -174,6 +175,8 @@ type commentSnapshot struct {
 	// to at, when it was read last, after everything listed here.
 	heads []state.Head
 	at    time.Time
+	// pull is the PR, read after everything above.
+	pull *github.PullRequest
 }
 
 // seen is the patch set whose commit GitHub had from minSeen before t
@@ -252,6 +255,29 @@ func (m *commentMap) list() []state.Comment {
 // its thread's root has been, and ids of posted comments are learned by
 // reading them back.
 func (c *Comments) Sync(ctx context.Context, n int) error {
+	_, err := c.sync(ctx, n)
+	return err
+}
+
+// prRead is what a comment sync's first read of the PR saw, in the order
+// it read it: the issue comments, who edited them, then the PR (and so
+// its heads). Commands run on it rather than reading it all again.
+type prRead struct {
+	ics   []github.IssueComment
+	edits map[int64]string
+	pull  *github.PullRequest
+	heads []state.Head
+	at    time.Time
+}
+
+// sync is Sync, returning its first read of the PR (nil if none).
+func (c *Comments) sync(ctx context.Context, n int) (*prRead, error) {
+	var read *prRead
+	err := c.syncInto(ctx, n, &read)
+	return read, err
+}
+
+func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 	st, err := c.Store.Load(ctx, n)
 	if err != nil {
 		return err
@@ -278,6 +304,8 @@ func (c *Comments) Sync(ctx context.Context, n int) error {
 		}
 		if first == nil {
 			first = snap
+			*read = &prRead{ics: slices.Clone(snap.ics), edits: maps.Clone(snap.edits), pull: snap.pull,
+				heads: slices.Clone(snap.heads), at: snap.at}
 		} else {
 			c.settle(snap, first)
 		}
@@ -453,6 +481,7 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 		return nil, err
 	}
 	s.heads = withHead(heads, p.Head.SHA, s.at)
+	s.pull = p
 	return s, nil
 }
 
