@@ -218,12 +218,9 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 			gerritHeads[st.State.HeadBranch] = n
 		}
 	}
-	// Where a GitHub-born layer may sit: this branch, a Gerrit-born head
-	// on it, or another open PR's head (a stack).
+	// Where a GitHub-born layer may sit: this branch, or another open PR's
+	// head (a stack, a Gerrit-born change's PR's too).
 	bases := map[string]bool{branch: true}
-	for h := range gerritHeads {
-		bases[h] = true
-	}
 	for i := range prs {
 		if prs[i].HeadRepo() == repo {
 			bases[prs[i].Head.Ref] = true

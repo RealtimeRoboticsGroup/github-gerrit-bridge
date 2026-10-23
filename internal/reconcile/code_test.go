@@ -4295,6 +4295,26 @@ func TestAnotherPRFromTheSameHeadDoesNotBlockAStackedImport(t *testing.T) {
 	if !slices.Equal(prs, []string{"51", "60"}) {
 		t.Errorf("imported PRs %v, want [51 60]", prs)
 	}
+	// And a layer on a Gerrit-born change's PR head.
+	up.uploads = nil
+	g1head := s.pulls[10].Head.Ref
+	side := s.commit(s.pulls[10].Head.SHA, "c.txt", "c\n", "Add c")
+	s.push("github.git", side, "refs/heads/side")
+	s.pr(70, "side", side, "nowhere", "mallory")
+	s.pr(71, "side", side, g1head, "austin")
+	if err := im.Import(context.Background(), "main"); err != nil {
+		t.Fatal(err)
+	}
+	prs = nil
+	for _, u := range up.uploads {
+		msg, _ := up.m.Git(context.Background(), nil, "log", "-1", "--format=%B", strings.Fields(u)[0])
+		if m := regexp.MustCompile(`GitHub-PR: \S+/pull/(\d+)`).FindStringSubmatch(string(msg)); m != nil {
+			prs = append(prs, m[1])
+		}
+	}
+	if !slices.Contains(prs, "71") || slices.Contains(prs, "70") {
+		t.Errorf("on %s: imported PRs %v, want 71's", g1head, prs)
+	}
 	// PR 10 is linked to change 1: another PR from its head doesn't take it.
 	pr10 := s.pulls[10]
 	other := &github.PullRequest{Number: 3, Base: github.Ref{Ref: "main"}}
