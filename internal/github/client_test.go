@@ -432,62 +432,54 @@ func TestGraphQLAnswersVouchedByREST(t *testing.T) {
 	want(8, 4, 9)
 }
 
-// The lists behind an answer need not be read again before it if the
-// caller read them moments ago; they are always read again after it,
-// and a read older than readMoments does not count.
-func TestVouchedTakesListsReadMomentsAgo(t *testing.T) {
+// The lists behind an answer need not be read again before it if this
+// sync read them (WithReads): never another sync's reads, whenever they
+// were. They are always read again after it.
+func TestVouchedTakesTheSyncsOwnReads(t *testing.T) {
 	f := &fakeLists{version: map[string]int{}, items: map[string]int{"pulls/1/comments": 1}, queries: map[string]int{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.handler))
 	defer srv.Close()
-	now := time.Now()
-	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r", now: func() time.Time { return now }}
-	ctx := context.Background()
-	if _, err := c.ListIssueComments(ctx, 1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.ListReviewComments(ctx, 1); err != nil {
-		t.Fatal(err)
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	sync := WithReads(context.Background())
+	for _, ctx := range []context.Context{sync, context.Background()} {
+		if _, err := c.ListIssueComments(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.ListReviewComments(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
 	}
 	f.rest = 0
-	if _, err := c.Edits(ctx, 1); err != nil {
+	if _, err := c.Edits(sync, 1); err != nil {
 		t.Fatal(err)
 	}
 	if f.rest != 2 {
-		t.Errorf("%d REST reads for edits after the lists were read: want the 2 after its query", f.rest)
+		t.Errorf("%d REST reads for edits after the sync read the lists: want the 2 after its query", f.rest)
 	}
 	f.rest = 0
-	if _, err := c.ReviewThreads(ctx, 1); err != nil {
+	if _, err := c.ReviewThreads(sync, 1); err != nil {
 		t.Fatal(err)
 	}
 	if f.rest != 0 || f.queries["threads"] != 1 {
 		t.Errorf("threads: %d REST reads, %v", f.rest, f.queries)
 	}
-	now = now.Add(readMoments + time.Second)
-	f.rest = 0
-	if _, err := c.Edits(ctx, 1); err != nil {
-		t.Fatal(err)
+	// Another sync, or none: read again, though the client read them.
+	for _, ctx := range []context.Context{WithReads(context.Background()), context.Background()} {
+		f.rest = 0
+		if _, err := c.Edits(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
+		if f.rest != 4 {
+			t.Errorf("%d REST reads for edits in a sync that read nothing: want 4", f.rest)
+		}
 	}
-	if f.rest != 4 {
-		t.Errorf("%d REST reads for edits with the lists read long ago: want 4", f.rest)
-	}
-	// A read GitHub answers 304 counts as read then.
-	now = now.Add(readMoments + time.Second)
-	c.ListIssueComments(ctx, 1)
-	c.ListReviewComments(ctx, 1)
-	f.rest = 0
-	if _, err := c.Edits(ctx, 1); err != nil {
-		t.Fatal(err)
-	}
-	if f.rest != 2 {
-		t.Errorf("%d REST reads for edits after the lists were confirmed unchanged: want 2", f.rest)
-	}
-	// What changed since is seen: the caller's own read of it is newer.
+	// What the sync read again is what counts.
 	f.version["issues/1/comments"]++
-	if _, err := c.ListIssueComments(ctx, 1); err != nil {
+	if _, err := c.ListIssueComments(sync, 1); err != nil {
 		t.Fatal(err)
 	}
 	before := f.queries["edits"]
-	if _, err := c.Edits(ctx, 1); err != nil {
+	if _, err := c.Edits(sync, 1); err != nil {
 		t.Fatal(err)
 	}
 	if f.queries["edits"] == before {

@@ -219,6 +219,7 @@ func (c *Commands) run(ctx context.Context, n int, alone bool, read *prRead) err
 // read reads change n's PR pr as a comment sync does (prRead), noting
 // its head.
 func (c *Commands) read(ctx context.Context, n, pr int, st *state.Change) (*prRead, error) {
+	ctx = github.WithReads(ctx)
 	ics, err := c.GitHub.ListIssueComments(ctx, pr)
 	if err != nil {
 		return nil, err

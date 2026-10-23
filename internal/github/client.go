@@ -58,8 +58,6 @@ type cached struct {
 	// added, the page still answers 304, and its cached Link would hide
 	// the new next page. Such a page is always fetched in full.
 	fullLast bool
-	// checked is when GitHub last confirmed it (200 or 304).
-	checked time.Time
 }
 
 // fullLastPage reports whether body, the answer to GET u, is a JSON
@@ -112,7 +110,7 @@ func (c *Client) cacheGet(u string, resp *http.Response, body []byte) {
 	} else {
 		c.etagOrder = append(c.etagOrder, u)
 	}
-	c.etags[u] = &cached{etag: etag, header: resp.Header.Clone(), body: body, fullLast: fullLastPage(u, resp.Header, body), checked: c.clock()}
+	c.etags[u] = &cached{etag: etag, header: resp.Header.Clone(), body: body, fullLast: fullLastPage(u, resp.Header, body)}
 	c.etagBytes += len(body)
 	// Oldest first, until within both bounds (never the entry just made).
 	for len(c.etagOrder) > 1 && (len(c.etagOrder) > maxCachedResponses || c.etagBytes > maxCachedBytes) {
@@ -237,13 +235,13 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) (*htt
 		// Unchanged: the cached answer, with its headers (Link, for
 		// paging).
 		resp.StatusCode, resp.Header, b = http.StatusOK, prev.header.Clone(), prev.body
-		c.mu.Lock()
-		if e := c.etags[u]; e != nil {
-			e.checked = c.clock()
-		}
-		c.mu.Unlock()
 	case method == http.MethodGet && resp.StatusCode == http.StatusOK:
 		c.cacheGet(u, resp, b)
+	}
+	if r := readsOf(ctx); r != nil && method == http.MethodGet && resp.StatusCode == http.StatusOK {
+		r.mu.Lock()
+		r.pages[u] = readPage{header: resp.Header.Clone(), body: b}
+		r.mu.Unlock()
 	}
 	if resp.StatusCode/100 != 2 {
 		ae := &APIError{Method: method, Path: path, Status: resp.StatusCode}
@@ -283,21 +281,43 @@ func (c *Client) url(path string) (string, error) {
 	return path, nil
 }
 
-// recent is the cached answer to GET path if GitHub confirmed it within
-// d, else nil.
-func (c *Client) recent(path string, d time.Duration) *cached {
+// reads are the pages one sync read (WithReads), by URL: what it has
+// read need not be read again for checks that any read from before will
+// do (vouched).
+type reads struct {
+	mu    sync.Mutex
+	pages map[string]readPage
+}
+
+type readPage struct {
+	header http.Header
+	body   []byte
+}
+
+type readsKey struct{}
+
+// WithReads returns ctx recording the list pages read with it, for this
+// sync only: one sync's reads never stand in for another's.
+func WithReads(ctx context.Context) context.Context {
+	return context.WithValue(ctx, readsKey{}, &reads{pages: map[string]readPage{}})
+}
+
+func readsOf(ctx context.Context) *reads {
+	r, _ := ctx.Value(readsKey{}).(*reads)
+	return r
+}
+
+// readBefore is the page at path read earlier with ctx, if it was.
+func (c *Client) readBefore(ctx context.Context, path string) (readPage, bool) {
+	r := readsOf(ctx)
 	u, err := c.url(path)
-	if err != nil {
-		return nil
+	if r == nil || err != nil {
+		return readPage{}, false
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	e := c.etags[u]
-	if e == nil || e.checked.IsZero() || c.clock().Sub(e.checked) > d {
-		return nil
-	}
-	cp := *e
-	return &cp
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.pages[u]
+	return p, ok
 }
 
 func (c *Client) recordRate(h http.Header) {

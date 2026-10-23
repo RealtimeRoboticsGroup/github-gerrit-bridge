@@ -408,6 +408,8 @@ func (c *Comments) settle(s, first *commentSnapshot) {
 }
 
 func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*commentSnapshot, error) {
+	// Its lists vouch for the GraphQL answers read after them.
+	ctx = github.WithReads(ctx)
 	s := &commentSnapshot{byID: map[string]*gerrit.CommentInfo{}, rcByID: map[int64]*github.ReviewComment{},
 		psToSHA: map[int]string{}, shaToPS: map[string]int{}}
 	var err error

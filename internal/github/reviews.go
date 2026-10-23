@@ -565,7 +565,7 @@ func (c *Client) ReviewEdits(ctx context.Context, n int) (map[int64]string, erro
 // without review comments has none, which REST says for free; otherwise
 // it is always asked, since resolving a thread changes nothing in REST.
 func (c *Client) ReviewThreads(ctx context.Context, n int) ([]ReviewThread, error) {
-	_, count, err := c.listPrint(ctx, c.RepoPath("pulls/"+strconv.Itoa(n)+"/comments"), readMoments)
+	_, count, err := c.listPrint(ctx, c.RepoPath("pulls/"+strconv.Itoa(n)+"/comments"), true)
 	if err != nil {
 		return nil, err
 	}
@@ -601,9 +601,9 @@ var confirmAfter = 30 * time.Second
 var maxAnswers = 4096
 
 func (c *Client) vouched(ctx context.Context, key string, paths []string, compute func() (map[int64]string, error)) (map[int64]string, error) {
-	// Any read from before compute will do for before: lists read a
-	// moment ago (the caller's, say) need not be read again.
-	before, err := c.listsPrint(ctx, paths, readMoments)
+	// Any read from before compute will do for before: lists this sync
+	// read already (WithReads) need not be read again.
+	before, err := c.listsPrint(ctx, paths, true)
 	if err != nil {
 		return nil, err
 	}
@@ -617,7 +617,7 @@ func (c *Client) vouched(ctx context.Context, key string, paths []string, comput
 	if err != nil {
 		return nil, err
 	}
-	after, err := c.listsPrint(ctx, paths, 0)
+	after, err := c.listsPrint(ctx, paths, false)
 	if err != nil {
 		return nil, err
 	}
@@ -643,10 +643,10 @@ func (c *Client) vouched(ctx context.Context, key string, paths []string, comput
 
 // listsPrint is listPrint over several lists, "" if any has a page
 // without an ETag.
-func (c *Client) listsPrint(ctx context.Context, paths []string, recent time.Duration) (string, error) {
+func (c *Client) listsPrint(ctx context.Context, paths []string, readBefore bool) (string, error) {
 	var print strings.Builder
 	for _, p := range paths {
-		pp, _, err := c.listPrint(ctx, p, recent)
+		pp, _, err := c.listPrint(ctx, p, readBefore)
 		if err != nil {
 			return "", err
 		}
@@ -658,16 +658,11 @@ func (c *Client) listsPrint(ctx context.Context, paths []string, recent time.Dur
 	return print.String(), nil
 }
 
-// readMoments is how recently GitHub must have confirmed a page for
-// listPrint to take it as read.
-const readMoments = 2 * time.Second
-
 // listPrint fetches every page of the list at path (free when unchanged,
 // through the ETag cache) and returns the pages' ETags together, "" if a
-// page had none, and how many items there are. A page GitHub confirmed
-// within recent (a sync's own read of the list, moments ago) is not
-// fetched again.
-func (c *Client) listPrint(ctx context.Context, path string, recent time.Duration) (string, int, error) {
+// page had none, and how many items there are. With readBefore, a page
+// this sync read already (WithReads) is not fetched again.
+func (c *Client) listPrint(ctx context.Context, path string, readBefore bool) (string, int, error) {
 	sep := "?"
 	if strings.Contains(path, "?") {
 		sep = "&"
@@ -678,8 +673,8 @@ func (c *Client) listPrint(ctx context.Context, path string, recent time.Duratio
 	for next != "" {
 		var page []json.RawMessage
 		var header http.Header
-		if e := c.recent(next, recent); recent > 0 && e != nil && json.Unmarshal(e.body, &page) == nil {
-			header = e.header
+		if p, ok := c.readBefore(ctx, next); readBefore && ok && json.Unmarshal(p.body, &page) == nil {
+			header = p.header
 		} else {
 			page = nil
 			resp, err := c.Do(ctx, http.MethodGet, next, nil, &page)
