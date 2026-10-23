@@ -64,6 +64,8 @@ type sites struct {
 	calls      []string // Gerrit edits made, as "<what> <change> as <user>"
 	// refuseReview makes reviews of a change fail with that status.
 	refuseReview map[int]int
+	// failBranches makes Gerrit's branch lookups fail.
+	failBranches bool
 	// refusePulls makes edits of these PRs fail as GitHub's validation.
 	refusePulls map[int]bool
 }
@@ -320,6 +322,10 @@ func (s *sites) gerritStatus(n int, status, author string) {
 
 // branch answers whether gerrit.git has the branch.
 func (s *sites) branch(w http.ResponseWriter, r *http.Request) {
+	if s.failBranches {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", r.PathValue("b"))
 	cmd.Dir = filepath.Join(s.dir, "gerrit.git")
 	if cmd.Run() != nil {

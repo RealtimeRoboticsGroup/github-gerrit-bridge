@@ -1802,6 +1802,43 @@ func TestReconcileReadsWhatItHasOnce(t *testing.T) {
 	}
 }
 
+// An import that failed hands nothing on: export lists the PRs itself.
+func TestFailedImportHandsOnNoList(t *testing.T) {
+	s, im, _, m1, g, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	st, _ := im.Store.Load(ctx, 1)
+	st.State.Origin, st.State.HeadBranch = "github", "feature"
+	if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+		t.Fatal(err)
+	}
+	s.changes[1].Owner = s.accounts["austin"]
+	s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
+	h2 := s.commit(s.rebase(g[0], m1), "one.txt", "new code\n", "More")
+	s.push("github.git", h2, "refs/heads/feature")
+	s.pulls[10].Head.SHA = h2
+	s.webhookPush(im.Pushers, 10, "austin")
+	s.failBranches = true // Gerrit is down, after GitHub's list
+	c := &Code{Project: "p", Gerrit: im.Gerrit, GitHub: im.GitHub, GitHubURL: im.GitHubURL, Mirror: im.Mirror, Store: im.Store,
+		DefaultBranch: "main", Logger: slog.Default(), BridgeLogin: "bot", Identity: im.Identity, Importer: im}
+	tr := trace.New()
+	if err := c.Reconcile(trace.With(ctx, tr), Key{Branch: "main"}); err == nil {
+		t.Fatal("the import did not fail")
+	}
+	spans, _ := tr.Spans()
+	pass, lists := 0, 0
+	for _, sp := range spans {
+		switch {
+		case strings.HasPrefix(sp.What, "observe (pass"):
+			pass++
+		case pass == 1 && strings.Contains(sp.What, "/pulls?") && strings.Contains(sp.What, "state=open"):
+			lists++
+		}
+	}
+	if lists != 1 {
+		t.Errorf("export's first look listed the open PRs %d times after a failed import, want 1", lists)
+	}
+}
+
 // What one step listed is used once, by the step after: a third asks
 // GitHub again, and without a place for it in ctx, every one does.
 func TestListOpenPullsOnce(t *testing.T) {
