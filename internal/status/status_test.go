@@ -24,7 +24,8 @@ func TestPage(t *testing.T) {
 			Waiting: []queue.Entry[string]{{Key: "comments/12", At: now.Add(-2 * time.Minute)}, {Key: "branch/main", At: now.Add(-time.Minute), Resync: true}},
 			Held:    []queue.Entry[string]{{Key: "pr/7", At: now.Add(-10 * time.Second), Again: true}},
 			Failing: []queue.Entry[string]{{Key: "pr/9", Failures: 3, Err: `422 <script>alert(1)</script>`}},
-			Recent:  []queue.Entry[string]{{Key: "pr/8", At: now.Add(-5 * time.Second), Took: 1200 * time.Millisecond}},
+			Recent: []queue.Entry[string]{{Key: "pr/8", At: now.Add(-5 * time.Second), Took: 1200 * time.Millisecond},
+				{Key: "pr/9", At: now.Add(-6 * time.Second), Waited: 300 * time.Microsecond, Took: 40 * time.Microsecond}},
 		},
 		Name: func(k string) string { return k },
 		Link: func(k string) string {
@@ -44,7 +45,7 @@ func TestPage(t *testing.T) {
 		"Waiting (2)", "comments/12", "2m0s", "resync",
 		"Held (1)", "runs again after this run",
 		"Failing (1)", "&lt;script&gt;", ">3<",
-		"Recently done (1)", "1.2s",
+		"Recently done (2)", "1.2s", "&lt;1ms",
 		"GitHub API", "4000 of 5000 left",
 	} {
 		if !strings.Contains(body, want) {

@@ -86,9 +86,11 @@ func (h *Handler[K]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// dur is d rounded for reading: 340ms, 12.4s, 3m05s.
+// dur is d rounded for reading: <1ms, 340ms, 12.4s, 3m05s.
 func dur(d time.Duration) string {
 	switch {
+	case d < time.Millisecond:
+		return "<1ms"
 	case d < time.Second:
 		return d.Round(time.Millisecond).String()
 	case d < time.Minute:
