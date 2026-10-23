@@ -145,6 +145,16 @@ func TestHandler(t *testing.T) {
 
 func TestPlugin(t *testing.T) {
 	js := string(Plugin("https://example.com/bridge/", `p"q`))
+	// Gerrit calls a top-level action with the latest patch set, whatever
+	// is shown: every Rerun names its own (ninth audit).
+	for _, want := range []string{"callback: change => retest(change, patchset)", "rerun(run.patchset || data.patchsetNumber)", "...rerun(data.patchsetNumber), name: 'Rerun CI'"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("plugin lacks %q", want)
+		}
+	}
+	if strings.Contains(js, "callback: retest,") {
+		t.Error("an action takes Gerrit's patch set")
+	}
 	if !strings.Contains(js, `const BRIDGE_URL = "https://example.com/bridge";`) || !strings.Contains(js, `const PROJECT = "p\"q";`) {
 		t.Errorf("plugin not filled in:\n%s", js[:400])
 	}

@@ -28,12 +28,15 @@ window.Gerrit.install(plugin => {
       return {errorMessage: `Could not post "retest": ${e}`};
     }
   };
-  const rerun = {
+  // Each action names its patch set: Gerrit calls a top-level action
+  // with the latest patch set, not the one shown, which may be someone
+  // else's newer upload (ninth audit).
+  const rerun = patchset => ({
     name: 'Rerun',
-    tooltip: 'Comment "retest" so CI builds this patch set again',
+    tooltip: `Comment "retest" on patch set ${patchset} so CI builds it again`,
     primary: true,
-    callback: retest,
-  };
+    callback: change => retest(change, patchset),
+  });
 
   plugin.checks().register({
     fetch: async data => {
@@ -53,13 +56,13 @@ window.Gerrit.install(plugin => {
       const body = await resp.json();
       const runs = (body.runs || []).map(toDates);
       for (const run of runs) {
-        if (run.status === 'COMPLETED') run.actions = [rerun];
+        if (run.status === 'COMPLETED') run.actions = [rerun(run.patchset || data.patchsetNumber)];
       }
       return {
         responseCode: 'OK',
         runs,
         links: body.links || [],
-        actions: [{...rerun, name: 'Rerun CI', primary: false}],
+        actions: [{...rerun(data.patchsetNumber), name: 'Rerun CI', primary: false}],
       };
     },
   }, {fetchPollingIntervalSeconds: 30});
