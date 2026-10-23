@@ -204,8 +204,15 @@ func (c *Code) reconcile(ctx context.Context, branch string) error {
 		c.Importer.link = c.linkPR
 		c.Importer.onImported = c.exported
 		end := trace.Region(ctx, "import")
-		err := c.Importer.Import(ctx, branch)
+		listed := &openPulls{}
+		before := exportedCount(ctx)
+		err := c.Importer.Import(withOpenPulls(ctx, listed), branch)
 		end()
+		if exportedCount(ctx) == before && err == nil {
+			// It changed nothing: what it listed is what export's first
+			// look would list.
+			ctx = withOpenPulls(ctx, listed)
+		}
 		if err != nil {
 			importErr = fmt.Errorf("importing GitHub PRs for %s: %w", branch, err)
 			c.Logger.Warn("import incomplete; exporting anyway", "branch", branch, "err", err)
@@ -216,6 +223,44 @@ func (c *Code) reconcile(ctx context.Context, branch string) error {
 }
 
 type exportedKey struct{}
+
+// exportedCount is how many changes ctx's reconcile has exported so far.
+func exportedCount(ctx context.Context) int {
+	if list, ok := ctx.Value(exportedKey{}).(*[]int); ok {
+		return len(*list)
+	}
+	return 0
+}
+
+// openPulls carries the open PRs one step of a reconcile listed to the
+// next (the import's to export's first look): the same sync's read, used
+// once.
+type openPulls struct {
+	prs    []github.PullRequest
+	listed bool
+}
+
+type openPullsKey struct{}
+
+func withOpenPulls(ctx context.Context, o *openPulls) context.Context {
+	return context.WithValue(ctx, openPullsKey{}, o)
+}
+
+// listOpenPulls lists the open PRs: what the step before listed, if ctx
+// carries it and nobody used it yet, else GitHub's answer now (kept for
+// the step after, if ctx carries a place for it).
+func listOpenPulls(ctx context.Context, gh *github.Client) ([]github.PullRequest, error) {
+	o, _ := ctx.Value(openPullsKey{}).(*openPulls)
+	if o != nil && o.listed {
+		o.listed = false
+		return slices.Clone(o.prs), nil
+	}
+	prs, err := gh.ListPulls(ctx, "open")
+	if o != nil && err == nil {
+		o.prs, o.listed = slices.Clone(prs), true
+	}
+	return prs, err
+}
 
 // withExported returns ctx collecting into list the changes exported
 // under it (exported), for Reconcile to hand on.
@@ -646,7 +691,7 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]strin
 	// Open PRs, listed up front: a closed change whose PR is still open
 	// (a merge waiting for replication, design §6.7) stays in the snapshot,
 	// so its PR is still managed and its head branch kept.
-	openPRs, err := c.GitHub.ListPulls(ctx, "open")
+	openPRs, err := listOpenPulls(ctx, c.GitHub)
 	if err != nil {
 		return nil, err
 	}
@@ -912,16 +957,25 @@ func (c *Code) observeHistory(ctx context.Context, s *Snapshot, env []string) er
 	var specs []string
 	for _, n := range todo {
 		head := s.head(n, s.Changes[n].ChangeID)
+		local := "refs/remotes/github/heads/" + head
+		spec := "+refs/heads/" + head + ":" + local
 		if _, _, fork := github.SplitHeadKey(head); fork {
 			// GitHub keeps every PR's head in the base repository.
 			pr := s.State[n].State.PR
-			specs = append(specs, fmt.Sprintf("+refs/pull/%d/head:refs/remotes/github/pull/%d", pr, pr))
-			continue
+			local = fmt.Sprintf("refs/remotes/github/pull/%d", pr)
+			spec = fmt.Sprintf("+refs/pull/%d/head:%s", pr, local)
 		}
-		specs = append(specs, "+refs/heads/"+head+":refs/remotes/github/heads/"+head)
+		// todo has only heads GitHub listed (GitHubBranches), so never ""
+		// for a ref the mirror lacks.
+		if have, err := c.Mirror.RevParse(ctx, local); err == nil && have == s.GitHubBranches[head] {
+			continue // fetched already (the import's, say): at what GitHub just said
+		}
+		specs = append(specs, spec)
 	}
-	if _, err := c.Mirror.GitEnv(ctx, env, nil, append([]string{"-c", fsckFetch, "fetch", "--quiet", c.GitHubURL}, specs...)...); err != nil {
-		return err
+	if len(specs) > 0 {
+		if _, err := c.Mirror.GitEnv(ctx, env, nil, append([]string{"-c", fsckFetch, "fetch", "--quiet", c.GitHubURL}, specs...)...); err != nil {
+			return err
+		}
 	}
 	for _, n := range todo {
 		ch := s.Changes[n]

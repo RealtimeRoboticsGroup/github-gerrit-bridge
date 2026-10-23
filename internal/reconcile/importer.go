@@ -188,7 +188,7 @@ func (im *Importer) refusedWhy(pr int, sha string) string {
 
 // Import imports every GitHub-born PR whose chain targets branch.
 func (im *Importer) Import(ctx context.Context, branch string) error {
-	prs, err := im.GitHub.ListPulls(ctx, "open")
+	prs, err := listOpenPulls(ctx, im.GitHub)
 	listed := time.Now() // when GitHub said what prs' heads are
 	if err == nil {
 		err = im.prunePullRefs(ctx, prs)

@@ -19,6 +19,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/httplog"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
@@ -217,11 +218,12 @@ func (s *sites) mirror(ctx context.Context) *gitmirror.Repo {
 }
 
 func (s *sites) gerritClient() *gerrit.Client {
-	return &gerrit.Client{BaseURL: s.srv.URL, User: "bridge", Password: "x"}
+	return &gerrit.Client{BaseURL: s.srv.URL, User: "bridge", Password: "x", HTTP: &http.Client{Transport: &httplog.Transport{Name: "gerrit"}}}
 }
 
 func (s *sites) githubClient() *github.Client {
-	return &github.Client{BaseURL: s.srv.URL, Owner: "o", Repo: "r", Tokens: github.StaticToken("t")}
+	// As the bridge's: every request is a span of a run's trace.
+	return &github.Client{BaseURL: s.srv.URL, Owner: "o", Repo: "r", Tokens: github.StaticToken("t"), HTTP: &http.Client{Transport: &httplog.Transport{Name: "github"}}}
 }
 
 // change adds change n at patch set ps (commit rev) with Change-Id cid.
