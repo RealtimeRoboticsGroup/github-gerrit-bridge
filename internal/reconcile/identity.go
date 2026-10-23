@@ -427,6 +427,15 @@ func (u *Users) pin(ctx context.Context, login, user string, account int, id int
 			}
 			return false, nil
 		}
+		for other, q := range ids.ByUser {
+			if q.GitHubID == id && other != key {
+				// One GitHub account, already another Gerrit account's:
+				// renamed onto a freed login, it is not a second one
+				// (ninth audit). An override pins above, if it is.
+				u.warn("GitHub account is pinned to another Gerrit account; not acting as this one", login, user)
+				return false, nil
+			}
+		}
 		if account != 0 {
 			rl, ok := u.Gerrit.(registeredLooker)
 			if !ok {

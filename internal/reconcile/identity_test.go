@@ -325,3 +325,20 @@ func TestUsersNeverGroupsFailClosed(t *testing.T) {
 		t.Errorf("alice acts as %q though the excluded groups cannot all be listed", user)
 	}
 }
+
+// One GitHub account, pinned to Gerrit bob, renamed onto the freed login
+// of Gerrit maint (never pinned): not maint too.
+func TestOneGitHubAccountIsNotPinnedToTwoGerritAccounts(t *testing.T) {
+	ids := fakeIDs{"bob": 5}
+	pins := &memPins{ids: &state.Identities{ByUser: map[string]state.Identity{}}}
+	u := &Users{Gerrit: fakeAccounts{users: []string{"bob", "maint"}}, Pins: pins, GitHub: ids}
+	ctx := context.Background()
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "bob", ID: 5}); !ok || user != "bob" {
+		t.Fatalf("bob = %q %v", user, ok)
+	}
+	delete(ids, "bob")
+	ids["maint"] = 5 // bob renamed himself to the freed login
+	if user, ok := u.GerritUserFor(ctx, github.User{Login: "maint", ID: 5}); ok {
+		t.Errorf("bob's GitHub account (pinned to Gerrit bob) now acts as Gerrit %q too; pins %+v", user, pins.ids.ByUser)
+	}
+}
