@@ -139,7 +139,7 @@ func (r *Repo) GitEnv(ctx context.Context, env []string, stdin []byte, args ...s
 	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = r.Dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(inheritedEnv(),
 		// Only our settings: no user or system config, no prompts.
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
@@ -252,4 +252,18 @@ func parsePorcelain(out []byte) []PushResult {
 		res = append(res, pr)
 	}
 	return res
+}
+
+// inheritedEnv is the bridge's environment without git's own variables:
+// GIT_CONFIG_COUNT/GIT_CONFIG_PARAMETERS (a credential.helper that stores
+// the passwords, say), GIT_TRACE_CURL, GIT_ASKPASS and the like in the
+// operator's environment would act on every command (ninth audit).
+func inheritedEnv() []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			out = append(out, kv)
+		}
+	}
+	return out
 }

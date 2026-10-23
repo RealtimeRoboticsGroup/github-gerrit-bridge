@@ -149,3 +149,27 @@ func TestDeadlineStopsGitsChildren(t *testing.T) {
 		t.Errorf("another fetch's .keep file: %v", err)
 	}
 }
+
+// git's own variables in the bridge's environment don't reach git: a
+// GIT_CONFIG_COUNT credential.helper would store the passwords.
+func TestGitIgnoresInheritedGitVariables(t *testing.T) {
+	ctx := context.Background()
+	r := &Repo{Dir: filepath.Join(t.TempDir(), "m.git"), Remote: "/a"}
+	if err := r.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "credential.helper")
+	t.Setenv("GIT_CONFIG_VALUE_0", "store")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'core.audit9=yes'")
+	for _, key := range []string{"credential.helper", "core.audit9"} {
+		if out, err := r.Git(ctx, nil, "config", "--get", key); err == nil {
+			t.Errorf("%s = %q, from the environment", key, out)
+		}
+	}
+	// The bridge's own settings still apply.
+	r.Env = []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.mine", "GIT_CONFIG_VALUE_0=yes"}
+	if out, err := r.Git(ctx, nil, "config", "--get", "core.mine"); err != nil || strings.TrimSpace(string(out)) != "yes" {
+		t.Errorf("core.mine = %q, %v", out, err)
+	}
+}
