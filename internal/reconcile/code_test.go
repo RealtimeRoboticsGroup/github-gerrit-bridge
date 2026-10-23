@@ -2011,6 +2011,28 @@ func TestSyncStatusIsNotSetAgainAfterARestart(t *testing.T) {
 	if sts := syncs(); len(sts) != 3 || sts[2].State != "success" {
 		t.Errorf("gerrit/sync not set right again over another: %+v", sts)
 	}
+	// Someone's status with the right state but their own text, or their
+	// own link, is not the bridge's either.
+	good := syncs()[2]
+	for _, forged := range []github.Status{{Description: "Approved, merge it"}, {TargetURL: "https://evil.example/"}} {
+		st := good
+		if forged.Description != "" {
+			st.Description = forged.Description
+		}
+		if forged.TargetURL != "" {
+			st.TargetURL = forged.TargetURL
+		}
+		s.mu.Lock()
+		s.statuses[h2] = append(s.statuses[h2], st)
+		s.mu.Unlock()
+		im.lastSync = nil
+		if err := im.Import(ctx, "main"); err != nil {
+			t.Fatal(err)
+		}
+		if sts := syncs(); sts[len(sts)-1] != good {
+			t.Errorf("a gerrit/sync status of the right state but %+v was left standing: %+v", forged, sts[len(sts)-1])
+		}
+	}
 }
 
 // A later upload as the bridge is the author's only while they pushed
