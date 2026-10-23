@@ -408,7 +408,13 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	}
 	// Statuses need the patch set on GitHub; refresh them as soon as the
 	// code mirror puts it there.
-	code.OnExported = checks.Sync
+	// The new head's statuses come from the change's comment sync, which
+	// holds the branch only shared: posted inline, they held it alone,
+	// most of a busy reconcile (about 0.8s each, several per PR).
+	code.OnExported = func(_ context.Context, n int) error {
+		q.Add(reconcile.Key{Comments: n})
+		return nil
+	}
 	if err := checks.CheckUntrusted(ctx, self.AccountID); err != nil {
 		return err
 	}

@@ -41,8 +41,9 @@ type Code struct {
 	Logger        *slog.Logger
 	// Importer, if set, imports GitHub-born PRs before each reconcile.
 	Importer *Importer
-	// OnExported, if set, is called (under the branch lock) for each
-	// change whose current patch set reached GitHub in this reconcile.
+	// OnExported, if set, is called for each change whose current patch
+	// set reached GitHub in a reconcile, once it has let go of the
+	// branch.
 	OnExported func(ctx context.Context, n int) error
 	// Identity maps GitHub logins to Gerrit usernames, and BridgeLogin is
 	// the bridge's own GitHub login: closing or reopening a PR on GitHub
@@ -176,7 +177,22 @@ const maxPasses = 5
 
 // Reconcile mirrors the target branch named by k.Branch.
 func (c *Code) Reconcile(ctx context.Context, k Key) error {
-	branch := k.Branch
+	var exported []int
+	err := c.reconcile(withExported(ctx, &exported), k.Branch)
+	// Handed on once the branch is let go of: what follows an export
+	// (the new head's statuses) must not hold it.
+	slices.Sort(exported)
+	for _, n := range slices.Compact(exported) {
+		if c.OnExported != nil {
+			if err := c.OnExported(ctx, n); err != nil {
+				c.Logger.Warn("post-export sync failed", "change", n, "err", err)
+			}
+		}
+	}
+	return err
+}
+
+func (c *Code) reconcile(ctx context.Context, branch string) error {
 	wait := trace.Region(ctx, "wait for branch "+branch+", alone")
 	defer c.lock(branch)()
 	wait()
@@ -197,6 +213,14 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 	}
 	defer trace.Region(ctx, "export")()
 	return cmp.Or(c.export(ctx, branch), importErr)
+}
+
+type exportedKey struct{}
+
+// withExported returns ctx collecting into list the changes exported
+// under it (exported), for Reconcile to hand on.
+func withExported(ctx context.Context, list *[]int) context.Context {
+	return context.WithValue(ctx, exportedKey{}, list)
 }
 
 // export mirrors the target branch's changes to GitHub.
@@ -1517,12 +1541,10 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			c.PRBudget.Take(ctx, ch.OwnerID)
 		}
 		c.Logger.Info("created PR", "change", a.Change, "pr", pr.Number, "url", pr.HTMLURL)
-		if err := c.link(ctx, s, a.Change, pr); err != nil {
-			return err
-		}
-		// Its head from the start: a review a minute on is about it,
-		// however busy the bridge is before it next reads the PR.
-		return noteHead(ctx, c.Store, a.Change, pr.Head.SHA, at)
+		// Its head from the start, in the same save: a review a minute on
+		// is about it, however busy the bridge is before it next reads
+		// the PR.
+		return c.linkHead(ctx, s, a.Change, pr, at)
 	case UpdatePR:
 		if u := a.Update; u.State == nil && u.Base == nil {
 			// Text only: wait if whoever changed it changed too many.
@@ -1600,8 +1622,26 @@ func (c *Code) link(ctx context.Context, s *Snapshot, n int, pr *github.PullRequ
 	return c.linkPR(ctx, n, origin, s.Branch, s.Changes[n].ChangeID, pr)
 }
 
+// linkHead is link, noting the PR's head as seen at at.
+func (c *Code) linkHead(ctx context.Context, s *Snapshot, n int, pr *github.PullRequest, at time.Time) error {
+	origin := "gerrit"
+	if s.githubBorn(n) {
+		origin = "github"
+	}
+	return c.linkPRAt(ctx, n, origin, s.Branch, s.Changes[n].ChangeID, pr, at)
+}
+
 func (c *Code) linkPR(ctx context.Context, n int, origin, branch, changeID string, pr *github.PullRequest) error {
+	return c.linkPRAt(ctx, n, origin, branch, changeID, pr, time.Time{})
+}
+
+// linkPRAt links change n to pr, and with at, notes pr's head as seen
+// then, in one save.
+func (c *Code) linkPRAt(ctx context.Context, n int, origin, branch, changeID string, pr *github.PullRequest, at time.Time) error {
 	err := c.updateState(ctx, n, fmt.Sprintf("Link PR #%d", pr.Number), func(st *state.Change) {
+		if !at.IsZero() {
+			st.Heads = withHead(st.Heads, pr.Head.SHA, at)
+		}
 		st.State.Change = n
 		st.State.ChangeID = changeID
 		st.State.Branch = branch
@@ -1720,7 +1760,14 @@ func (c *Code) appendCommit(ctx context.Context, a Append) (string, error) {
 	return strings.TrimSpace(string(commit)), nil
 }
 
+// exported notes that change n's current patch set reached GitHub: for
+// Reconcile to hand on (OnExported) once it lets go of the branch, or at
+// once outside one.
 func (c *Code) exported(ctx context.Context, n int) error {
+	if list, ok := ctx.Value(exportedKey{}).(*[]int); ok {
+		*list = append(*list, n)
+		return nil
+	}
 	if c.OnExported == nil {
 		return nil
 	}
@@ -1743,6 +1790,7 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan, skip *skips) er
 			stackOf[n] = st.Number
 		}
 	}
+	var updates []stateUpdate
 	for _, n := range sortedKeys(s.Changes) {
 		ch := s.Changes[n]
 		d := p.Desired[n]
@@ -1754,11 +1802,9 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan, skip *skips) er
 			// Not mirrored (closed or private): remember the status so we
 			// stop fetching it.
 			if st != nil && st.Version != "" && st.State.Lifecycle != ch.Status {
-				if err := c.updateState(ctx, n, "Lifecycle "+ch.Status, func(st *state.Change) {
+				updates = append(updates, stateUpdate{n, "Lifecycle " + ch.Status, func(st *state.Change) {
 					st.State.Lifecycle = ch.Status
-				}); err != nil {
-					return err
-				}
+				}})
 			}
 			continue
 		}
@@ -1773,7 +1819,7 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan, skip *skips) er
 			}
 		}
 		tree, parentTree := c.trees(ctx, ch.Revision)
-		err := c.updateState(ctx, n, fmt.Sprintf("Sync patch set %d", ch.PatchSet), func(st *state.Change) {
+		updates = append(updates, stateUpdate{n, fmt.Sprintf("Sync patch set %d", ch.PatchSet), func(st *state.Change) {
 			st.State.BaseBranch = d.Base
 			st.State.Stack = stackOf[d.PR]
 			st.State.Lifecycle = ch.Status
@@ -1802,8 +1848,44 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan, skip *skips) er
 					Tree: tree, ParentTree: parentTree, At: time.Now(),
 				})
 			}
-		})
-		if err != nil {
+		}})
+	}
+	// One push for all: each is a push to Gerrit, which sends every ref
+	// the project has first.
+	return c.updateStates(ctx, updates)
+}
+
+// stateUpdate is a change to make to change n's state, saved with msg.
+type stateUpdate struct {
+	n   int
+	msg string
+	f   func(*state.Change)
+}
+
+// updateStates is updateState for several changes, saved together
+// (Store.SaveAll); on a concurrent write, each again on its own.
+func (c *Code) updateStates(ctx context.Context, us []stateUpdate) error {
+	cs := map[int]*state.Change{}
+	msgs := map[int]string{}
+	for _, u := range us {
+		if cs[u.n] == nil {
+			st, err := c.Store.Load(ctx, u.n)
+			if err != nil {
+				return err
+			}
+			cs[u.n] = st
+			msgs[u.n] = u.msg
+		} else {
+			msgs[u.n] += "; " + u.msg
+		}
+		u.f(cs[u.n])
+	}
+	err := c.Store.SaveAll(ctx, cs, func(n int) string { return msgs[n] })
+	if !errors.Is(err, state.ErrConflict) {
+		return err
+	}
+	for _, u := range us {
+		if err := c.updateState(ctx, u.n, u.msg, u.f); err != nil {
 			return err
 		}
 	}

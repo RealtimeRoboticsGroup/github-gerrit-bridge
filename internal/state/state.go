@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -393,23 +394,37 @@ func (s *Store) Load(ctx context.Context, n int) (*Change, error) {
 // ref moved, the mirror is refreshed and ErrConflict returned. Saving a
 // state identical to the stored one does nothing.
 func (s *Store) Save(ctx context.Context, n int, c *Change, msg string) error {
+	commit, err := s.commit(ctx, n, c, msg)
+	if err != nil || commit == "" {
+		return err
+	}
+	if err := s.pushRef(ctx, Ref(n), c.Version, commit); err != nil {
+		return err
+	}
+	s.saved(n, c, commit)
+	return nil
+}
+
+// commit makes the commit that saves c as change n's state on top of its
+// version, "" if nothing changed.
+func (s *Store) commit(ctx context.Context, n int, c *Change, msg string) (string, error) {
 	if c.State.Change == 0 {
 		c.State.Change = n
 	}
 	if c.State.Change != n {
-		return fmt.Errorf("saving change %d state under change %d", c.State.Change, n)
+		return "", fmt.Errorf("saving change %d state under change %d", c.State.Change, n)
 	}
 	tree, err := s.writeTree(ctx, c)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if c.Version != "" {
 		old, err := s.Repo.RevParse(ctx, c.Version+"^{tree}")
 		if err != nil {
-			return err
+			return "", err
 		}
 		if old == tree {
-			return nil
+			return "", nil
 		}
 	}
 	args := []string{"commit-tree", tree, "-m", msg}
@@ -418,15 +433,16 @@ func (s *Store) Save(ctx context.Context, n int, c *Change, msg string) error {
 	}
 	out, err := s.Repo.Git(ctx, nil, args...)
 	if err != nil {
-		return err
+		return "", err
 	}
-	commit := strings.TrimSpace(string(out))
+	return strings.TrimSpace(string(out)), nil
+}
 
-	if err := s.pushRef(ctx, Ref(n), c.Version, commit); err != nil {
-		return err
-	}
+// saved records that commit, pushed, is change n's state c.
+func (s *Store) saved(n int, c *Change, commit string) {
 	c.Version = commit
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.byPR == nil {
 		s.byPR = map[int]int{}
 	}
@@ -448,7 +464,90 @@ func (s *Store) Save(ctx context.Context, n int, c *Change, msg string) error {
 		s.byBranch[c.State.Branch] = map[int]bool{}
 	}
 	s.byBranch[c.State.Branch][n] = true
-	s.mu.Unlock()
+}
+
+// SaveAll is Save for several changes, in one push: each push to Gerrit
+// has it send every ref the project has first, which on a big project
+// takes longer than the rest. Atomic: either every change's state moves
+// or none does, each only from the version it was loaded at; if any was
+// written meanwhile, it is ErrConflict and none moved (the written ones
+// are refreshed, as for Save).
+func (s *Store) SaveAll(ctx context.Context, cs map[int]*Change, msg func(n int) string) error {
+	var args []string
+	commits := map[int]string{}
+	nums := make([]int, 0, len(cs))
+	for n := range cs {
+		nums = append(nums, n)
+	}
+	slices.Sort(nums)
+	for _, n := range nums {
+		commit, err := s.commit(ctx, n, cs[n], msg(n))
+		if err != nil {
+			return err
+		}
+		if commit != "" {
+			commits[n] = commit
+			args = append(args, "--force-with-lease="+Ref(n)+":"+cs[n].Version, commit+":"+Ref(n))
+		}
+	}
+	switch len(commits) {
+	case 0:
+		return nil
+	case 1:
+		for n, commit := range commits {
+			if err := s.pushRef(ctx, Ref(n), cs[n].Version, commit); err != nil {
+				return err
+			}
+			s.saved(n, cs[n], commit)
+		}
+		return nil
+	}
+	res, err := s.Repo.Push(ctx, append([]string{"--atomic"}, args...)...)
+	if err != nil {
+		return err
+	}
+	byRef := map[string]gitmirror.PushResult{}
+	for _, r := range res {
+		byRef[r.Ref] = r
+	}
+	var conflicts []string
+	for _, n := range nums {
+		if commits[n] == "" {
+			continue
+		}
+		r, ok := byRef[Ref(n)]
+		if !ok {
+			return fmt.Errorf("push %s: no result in %+v", Ref(n), res)
+		}
+		if r.Rejected && isLeaseFailure(r.Reason) {
+			conflicts = append(conflicts, Ref(n))
+		} else if r.Rejected && !strings.Contains(r.Reason, "atomic") {
+			return fmt.Errorf("push %s rejected: %s", Ref(n), r.Reason)
+		}
+	}
+	if len(conflicts) > 0 {
+		for _, ref := range conflicts {
+			n, _ := strconv.Atoi(ref[strings.LastIndexByte(ref, '/')+1:])
+			if err := s.refresh(ctx, ref, n); err != nil {
+				return err
+			}
+		}
+		return fmt.Errorf("%w: %s", ErrConflict, strings.Join(conflicts, ", "))
+	}
+	for _, r := range res {
+		if r.Rejected {
+			return fmt.Errorf("push %s rejected: %s", r.Ref, r.Reason)
+		}
+	}
+	for _, n := range nums {
+		if commit := commits[n]; commit != "" {
+			if _, err := s.Repo.Git(ctx, nil, "update-ref", Ref(n), commit); err != nil {
+				return err
+			}
+			s.setHead(n, commit)
+			s.saved(n, cs[n], commit)
+		}
+	}
 	return nil
 }
 
@@ -472,25 +571,33 @@ func (s *Store) pushRef(ctx context.Context, ref, old, commit string) error {
 		n, _ = strconv.Atoi(ref[strings.LastIndexByte(ref, '/')+1:])
 	}
 	if res[0].Rejected {
-		// Someone else wrote it. Refresh our copy so the retry sees theirs.
-		if _, err := s.Repo.Git(ctx, nil, "fetch", "--quiet", "origin", "+"+ref+":"+ref); err != nil {
-			// Fetching a ref that was deleted fails; drop ours to match.
-			// Any other failure leaves ours alone: an empty state would
-			// look like nothing was ever mirrored.
-			out, lerr := s.Repo.Git(ctx, nil, "ls-remote", "origin", ref)
-			if lerr != nil || len(bytes.TrimSpace(out)) != 0 {
-				return fmt.Errorf("refreshing %s after a conflict: %w", ref, err)
-			}
-			s.Repo.Git(ctx, nil, "update-ref", "-d", ref)
+		if err := s.refresh(ctx, ref, n); err != nil {
+			return err
 		}
-		theirs, _ := s.Repo.RevParse(ctx, ref+"^{commit}")
-		s.setHead(n, theirs)
 		return fmt.Errorf("%w: %s: %s", ErrConflict, ref, res[0].Reason)
 	}
 	if _, err = s.Repo.Git(ctx, nil, "update-ref", ref, commit); err != nil {
 		return err
 	}
 	s.setHead(n, commit)
+	return nil
+}
+
+// refresh fetches ref (change n's state, or -1), which someone else
+// wrote, so a retry sees theirs.
+func (s *Store) refresh(ctx context.Context, ref string, n int) error {
+	if _, err := s.Repo.Git(ctx, nil, "fetch", "--quiet", "origin", "+"+ref+":"+ref); err != nil {
+		// Fetching a ref that was deleted fails; drop ours to match.
+		// Any other failure leaves ours alone: an empty state would
+		// look like nothing was ever mirrored.
+		out, lerr := s.Repo.Git(ctx, nil, "ls-remote", "origin", ref)
+		if lerr != nil || len(bytes.TrimSpace(out)) != 0 {
+			return fmt.Errorf("refreshing %s after a conflict: %w", ref, err)
+		}
+		s.Repo.Git(ctx, nil, "update-ref", "-d", ref)
+	}
+	theirs, _ := s.Repo.RevParse(ctx, ref+"^{commit}")
+	s.setHead(n, theirs)
 	return nil
 }
 

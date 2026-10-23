@@ -22,6 +22,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 // prStates is a change whose PR someone closed or reopened on GitHub,
@@ -1468,6 +1469,121 @@ func TestNewPRHasItsHeadFromTheStart(t *testing.T) {
 	later := time.Now().Add(2 * time.Minute)
 	if got := headThroughout(st.Heads, later.Add(-minSeen), later); got != head {
 		t.Errorf("heads %+v: two minutes on, GitHub showed %q throughout the minute, want the PR's head %s", st.Heads, got, short(head))
+	}
+	// Saved with the link, not after it: each save is a push to Gerrit,
+	// about half a second with the branch held.
+	if log := s.git("m.git", "log", "--format=%s", state.Ref(1)); strings.Contains(log, "PR head") {
+		t.Errorf("state history %q: the head was saved on its own", log)
+	}
+}
+
+// A reconcile saves what it recorded of every change in one push: each
+// push to Gerrit has it send every ref the project has first.
+func TestRecordSavesInOnePush(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	msg1 := "One\n\nChange-Id: " + cid(1) + "\n"
+	c1 := s.commit(m0, "f.txt", "f\n", msg1)
+	s.change(1, cid(1), c1, msg1, "NEW")
+	msg2 := "Two\n\nChange-Id: " + cid(2) + "\n"
+	s.change(2, cid(2), s.commit(c1, "g.txt", "g\n", msg2), msg2, "NEW")
+	tr := trace.New()
+	if err := c.Reconcile(trace.With(ctx, tr), Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	spans, _ := tr.Spans()
+	var pushes []string
+	in := false
+	for _, sp := range spans {
+		switch {
+		case sp.What == "record":
+			in = true
+		case in && sp.Depth == 0:
+			in = false
+		case in && strings.HasPrefix(sp.What, "git push"):
+			pushes = append(pushes, sp.What)
+		}
+	}
+	if len(pushes) != 1 || !strings.Contains(pushes[0], state.Ref(1)) || !strings.Contains(pushes[0], state.Ref(2)) {
+		t.Errorf("record pushed %q, want both changes' state in one push", pushes)
+	}
+	for _, n := range []int{1, 2} {
+		if st, _ := store.Load(ctx, n); st.State.PR == 0 || len(st.Revisions) == 0 {
+			t.Errorf("change %d state %+v", n, st.State)
+		}
+	}
+}
+
+// Saved together, changes written meanwhile by someone else are saved
+// again one by one, on top of what they wrote.
+func TestUpdateStatesAfterAConcurrentWrite(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	for _, n := range []int{1, 2} {
+		if err := store.Save(ctx, n, &state.Change{State: state.ChangeState{Branch: "main"}}, "create"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m2 := &gitmirror.Repo{Dir: filepath.Join(s.dir, "m2.git"), Remote: filepath.Join(s.dir, "gerrit.git"), Name: "Other", Email: "o@example.com"}
+	if err := m2.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	other := &state.Store{Repo: m2}
+	if err := other.Fetch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := other.Load(ctx, 2)
+	st.State.Title = "theirs"
+	if err := other.Save(ctx, 2, st, "other writer"); err != nil {
+		t.Fatal(err)
+	}
+	err := c.updateStates(ctx, []stateUpdate{
+		{1, "one", func(st *state.Change) { st.State.Stack = 10 }},
+		{2, "two", func(st *state.Change) { st.State.Stack = 20 }},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, _ := store.Load(ctx, 1)
+	two, _ := store.Load(ctx, 2)
+	if one.State.Stack != 10 || two.State.Stack != 20 || two.State.Title != "theirs" {
+		t.Errorf("one %+v, two %+v", one.State, two.State)
+	}
+}
+
+// What a reconcile exported is handed on (OnExported) after the branch
+// is let go of, not worked on under it: its checks are a comment sync's.
+func TestExportedChangesAreHandedOn(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	msg := "Feature\n\nChange-Id: " + cid(1) + "\n"
+	s.change(1, cid(1), s.commit(m0, "f.txt", "f\n", msg), msg, "NEW")
+	var handed []int
+	l := c.branchLock("main")
+	c.OnExported = func(_ context.Context, n int) error {
+		l.mu.Lock()
+		held := l.held
+		l.mu.Unlock()
+		if held {
+			t.Error("handed on with the branch still held")
+		}
+		handed = append(handed, n)
+		return nil
+	}
+	if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(handed, []int{1}) {
+		t.Errorf("handed on %v, want change 1", handed)
 	}
 }
 

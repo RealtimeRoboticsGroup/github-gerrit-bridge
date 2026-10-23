@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"reflect"
@@ -432,5 +433,82 @@ func TestFirstStateCommitIsPushedWhole(t *testing.T) {
 	}
 	if !strings.Contains(sent, strings.TrimSpace(string(blob))) {
 		t.Errorf("the shared votes.json was not sent with change 6's first state commit; sent:\n%s", sent)
+	}
+}
+
+// SaveAll saves several changes in one push, each only from the version
+// it was loaded at: if another writer moved one, it is ErrConflict and
+// none moved; the moved one is refreshed, so a retry builds on theirs.
+func TestSaveAllIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	origin, s := newStores(t, 2)
+	a, b := s[0], s[1]
+	for _, n := range []int{5, 6, 7} {
+		if err := a.Save(ctx, n, sample(), "create"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	load := func(st *Store, ns ...int) map[int]*Change {
+		if st == b {
+			if err := b.Fetch(ctx); err != nil { // its own mirror
+				t.Fatal(err)
+			}
+		}
+		out := map[int]*Change{}
+		for _, n := range ns {
+			c, err := st.Load(ctx, n)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[n] = c
+		}
+		return out
+	}
+	tip := func(n int) string {
+		out, err := origin.Git(ctx, nil, "rev-parse", Ref(n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	msg := func(n int) string { return fmt.Sprintf("batch %d", n) }
+
+	cs := load(a, 5, 6, 7)
+	cs[5].State.Stack, cs[6].State.Stack = 50, 60 // 7 unchanged
+	was7 := tip(7)
+	if err := a.SaveAll(ctx, cs, msg); err != nil {
+		t.Fatal(err)
+	}
+	if got := load(b, 5, 6); got[5].State.Stack != 50 || got[6].State.Stack != 60 || tip(7) != was7 {
+		t.Errorf("after SaveAll: 5 %+v, 6 %+v, 7 moved %v", got[5].State, got[6].State, tip(7) != was7)
+	}
+	if cs[5].Version != tip(5) || cs[6].Version != tip(6) {
+		t.Error("versions not updated")
+	}
+
+	// b writes 6 behind a's back; a's batch of 5 and 6 moves neither.
+	other := load(b, 6)[6]
+	other.State.Stack = 66
+	if err := b.Save(ctx, 6, other, "b"); err != nil {
+		t.Fatal(err)
+	}
+	was5 := tip(5)
+	cs[5].State.Stack, cs[6].State.Stack = 51, 61
+	if err := a.SaveAll(ctx, cs, msg); !errors.Is(err, ErrConflict) {
+		t.Fatalf("err %v, want ErrConflict", err)
+	}
+	if tip(5) != was5 || load(b, 6)[6].State.Stack != 66 {
+		t.Error("a conflicting batch moved something")
+	}
+	retry := load(a, 5, 6)
+	if retry[6].State.Stack != 66 {
+		t.Errorf("a not refreshed: sees %+v", retry[6].State)
+	}
+	retry[5].State.Stack, retry[6].State.Stack = 51, 61
+	if err := a.SaveAll(ctx, retry, msg); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if got := load(b, 5, 6); got[5].State.Stack != 51 || got[6].State.Stack != 61 {
+		t.Errorf("after retry %+v %+v", got[5].State, got[6].State)
 	}
 }
