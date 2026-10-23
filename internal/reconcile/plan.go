@@ -287,7 +287,7 @@ type Append struct {
 	Onto     string // parent of the new commit
 	Lease    string // what the branch must hold now ("" = absent)
 	// KeepMessage reuses the patch set's message (a re-parented change)
-	// instead of "Patchset N from Gerrit" (an edit appended to a branch).
+	// instead of "Patchset N" (an edit appended to a branch).
 	KeepMessage bool
 	// Merge, if set, is a second parent: the new base of a patch set that
 	// was rebased in Gerrit.

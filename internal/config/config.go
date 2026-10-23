@@ -100,7 +100,7 @@ type GitHub struct {
 	// existing PR. Zero imports all.
 	ImportCreatedAfter time.Time `yaml:"import_created_after"`
 	// CommitterName and CommitterEmail are the committer of the commits
-	// the bridge writes for GitHub ("Patchset N from Gerrit"). Default: the
+	// the bridge writes for GitHub ("Patchset N"). Default: the
 	// bridge's Gerrit account.
 	CommitterName  string `yaml:"committer_name"`
 	CommitterEmail string `yaml:"committer_email"`

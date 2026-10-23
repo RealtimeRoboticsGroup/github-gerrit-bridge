@@ -375,10 +375,10 @@ in Gerrit (an edit, "Apply fix", or a rebase):
 
 - **Same parent state** (content changed only): append a commit to the
   user's branch with `tree = tree(new PS)` and message
-  "Patchset N from Gerrit (Jane Doe)". This is a fast-forward, so the user's
+  "Patchset N". This is a fast-forward, so the user's
   local branch history is preserved and `git pull` just works.
 - **Parent changed** (rebased in Gerrit): append a merge commit "Patchset
-  N from Gerrit, rebased" of the branch and the new parent's GitHub
+  N, rebased" of the branch and the new parent's GitHub
   commit, with the patch set's tree, as for Gerrit-born changes (§5.2.1).
   Still a fast-forward, so the history and `git pull` keep working. (Until
   2026-10-18 this force-pushed the Gerrit commit itself.)
@@ -427,11 +427,11 @@ use: "changes since your last review", the per-commit views, and the
 commits their comments were written against. So since 2026-10-17 every
 new patch set of a Gerrit-born change goes on top of its PR's head too:
 
-- **Same parent** (an amend): a commit "Patchset N from Gerrit" with the
+- **Same parent** (an amend): a commit "Patchset N" with the
   patch set's tree, on top of the head. Its body links the patchset
   (`…/+/<change>/<N>`), not just the change.
 - **New parent** (rebased in Gerrit, or the change below has a new patch
-  set): a merge commit "Patchset N from Gerrit, rebased" of the head and
+  set): a merge commit "Patchset N, rebased" of the head and
   the new parent's GitHub commit, with the patch set's tree. The PR's diff
   against its base is still exactly the patch set's own change.
 - **Same tree and parent** (say, a commit-message edit): nothing is pushed.
@@ -1969,7 +1969,7 @@ Abandon and Toggle Work In Progress for Administrators.
      to a frozen base and the stack split. Restacking on GitHub imported
      layer 2 again and rejoined the stack.
    - A Gerrit edit of a GitHub-born change was appended to the user's
-     branch as "Patchset N from Gerrit" (`git pull --ff-only` works); a
+     branch as "Patchset N" (`git pull --ff-only` works); a
      rebase in Gerrit force-pushes instead.
    - Both sides moving: the GitHub push became a patch set, then Gerrit's
      version was re-uploaded on top and appended to GitHub, with a notice on
