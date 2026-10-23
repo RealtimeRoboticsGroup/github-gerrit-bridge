@@ -29,6 +29,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/queue"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/status"
 )
 
 func main() {
@@ -258,9 +259,51 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 		MaxHeaderBytes: 64 << 10}
 
+	var statusSrv *http.Server
+	if cfg.StatusListen != "" {
+		started := time.Now()
+		statusSrv = &http.Server{Addr: cfg.StatusListen, ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second,
+			Handler: &status.Handler[reconcile.Key]{
+				Queue: q,
+				Name:  reconcile.Key.String,
+				Link: func(k reconcile.Key) string {
+					switch {
+					case k.Comments != 0:
+						return rest.ChangeURL(cfg.Gerrit.Project, k.Comments)
+					case k.Merged != 0:
+						return rest.ChangeURL(cfg.Gerrit.Project, k.Merged)
+					case k.PR != 0:
+						return fmt.Sprintf("https://github.com/%s/pull/%d", repo, k.PR)
+					case k.PRComments != 0:
+						return fmt.Sprintf("https://github.com/%s/pull/%d", repo, k.PRComments)
+					}
+					return ""
+				},
+				Facts: func() []status.Fact {
+					last := "never"
+					if t := stream.LastEvent(); !t.IsZero() {
+						last = time.Since(t).Round(time.Second).String() + " ago"
+					}
+					rl := gh.RateLimit()
+					budget := "not known yet"
+					if rl.Limit > 0 {
+						budget = fmt.Sprintf("%d of %d left, resets in %v", rl.Remaining, rl.Limit, time.Until(rl.Reset).Round(time.Second))
+					}
+					return []status.Fact{
+						{Name: "Up", Value: time.Since(started).Round(time.Second).String()},
+						{Name: "Project", Value: cfg.Gerrit.Project + " ↔ " + repo},
+						{Name: "Workers", Value: fmt.Sprint(cfg.Workers, " (+1 for merges)")},
+						{Name: "Last Gerrit event", Value: last},
+						{Name: "GitHub API", Value: budget},
+						{Name: "Dry run", Value: fmt.Sprint(dryRun)},
+					}
+				},
+			}}
+	}
+
 	logger.Info("gerrit-github-bridge starting",
 		"dry_run", dryRun, "gerrit", cfg.Gerrit.URL, "project", cfg.Gerrit.Project,
-		"github", repo, "listen", cfg.Listen)
+		"github", repo, "listen", cfg.Listen, "status_listen", cfg.StatusListen)
 
 	var wg sync.WaitGroup
 	errc := make(chan error, 1)
@@ -408,6 +451,16 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			errc <- err
 		}
 	})
+	if statusSrv != nil {
+		wg.Go(func() {
+			if err := statusSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				select {
+				case errc <- err:
+				default:
+				}
+			}
+		})
+	}
 
 	select {
 	case <-ctx.Done():
@@ -419,6 +472,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	srv.Shutdown(shutdownCtx)
+	if statusSrv != nil {
+		statusSrv.Shutdown(shutdownCtx)
+	}
 	q.ShutDown()
 	wg.Wait()
 	return err

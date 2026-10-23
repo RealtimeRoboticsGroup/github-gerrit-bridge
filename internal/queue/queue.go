@@ -29,6 +29,8 @@ type Queue[K comparable] struct {
 	started    map[K]time.Time
 	queuedAt   map[K]time.Time // when a dirty key was first added
 	waited     map[K]time.Duration
+	errs       map[K]string // last error of a key that is failing
+	recent     []Entry[K]   // the last runs, oldest first (Snapshot)
 	shutdown   bool
 
 	// MinRetry and MaxRetry bound the exponential backoff used by Retry.
@@ -56,6 +58,7 @@ func New[K comparable]() *Queue[K] {
 		started:    map[K]time.Time{},
 		queuedAt:   map[K]time.Time{},
 		waited:     map[K]time.Duration{},
+		errs:       map[K]string{},
 		MinRetry:   time.Second,
 		MaxRetry:   5 * time.Minute,
 	}
@@ -183,6 +186,14 @@ func (q *Queue[K]) Forget(k K) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	delete(q.failures, k)
+	delete(q.errs, k)
+}
+
+// Failed records why k's last run failed, for Snapshot, until Forget.
+func (q *Queue[K]) Failed(k K, err string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.errs[k] = err
 }
 
 // Get blocks until a key is available, and hands it to the caller, who must
@@ -269,6 +280,12 @@ func (q *Queue[K]) Waited(k K) time.Duration {
 func (q *Queue[K]) Done(k K) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if start, ok := q.started[k]; ok {
+		q.recent = append(q.recent, Entry[K]{Key: k, At: start, Waited: q.waited[k], Took: time.Since(start), Err: q.errs[k]})
+		if len(q.recent) > maxRecent {
+			q.recent = slices.Delete(q.recent, 0, len(q.recent)-maxRecent)
+		}
+	}
 	delete(q.processing, k)
 	delete(q.waited, k)
 	// started stays: it is k's last start, which throttles Adds that come
@@ -304,6 +321,76 @@ func (q *Queue[K]) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.order) + len(q.low)
+}
+
+// maxRecent is how many finished runs Snapshot shows.
+const maxRecent = 100
+
+// Entry is one key in a Snapshot. At is when it started (running, or a
+// recent run) or was first added (waiting or held).
+type Entry[K comparable] struct {
+	Key    K
+	At     time.Time
+	Waited time.Duration // before it started (running, recent)
+	Took   time.Duration // recent
+	// Resync: waiting only for a periodic resync (AddLow), behind events.
+	Resync bool
+	// Again: held, it runs once more after its current run; else held,
+	// it ran moments ago (MinInterval).
+	Again bool
+	// Failures and Err: consecutive failed runs, and the last one's error.
+	Failures int
+	Err      string
+}
+
+// Snapshot is what the queue is doing.
+type Snapshot[K comparable] struct {
+	Running []Entry[K] // longest running first
+	Waiting []Entry[K] // in the order workers will take them, mostly
+	Held    []Entry[K] // added, but not in line yet
+	Failing []Entry[K] // waiting to be retried, or failing again
+	Recent  []Entry[K] // finished, newest first
+}
+
+// Snapshot reports what the queue is doing, for a status page.
+func (q *Queue[K]) Snapshot() Snapshot[K] {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var s Snapshot[K]
+	fail := func(e Entry[K]) Entry[K] {
+		e.Failures, e.Err = q.failures[e.Key], q.errs[e.Key]
+		return e
+	}
+	for k := range q.processing {
+		s.Running = append(s.Running, fail(Entry[K]{Key: k, At: q.started[k], Waited: q.waited[k]}))
+	}
+	slices.SortFunc(s.Running, func(a, b Entry[K]) int { return a.At.Compare(b.At) })
+	inLine := map[K]bool{}
+	for _, k := range q.order {
+		inLine[k] = true
+		s.Waiting = append(s.Waiting, fail(Entry[K]{Key: k, At: q.queuedAt[k]}))
+	}
+	for _, k := range q.low {
+		inLine[k] = true
+		s.Waiting = append(s.Waiting, fail(Entry[K]{Key: k, At: q.queuedAt[k], Resync: true}))
+	}
+	for k := range q.dirty {
+		if !inLine[k] {
+			_, running := q.processing[k]
+			s.Held = append(s.Held, fail(Entry[K]{Key: k, At: q.queuedAt[k], Again: running}))
+		}
+	}
+	slices.SortFunc(s.Held, func(a, b Entry[K]) int { return a.At.Compare(b.At) })
+	for k, n := range q.failures {
+		if n > 0 {
+			s.Failing = append(s.Failing, fail(Entry[K]{Key: k}))
+		}
+	}
+	slices.SortFunc(s.Failing, func(a, b Entry[K]) int { return b.Failures - a.Failures })
+	for i := len(q.recent) - 1; i >= 0; i-- {
+		s.Recent = append(s.Recent, q.recent[i])
+	}
+	return s
 }
 
 // ShutDown makes Get return false in every worker, and drops pending keys.

@@ -236,6 +236,7 @@ func reconcileOne(ctx context.Context, q *queue.Queue[Key], rec Reconciler, k Ke
 	defer func() {
 		if p := recover(); p != nil {
 			logger.Error("reconcile panicked", "key", k.String(), "panic", fmt.Sprint(p))
+			q.Failed(k, "panic: "+fmt.Sprint(p))
 			q.Retry(k)
 		}
 	}()
@@ -259,6 +260,7 @@ func reconcileOne(ctx context.Context, q *queue.Queue[Key], rec Reconciler, k Ke
 		if ctx.Err() != nil {
 			return
 		}
+		q.Failed(k, err.Error())
 		d := q.Retry(k)
 		logger.Warn("reconcile failed", "key", k.String(), "err", err, "retry_in", d.Round(time.Millisecond))
 		return

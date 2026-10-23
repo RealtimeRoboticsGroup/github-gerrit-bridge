@@ -19,12 +19,14 @@ Everything listens on 127.0.0.1 only. From your desktop, tunnel the web
 UIs:
 
 ```
-ssh -L 18080:127.0.0.1:18080 -L 18081:127.0.0.1:18081 -L 18090:127.0.0.1:18090 server1868-4
+ssh -L 18080:127.0.0.1:18080 -L 18081:127.0.0.1:18081 -L 18082:127.0.0.1:18082 -L 18090:127.0.0.1:18090 server1868-4
 ```
 
 then open <http://127.0.0.1:18080/gerrit/login> and sign in with GitHub
 (the "Bridge test Gerrit" OAuth App, owned by realtimeroboticsbot), and
-<http://127.0.0.1:18090> for builds. The Checks tab of a change reads
+<http://127.0.0.1:18090> for builds, and <http://127.0.0.1:18082> for the
+bridge's status page (what it is running, what waits, what fails and why,
+and its recent runs). The Checks tab of a change reads
 from the bridge on 18081, so tunnel that too. Use `127.0.0.1`, not `localhost`: the
 OAuth callback goes to 127.0.0.1, and a session cookie set on another host
 does not follow it ("Invalid authentication state"). Links the bridge posts

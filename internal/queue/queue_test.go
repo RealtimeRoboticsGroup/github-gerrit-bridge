@@ -331,3 +331,81 @@ func TestAddLowWhileProcessing(t *testing.T) {
 		}
 	}
 }
+
+// Snapshot shows each key where it is: running, waiting in the order
+// workers take them (events before a resync's), held, failing with its
+// error, and done, newest first.
+func TestSnapshot(t *testing.T) {
+	q := New[string]()
+	q.MinInterval = time.Hour
+	q.Add("a")
+	q.Add("b")
+	q.AddLow("r")
+	q.Add("c")
+	if k, _ := q.Get(); k != "a" {
+		t.Fatalf("got %q", k)
+	}
+	q.Add("a") // again while it runs
+	s := q.Snapshot()
+	keys := func(es []Entry[string]) (out []string) {
+		for _, e := range es {
+			out = append(out, e.Key)
+		}
+		return out
+	}
+	if got := keys(s.Running); !slices.Equal(got, []string{"a"}) || s.Running[0].At.IsZero() {
+		t.Errorf("running %v", s.Running)
+	}
+	if got := keys(s.Waiting); !slices.Equal(got, []string{"b", "c", "r"}) || s.Waiting[0].Resync || !s.Waiting[2].Resync {
+		t.Errorf("waiting %+v", s.Waiting)
+	}
+	if len(s.Held) != 1 || s.Held[0].Key != "a" || !s.Held[0].Again {
+		t.Errorf("held %+v", s.Held)
+	}
+
+	q.Failed("a", "boom")
+	q.Retry("a")
+	q.Done("a") // ran at most an hour ago: held, not in line
+	s = q.Snapshot()
+	if len(s.Failing) != 1 || s.Failing[0].Key != "a" || s.Failing[0].Failures != 1 || s.Failing[0].Err != "boom" {
+		t.Errorf("failing %+v", s.Failing)
+	}
+	if len(s.Held) != 1 || s.Held[0].Key != "a" || s.Held[0].Again {
+		t.Errorf("held after its run %+v", s.Held)
+	}
+	k, _ := q.Get()
+	q.Forget(k)
+	q.Done(k)
+	s = q.Snapshot()
+	if got := keys(s.Recent); !slices.Equal(got, []string{k, "a"}) || s.Recent[1].Err != "boom" || s.Recent[0].Err != "" || s.Recent[1].Took <= 0 {
+		t.Errorf("recent %+v", s.Recent)
+	}
+	if len(s.Failing) != 1 {
+		t.Errorf("a's failure forgotten with %s's success: %+v", k, s.Failing)
+	}
+	for range maxRecent + 5 {
+		q.Add("x")
+		k, _ := q.Get()
+		q.Done(k)
+		q.mu.Lock()
+		delete(q.started, k) // not throttled
+		q.mu.Unlock()
+	}
+	if n := len(q.Snapshot().Recent); n != maxRecent {
+		t.Errorf("%d recent runs kept", n)
+	}
+
+	// A run that succeeds after a failure shows no error.
+	q = New[string]()
+	q.Add("k")
+	q.Get()
+	q.Failed("k", "boom")
+	q.Done("k")
+	q.Add("k")
+	q.Get()
+	q.Forget("k")
+	q.Done("k")
+	if r := q.Snapshot().Recent; len(r) != 2 || r[0].Err != "" || r[1].Err != "boom" {
+		t.Errorf("recent after a success %+v", r)
+	}
+}

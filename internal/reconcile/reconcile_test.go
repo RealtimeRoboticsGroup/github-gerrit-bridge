@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -238,6 +239,14 @@ func TestWorkRetries(t *testing.T) {
 	defer f.mu.Unlock()
 	if f.calls[Key{Comments: 1}] != 2 || f.calls[Key{Comments: 2}] != 2 || f.calls[Key{Comments: 3}] != 1 {
 		t.Errorf("calls = %v; want an error and a panic each retried once", f.calls)
+	}
+	// The status page shows why each failed run failed.
+	errs := map[Key][]string{}
+	for _, e := range q.Snapshot().Recent {
+		errs[e.Key] = append(errs[e.Key], e.Err)
+	}
+	if !slices.Contains(errs[Key{Comments: 1}], "transient") || !slices.Contains(errs[Key{Comments: 2}], "panic: bug") {
+		t.Errorf("recent runs' errors %q", errs)
 	}
 }
 

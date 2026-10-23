@@ -48,6 +48,7 @@ func run() error {
 	project := flag.String("project", "bridge-test", "Project to create on first run.")
 	github := flag.String("github", "AustinSchuh/bridge-scratch", "GitHub owner/repo for the generated bridge config.")
 	listen := flag.String("bridge_listen", "127.0.0.1:18081", "Listen address for the generated bridge config.")
+	statusListen := flag.String("bridge_status_listen", "127.0.0.1:18082", "Status page address for the generated --replicate_project bridge config (empty: none).")
 	replicate := flag.String("replicate_project", "", "Replicate this project's branches to the --github repo.")
 	tokenFile := flag.String("github_token_file", "", "GitHub token for replication (stored in etc/secure.config).")
 	deployKey := flag.String("github_deploy_key_file", "", "Replicate over SSH with this private key (a GitHub deploy key with write access) instead of the token, "+
@@ -124,7 +125,7 @@ func run() error {
 		}
 	}
 	if *replicate != "" {
-		pcfg, err := mirrorProject(ctx, s, bridgeDir, *replicate, *github, *listen, *tokenFile, *identity, *bot, *ciUser, *buildkiteURL)
+		pcfg, err := mirrorProject(ctx, s, bridgeDir, *replicate, *github, *listen, *statusListen, *tokenFile, *identity, *bot, *ciUser, *buildkiteURL)
 		if err != nil {
 			return err
 		}
@@ -194,7 +195,7 @@ func run() error {
 
 // mirrorProject makes sure the replicated project exists, seeded from the
 // GitHub repo's main, and that a bridge config for it exists.
-func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project, repo, listen, tokenFile, identity, bot, ciUser, buildkiteURL string) (string, error) {
+func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project, repo, listen, statusListen, tokenFile, identity, bot, ciUser, buildkiteURL string) (string, error) {
 	tok, err := config.ReadSecret(tokenFile)
 	if err != nil {
 		return "", err
@@ -234,7 +235,7 @@ func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project
 	}
 	owner, name, _ := strings.Cut(repo, "/")
 	return s.WriteProjectConfig(bridgeDir, testgerrit.ProjectConfig{
-		File: project + ".yaml", Project: project, Owner: owner, Repo: name, Listen: listen,
+		File: project + ".yaml", Project: project, Owner: owner, Repo: name, Listen: listen, StatusListen: statusListen,
 		Identity: ids, ImportCreatedAfter: time.Now(), ResyncInterval: 5 * time.Minute, TokenUser: bot, CIAccount: ciUser,
 		Buildkite: buildkiteURL,
 	})

@@ -170,3 +170,17 @@ func TestLooseSecret(t *testing.T) {
 		t.Errorf("tight %v, loose %v", LooseSecret(tight), LooseSecret(loose))
 	}
 }
+
+// The status page tells when the bridge is starved: only on loopback.
+func TestStatusListenIsLoopbackOnly(t *testing.T) {
+	for addr, ok := range map[string]bool{"": true, "127.0.0.1:8081": true, "[::1]:8081": true, "localhost:8081": true,
+		":8081": false, "0.0.0.0:8081": false, "192.0.2.1:8081": false, "127.0.0.1": false} {
+		c, err := Parse([]byte(strings.Replace(full, "listen: \":9000\"\n", "listen: \":9000\"\nstatus_listen: \""+addr+"\"\n", 1)))
+		if (err == nil) != ok {
+			t.Errorf("status_listen %q: %v", addr, err)
+		}
+		if err == nil && c.StatusListen != addr {
+			t.Errorf("status_listen %q read as %q", addr, c.StatusListen)
+		}
+	}
+}

@@ -114,6 +114,8 @@ func (s *Server) WriteBridgeConfig(dir string, e *Env, owner, repo string, liste
 // ProjectConfig describes a bridge config written by WriteProjectConfig.
 type ProjectConfig struct {
 	File, Project, Owner, Repo, Listen string
+	// StatusListen, if set, is where the bridge serves its status page.
+	StatusListen string
 	// Identity maps GitHub logins to Gerrit usernames.
 	Identity           map[string]string
 	ImportCreatedAfter time.Time
@@ -175,6 +177,9 @@ github:
 		}
 		fmt.Fprintf(&b, "  buildkite:\n    api_url: %s\n    organization: test\n    pipeline: ci\n    token_file: %s\n  checks_url: http://%s\n",
 			c.Buildkite, tok, c.Listen)
+	}
+	if c.StatusListen != "" {
+		fmt.Fprintf(&b, "status_listen: %q\n", c.StatusListen)
 	}
 	path := filepath.Join(dir, c.File)
 	return path, os.WriteFile(path, []byte(b.String()), 0o600)

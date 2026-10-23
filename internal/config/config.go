@@ -25,8 +25,13 @@ import (
 type Config struct {
 	// Listen is the address of the HTTP server for webhooks, /checks and
 	// /healthz. Default 127.0.0.1:8080: put a TLS proxy in front.
-	Listen  string `yaml:"listen"`
-	Workers int    `yaml:"workers"`
+	Listen string `yaml:"listen"`
+	// StatusListen, if set, serves a status page (the work queue, the
+	// last Gerrit event, GitHub's rate budget) at / on its own listener,
+	// which must be a loopback address: it is for operators, never the
+	// internet. Default off.
+	StatusListen string `yaml:"status_listen"`
+	Workers      int    `yaml:"workers"`
 	// ResyncInterval queues a full resync periodically, so missed events
 	// (or webhooks that cannot reach the bridge, or were refused while it
 	// was busy) heal. Default 30m; zero disables.
@@ -202,6 +207,11 @@ func (c *Config) validate() error {
 		}
 	}
 	req("gerrit.url", c.Gerrit.URL)
+	if c.StatusListen != "" {
+		if host, _, err := net.SplitHostPort(c.StatusListen); err != nil || !loopback(host) {
+			errs = append(errs, fmt.Errorf("status_listen %q must be a loopback address and port, e.g. 127.0.0.1:8081: the status page is not for the internet", c.StatusListen))
+		}
+	}
 	req("gerrit.project", c.Gerrit.Project)
 	req("gerrit.http_user", c.Gerrit.HTTPUser)
 	req("gerrit.http_password_file", c.Gerrit.HTTPPasswordFile)

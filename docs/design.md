@@ -1523,6 +1523,12 @@ Known gaps:
   the reviews, closes and comments that came after it as long.
 - `/healthz` and `/metrics` (Prometheus). Metrics: queue depth, reconcile
   latency, API errors, and GitHub rate-limit budget.
+- A status page (`status_listen`, off by default; loopback addresses
+  only, since it tells when the bridge is starved): what each worker is
+  running and for how long, what waits in the order workers take it
+  (resync keys marked), what is held back (running and dirty again, or
+  throttled), what is failing with its last error, and the last 100 runs
+  with how long each waited and took. It refreshes every 5 s.
 - Rate limits: GitHub ETag conditional requests (as built 2026-10-19:
   every GET is revalidated with `If-None-Match`, and GitHub's 304s, which
   do not count against the rate limit, are answered from an in-memory

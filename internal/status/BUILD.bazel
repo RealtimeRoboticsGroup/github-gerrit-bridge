@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "status",
+    srcs = ["status.go"],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/status",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/queue"],
+)
+
+go_test(
+    name = "status_test",
+    srcs = ["status_test.go"],
+    embed = [":status"],
+    deps = ["//internal/queue"],
+)
