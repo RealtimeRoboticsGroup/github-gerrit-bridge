@@ -668,6 +668,16 @@ func TestDoSendsTheTokenOnlyToGitHub(t *testing.T) {
 	if _, err := c.Do(context.Background(), http.MethodGet, elsewhere.URL+"/x", nil, nil); err == nil || got != "" {
 		t.Errorf("err = %v, token sent: %q", err, got)
 	}
+	// A relative path is joined to BaseURL as text: one not starting with
+	// "/" could name another host.
+	for _, p := range []string{"@evil.example/x", "evil.example/x", ".evil.example/x", "?page=2"} {
+		if u, err := c.url(p); err == nil {
+			t.Errorf("url(%q) = %q", p, u)
+		}
+	}
+	if u, err := c.url("/repos/o/r"); err != nil || u != "https://api.github.com/repos/o/r" {
+		t.Errorf("url(/repos/o/r) = %q, %v", u, err)
+	}
 	if !sameOrigin("https://api.github.com/x?page=2", "https://API.github.com") || sameOrigin("http://api.github.com/x", "https://api.github.com") {
 		t.Error("sameOrigin")
 	}

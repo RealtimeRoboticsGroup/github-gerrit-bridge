@@ -271,6 +271,11 @@ func (c *Client) url(path string) (string, error) {
 		base = DefaultBaseURL
 	}
 	if !strings.HasPrefix(path, "https://") && !strings.HasPrefix(path, "http://") {
+		// Joined as text, so a path not starting with "/" could name
+		// another host ("@evil.example/x") and get the token.
+		if !strings.HasPrefix(path, "/") {
+			return "", fmt.Errorf("github: path %q is not absolute", path)
+		}
 		return strings.TrimRight(base, "/") + path, nil
 	}
 	if !sameOrigin(path, base) {
