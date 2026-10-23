@@ -247,8 +247,10 @@ func (c *Config) validate() error {
 		req("ci.buildkite.pipeline", b.Pipeline)
 		req("ci.buildkite.token_file", b.TokenFile)
 		// Its token goes with every request.
-		if u, err := url.Parse(b.APIURL); b.APIURL != "" && (err != nil || (u.Scheme != "https" && !loopback(u.Hostname()))) {
-			errs = append(errs, errors.New("ci.buildkite.api_url must be https (or a loopback address)"))
+		if b.APIURL != "" {
+			if err := secureURL(b.APIURL); err != nil {
+				errs = append(errs, fmt.Errorf("ci.buildkite.api_url %w", err))
+			}
 		}
 	}
 	if c.CI.ChecksURL != "" && c.CI.Buildkite == nil {
@@ -265,8 +267,10 @@ func (c *Config) validate() error {
 		}
 	}
 	// Basic auth goes with every request.
-	if u, err := url.Parse(c.Gerrit.URL); c.Gerrit.URL != "" && (err != nil || (u.Scheme != "https" && !loopback(u.Hostname()))) {
-		errs = append(errs, errors.New("gerrit.url must be https (or a loopback address)"))
+	if c.Gerrit.URL != "" {
+		if err := secureURL(c.Gerrit.URL); err != nil {
+			errs = append(errs, fmt.Errorf("gerrit.url %w", err))
+		}
 	}
 	if c.ResyncInterval < 0 {
 		errs = append(errs, errors.New("resync_interval must not be negative"))
@@ -278,6 +282,22 @@ func (c *Config) validate() error {
 		errs = append(errs, errors.New("gerrit.ssh durations and counts must not be negative"))
 	}
 	return errors.Join(errs...)
+}
+
+// secureURL checks a base URL credentials are sent to: https (or a
+// loopback address), and only a base. Gerrit's is in every link the
+// bridge posts publicly, so a password in it would be too (ninth audit).
+func secureURL(raw string) error {
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil || u.Host == "":
+		return errors.New("is not a URL")
+	case u.Scheme != "https" && !(u.Scheme == "http" && loopback(u.Hostname())):
+		return errors.New("must be https (or a loopback address)")
+	case u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		return errors.New("must not have credentials, a query or a fragment")
+	}
+	return nil
 }
 
 // loopback reports whether host is a loopback address. Literals only: a

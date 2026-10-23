@@ -150,7 +150,8 @@ func TestSafeDefaults(t *testing.T) {
 }
 
 func TestGerritURLMustBeHTTPS(t *testing.T) {
-	for url, ok := range map[string]bool{"http://gerrit.example.com": false, "http://127.0.0.1:18080/gerrit": true, "http://localhost:8080": false, "https://gerrit.example.com": true} {
+	for url, ok := range map[string]bool{"http://gerrit.example.com": false, "http://127.0.0.1:18080/gerrit": true, "http://localhost:8080": false, "https://gerrit.example.com": true,
+		"https://u:p@gerrit.example.com": false, "https://gerrit.example.com/?x=1": false, "https://gerrit.example.com/#f": false, "ftp://127.0.0.1": false, "https:///gerrit": false} {
 		_, err := Parse([]byte(strings.Replace(full, "https://gerrit.example.com/", url, 1)))
 		if (err == nil) != ok {
 			t.Errorf("%s: err = %v", url, err)
@@ -160,7 +161,8 @@ func TestGerritURLMustBeHTTPS(t *testing.T) {
 
 func TestBuildkiteURLMustBeHTTPS(t *testing.T) {
 	bk := "ci:\n  buildkite:\n    organization: o\n    pipeline: p\n    token_file: /x\n    api_url: %s\n"
-	for url, ok := range map[string]bool{"http://buildkite.example.com": false, "http://127.0.0.1:18090": true, "https://api.buildkite.com": true} {
+	for url, ok := range map[string]bool{"http://buildkite.example.com": false, "http://127.0.0.1:18090": true, "https://api.buildkite.com": true,
+		"https://u:p@api.buildkite.com": false, "https://api.buildkite.com/?q": false} {
 		_, err := Parse([]byte(full + fmt.Sprintf(bk, url)))
 		if (err == nil) != ok {
 			t.Errorf("%s: err = %v", url, err)
