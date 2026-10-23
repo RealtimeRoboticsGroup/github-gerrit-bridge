@@ -506,24 +506,15 @@ func (s *Store) SaveAll(ctx context.Context, cs map[int]*Change, msg func(n int)
 	if err != nil {
 		return err
 	}
-	byRef := map[string]gitmirror.PushResult{}
-	for _, r := range res {
-		byRef[r.Ref] = r
-	}
-	var conflicts []string
+	var refs []string
 	for _, n := range nums {
-		if commits[n] == "" {
-			continue
+		if commits[n] != "" {
+			refs = append(refs, Ref(n))
 		}
-		r, ok := byRef[Ref(n)]
-		if !ok {
-			return fmt.Errorf("push %s: no result in %+v", Ref(n), res)
-		}
-		if r.Rejected && isLeaseFailure(r.Reason) {
-			conflicts = append(conflicts, Ref(n))
-		} else if r.Rejected && !strings.Contains(r.Reason, "atomic") {
-			return fmt.Errorf("push %s rejected: %s", Ref(n), r.Reason)
-		}
+	}
+	conflicts, err := leaseConflicts(refs, res)
+	if err != nil {
+		return err
 	}
 	if len(conflicts) > 0 {
 		for _, ref := range conflicts {
@@ -660,6 +651,37 @@ func nilIfEmpty[T any](s []T) []T {
 
 // isLeaseFailure reports whether a push rejection means the ref moved
 // (the lease failed), as opposed to a permission or validation error.
+// leaseConflicts are the refs of an atomic push whose leases failed. The
+// others are then rejected only as the transaction's ("atomic push
+// failed", or Gerrit's "transaction aborted"), whichever comes first in
+// the results: anything else is an error (ninth audit: a sibling's
+// "transaction aborted" hid the conflict, so nothing fell back).
+func leaseConflicts(refs []string, res []gitmirror.PushResult) ([]string, error) {
+	byRef := map[string]gitmirror.PushResult{}
+	for _, r := range res {
+		byRef[r.Ref] = r
+	}
+	var conflicts []string
+	var other error
+	for _, ref := range refs {
+		r, ok := byRef[ref]
+		switch {
+		case !ok:
+			return nil, fmt.Errorf("push %s: no result in %+v", ref, res)
+		case !r.Rejected:
+		case isLeaseFailure(r.Reason):
+			conflicts = append(conflicts, ref)
+		case strings.Contains(r.Reason, "atomic") || strings.Contains(r.Reason, "aborted"):
+		case other == nil:
+			other = fmt.Errorf("push %s rejected: %s", ref, r.Reason)
+		}
+	}
+	if other != nil {
+		return nil, other
+	}
+	return conflicts, nil
+}
+
 func isLeaseFailure(reason string) bool {
 	for _, r := range []string{"stale info", "fetch first", "non-fast-forward", "failed to lock", "lock"} {
 		if strings.Contains(reason, r) {

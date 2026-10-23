@@ -512,3 +512,29 @@ func TestSaveAllIsAtomic(t *testing.T) {
 		t.Errorf("after retry %+v %+v", got[5].State, got[6].State)
 	}
 }
+
+// An atomic push one ref's lease failed on: the others are rejected as
+// the transaction's, in any order (Gerrit says "transaction aborted"),
+// and that is a conflict to fall back from, not an error.
+func TestLeaseConflictsOfAnAtomicPush(t *testing.T) {
+	refs := []string{Ref(5), Ref(6), Ref(7)}
+	for _, tc := range []struct {
+		res  []gitmirror.PushResult
+		want []string
+		err  bool
+	}{
+		{[]gitmirror.PushResult{{Ref: Ref(5)}, {Ref: Ref(6)}, {Ref: Ref(7)}}, nil, false},
+		{[]gitmirror.PushResult{{Ref: Ref(5), Rejected: true, Reason: "transaction aborted"}, {Ref: Ref(6), Rejected: true, Reason: "failed to lock"},
+			{Ref: Ref(7), Rejected: true, Reason: "transaction aborted"}}, []string{Ref(6)}, false},
+		{[]gitmirror.PushResult{{Ref: Ref(5), Rejected: true, Reason: "atomic push failed"}, {Ref: Ref(6), Rejected: true, Reason: "stale info"},
+			{Ref: Ref(7), Rejected: true, Reason: "atomic push failed"}}, []string{Ref(6)}, false},
+		{[]gitmirror.PushResult{{Ref: Ref(5), Rejected: true, Reason: "transaction aborted"}, {Ref: Ref(6), Rejected: true, Reason: "prohibited by Gerrit"},
+			{Ref: Ref(7), Rejected: true, Reason: "stale info"}}, nil, true},
+		{[]gitmirror.PushResult{{Ref: Ref(5)}, {Ref: Ref(6)}}, nil, true},
+	} {
+		got, err := leaseConflicts(refs, tc.res)
+		if (err != nil) != tc.err || !slices.Equal(got, tc.want) {
+			t.Errorf("%+v: %v, %v", tc.res, got, err)
+		}
+	}
+}
