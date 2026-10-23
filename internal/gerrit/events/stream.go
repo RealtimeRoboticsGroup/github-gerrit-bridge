@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"strings"
 	"sync"
@@ -82,6 +83,7 @@ type Stream struct {
 
 	mu       sync.Mutex
 	lastLine time.Time
+	counts   map[string]int // events handed on, by type
 }
 
 // LastEvent is when the last line was read, for health checks.
@@ -89,6 +91,14 @@ func (s *Stream) LastEvent() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastLine
+}
+
+// Counts is how many events of each type have been handed on since the
+// bridge started.
+func (s *Stream) Counts() map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.counts)
 }
 
 // Run reads events until ctx is cancelled. It always returns ctx.Err().
@@ -199,6 +209,12 @@ func (s *Stream) dispatch(line []byte, logger *slog.Logger) {
 		s.Handler.Resync("dropped-output")
 		return
 	}
+	s.mu.Lock()
+	if s.counts == nil {
+		s.counts = map[string]int{}
+	}
+	s.counts[e.Type]++
+	s.mu.Unlock()
 	s.Handler.Event(e)
 }
 

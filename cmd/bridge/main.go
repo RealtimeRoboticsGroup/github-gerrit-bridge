@@ -2,17 +2,21 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"regexp"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -284,6 +288,19 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 					if t := stream.LastEvent(); !t.IsZero() {
 						last = time.Since(t).Round(time.Second).String() + " ago"
 					}
+					counts := stream.Counts()
+					total := 0
+					types := slices.Collect(maps.Keys(counts))
+					slices.SortFunc(types, func(a, b string) int { return cmp.Or(counts[b]-counts[a], strings.Compare(a, b)) })
+					var each []string
+					for _, t := range types {
+						total += counts[t]
+						each = append(each, fmt.Sprintf("%s %d", t, counts[t]))
+					}
+					events := fmt.Sprint(total)
+					if len(each) > 0 {
+						events += " (" + strings.Join(each, ", ") + ")"
+					}
 					rl := gh.RateLimit()
 					budget := "not known yet"
 					if rl.Limit > 0 {
@@ -294,6 +311,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 						{Name: "Project", Value: cfg.Gerrit.Project + " ↔ " + repo},
 						{Name: "Workers", Value: fmt.Sprint(cfg.Workers, " (+1 for merges)")},
 						{Name: "Last Gerrit event", Value: last},
+						{Name: "Gerrit events since start", Value: events},
 						{Name: "GitHub API", Value: budget},
 						{Name: "Dry run", Value: fmt.Sprint(dryRun)},
 					}

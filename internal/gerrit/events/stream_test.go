@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -229,5 +230,21 @@ func TestSSHSourceEndToEnd(t *testing.T) {
 	rec.expect(t, "patchset-created/42")
 	if got := srv.Execs[0]; got != "gerrit stream-events -s patchset-created -s dropped-output" {
 		t.Errorf("exec = %q", got)
+	}
+}
+
+// Events handed on are counted by type; dropped-output, which only asks
+// for a resync, is not one.
+func TestStreamCountsEvents(t *testing.T) {
+	src := newPipeSource()
+	rec := newRecorder()
+	s := &Stream{Source: src, Handler: rec}
+	run(t, s)
+	w := src.next(t)
+	rec.expect(t, "resync:connected")
+	io.WriteString(w, ev("patchset-created", 1)+ev("comment-added", 2)+ev("comment-added", 3)+`{"type":"dropped-output"}`+"\n")
+	rec.expect(t, "patchset-created/1", "comment-added/2", "comment-added/3", "resync:dropped-output")
+	if got := s.Counts(); !maps.Equal(got, map[string]int{"patchset-created": 1, "comment-added": 2}) {
+		t.Errorf("counts %v", got)
 	}
 }
