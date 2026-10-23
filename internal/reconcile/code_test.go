@@ -600,6 +600,16 @@ func TestObserveHistory(t *testing.T) {
 			t.Errorf("%s: HasParent=%v SameTree=%q; want %v, same=%v", tc.name, snap.HasParent[1], snap.SameTree[1], tc.hasParent, tc.same)
 		}
 	}
+	// A head the mirror has at another commit than GitHub's is fetched:
+	// only one already at what GitHub says is skipped.
+	local := "refs/remotes/github/heads/gerrit/" + cid(1)
+	s.git("m.git", "update-ref", local, m0)
+	if err := c.observeHistory(ctx, snapFor(s.commit(m0, "one.txt", "1c\n", "One"), m0), env); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.git("m.git", "rev-parse", local); got != ps1 {
+		t.Errorf("the mirror's %s = %s, want GitHub's %s", local, short(got), short(ps1))
+	}
 }
 
 // /submit of a GitHub-born PR: the author's branch gets Gerrit's squash,
