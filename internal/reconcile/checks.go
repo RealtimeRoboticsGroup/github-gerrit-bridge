@@ -318,8 +318,15 @@ func voteString(v int) string {
 // who names a Gerrit account: its full name, and the username too, since
 // anyone can set their full name to someone else's. The name is kept
 // short, and its spacing plain, so no line it is in loses the username
-// when cut.
+// when cut, and without the marks that would let it read as more than
+// one name ("x, +2 Austin Schuh (AustinSchuh)", ninth audit).
 func who(a gerrit.AccountInfo) string {
+	a.Name = strings.Map(func(r rune) rune {
+		if strings.ContainsRune(",()+", r) {
+			return ' '
+		}
+		return r
+	}, a.Name)
 	a.Name = shorten(strings.Join(strings.Fields(a.Name), " "), maxName)
 	switch {
 	case a.Name != "" && a.Username != "" && !strings.EqualFold(a.Name, a.Username):
@@ -330,6 +337,15 @@ func who(a gerrit.AccountInfo) string {
 		return a.Username
 	}
 	return fmt.Sprintf("account %d", a.AccountID)
+}
+
+// voter names a Gerrit account in a status's list of votes: by username,
+// which Gerrit restricts, so many votes cut short still read true.
+func voter(a gerrit.AccountInfo) string {
+	if a.Username != "" {
+		return a.Username
+	}
+	return who(a)
 }
 
 func truncateDesc(s string) string {
@@ -363,7 +379,7 @@ func desiredStatuses(ch *gerrit.ChangeInfo, changeURL string, ciLabels []string,
 			if a.Value == 0 {
 				continue
 			}
-			e := voteString(a.Value) + " " + who(a.AccountInfo)
+			e := voteString(a.Value) + " " + voter(a.AccountInfo)
 			switch {
 			case a.Value == hi && hi > 0:
 				max = append(max, e)

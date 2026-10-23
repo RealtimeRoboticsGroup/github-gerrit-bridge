@@ -323,3 +323,16 @@ func (f *flakyGroup) GroupMembers(context.Context, string) ([]gerrit.AccountInfo
 	}
 	return slices.Clone(f.members), nil
 }
+
+// Anyone can set their full name. One that reads as another vote
+// ("x, +2 Austin Schuh (AustinSchuh)") must not forge a voter in the
+// status: votes are listed by username, which Gerrit restricts.
+func TestStatusNamesCannotForgeAVoter(t *testing.T) {
+	jr := gerrit.AccountInfo{AccountID: 1, Name: "Junior Dev", Username: "jr"}
+	mallory := gerrit.AccountInfo{AccountID: 2, Name: "x, +2 Austin Schuh (AustinSchuh)", Username: "mallory"}
+	ch := change([]gerrit.ApprovalInfo{{AccountInfo: jr, Value: 2}, {AccountInfo: mallory, Value: 1}}, nil)
+	s := byContext(desiredStatuses(ch, "u", nil, ciRun{}, true, ""))[statusPrefix+"Code-Review"]
+	if s.Description != "+2 jr, +1 mallory" {
+		t.Errorf("description = %q", s.Description)
+	}
+}

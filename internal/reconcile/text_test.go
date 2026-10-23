@@ -172,6 +172,10 @@ func TestWhoNamesTheUsername(t *testing.T) {
 	if got := who(gerrit.AccountInfo{Name: "Austin Schuh", Username: "mallory"}); got != "Austin Schuh (mallory)" {
 		t.Errorf("who = %q", got)
 	}
+	// A name that reads as more than one: its marks are dropped.
+	if got := who(gerrit.AccountInfo{Name: "x, +2 Austin Schuh (AustinSchuh)", Username: "mallory"}); got != "x 2 Austin Schuh AustinSchuh (mallory)" {
+		t.Errorf("who = %q", got)
+	}
 	// A name padded to push the username out of a cut status line.
 	long := "Austin" + strings.Repeat(" \t\u00a0", 100) + "Schuh" + strings.Repeat("é", 200)
 	d := truncateDesc("+2 " + who(gerrit.AccountInfo{Name: long, Username: "mallory"}))
