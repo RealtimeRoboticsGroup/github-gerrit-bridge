@@ -939,7 +939,7 @@ has its text, saying it was not counted (seventh audit).
   busy one; third audit), and takes the branch lock ahead of anyone else
   waiting for it; the full reconcile follows (audit follow-up
   2026-10-19; slow or late reconciles are logged). It still waits for
-  whoever holds the branch lock (a slow comment sync, say), so under
+  whoever holds the branch lock (comment syncs already running, say), so under
   heavy load replication can win. If replication wins anyway, or the
   submit rewrote the commit (rebase, cherry-pick, any GitHub-born squash
   that is not a no-op), the PR is closed with a "Merged in Gerrit" notice.
@@ -1760,8 +1760,14 @@ Abandon and Toggle Work In Progress for Administrators.
    `SetReview`, and resolving or "Done" on either side resolved the other.
    How it is built:
    - Comment sync is keyed per change (`comment-added`, `patchset-created`,
-     and review/comment webhooks) and shares the branch lock with the
-     code mirror.
+     and review/comment webhooks). It holds the branch lock shared: comment
+     syncs of different changes run side by side (one at a time per
+     change), but never alongside the code mirror or a merge, which hold
+     it alone, and a writer waiting goes ahead of new comment syncs. A
+     `/submit` a comment sync finds runs once the sync has let go, with
+     the branch held alone, reading everything again. (Until 2026-10-22
+     every comment sync held the branch alone: with four workers, closing
+     sixty PRs at once synced their comments one at a time.)
    - Mirrors are recognisable without state: GitHub bodies carry
      `<!-- bridge:gerrit/<change>/<id> -->`, bridge notices carry
      `<!-- bridge:notice -->`, and Gerrit mirrors are authored by the

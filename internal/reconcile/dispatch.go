@@ -5,13 +5,16 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
 // Dispatcher routes each key to the code mirror or comment sync. Both take
-// the target branch's lock, so they never interleave on one change's state.
+// the target branch's lock, so they never interleave on one change's state:
+// the code mirror alone, comment syncs shared with one another (one at a
+// time per change), but a /submit alone.
 type Dispatcher struct {
 	Code     *Code
 	Comments *Comments
@@ -24,6 +27,26 @@ type Dispatcher struct {
 	// keys, so many PRs' events cost one branch reconcile, not one each
 	// (fourth audit).
 	Enqueue func(Key)
+
+	mu      sync.Mutex
+	changes map[int]*sync.Mutex // comment syncs of one change, one at a time
+}
+
+// changeLock takes change n for its comment sync: comments/N and a PR's
+// pr-comments key both sync it, and may run at once.
+func (d *Dispatcher) changeLock(n int) func() {
+	d.mu.Lock()
+	if d.changes == nil {
+		d.changes = map[int]*sync.Mutex{}
+	}
+	m := d.changes[n]
+	if m == nil {
+		m = &sync.Mutex{}
+		d.changes[n] = m
+	}
+	d.mu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
 // branch reconciles branch, or queues it.
@@ -91,29 +114,52 @@ func (d *Dispatcher) syncComments(ctx context.Context, n int) error {
 	if err != nil || st.State.PR == 0 {
 		return err
 	}
+	later, alone, err := d.syncShared(ctx, n, st.State.Branch)
+	if err != nil {
+		return err
+	}
+	if !alone {
+		return later
+	}
+	// A /submit is due: it runs with the branch to itself (PrepareSubmit
+	// moves PRs and their bases), reading everything again.
 	defer d.Code.lock(st.State.Branch)()
+	if err := d.Commands.Run(ctx, n); errors.As(err, new(*errLater)) {
+		return waitFor(max(laterOf(err), laterOf(later)))
+	} else if err != nil {
+		return err
+	}
+	return later
+}
+
+// syncShared syncs change n's comments, commands and checks with branch
+// shared. alone says a command needs it alone (errNeedsBranch).
+func (d *Dispatcher) syncShared(ctx context.Context, n int, branch string) (later error, alone bool, err error) {
+	defer d.Code.rlock(branch)()
+	defer d.changeLock(n)()
 	// What waits (errLater) does not hold up the rest.
-	var later error
 	var l *errLater
 	if err := d.Comments.Sync(ctx, n); errors.As(err, &l) {
 		later = err
 	} else if err != nil {
-		return err
+		return nil, false, err
 	}
 	if d.Commands != nil {
-		if err := d.Commands.Run(ctx, n); errors.As(err, &l) {
+		if err := d.Commands.run(ctx, n, false); errors.Is(err, errNeedsBranch) {
+			alone = true
+		} else if errors.As(err, &l) {
 			later = waitFor(max(l.after, laterOf(later)))
 		} else if err != nil {
-			return err
+			return nil, false, err
 		}
 	}
 	// Votes and CI results arrive as replies, so they ride along.
 	if d.Checks != nil {
 		if err := d.Checks.Sync(ctx, n); err != nil {
-			return err
+			return nil, false, err
 		}
 	}
-	return later
+	return later, alone, nil
 }
 
 // laterOf is how long err, an errLater or nil, waits.

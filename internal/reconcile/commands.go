@@ -126,8 +126,18 @@ var (
 	handledMarker = regexp.MustCompile(`<!-- bridge:cmd/(\d+) -->\s*\z`)
 )
 
-// Run handles new commands on change n's PR.
-func (c *Commands) Run(ctx context.Context, n int) error {
+// errNeedsBranch says a command is due that must run with its branch
+// locked alone (a /submit: PrepareSubmit moves PRs and their bases), not
+// shared as comment syncs hold it.
+var errNeedsBranch = errors.New("a command needs the branch alone")
+
+// Run handles new commands on change n's PR. The caller holds its branch
+// alone.
+func (c *Commands) Run(ctx context.Context, n int) error { return c.run(ctx, n, true) }
+
+// run is Run; holding the branch only shared (not alone), it stops with
+// errNeedsBranch before running a command.
+func (c *Commands) run(ctx context.Context, n int, alone bool) error {
 	st, err := c.Store.Load(ctx, n)
 	if err != nil || st.State.PR == 0 || st.State.Lifecycle != "NEW" {
 		return err
@@ -191,6 +201,9 @@ func (c *Commands) Run(ctx context.Context, n int) error {
 		if c.DryRun {
 			c.Logger.Info("dry run: would run /submit", "change", n, "pr", pr, "by", ic.User.Login)
 			continue
+		}
+		if !alone {
+			return errNeedsBranch
 		}
 		if !c.Replies.Take(ctx, int(ic.User.ID)) {
 			c.Logger.Info("/submit not answered: its author posted too many lately", "change", n, "pr", pr, "by", ic.User.Login)

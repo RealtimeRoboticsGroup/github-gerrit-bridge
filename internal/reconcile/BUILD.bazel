@@ -43,6 +43,7 @@ go_test(
         "code_test.go",
         "commands_test.go",
         "comments_test.go",
+        "lock_test.go",
         "dispatch_test.go",
         "identity_test.go",
         "importer_test.go",

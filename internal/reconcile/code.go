@@ -72,16 +72,22 @@ type Code struct {
 
 	// locks serializes reconciles of one target branch. The queue already
 	// does for Branch keys; Change and PR keys resolve to a branch here.
+	// Comment syncs share it (rlock), with one another but not with the
+	// branch's reconcile or a merge.
 	mu    sync.Mutex
 	locks map[string]*branchLock
 }
 
-// branchLock is a mutex whose urgent waiters go first.
+// branchLock is a readers-writer lock whose urgent writers go first, and
+// whose waiting writers go ahead of new readers: a stream of comment
+// syncs must not keep a merge or the branch's reconcile waiting.
 type branchLock struct {
-	mu     sync.Mutex
-	cond   *sync.Cond
-	held   bool
-	urgent int // urgent waiters
+	mu      sync.Mutex
+	cond    *sync.Cond
+	held    bool // by a writer
+	readers int
+	urgent  int // urgent writers waiting
+	writers int // other writers waiting
 }
 
 func (l *branchLock) lock(urgent bool) {
@@ -90,8 +96,11 @@ func (l *branchLock) lock(urgent bool) {
 	if urgent {
 		l.urgent++
 		defer func() { l.urgent-- }()
+	} else {
+		l.writers++
+		defer func() { l.writers-- }()
 	}
-	for l.held || (!urgent && l.urgent > 0) {
+	for l.held || l.readers > 0 || (!urgent && l.urgent > 0) {
 		l.cond.Wait()
 	}
 	l.held = true
@@ -100,6 +109,22 @@ func (l *branchLock) lock(urgent bool) {
 func (l *branchLock) unlock() {
 	l.mu.Lock()
 	l.held = false
+	l.cond.Broadcast()
+	l.mu.Unlock()
+}
+
+func (l *branchLock) rlock() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for l.held || l.urgent > 0 || l.writers > 0 {
+		l.cond.Wait()
+	}
+	l.readers++
+}
+
+func (l *branchLock) runlock() {
+	l.mu.Lock()
+	l.readers--
 	l.cond.Broadcast()
 	l.mu.Unlock()
 }
@@ -119,6 +144,7 @@ func (c *Code) branchLock(branch string) *branchLock {
 	return l
 }
 
+// lock takes branch for its reconcile, or a /submit, alone.
 func (c *Code) lock(branch string) func() {
 	l := c.branchLock(branch)
 	l.lock(false)
@@ -132,6 +158,15 @@ func (c *Code) lockUrgent(branch string) func() {
 	l := c.branchLock(branch)
 	l.lock(true)
 	return l.unlock
+}
+
+// rlock takes branch shared, for a comment sync: alongside others, never
+// alongside the branch's reconcile or a merge, which change PRs and
+// their state.
+func (c *Code) rlock(branch string) func() {
+	l := c.branchLock(branch)
+	l.rlock()
+	return l.runlock
 }
 
 // maxPasses bounds plan/apply rounds per reconcile. New PRs need one pass
