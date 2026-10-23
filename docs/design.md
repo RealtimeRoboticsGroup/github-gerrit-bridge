@@ -1229,6 +1229,11 @@ defenses, by threat:
   timed from when the bridge first saw it as it is. A `retest` line is
   matched in any case and with spaces around it, which Gerrit's own
   matching may not take but the bridge trims (seventh audit).
+  Other comments, edits and PR descriptions get no such wait: one edited
+  by someone else within moments of being posted could, if GraphQL had
+  not yet caught up, be mirrored as its author. **Accepted** (ninth
+  audit): a live probe saw no lag, and such a comment can neither run CI
+  nor submit.
 - **Edits to the bridge's own GitHub comments.** A Gerrit comment's GitHub
   copy can be edited by anyone with write access, which would put words in
   a Gerrit reviewer's mouth or change its `bridge:gerrit/…` marker. Gerrit
