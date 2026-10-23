@@ -1397,7 +1397,9 @@ defenses, by threat:
   2026-10-19). A PR whose commits name no Change-Id gets one derived
   with a key (from the webhook secret), so nobody can work it out from
   the PR and upload a change with it first to keep the PR out (third
-  audit).
+  audit). Since anyone can see those Change-Ids, a guessable secret could
+  be found from them offline: it must be at least 32 characters
+  (`openssl rand -hex 32`; ninth audit).
 - **Bridge markers.** `<!-- bridge:… -->` markers mark state (handled
   commands, comment mappings) only in comments by the bridge's own GitHub
   login that nobody else has edited, and only at the end, where the
@@ -1644,7 +1646,9 @@ Known gaps:
 - `/healthz` and `/metrics` (Prometheus). Metrics: queue depth, reconcile
   latency, API errors, and GitHub rate-limit budget.
 - A status page (`status_listen`, off by default; loopback addresses
-  only, since it tells when the bridge is starved): what each worker is
+  only, since it tells when the bridge is starved; it answers only GET
+  and HEAD, and only to a loopback Host, so a page that rebinds its own
+  name to 127.0.0.1 can't read it from the operator's browser): what each worker is
   running and for how long, what waits in the order workers take it
   (resync keys marked), what is held back (running and dirty again, or
   throttled), what is failing with its last error, and the last 100 runs
@@ -1848,6 +1852,15 @@ Abandon and Toggle Work In Progress for Administrators.
   (`GET /meta`, `hooks`): otherwise anyone can make the bridge read
   unsigned bodies (third audit).
   `gerrit.url` is https.
+- **Ninth audit, for the rollout:** gerrit-buildkite now takes
+  `-token_file` and `-webhook_token_file` (it refuses `-token` and
+  `-webhook_token`), needs an https `-api_url`, and builds only the
+  commit whose patch set it judged; `gerrit.url`, `-gerrit_url` and the
+  Buildkite URL accept loopback only as IP literals, and no credentials,
+  query or fragment; the webhook secret must be 32+ characters; git runs
+  without the bridge's inherited `GIT_*` variables; and
+  `github.committer_email` (e.g. gerrit@realtimeroboticsgroup.org) sets
+  the committer of the "Patchset N" commits.
 - **A dedicated GitHub bot account** for the token, not a person's: the
   bridge's own login never maps to a Gerrit account, and a person's
   comments under it would never be mirrored.
