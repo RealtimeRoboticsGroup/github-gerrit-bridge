@@ -550,8 +550,11 @@ func MakePlan(s *Snapshot) *Plan {
 		// differs from GitHub's: a Gerrit-born PR's head is the history of
 		// its patch sets, a GitHub-born one's the commits Gerrit squashed,
 		// and a submit may rebase. Swap the merged commit in (same files),
-		// unless it is a fork that does not allow maintainer edits.
-		swap := c.Status == "MERGED" && pr.Head.SHA != c.Revision && !s.NoPush[n]
+		// unless it is a fork that does not allow maintainer edits, or the
+		// head is a push Gerrit never had (it merged first): never
+		// overwrite that, as PrepareSubmit doesn't (ninth audit).
+		_, knownHead := s.githubFor(n)[pr.Head.SHA]
+		swap := c.Status == "MERGED" && pr.Head.SHA != c.Revision && !s.NoPush[n] && knownHead
 		if c.Status == "MERGED" && (pr.Head.SHA == c.Revision || swap) && !s.OnGitHubBranch[c.Revision] {
 			// The PR's head is (now) exactly the merged commit, and
 			// replication has not brought it to GitHub yet. GitHub marks a
@@ -576,6 +579,9 @@ func MakePlan(s *Snapshot) *Plan {
 		}
 		var msg string
 		switch {
+		case c.Status == "MERGED" && !knownHead && pr.Head.SHA != c.Revision:
+			msg = fmt.Sprintf("Merged in Gerrit as [change %d](%s), without this PR's last push (%s), which came after: "+
+				"it is left on the branch, and a new PR can bring it in.", n, c.URL, short(pr.Head.SHA))
 		case c.Status == "MERGED":
 			msg = fmt.Sprintf("Merged in Gerrit as [change %d](%s).", n, c.URL)
 		case c.Status == "ABANDONED":

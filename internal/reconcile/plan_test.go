@@ -1363,3 +1363,24 @@ func TestWithheldChanges(t *testing.T) {
 		t.Error("closed a withheld change's PR")
 	}
 }
+
+// The author pushed a commit Gerrit never had: the change merged first,
+// so it was not imported. The merged-commit swap must not force-push over
+// it (PrepareSubmit refuses to: "a push not imported yet, never
+// overwritten").
+func TestMergedSwapKeepsAnUnimportedPush(t *testing.T) {
+	w := bornWorld(t)
+	w.converge()
+	w.branch["feature"] = "h2" // the author's new push, not imported
+	w.parents["h2"] = []string{"h1"}
+	w.gerrit[1].Status = "MERGED"
+	w.onMain["s1"] = true
+	w.converge()
+	if got := w.branch["feature"]; got != "h2" {
+		t.Errorf("feature = %s: the author's unimported push h2 was force-pushed over", got)
+	}
+	if pr := w.prs[1]; pr.State != "closed" || !strings.Contains(strings.Join(w.log, "\n"), "comment #1: Merged in Gerrit as [change 1]") ||
+		!strings.Contains(strings.Join(w.log, "\n"), "without this PR's last push (h2)") {
+		t.Errorf("PR %s, log %q", pr.State, w.log)
+	}
+}
