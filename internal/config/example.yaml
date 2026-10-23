@@ -36,6 +36,7 @@ gerrit:
 github:
   owner: frc971
   repo: 971-Robot-Code
+  # At least 32 characters: openssl rand -hex 32.
   webhook_secret_file: /etc/github-gerrit-bridge/webhook-secret
   # Optional: accept deliveries only from GitHub's "hooks" ranges
   # (https://api.github.com/meta), if the bridge sees GitHub's addresses.

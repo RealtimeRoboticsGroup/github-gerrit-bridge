@@ -123,6 +123,18 @@ func TestExactlyOneToken(t *testing.T) {
 	}
 }
 
+func TestWebhookSecretIsLong(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s")
+	os.WriteFile(p, []byte(strings.Repeat("a", MinWebhookSecret-1)+"\n"), 0o600)
+	if _, err := ReadWebhookSecret(p); err == nil {
+		t.Error("short secret accepted")
+	}
+	os.WriteFile(p, []byte(strings.Repeat("a", MinWebhookSecret)+"\n"), 0o600)
+	if s, err := ReadWebhookSecret(p); err != nil || len(s) != MinWebhookSecret {
+		t.Errorf("ReadWebhookSecret = %q, %v", s, err)
+	}
+}
+
 func TestReadSecret(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "s")

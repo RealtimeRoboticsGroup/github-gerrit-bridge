@@ -316,6 +316,21 @@ func LooseSecret(path string) bool {
 	return err == nil && fi.Mode().Perm()&0o077 != 0
 }
 
+// MinWebhookSecret is the shortest webhook secret accepted. It also keys
+// the Change-Ids derived for PRs, which anyone can see, so a guessable
+// one could be found offline and webhooks forged with it (ninth audit).
+const MinWebhookSecret = 32
+
+// ReadWebhookSecret reads the webhook secret from path: at least
+// MinWebhookSecret characters (openssl rand -hex 32).
+func ReadWebhookSecret(path string) (string, error) {
+	s, err := ReadSecret(path)
+	if err == nil && len(s) < MinWebhookSecret {
+		err = fmt.Errorf("%s: the webhook secret must be at least %d characters (openssl rand -hex 32)", path, MinWebhookSecret)
+	}
+	return s, err
+}
+
 // ReadSecret reads a secret from path, trimming surrounding whitespace.
 func ReadSecret(path string) (string, error) {
 	b, err := os.ReadFile(path)

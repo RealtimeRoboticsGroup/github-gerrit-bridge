@@ -97,7 +97,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	webhookSecret, err := config.ReadSecret(cfg.GitHub.WebhookSecretFile)
+	webhookSecret, err := config.ReadWebhookSecret(cfg.GitHub.WebhookSecretFile)
 	if err != nil {
 		return err
 	}
