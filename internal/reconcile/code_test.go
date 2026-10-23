@@ -211,7 +211,7 @@ func TestPrepareSubmitSwapsInGerritsCommit(t *testing.T) {
 	s.git("m.git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/gerrit/heads/main")
 	g1 := s.commit(m0, "one.txt", "1\n", "One\n\nChange-Id: I1\n")
 	g2 := s.commit(g1, "two.txt", "2\n", "Two\n\nChange-Id: I2\n")
-	h2 := s.commit(g2, "two.txt", "2b\n", "Patch set 2 from Gerrit") // GitHub history of change 2
+	h2 := s.commit(g2, "two.txt", "2b\n", "Patchset 2 from Gerrit")  // GitHub history of change 2
 	g2b := s.commit(g1, "two.txt", "2b\n", "Two\n\nChange-Id: I2\n") // Gerrit's patch set 2
 	s.change(1, "I1", g1, "One\n\nChange-Id: I1\n", "NEW")
 	ci2 := s.change(2, "I2", g2b, "Two\n\nChange-Id: I2\n", "NEW")
@@ -534,15 +534,21 @@ func TestAppendCommitBuildsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.git("m.git", "log", "-1", "--format=%P %s", h2); got != ps1+" Patch set 2 from Gerrit" {
+	if got := s.git("m.git", "log", "-1", "--format=%P %s", h2); got != ps1+" Patchset 2 from Gerrit" {
 		t.Errorf("amend: %q", got)
 	}
 	h3, err := c.appendCommit(ctx, Append{Change: 1, PatchSet: 3, Revision: ps3, Onto: h2, Merge: m1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.git("m.git", "log", "-1", "--format=%P %s", h3); got != h2+" "+m1+" Patch set 3 from Gerrit, rebased" {
+	if got := s.git("m.git", "log", "-1", "--format=%P %s", h3); got != h2+" "+m1+" Patchset 3 from Gerrit, rebased" {
 		t.Errorf("rebase: %q", got)
+	}
+	for h, ps := range map[string]int{h2: 2, h3: 3} {
+		want := fmt.Sprintf("%s/%d", c.changeURL(1), ps)
+		if got := s.git("m.git", "log", "-1", "--format=%b", h); got != want {
+			t.Errorf("patch set %d links to %q, want %q", ps, got, want)
+		}
 	}
 	for h, ps := range map[string]string{h2: ps2, h3: ps3} {
 		if s.git("m.git", "rev-parse", h+"^{tree}") != s.git("m.git", "rev-parse", ps+"^{tree}") {
@@ -3238,7 +3244,7 @@ func TestMergedKeyReadiesPRsForReplication(t *testing.T) {
 	m1 := s.commit(m0, "b.txt", "b\n", "main moves")
 	s.push("gerrit.git", m1, "refs/heads/main")
 	g1 := s.commit(m0, "one.txt", "1\n", "One\n\nChange-Id: "+cid(1)+"\n")
-	h1 := s.commit(g1, "one.txt", "1b\n", "Patch set 2 from Gerrit") // GitHub history
+	h1 := s.commit(g1, "one.txt", "1b\n", "Patchset 2 from Gerrit") // GitHub history
 	merged := s.commit(m1, "one.txt", "1b\n", "One\n\nChange-Id: "+cid(1)+"\n")
 	ci := s.change(1, cid(1), merged, "One\n\nChange-Id: "+cid(1)+"\n", "MERGED")
 	ci.Revisions[merged] = gerritRev(ci.Revisions[merged], 3)

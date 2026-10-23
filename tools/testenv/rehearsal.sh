@@ -132,7 +132,7 @@ wait_for "the top PR moves to a frozen base and leaves the stack" frozen
 # head_commit <pr> <jq>: a field of the PR head's commit.
 head_commit() { me api "repos/${R}/commits/$(me api "repos/${R}/pulls/$1" --jq .head.sha)" --jq "$2"; }
 appended() { [[ "$(head_commit "${P2}" '[.parents[].sha] | join(" ")')" == "${HEAD2}" ]] &&
-  [[ "$(head_commit "${P2}" '.commit.message')" == "Patch set 2 from Gerrit"* ]]; }
+  [[ "$(head_commit "${P2}" '.commit.message')" == "Patchset 2 from Gerrit"* ]]; }
 wait_for "the amend is a new commit on top of patch set 1 (history kept)" appended
 outdated_only() {  # the suggestion on line 1 is outdated (the line changed); the thread is still there
   me api graphql -f query="query{repository(owner:\"AustinSchuh\",name:\"bridge-scratch\"){pullRequest(number:${P2}){reviewThreads(first:50){nodes{comments(first:1){nodes{body}}}}}}}" \
@@ -143,7 +143,7 @@ wait_for "the review threads stay on the PR" outdated_only
 rejoined() { [[ "$(me api "repos/${R}/pulls/${P3}" --jq '.stack.size // 0')" == 3 ]] && [[ "$(me api "repos/${R}/pulls/${P3}" --jq .base.ref)" == gerrit/* ]]; }
 wait_for "rebasing it rejoins the stack" rejoined
 merge_of_base() { [[ "$(head_commit "${P3}" '.parents | length')" == 2 ]] &&
-  [[ "$(head_commit "${P3}" '.commit.message')" == "Patch set 2 from Gerrit, rebased"* ]] &&
+  [[ "$(head_commit "${P3}" '.commit.message')" == "Patchset 2 from Gerrit, rebased"* ]] &&
   [[ "$(me api "repos/${R}/pulls/${P3}/files" --jq '[.[].filename] | join(" ")')" == "chain-${RUN}-3.txt" ]]; }
 wait_for "the rebase is a merge of the new base; the PR still shows only its own file" merge_of_base
 
@@ -218,7 +218,7 @@ wait_for "both submittable once CI verifies" gsubmittable
 # Amend the top one, so its PR head is the bridge's history commit: the
 # bridge must swap in Gerrit's commit before replication lands it.
 (cd "${ME_CLONE}" && echo "amended" >> "gsubmit-${RUN}-2.txt" && git commit -qa --amend --no-edit && git push -q gerrit HEAD:refs/for/main 2>/dev/null)
-ps2_on_github() { [[ "$(head_commit "${O2}" '.commit.message')" == "Patch set 2 from Gerrit"* ]]; }
+ps2_on_github() { [[ "$(head_commit "${O2}" '.commit.message')" == "Patchset 2 from Gerrit"* ]]; }
 wait_for "the amend reaches the PR as a new commit" ps2_on_github
 for c in "${F1}" "${F2}"; do gerrit_as AustinSchuh POST "changes/${c}/revisions/current/review" '{"labels":{"Code-Review":2}}' >/dev/null; done
 wait_for "both submittable again once CI verifies" gsubmittable

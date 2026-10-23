@@ -1803,10 +1803,11 @@ func (c *Code) appendCommit(ctx context.Context, a Append) (string, error) {
 		return "", fmt.Errorf("parsing %s", a.Revision)
 	}
 	env := []string{"GIT_AUTHOR_NAME=" + f[1], "GIT_AUTHOR_EMAIL=" + f[2], "GIT_AUTHOR_DATE=" + f[3]}
-	msg := fmt.Sprintf("Patch set %d from Gerrit\n\n%s\n", a.PatchSet, c.changeURL(a.Change))
+	link := fmt.Sprintf("%s/%d", c.changeURL(a.Change), a.PatchSet)
+	msg := fmt.Sprintf("Patchset %d from Gerrit\n\n%s\n", a.PatchSet, link)
 	parents := []string{"-p", a.Onto}
 	if a.Merge != "" {
-		msg = fmt.Sprintf("Patch set %d from Gerrit, rebased\n\n%s\n", a.PatchSet, c.changeURL(a.Change))
+		msg = fmt.Sprintf("Patchset %d from Gerrit, rebased\n\n%s\n", a.PatchSet, link)
 		parents = append(parents, "-p", a.Merge)
 	}
 	if a.KeepMessage {
