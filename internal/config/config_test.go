@@ -150,7 +150,7 @@ func TestSafeDefaults(t *testing.T) {
 }
 
 func TestGerritURLMustBeHTTPS(t *testing.T) {
-	for url, ok := range map[string]bool{"http://gerrit.example.com": false, "http://127.0.0.1:18080/gerrit": true, "http://localhost:8080": true, "https://gerrit.example.com": true} {
+	for url, ok := range map[string]bool{"http://gerrit.example.com": false, "http://127.0.0.1:18080/gerrit": true, "http://localhost:8080": false, "https://gerrit.example.com": true} {
 		_, err := Parse([]byte(strings.Replace(full, "https://gerrit.example.com/", url, 1)))
 		if (err == nil) != ok {
 			t.Errorf("%s: err = %v", url, err)
@@ -188,7 +188,7 @@ func TestLooseSecret(t *testing.T) {
 
 // The status page tells when the bridge is starved: only on loopback.
 func TestStatusListenIsLoopbackOnly(t *testing.T) {
-	for addr, ok := range map[string]bool{"": true, "127.0.0.1:8081": true, "[::1]:8081": true, "localhost:8081": true,
+	for addr, ok := range map[string]bool{"": true, "127.0.0.1:8081": true, "[::1]:8081": true, "localhost:8081": false,
 		":8081": false, "0.0.0.0:8081": false, "192.0.2.1:8081": false, "127.0.0.1": false} {
 		c, err := Parse([]byte(strings.Replace(full, "listen: \":9000\"\n", "listen: \":9000\"\nstatus_listen: \""+addr+"\"\n", 1)))
 		if (err == nil) != ok {

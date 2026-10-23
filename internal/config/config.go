@@ -280,10 +280,10 @@ func (c *Config) validate() error {
 	return errors.Join(errs...)
 }
 
+// loopback reports whether host is a loopback address. Literals only: a
+// name ("localhost") is looked up, and may not be loopback where
+// /etc/hosts lacks it (ninth audit).
 func loopback(host string) bool {
-	if host == "localhost" {
-		return true
-	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }
