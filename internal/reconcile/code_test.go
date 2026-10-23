@@ -1798,6 +1798,118 @@ func TestListOpenPullsOnce(t *testing.T) {
 	}
 }
 
+// A reconcile reads a closed PR it still has a change for once, not once
+// a pass: still closed while the pass's own open list lacks it. Reopened,
+// it is the list's.
+func TestClosedPRsAreReadOncePerReconcile(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	msg := "Feature\n\nChange-Id: " + cid(1) + "\n"
+	rev := s.commit(m0, "f.txt", "f\n", msg)
+	s.change(1, cid(1), rev, msg, "ABANDONED")
+	s.push("github.git", rev, "refs/heads/gerrit/"+cid(1))
+	s.pr(10, "gerrit/"+cid(1), rev, "main", "bot").State = "closed"
+	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "gerrit",
+		HeadBranch: "gerrit/" + cid(1), Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: rev, GitHubSHA: rev}}})
+	tr := trace.New()
+	rctx := context.WithValue(trace.With(ctx, tr), closedPRsKey{}, map[int]*github.PullRequest{})
+	gets := func() int {
+		spans, _ := tr.Spans()
+		n := 0
+		for _, sp := range spans {
+			if strings.Contains(sp.What, "GET /repos/o/r/pulls/10 ") {
+				n++
+			}
+		}
+		return n
+	}
+	for range 3 {
+		snap, err := c.observe(rctx, "main", map[int]string{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pr := snap.PRs[10]; pr == nil || pr.State != "closed" {
+			t.Fatalf("PR 10 = %+v", pr)
+		}
+	}
+	if n := gets(); n != 1 {
+		t.Errorf("PR 10 read %d times in three passes, want 1", n)
+	}
+	s.mu.Lock()
+	s.pulls[10].State = "open" // someone reopened it
+	s.mu.Unlock()
+	snap, err := c.observe(rctx, "main", map[int]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr := snap.PRs[10]; pr == nil || pr.State != "open" {
+		t.Errorf("reopened PR 10 = %+v, want the open list's", pr)
+	}
+
+	// Listed open, but not under the head the bridge knows it by: read
+	// again, not taken as closed; and kept only while closed.
+	rctx = context.WithValue(ctx, closedPRsKey{}, map[int]*github.PullRequest{})
+	s.mu.Lock()
+	s.pulls[10].State = "closed"
+	s.mu.Unlock()
+	if _, err := c.observe(rctx, "main", map[int]string{}); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.pulls[10].State, s.pulls[10].Head.Ref = "open", "renamed"
+	s.mu.Unlock()
+	if snap, _ := c.observe(rctx, "main", map[int]string{}); snap.PRs[10] == nil || snap.PRs[10].State != "open" {
+		t.Errorf("reopened under another head: PR 10 = %+v, want open", snap.PRs[10])
+	}
+	s.mu.Lock()
+	s.pulls[10].State = "closed"
+	s.mu.Unlock()
+	if snap, _ := c.observe(rctx, "main", map[int]string{}); snap.PRs[10] == nil || snap.PRs[10].State != "closed" {
+		t.Errorf("closed again: PR 10 = %+v, want closed", snap.PRs[10])
+	}
+}
+
+// Over a whole reconcile too: one that makes a second pass (to create
+// another change's PR) reads the closed PR once.
+func TestClosedPRIsReadOnceOverAReconcile(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	msg := "Feature\n\nChange-Id: " + cid(1) + "\n"
+	rev := s.commit(m0, "f.txt", "f\n", msg)
+	s.change(1, cid(1), rev, msg, "ABANDONED")
+	s.push("github.git", rev, "refs/heads/gerrit/"+cid(1))
+	s.pr(10, "gerrit/"+cid(1), rev, "main", "bot").State = "closed"
+	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "gerrit",
+		HeadBranch: "gerrit/" + cid(1), Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: rev, GitHubSHA: rev}}})
+	msg2 := "Other\n\nChange-Id: " + cid(2) + "\n"
+	s.change(2, cid(2), s.commit(m0, "g.txt", "g\n", msg2), msg2, "NEW")
+	tr := trace.New()
+	if err := c.Reconcile(trace.With(ctx, tr), Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	spans, _ := tr.Spans()
+	passes, gets := 0, 0
+	for _, sp := range spans {
+		if strings.HasPrefix(sp.What, "observe (pass") {
+			passes++
+		}
+		if strings.Contains(sp.What, "GET /repos/o/r/pulls/10 ") {
+			gets++
+		}
+	}
+	if passes < 2 || gets != 1 {
+		t.Errorf("%d passes read closed PR 10 %d times, want once", passes, gets)
+	}
+}
+
 // The importer records every head it sees a linked PR at, a known one
 // too: a branch put back on an older patch set's commit imports and
 // records nothing else, yet that is what GitHub then shows, and what a

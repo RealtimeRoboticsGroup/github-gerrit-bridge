@@ -193,6 +193,7 @@ func (c *Code) Reconcile(ctx context.Context, k Key) error {
 }
 
 func (c *Code) reconcile(ctx context.Context, branch string) error {
+	ctx = context.WithValue(ctx, closedPRsKey{}, map[int]*github.PullRequest{})
 	wait := trace.Region(ctx, "wait for branch "+branch+", alone")
 	defer c.lock(branch)()
 	wait()
@@ -223,6 +224,10 @@ func (c *Code) reconcile(ctx context.Context, branch string) error {
 }
 
 type exportedKey struct{}
+
+// closedPRsKey carries the closed PRs a reconcile read one by one, so
+// its later passes need not read them again (observe).
+type closedPRsKey struct{}
 
 // exportedCount is how many changes ctx's reconcile has exported so far.
 func exportedCount(ctx context.Context) int {
@@ -839,8 +844,16 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]strin
 	if err := c.markUnlinked(ctx, s, repoName, byNumber); err != nil {
 		return nil, err
 	}
+	closedPRs, _ := ctx.Value(closedPRsKey{}).(map[int]*github.PullRequest)
 	for n, st := range s.State {
 		if pr := st.State.PR; pr != 0 && s.PRs[pr] == nil && s.Changes[n] != nil {
+			if got := closedPRs[pr]; got != nil && !prOpen[pr] {
+				// Read closed earlier in this reconcile and not open now
+				// (the list above is this pass's): still closed, and a
+				// closed PR's head does not move.
+				s.PRs[pr] = got
+				continue
+			}
 			got, err := c.GitHub.GetPull(ctx, pr)
 			if github.IsNotFound(err) {
 				continue
@@ -849,6 +862,9 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]strin
 				return nil, err
 			}
 			s.PRs[pr] = got
+			if closedPRs != nil && got.State != "open" {
+				closedPRs[pr] = got
+			}
 		}
 	}
 	// GitHub-born changes live on the user's branch: take its head from
