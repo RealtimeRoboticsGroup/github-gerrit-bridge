@@ -85,8 +85,11 @@ unit bridge-test-gerrit "Bridge test instance: Gerrit" \
   "" "TimeoutStopSec=60"
 unit bridge-test-buildkite "Bridge test instance: fake Buildkite" \
   "${TE}/bin/fakebuildkite --duration 20s --gerrit_url http://127.0.0.1:18080/gerrit --gerrit_user buildkite --gerrit_password_file ${SITE}/ci/http-password" "" ""
+# The fake Buildkite's tokens, in files: gerrit-buildkite refuses them on
+# its command line.
+(umask 077; printf 'fake\n' > "${TE}/ci-api-token"; printf 'test-webhook-token\n' > "${TE}/ci-webhook-token")
 unit bridge-test-ci "Bridge test instance: gerrit-buildkite" \
-  "${GBK} -token fake -api_url http://127.0.0.1:18090/ -webhook_token test-webhook-token -user buildkite -key ${SITE}/ci/id_ed25519 -gerrit_url http://127.0.0.1:18080/gerrit -http_password_file ${SITE}/ci/http-password -server localhost -project bridge-scratch -buildkite_project ci -organization test -database ${TE}/buildkite.db" \
+  "${GBK} -token_file ${TE}/ci-api-token -api_url http://127.0.0.1:18090/ -webhook_token_file ${TE}/ci-webhook-token -user buildkite -key ${SITE}/ci/id_ed25519 -gerrit_url http://127.0.0.1:18080/gerrit -http_password_file ${SITE}/ci/http-password -server localhost -project bridge-scratch -buildkite_project ci -organization test -database ${TE}/buildkite.db" \
   "After=bridge-test-gerrit.service bridge-test-buildkite.service" \
   "Environment=PATH=${SITE}/ci/bin:/usr/bin:/bin"
 unit bridge-test-bridge "Bridge test instance: the bridge" \

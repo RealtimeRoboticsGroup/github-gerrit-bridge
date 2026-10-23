@@ -1794,8 +1794,12 @@ Abandon and Toggle Work In Progress for Administrators.
   SSH it could not see a commit's committer, so a stranger's commit
   naming a trusted user as its author, pushed as it is by someone who
   may forge committers, was trusted (eighth audit). It also needs
-  `-webhook_token` (a forged webhook reporting a build as passed would be
-  Verified), and `-listen` on an address only Buildkite reaches.
+  `-webhook_token_file` (a forged webhook reporting a build as passed
+  would be Verified) and `-token_file`, files rather than the old
+  `-token`/`-webhook_token`, which it refuses: any local user can read a
+  command line (ninth audit). `-api_url` must be https; the API token
+  goes to no other host. And `-listen` on an address only Buildkite
+  reaches.
 - **Administrators' `abandon` and `toggleWipState`** on the bridged
   project's `refs/heads/*` (Administrate Server is not applied through
   Run-As), not on All-Projects.
