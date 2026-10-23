@@ -1154,6 +1154,24 @@ token, so the bridge's posts are theirs. What stands in the way:
 4. **Repository access.** Exports push `gerrit/<Change-Id>` branches and
    open PRs, so the token needs push access. Webhooks need repository
    admin; without them the bridge relies on `resync_interval` polling.
+
+   *Note:* a work repository may have ~1000 open PRs, too many to mirror
+   or to poll one by one. Neither is needed:
+   - **Mirror only the person's PRs:** those they wrote or are asked to
+     review, and perhaps ones opted in with a label. The search
+     `is:pr is:open involves:@me` (or `review-requested:@me`) lists them,
+     tens rather than a thousand. Today the importer lists every open PR,
+     so this is a new filter.
+   - **Poll notifications instead of webhooks.** `GET /notifications`
+     needs only the person's own token, already covers the threads they
+     are involved in (review requests, mentions, comments and pushes on
+     their PRs), takes `If-Modified-Since` (a `304` does not count against
+     the rate limit) and says how often to ask (`X-Poll-Interval`, usually
+     60 s). Re-sync the PRs it names, and run the `involves:@me` search now
+     and then for anything it missed (a PR one starts reviewing unasked).
+   - **About a minute of latency** instead of seconds, which is fine for
+     one person. This is no time-window reuse: polling only decides when
+     to look, and each sync still reads fresh.
 5. **Policy.** It copies the repository to a Gerrit the person runs and
    automates with a personal token. Check that the employer allows both,
    and host the Gerrit where they approve.
