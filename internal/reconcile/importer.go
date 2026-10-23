@@ -218,6 +218,17 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 			gerritHeads[st.State.HeadBranch] = n
 		}
 	}
+	// Where a GitHub-born layer may sit: this branch, a Gerrit-born head
+	// on it, or another open PR's head (a stack).
+	bases := map[string]bool{branch: true}
+	for h := range gerritHeads {
+		bases[h] = true
+	}
+	for i := range prs {
+		if prs[i].HeadRepo() == repo {
+			bases[prs[i].Head.Ref] = true
+		}
+	}
 	byHead := map[string]*github.PullRequest{}
 	for i := range prs {
 		pr := &prs[i]
@@ -260,6 +271,9 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 				im.Logger.Info("not importing a PR from a branch Gerrit owns", "pr", pr.Number, "branch", key)
 				continue
 			}
+		}
+		if other := byHead[key]; other != nil && !im.rather(pr, other, bases) {
+			continue
 		}
 		byHead[key] = pr
 	}
@@ -1177,6 +1191,23 @@ func (im *Importer) parentTrusted(ctx context.Context, parent, base, branch stri
 		}
 	}
 	return false, nil
+}
+
+// rather reports whether PR a should be imported for a head instead of
+// b, another open PR from the same head: the one linked to a change, else
+// one onto a base a layer may sit on (bases), else the older. Anyone may
+// open a PR from someone's fork branch, into any base: that must not keep
+// the author's own PR from being imported (ninth audit).
+func (im *Importer) rather(a, b *github.PullRequest, bases map[string]bool) bool {
+	linked := func(pr *github.PullRequest) bool { return im.Store.ChangeForPR(pr.Number) != 0 }
+	here := func(pr *github.PullRequest) bool { return bases[pr.Base.Ref] }
+	switch {
+	case linked(a) != linked(b):
+		return linked(a)
+	case here(a) != here(b):
+		return here(a)
+	}
+	return a.Number < b.Number // as before: the older (either will do)
 }
 
 // Fetch deadlines: all open PRs' heads at once, then each alone.

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -4193,5 +4194,68 @@ func TestCodeFromMergesForgedCommittersAndMissingCommits(t *testing.T) {
 	if codeFrom(map[int]gerrit.RevisionInfo{1: codeRev("REWORK", 5, 5, "m"), 2: unread}, 2, own(5)) ||
 		codeFrom(map[int]gerrit.RevisionInfo{1: unread}, 1, func(gerrit.RevisionInfo) bool { return true }) {
 		t.Error("a patch set whose commit was not read was someone's")
+	}
+}
+
+// Anyone may open a PR from someone's branch, into any base. One opened
+// first, into a branch the bridge doesn't mirror, must not keep the
+// author's own PR from that head, into main, from being imported.
+func TestAnotherPRFromTheSameHeadDoesNotBlockTheImport(t *testing.T) {
+	for _, order := range [][2]int{{50, 51}, {51, 50}} {
+		s, im, up, m1, _, _ := gerritBornWorld(t, false)
+		h := s.commit(m1, "a.txt", "a\n", "Add a")
+		s.push("github.git", h, "refs/heads/feature")
+		s.pr(order[0], "feature", h, "elsewhere", "mallory")
+		s.pr(order[1], "feature", h, "main", "austin")
+		if err := im.Import(context.Background(), "main"); err != nil {
+			t.Fatal(err)
+		}
+		if len(up.uploads) != 1 {
+			t.Fatalf("PRs %v: uploads %v", order, up.uploads)
+		}
+		sha := strings.Fields(up.uploads[0])[0]
+		msg, err := up.m.Git(context.Background(), nil, "log", "-1", "--format=%B", sha)
+		if want := fmt.Sprintf("GitHub-PR: https://github.com/o/r/pull/%d\n", order[1]); err != nil || !strings.Contains(string(msg), want) {
+			t.Errorf("PRs %v: imported %q, want the author's PR #%d", order, msg, order[1])
+		}
+	}
+}
+
+// The same for a stacked layer, whose base is another PR's head; and a
+// PR already linked to a change keeps it.
+func TestAnotherPRFromTheSameHeadDoesNotBlockAStackedImport(t *testing.T) {
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	up.create = true
+	im.link = func(ctx context.Context, n int, origin, branch, changeID string, pr *github.PullRequest) error {
+		return updateStateFn(ctx, im.Store, n, "Link", func(st *state.Change) {
+			st.State.Change, st.State.ChangeID, st.State.Branch, st.State.Origin, st.State.PR = n, changeID, branch, origin, pr.Number
+			st.State.HeadBranch = pr.HeadKey("o/r")
+		})
+	}
+	h := s.commit(m1, "a.txt", "a\n", "Add a")
+	top := s.commit(h, "b.txt", "b\n", "Add b")
+	s.push("github.git", h, "refs/heads/feature")
+	s.push("github.git", top, "refs/heads/top")
+	s.pr(51, "feature", h, "main", "austin")
+	s.pr(59, "top", top, "nowhere", "mallory")
+	s.pr(60, "top", top, "feature", "austin")
+	if err := im.Import(context.Background(), "main"); err != nil {
+		t.Fatal(err)
+	}
+	var prs []string
+	for _, u := range up.uploads {
+		msg, _ := up.m.Git(context.Background(), nil, "log", "-1", "--format=%B", strings.Fields(u)[0])
+		if m := regexp.MustCompile(`GitHub-PR: \S+/pull/(\d+)`).FindStringSubmatch(string(msg)); m != nil {
+			prs = append(prs, m[1])
+		}
+	}
+	if !slices.Equal(prs, []string{"51", "60"}) {
+		t.Errorf("imported PRs %v, want [51 60]", prs)
+	}
+	// PR 10 is linked to change 1: another PR from its head doesn't take it.
+	pr10 := s.pulls[10]
+	other := &github.PullRequest{Number: 3, Base: github.Ref{Ref: "main"}}
+	if im.rather(other, pr10, map[string]bool{"main": true}) || !im.rather(pr10, other, map[string]bool{"main": true}) {
+		t.Error("an older PR from a linked PR's head took its place")
 	}
 }
