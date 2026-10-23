@@ -2245,3 +2245,52 @@ func TestSuggestionWithBackticksStaysCode(t *testing.T) {
 		t.Errorf("body:\n%s", b)
 	}
 }
+
+// A dismissal of an approval that cast no vote (not counted) leaves the
+// reviewer's own Gerrit vote alone: only the approval's vote is withdrawn.
+func TestDismissalLeavesAVoteTheApprovalNeverCast(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	bobg := fakeAs{e.g, gerrit.AccountInfo{AccountID: 7, Username: "bobg"}}
+	if err := bobg.SetReview(context.Background(), 5, "2", gerrit.ReviewInput{Labels: map[string]int{"Code-Review": 2}}); err != nil {
+		t.Fatal(err)
+	}
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha1", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70", SubmittedAt: e.g.now().Add(time.Second)})
+	e.sync(t)
+	if e.g.labels["Code-Review"]["bobg"] != 2 {
+		t.Fatalf("votes = %v", e.g.labels)
+	}
+	e.h.dismiss(70, "maint", e.g.now().Add(2*time.Second))
+	e.sync(t)
+	if v := e.g.labels["Code-Review"]["bobg"]; v != 2 {
+		t.Errorf("the dismissal of an approval that cast no vote withdrew bob's own Gerrit +2: now %+d (votes %v)", v, e.g.votes)
+	}
+}
+
+// The same when the reviewer's own Gerrit vote came after the approval
+// (which then needs to cast none): still not a vote the approval cast.
+func TestDismissalLeavesAVoteGivenAfterAnApprovalThatCastNone(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha1", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70", SubmittedAt: e.g.now().Add(-time.Second)})
+	bobg := fakeAs{e.g, gerrit.AccountInfo{AccountID: 7, Username: "bobg"}}
+	if err := bobg.SetReview(context.Background(), 5, "2", gerrit.ReviewInput{Labels: map[string]int{"Code-Review": 2}}); err != nil {
+		t.Fatal(err)
+	}
+	e.sync(t)
+	if !slices.Equal(e.g.votes, []string{"bobg:Code-Review=2"}) {
+		t.Fatalf("votes = %v, want only bob's own", e.g.votes)
+	}
+	// Since the approval, the bridge posted as bob without a vote, and
+	// cast someone else's vote: neither is the approval's vote.
+	e.g.messages = append(e.g.messages,
+		gerrit.ChangeMessage{ID: "m-bob", Author: gerrit.AccountInfo{AccountID: 7, Username: "bobg"}, Tag: mirrorTag, Date: e.g.tick(), Message: "Patch Set 2:\n\nCode-Review+2 from me later."},
+		gerrit.ChangeMessage{ID: "m-carol", Author: gerrit.AccountInfo{AccountID: 8, Username: "carol"}, Tag: mirrorTag, Date: e.g.tick(), Message: "Patch Set 2: Code-Review+1"})
+	e.h.dismiss(70, "maint", e.g.now().Add(2*time.Second))
+	e.sync(t)
+	if v := e.g.labels["Code-Review"]["bobg"]; v != 2 {
+		t.Errorf("the dismissal of an approval that cast no vote withdrew bob's own Gerrit +2: now %+d (votes %v)", v, e.g.votes)
+	}
+}

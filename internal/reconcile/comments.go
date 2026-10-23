@@ -1598,6 +1598,11 @@ func (c *Comments) dropDismissed(ctx context.Context, n, pr int, rv github.Revie
 	if vote == nil {
 		return nil
 	}
+	if !s.mirroredVoteSince(reviewer, rv.SubmittedAt) {
+		// The approval cast no vote (not counted): the reviewer's vote is
+		// one they gave in Gerrit, theirs alone (ninth audit).
+		return nil
+	}
 	if *dismissals == nil {
 		ds, err := c.GitHub.Dismissals(ctx, pr)
 		if err != nil {
@@ -1691,6 +1696,18 @@ func (s *commentSnapshot) votedSince(reviewer gerrit.AccountInfo, t time.Time, r
 	for _, m := range s.messages {
 		at, err := time.Parse("2006-01-02 15:04:05.999999999", m.Date)
 		if err == nil && at.After(t) && sameAccount(m.Author, reviewer) && !isBridgeTag(m.Tag) && re.MatchString(m.Message) {
+			return true
+		}
+	}
+	return false
+}
+
+// mirroredVoteSince reports whether the bridge cast a positive
+// Code-Review as reviewer since t: a GitHub approval's vote.
+func (s *commentSnapshot) mirroredVoteSince(reviewer gerrit.AccountInfo, t time.Time) bool {
+	for _, m := range s.messages {
+		at, err := time.Parse("2006-01-02 15:04:05.999999999", m.Date)
+		if err == nil && !at.Before(t) && sameAccount(m.Author, reviewer) && m.Tag == mirrorTag && positiveCodeReview.MatchString(m.Message) {
 			return true
 		}
 	}
