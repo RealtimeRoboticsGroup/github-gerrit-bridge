@@ -1057,6 +1057,58 @@ Caveats:
 This lives behind an `identity.TokenSource` interface. When there is no
 token, the bridge falls back to the bot.
 
+**Tabled (2026-10-22): what posting as the user would take.** Today every
+Gerrit → GitHub post is the bot's: GitHub has no Run-As, so a post is
+always the token holder's. What the bridge would post as a user is
+comments, thread replies and resolutions, and maybe Gerrit votes as
+reviews. In GitHub's fine-grained terms that is **Pull requests: write**
+(plus **Issues: write** for a PR's conversation comments): neither pushes
+code nor merges.
+
+- **AOS's tokens can't do it as they are.** The plugin is a classic OAuth
+  App, and AOS asks only for `USER_EMAIL`, which cannot comment. Classic
+  scopes have no "comment only": the least that can comment, `public_repo`,
+  is full write to every public repository the user can write to, and the
+  tokens never expire. Holding those for everyone is not worth the
+  attribution.
+- **A GitHub App instead.** Its user tokens carry only what the App may do
+  *and* the user may do, and only on repositories the App is installed on.
+  Create one with Pull requests: read & write, Issues: read & write, and
+  the account permission Email addresses: read (the plugin's email lookup,
+  which `USER_EMAIL` covers today). An org admin installs it on the AOS
+  repositories once.
+- **Probably no plugin change.** `OAuthProtocol` (master) runs the plain
+  web flow (authorize, then code → token with the client ID and secret),
+  which GitHub Apps serve at the same endpoints; it never checks the granted
+  scopes, and Apps ignore the `scope` parameter. So swapping the App's
+  client ID and secret into `gerrit.config` should keep login working.
+  Unchecked: the plugin's other features (repository and PR import, org
+  lists), which may need `repo`/`read:org`; AOS doesn't appear to use them.
+- **Approval is the next login.** GitHub shows each user the App's consent
+  screen at their next Gerrit login; authorizing is the opt-in, and the
+  plugin stores the new token as it does today. Until then a user has the
+  old OAuth App token, which the bridge must tell apart (it can't comment)
+  and fall back to the bot for.
+- **Token expiry is the snag.** App user tokens expire after 8 hours by
+  default, with a refresh token, which the plugin drops (it keeps only
+  `access_token`), while AOS's web sessions last 90 days. Either turn on the
+  App's opt-out of user-token expiry, or have the bridge refresh tokens and
+  keep the refresh tokens itself (a second secret store).
+- **The bridge side.** A `TokenSource` reading the token external IDs
+  (Access Database, or a fetch of `refs/meta/external-ids`) and decrypting
+  them with a copy of the plugin's key file; posting with the user's token
+  when there is one and the bot otherwise; and recognizing its posts by
+  something other than authorship (a marker in the body), since the
+  bot-copy checks (undoing edits to the bot's copy of a Gerrit comment)
+  would no longer apply: a user may edit their own comment.
+- **Costs.** A per-user secret for everyone who opts in (narrow, but still
+  secrets on an Internet-facing service), the key file off the Gerrit host,
+  and a new failure mode: a post going out under the wrong person's token.
+
+Verify against GitHub's current docs before starting: the expiry opt-out
+and the email permission especially. Nothing here was tried live; the test
+Gerrit doesn't use the github plugin's login.
+
 **Watch out:** the github plugin's *pull request import* creates Gerrit
 changes from GitHub PRs. That overlaps with §5.2 and would create duplicate
 changes, so it must stay off for the bridged repo.
