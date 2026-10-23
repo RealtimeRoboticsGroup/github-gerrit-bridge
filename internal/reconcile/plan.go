@@ -402,6 +402,14 @@ func MakePlan(s *Snapshot) *Plan {
 		}
 	}
 
+	// The current patch sets kept off their own authors' branches.
+	foreignRev := map[string]bool{}
+	for m := range s.Foreign {
+		if c := s.Changes[m]; c != nil {
+			foreignRev[c.Revision] = true
+		}
+	}
+
 	// Desired branches and PR shape.
 	refs := map[string]string{}
 	appends := map[string]Append{}
@@ -429,6 +437,10 @@ func MakePlan(s *Snapshot) *Plan {
 			// Changes .github/: the PR keeps what it has.
 		case s.Foreign[n]:
 			// Not the author's, nor a maintainer's: the PR keeps what it has.
+		case born && foreignRev[c.Parent]:
+			// Rebased onto a patch set kept off its own author's branch:
+			// not merged into this author's either (ninth audit). By
+			// revision: parentOf skips fork heads.
 		case !onGitHub && born:
 			// The author's branch is gone (or not listed): nothing to add to.
 		case !onGitHub && ghParent == c.Parent:

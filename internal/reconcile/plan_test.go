@@ -1384,3 +1384,32 @@ func TestMergedSwapKeepsAnUnimportedPush(t *testing.T) {
 		t.Errorf("PR %s, log %q", pr.State, w.log)
 	}
 }
+
+// Change 1's patch set 2 is someone else's (foreign): it never reaches
+// its author's branch. Change 2, a GitHub-born PR stacked on it, is
+// rebased in Gerrit onto that patch set (a click of Rebase takes the
+// parent's latest). The foreign commit must not reach change 2's
+// author's branch as the merged-in new parent either.
+func TestForeignParentIsNotMergedIntoAChildsBranch(t *testing.T) {
+	w := bornWorld(t)
+	w.upload(2, "t1", "s1")
+	w.gerrit[2].Message = "Child\n\nGitHub-PR: https://github.com/o/r/pull/2\nChange-Id: " + cid(2)
+	w.gerrit[2].Subject = "Child"
+	w.branch["alice"] = "a1"
+	w.parents["a1"] = []string{"h1"}
+	w.prs[2] = &github.PullRequest{Number: 2, State: "open", Title: "Child", Body: "",
+		Head: github.Ref{Ref: "alice"}, Base: github.Ref{Ref: "feature"}}
+	w.nextNum = 3
+	w.state[2] = &state.Change{
+		State:     state.ChangeState{PR: 2, Origin: "github", HeadBranch: "alice"},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: "t1", GitHubSHA: "a1"}},
+	}
+	w.converge()
+	w.upload(1, "s2", "m0") // Mallory's, in Gerrit
+	w.foreign = map[int]bool{1: true}
+	w.upload(2, "t2", "s2") // a Rebase onto the parent's latest
+	w.converge()
+	if strings.Contains(w.branch["alice"], "s2") || w.branch["feature"] != "h1" {
+		t.Errorf("feature = %s, alice = %s: the foreign patch set s2 reached an author's branch", w.branch["feature"], w.branch["alice"])
+	}
+}
