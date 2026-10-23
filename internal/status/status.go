@@ -7,6 +7,7 @@ package status
 
 import (
 	"html/template"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -50,6 +51,12 @@ type page struct {
 func (h *Handler[K]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	// Only a page asked for by a loopback name: a site that rebinds its
+	// own name to 127.0.0.1 sends that name (ninth audit).
+	if !loopbackHost(r.Host) {
+		http.Error(w, "the status page answers only to 127.0.0.1, [::1] or localhost", http.StatusMisdirectedRequest)
+		return
+	}
 	if id, ok := strings.CutPrefix(r.URL.Path, "/run/"); ok {
 		h.serveRun(w, id)
 		return
@@ -300,3 +307,16 @@ td.t { width: 28%; min-width: 120px; } .track { position: relative; height: 10px
 <td class="w" style="padding-left:{{.Indent}}px">{{.What}}{{with .Err}} <span class="err">{{.}}</span>{{end}}</td></tr>{{end}}</table>
 </body></html>
 `))
+
+// loopbackHost reports whether a request's Host names this machine.
+func loopbackHost(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}

@@ -42,7 +42,7 @@ func TestPage(t *testing.T) {
 		Now:   func() time.Time { return now },
 	}
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	h.ServeHTTP(w, get("/"))
 	body := w.Body.String()
 	for _, want := range []string{
 		"Running (1)", `<a href="https://github.com/o/r/pull/7">pr/7</a>`, "1m30s", "3s",
@@ -87,7 +87,7 @@ func TestRunTimeline(t *testing.T) {
 	}
 	get := func(path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		h.ServeHTTP(w, get(path))
 		return w
 	}
 	if body := get("/").Body.String(); !strings.Contains(body, `href="run/42"`) || strings.Contains(body, `href="run/43"`) {
@@ -110,6 +110,30 @@ func TestRunTimeline(t *testing.T) {
 	for _, path := range []string{"/run/43", "/run/99", "/other"} {
 		if w := get(path); w.Code != http.StatusNotFound {
 			t.Errorf("%s: %d", path, w.Code)
+		}
+	}
+}
+
+// get asks for path as the operator's browser does, through a tunnel.
+func get(path string) *http.Request {
+	r := httptest.NewRequest("GET", path, nil)
+	r.Host = "127.0.0.1:18082"
+	return r
+}
+
+// A page that rebinds its own name to 127.0.0.1 sends that name.
+func TestOnlyLoopbackHosts(t *testing.T) {
+	h := &Handler[string]{Queue: queue.New[string](), Name: func(k string) string { return k }}
+	for host, ok := range map[string]bool{"127.0.0.1:18082": true, "[::1]:18082": true, "localhost:18082": true, "LOCALHOST": true, "127.0.0.1": true,
+		"attacker.example:18082": false, "attacker.example": false, "192.0.2.1:18082": false, "[::1]": true, "127.0.0.1.attacker.example:18082": false, "": false} {
+		for _, path := range []string{"/", "/run/1"} {
+			r := httptest.NewRequest("GET", path, nil)
+			r.Host = host
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if got := w.Code != http.StatusMisdirectedRequest; got != ok {
+				t.Errorf("Host %q %s: %d", host, path, w.Code)
+			}
 		}
 	}
 }
