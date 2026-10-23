@@ -1753,6 +1753,7 @@ func TestReconcileReadsWhatItHasOnce(t *testing.T) {
 	s.webhookPush(im.Pushers, 10, "austin")
 	c := &Code{Project: "p", Gerrit: im.Gerrit, GitHub: im.GitHub, GitHubURL: im.GitHubURL, Mirror: im.Mirror, Store: im.Store,
 		DefaultBranch: "main", Logger: slog.Default(), BridgeLogin: "bot", Identity: im.Identity, Importer: im}
+	imports := 0 // listings by the import, before export's first look
 	count := func() (lists, headFetches int) {
 		t.Helper()
 		tr := trace.New()
@@ -1769,6 +1770,9 @@ func TestReconcileReadsWhatItHasOnce(t *testing.T) {
 				if pass <= 1 {
 					lists++
 				}
+				if pass == 0 {
+					imports++
+				}
 			case pass >= 1 && strings.HasPrefix(sp.What, "git -c "+fsckFetch) && strings.Contains(sp.What, "refs/heads/feature"):
 				headFetches++
 			}
@@ -1780,6 +1784,11 @@ func TestReconcileReadsWhatItHasOnce(t *testing.T) {
 	}
 	if lists, fetches := count(); lists != 1 || fetches != 0 {
 		t.Errorf("nothing new: %d listings, %d fetches of the PR's head by export; want 1 and 0", lists, fetches)
+	}
+	// Each reconcile's import lists them itself: nothing is kept from one
+	// reconcile to the next.
+	if imports != 2 {
+		t.Errorf("the imports of two reconciles listed the open PRs %d times, want 2", imports)
 	}
 }
 
@@ -1918,6 +1927,18 @@ func TestClosedPRIsReadOnceOverAReconcile(t *testing.T) {
 	}
 	if passes < 2 || gets != 1 {
 		t.Errorf("%d passes read closed PR 10 %d times, want once", passes, gets)
+	}
+	// The next reconcile reads it again: the memo is one reconcile's.
+	if err := updateStateFn(ctx, store, 1, "back to NEW", func(st *state.Change) { st.State.Lifecycle = "NEW" }); err != nil {
+		t.Fatal(err)
+	}
+	tr = trace.New()
+	if err := c.Reconcile(trace.With(ctx, tr), Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	spans, _ = tr.Spans()
+	if !slices.ContainsFunc(spans, func(sp trace.Span) bool { return strings.Contains(sp.What, "GET /repos/o/r/pulls/10 ") }) {
+		t.Error("the next reconcile took closed PR 10 from the last one's memo")
 	}
 }
 
