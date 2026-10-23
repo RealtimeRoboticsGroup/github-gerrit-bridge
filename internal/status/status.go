@@ -57,6 +57,11 @@ func (h *Handler[K]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the status page answers only to 127.0.0.1, [::1] or localhost", http.StatusMisdirectedRequest)
 		return
 	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "read only", http.StatusMethodNotAllowed)
+		return
+	}
 	if id, ok := strings.CutPrefix(r.URL.Path, "/run/"); ok {
 		h.serveRun(w, id)
 		return

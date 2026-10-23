@@ -137,3 +137,17 @@ func TestOnlyLoopbackHosts(t *testing.T) {
 		}
 	}
 }
+
+// It is read only.
+func TestOnlyReads(t *testing.T) {
+	h := &Handler[string]{Queue: queue.New[string](), Name: func(k string) string { return k }}
+	for method, ok := range map[string]bool{"GET": true, "HEAD": true, "POST": false, "PUT": false, "DELETE": false} {
+		r := get("/")
+		r.Method = method
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if got := w.Code != http.StatusMethodNotAllowed; got != ok {
+			t.Errorf("%s: %d", method, w.Code)
+		}
+	}
+}
