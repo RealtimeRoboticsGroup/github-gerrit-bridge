@@ -98,6 +98,21 @@ func TestTrustedGroupIsRequired(t *testing.T) {
 	}
 }
 
+func TestCommitter(t *testing.T) {
+	c, err := Parse([]byte(full + "  committer_name: Gerrit\n  committer_email: gerrit@example.com\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.GitHub.CommitterName != "Gerrit" || c.GitHub.CommitterEmail != "gerrit@example.com" {
+		t.Errorf("committer = %q <%q>", c.GitHub.CommitterName, c.GitHub.CommitterEmail)
+	}
+	for _, bad := range []string{"  committer_email: \"a>b\"\n", "  committer_name: \"Eve <e@x>\"\n", "  committer_name: \"a\\nb\"\n"} {
+		if _, err := Parse([]byte(full + bad)); err == nil || !strings.Contains(err.Error(), "committer") {
+			t.Errorf("%q: err = %v", bad, err)
+		}
+	}
+}
+
 func TestExactlyOneToken(t *testing.T) {
 	both := strings.Replace(full, "  token_file:", "  token_command: [gh, auth, token]\n  token_file:", 1)
 	none := strings.Replace(full, "  token_file: /etc/bridge/github-token\n", "", 1)

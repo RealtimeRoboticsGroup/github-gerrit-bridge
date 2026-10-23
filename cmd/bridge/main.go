@@ -344,15 +344,17 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		})
 	}
 	code := &reconcile.Code{
-		Project:       cfg.Gerrit.Project,
-		Gerrit:        rest,
-		GitHub:        gh,
-		GitHubURL:     "https://github.com/" + repo + ".git",
-		Mirror:        mirror,
-		Store:         store,
-		DefaultBranch: ghRepo.DefaultBranch,
-		DryRun:        dryRun,
-		Logger:        logger,
+		Project:        cfg.Gerrit.Project,
+		Gerrit:         rest,
+		GitHub:         gh,
+		GitHubURL:      "https://github.com/" + repo + ".git",
+		Mirror:         mirror,
+		CommitterName:  cfg.GitHub.CommitterName,
+		CommitterEmail: cfg.GitHub.CommitterEmail,
+		Store:          store,
+		DefaultBranch:  ghRepo.DefaultBranch,
+		DryRun:         dryRun,
+		Logger:         logger,
 	}
 	// Never act as the bridge itself, a service account (CI, say) or an
 	// administrator by matching usernames, even if someone registers that

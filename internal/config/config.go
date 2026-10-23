@@ -99,6 +99,11 @@ type GitHub struct {
 	// after this time, so turning the bridge on does not sweep up every
 	// existing PR. Zero imports all.
 	ImportCreatedAfter time.Time `yaml:"import_created_after"`
+	// CommitterName and CommitterEmail are the committer of the commits
+	// the bridge writes for GitHub ("Patchset N from Gerrit"). Default: the
+	// bridge's Gerrit account.
+	CommitterName  string `yaml:"committer_name"`
+	CommitterEmail string `yaml:"committer_email"`
 }
 
 // Identity maps GitHub users to Gerrit accounts (design §7).
@@ -225,6 +230,11 @@ func (c *Config) validate() error {
 	req("github.webhook_secret_file", c.GitHub.WebhookSecretFile)
 	if (c.GitHub.TokenFile == "") == (len(c.GitHub.TokenCommand) == 0) {
 		errs = append(errs, errors.New("exactly one of github.token_file and github.token_command is required"))
+	}
+	for k, v := range map[string]string{"github.committer_name": c.GitHub.CommitterName, "github.committer_email": c.GitHub.CommitterEmail} {
+		if strings.ContainsAny(v, "<>\n\x00") {
+			errs = append(errs, fmt.Errorf("%s: no <, > or newlines", k))
+		}
 	}
 	// CI's trusted group: the bridge must check it is not in it (design
 	// §6.5), so there is no turning that off.

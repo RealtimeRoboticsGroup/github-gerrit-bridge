@@ -521,6 +521,7 @@ func TestAppendCommitBuildsHistory(t *testing.T) {
 	s := newSites(t)
 	ctx := context.Background()
 	c, _ := s.code(ctx)
+	c.CommitterName, c.CommitterEmail = "Gerrit", "gerrit@example.com"
 	m0 := s.commit("", "a.txt", "a\n", "base")
 	m1 := s.commit(m0, "a.txt", "a\nmore\n", "main moves")
 	ps1 := s.commit(m0, "one.txt", "1\n", "One")
@@ -543,6 +544,9 @@ func TestAppendCommitBuildsHistory(t *testing.T) {
 	}
 	if got := s.git("m.git", "log", "-1", "--format=%P %s", h3); got != h2+" "+m1+" Patchset 3 from Gerrit, rebased" {
 		t.Errorf("rebase: %q", got)
+	}
+	if got := s.git("m.git", "log", "-1", "--format=%cn <%ce>", h2); got != "Gerrit <gerrit@example.com>" {
+		t.Errorf("committer: %q", got)
 	}
 	for h, ps := range map[string]int{h2: 2, h3: 3} {
 		want := fmt.Sprintf("%s/%d", c.changeURL(1), ps)

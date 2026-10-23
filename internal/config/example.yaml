@@ -49,6 +49,10 @@ github:
   # Only import GitHub PRs opened after this (RFC 3339); earlier ones are
   # left alone. Omit to import all.
   # import_created_after: 2026-10-04T00:00:00Z
+  # Committer of the commits the bridge adds to PRs ("Patchset N from
+  # Gerrit"). Default: the bridge's Gerrit account.
+  # committer_name: Gerrit
+  # committer_email: gerrit@example.com
 
 identity:
   # GitHub users are matched to the Gerrit account with the same username

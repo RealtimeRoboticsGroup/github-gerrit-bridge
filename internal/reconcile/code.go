@@ -33,12 +33,15 @@ type Code struct {
 	GitHub  *github.Client
 	// GitHubURL is the repository's HTTPS clone URL. Mirror.Config must
 	// hold gitmirror.CredentialHelper for https://github.com.
-	GitHubURL     string
-	Mirror        *gitmirror.Repo
-	Store         *state.Store
-	DefaultBranch string
-	DryRun        bool
-	Logger        *slog.Logger
+	GitHubURL string
+	Mirror    *gitmirror.Repo
+	// CommitterName and CommitterEmail, if set, commit what the bridge
+	// writes for GitHub instead of Mirror's identity.
+	CommitterName, CommitterEmail string
+	Store                         *state.Store
+	DefaultBranch                 string
+	DryRun                        bool
+	Logger                        *slog.Logger
 	// Importer, if set, imports GitHub-born PRs before each reconcile.
 	Importer *Importer
 	// OnExported, if set, is called for each change whose current patch
@@ -1803,6 +1806,12 @@ func (c *Code) appendCommit(ctx context.Context, a Append) (string, error) {
 		return "", fmt.Errorf("parsing %s", a.Revision)
 	}
 	env := []string{"GIT_AUTHOR_NAME=" + f[1], "GIT_AUTHOR_EMAIL=" + f[2], "GIT_AUTHOR_DATE=" + f[3]}
+	if c.CommitterName != "" {
+		env = append(env, "GIT_COMMITTER_NAME="+c.CommitterName)
+	}
+	if c.CommitterEmail != "" {
+		env = append(env, "GIT_COMMITTER_EMAIL="+c.CommitterEmail)
+	}
 	link := fmt.Sprintf("%s/%d", c.changeURL(a.Change), a.PatchSet)
 	msg := fmt.Sprintf("Patchset %d from Gerrit\n\n%s\n", a.PatchSet, link)
 	parents := []string{"-p", a.Onto}
