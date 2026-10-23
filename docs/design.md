@@ -1109,6 +1109,55 @@ Verify against GitHub's current docs before starting: the expiry opt-out
 and the email permission especially. Nothing here was tried live; the test
 Gerrit doesn't use the github plugin's login.
 
+**Tabled (2026-10-22): a personal mode, reviewing someone else's GitHub
+repository in one's own Gerrit.** One person bridges a repository they
+don't own (at work, say) to a Gerrit only they use, with their own GitHub
+token, so the bridge's posts are theirs. What stands in the way:
+
+1. **The token owner's own GitHub posts (the one to get right first).**
+   Everything recognizes the bridge's posts by author: `mine` and
+   `byBridge` compare the login with `BridgeLogin`, the bridge's own login
+   never maps to a Gerrit account, and an edit to the bridge's copy of a
+   Gerrit comment is undone. With the person's token, all of that turns
+   on them: what they write on GitHub is taken for the bridge's own and
+   never reaches Gerrit, and editing it may be "repaired". Staying out of
+   GitHub would be a rule to remember, so make it structural instead:
+   - **The bridge's posts are the ones it recorded.** The comment map
+     (`comments.json`) already holds every GitHub comment the bridge
+     posted, with `Origin: gerrit`; add the hash of the GitHub body as
+     written (today's `BodyHash` is the source text's). In this mode, a
+     comment by the token's login is the bridge's only if it is in the
+     map as Gerrit-born, and it is the bridge's untouched copy only while
+     its body has that hash. Notices and other posts outside the map need
+     recording the same way.
+     The `<!-- bridge:... -->` marker stays a hint for recovery (a lost
+     `refs/bridge`), never proof on its own.
+   - **Anything else by that login is the person's.** Mirror it to Gerrit
+     as their account (Run-As, as for anyone mapped), and map the login to
+     that account instead of to nobody.
+   - **Undo only edits to the bridge's own copies,** found by the body
+     hash rather than by who edited (GitHub's edit history names the same
+     login for both). Their own comments are left as they wrote them.
+   - **Echoes stay prevented** by the existing `github-bridge:mirror` tag
+     on what reaches Gerrit from GitHub.
+   - **Forgery is not a risk:** only the person can post as themselves,
+     and the worst a stray marker can do is keep their own comment out of
+     Gerrit until the map says otherwise.
+2. **GitHub owns the default branch.** The bridge assumes Gerrit submits
+   and replication writes GitHub's `main` (§6.7). Here merges happen on
+   GitHub, so Gerrit's branch follows GitHub's instead (a mirror push from
+   GitHub to Gerrit), and submitting means merging the PR on GitHub: the
+   reverse of today's flow. This is the largest piece.
+3. **Attribution headers.** Posts name their Gerrit author at the top;
+   when that author is the token owner, drop the header, since the post is
+   theirs.
+4. **Repository access.** Exports push `gerrit/<Change-Id>` branches and
+   open PRs, so the token needs push access. Webhooks need repository
+   admin; without them the bridge relies on `resync_interval` polling.
+5. **Policy.** It copies the repository to a Gerrit the person runs and
+   automates with a personal token. Check that the employer allows both,
+   and host the Gerrit where they approve.
+
 **Watch out:** the github plugin's *pull request import* creates Gerrit
 changes from GitHub PRs. That overlaps with §5.2 and would create duplicate
 changes, so it must stay off for the bridged repo.
