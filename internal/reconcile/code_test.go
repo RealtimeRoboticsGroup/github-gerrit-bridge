@@ -110,7 +110,7 @@ func TestCloseGerritRefusesIsExplainedAndUndone(t *testing.T) {
 	if s.changes[7].Status != "NEW" {
 		t.Errorf("status = %s", s.changes[7].Status)
 	}
-	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@brt closed this PR, but the bridge can't abandon [change 7](https://g/c/p/+/7) in Gerrit to match. Gerrit refused it as brt (abandon not permitted). The PR is reopened.") {
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@brt closed this PR, but the bridge can't abandon [change 7](https://g/c/p/+/7) in Gerrit to match. Gerrit refused it as brt (abandon not permitted). Only the change's owner and users with the Abandon permission can abandon it. The PR is reopened.") {
 		t.Errorf("notice = %v", s.comments[70])
 	}
 	// The plan then reopens it.
@@ -125,7 +125,7 @@ func TestCloseByUserWithoutGerritAccountIsUndone(t *testing.T) {
 	if changed, err := c.mirrorPRStates(context.Background(), snap, map[int]bool{}); err != nil || changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
-	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@stranger has no Gerrit account for the bridge to act as. The PR is reopened.") {
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@stranger has no Gerrit account for the bridge to act as. To get one, sign in to [Gerrit]("+c.Gerrit.BaseURL+") with GitHub; if you already have an account there under another username, ask a Gerrit admin to link it to your GitHub login. The PR is reopened.") {
 		t.Errorf("notice = %v", s.comments[70])
 	}
 }
@@ -2421,7 +2421,7 @@ func TestPREditGerritRefusesIsExplained(t *testing.T) {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
 	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@brt edited this PR's title or description, but the bridge can't change the commit message of [change 7]") ||
-		!strings.Contains(s.comments[70][0], "in Gerrit to match. Gerrit refused it as brt (edit not permitted). The PR is set back to match Gerrit.") {
+		!strings.Contains(s.comments[70][0], "in Gerrit to match. Gerrit refused it as brt (edit not permitted). Only the change's owner and users with the Add Patch Set permission can edit its commit message. The PR is set back to match Gerrit.") {
 		t.Errorf("notice = %v", s.comments[70])
 	}
 	// The plan then puts Gerrit's title back.
@@ -2531,7 +2531,7 @@ func TestPREditByUserWithoutGerritAccount(t *testing.T) {
 		if tc.mirrored && (len(s.calls) != 1 || s.calls[0] != "message 7 as bridge") {
 			t.Errorf("%s: calls = %v, want the bridge", tc.name, s.calls)
 		}
-		if !tc.mirrored && (len(s.calls) != 0 || len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@stranger has no Gerrit account")) {
+		if !tc.mirrored && (len(s.calls) != 0 || len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@stranger has no Gerrit account for the bridge to act as. To get one, sign in to [Gerrit]("+c.Gerrit.BaseURL+") with GitHub;")) {
 			t.Errorf("%s: calls = %v, notice = %v", tc.name, s.calls, s.comments[70])
 		}
 	}
@@ -2547,6 +2547,21 @@ func TestDraftToggleByNobodyIsRefused(t *testing.T) {
 		t.Fatalf("changed=%v err=%v calls=%v", changed, err, s.calls)
 	}
 	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "Someone marked this PR as a draft") || !strings.Contains(s.comments[70][0], "GitHub doesn't say who did it") {
+		t.Errorf("notice = %v", s.comments[70])
+	}
+}
+
+// A draft toggle Gerrit refuses says who Gerrit lets make it.
+func TestDraftToggleGerritRefusesSaysWhoMay(t *testing.T) {
+	s, c, snap := editsWorld(t, "gerrit")
+	s.pulls[70].Draft = true
+	s.activity[70] = github.PRActivity{DraftActor: github.User{Login: "brt"}} // may not toggle change 7
+	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 {
+		t.Fatalf("changed=%v err=%v calls=%v", changed, err, s.calls)
+	}
+	want := "in Gerrit to match. Gerrit refused it as brt (wip not permitted). Only the change's owner, the uploader of its latest patch set and " +
+		"users with the Toggle Work In Progress State permission can change it. The PR is set back to match Gerrit."
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], want) {
 		t.Errorf("notice = %v", s.comments[70])
 	}
 }

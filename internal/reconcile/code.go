@@ -1074,7 +1074,7 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 		}
 		var why string
 		if !ok {
-			why = fmt.Sprintf("@%s has no Gerrit account for the bridge to act as.", login)
+			why = c.noAccount("@" + login)
 		} else {
 			msg := fmt.Sprintf("PR #%d %s on GitHub.", pr.Number, past)
 			err := g.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/%s", n, action), map[string]string{"message": msg}, nil)
@@ -1087,7 +1087,7 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 			if !errors.As(err, &ge) || ge.Status >= 500 {
 				return changed, fmt.Errorf("%s change %d as %s: %w", action, n, user, err)
 			}
-			why = fmt.Sprintf("Gerrit refused it as %s (%s).", user, forGitHub(strings.TrimSpace(ge.Body)))
+			why = fmt.Sprintf("Gerrit refused it as %s (%s). Only the change's owner and users with the Abandon permission can %s it.", user, forGitHub(strings.TrimSpace(ge.Body)), action)
 		}
 		undo := "The PR is reopened"
 		if action == "restore" {
@@ -1222,7 +1222,8 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 					editor = editors[0]
 				}
 				if note, err := c.asEditor(ctx, ch, pr, editor, true, http.MethodPut, "message", map[string]string{"message": msg},
-					"edited this PR's title or description", "change the commit message of"); err != nil {
+					"edited this PR's title or description", "change the commit message of",
+					"Only the change's owner and users with the Add Patch Set permission can edit its commit message."); err != nil {
 					return changed, err
 				} else if note != "" {
 					notes = append(notes, note)
@@ -1242,7 +1243,8 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 			} else {
 				past := map[bool]string{true: "marked this PR as a draft", false: "marked this PR ready for review"}[pr.Draft]
 				if note, err := c.asEditor(ctx, ch, pr, act.DraftActor, false, http.MethodPost, hw, map[string]string{"message": fmt.Sprintf("PR #%d %s on GitHub.", pr.Number, map[bool]string{true: "marked draft", false: "marked ready for review"}[pr.Draft])},
-					past, "change the work-in-progress state of"); err != nil {
+					past, "change the work-in-progress state of",
+					"Only the change's owner, the uploader of its latest patch set and users with the Toggle Work In Progress State permission can change it."); err != nil {
 					return changed, err
 				} else if note != "" {
 					notes = append(notes, note)
@@ -1268,7 +1270,8 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 
 // asEditor calls changes/n/<endpoint> as GitHub user login's Gerrit
 // account. It returns a notice instead ("@login <did>, but the bridge
-// can't <would> change N in Gerrit to match. ...") when Gerrit refuses, or
+// can't <would> change N in Gerrit to match. ...") when Gerrit refuses
+// (saying, by may, who Gerrit lets do it), or
 // when the bridge will not act for login:
 //   - Someone without a Gerrit account acts only on their own PR's
 //     bridge-owned change, and then as the bridge (as their pushes are):
@@ -1280,7 +1283,7 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 //     codeTrusted), so a trusted editor does not vouch for it; but anyone
 //     else's patch set would not be pushed to the author's branch, nor
 //     built.
-func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRequest, gh github.User, newPatchSet bool, method, endpoint string, in any, did, would string) (string, error) {
+func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRequest, gh github.User, newPatchSet bool, method, endpoint string, in any, did, would, may string) (string, error) {
 	n, login := ch.Number, gh.Login
 	who := "@" + login
 	if login == "" {
@@ -1310,7 +1313,7 @@ func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRe
 	case login == "":
 		return refuse("GitHub doesn't say who did it, so there is no Gerrit account to do it as."), nil
 	default:
-		return refuse(fmt.Sprintf("%s has no Gerrit account for the bridge to act as.", who)), nil
+		return refuse(c.noAccount(who)), nil
 	}
 	err := g.Do(ctx, method, fmt.Sprintf("changes/%d/%s", n, endpoint), in, nil)
 	var ge *gerrit.Error
@@ -1319,10 +1322,17 @@ func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRe
 		c.Logger.Info("mirrored GitHub PR edit to Gerrit", "change", n, "endpoint", endpoint, "as", as)
 		return "", nil
 	case errors.As(err, &ge) && ge.Status < 500:
-		return refuse(fmt.Sprintf("Gerrit refused it as %s (%s).", as, forGitHub(strings.TrimSpace(ge.Body)))), nil
+		return refuse(fmt.Sprintf("Gerrit refused it as %s (%s). %s", as, forGitHub(strings.TrimSpace(ge.Body)), may)), nil
 	default:
 		return "", fmt.Errorf("%s %s change %d as %s: %w", method, endpoint, n, as, err)
 	}
+}
+
+// noAccount says that who has no Gerrit account the bridge can act as,
+// and how to get one.
+func (c *Code) noAccount(who string) string {
+	return fmt.Sprintf("%s has no Gerrit account for the bridge to act as. To get one, sign in to [Gerrit](%s) with GitHub; "+
+		"if you already have an account there under another username, ask a Gerrit admin to link it to your GitHub login.", who, c.Gerrit.BaseURL)
 }
 
 // trustedUser reports whether Gerrit user is in CI's trusted group. Not
