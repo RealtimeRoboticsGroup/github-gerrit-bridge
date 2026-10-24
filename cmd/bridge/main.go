@@ -298,23 +298,6 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 					return rs
 				},
 				Facts: func() []status.Fact {
-					last := "never"
-					if t := stream.LastEvent(); !t.IsZero() {
-						last = time.Since(t).Round(time.Second).String() + " ago"
-					}
-					counts := stream.Counts()
-					total := 0
-					types := slices.Collect(maps.Keys(counts))
-					slices.SortFunc(types, func(a, b string) int { return cmp.Or(counts[b]-counts[a], strings.Compare(a, b)) })
-					var each []string
-					for _, t := range types {
-						total += counts[t]
-						each = append(each, fmt.Sprintf("%s %d", t, counts[t]))
-					}
-					events := fmt.Sprint(total)
-					if len(each) > 0 {
-						events += " (" + strings.Join(each, ", ") + ")"
-					}
 					rl := gh.RateLimit()
 					budget := "not known yet"
 					if rl.Limit > 0 {
@@ -324,8 +307,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 						{Name: "Up", Value: time.Since(started).Round(time.Second).String()},
 						{Name: "Project", Value: cfg.Gerrit.Project + " ↔ " + repo},
 						{Name: "Workers", Value: fmt.Sprint(cfg.Workers, " (+1 for merges)")},
-						{Name: "Last Gerrit event", Value: last},
-						{Name: "Gerrit events since start", Value: events},
+						{Name: "Gerrit events", Value: gerritEvents(stream.Counts(), stream.LastEvent(), time.Now())},
 						{Name: "GitHub API", Value: budget},
 					}
 				},
@@ -531,4 +513,25 @@ func secretFiles(cfg *config.Config) []string {
 		secrets = append(secrets, cfg.CI.Buildkite.TokenFile)
 	}
 	return secrets
+}
+
+// gerritEvents sums up the Gerrit events seen since start, by type, and
+// how long ago the last came.
+func gerritEvents(counts map[string]int, last, now time.Time) string {
+	total := 0
+	types := slices.Collect(maps.Keys(counts))
+	slices.SortFunc(types, func(a, b string) int { return cmp.Or(counts[b]-counts[a], strings.Compare(a, b)) })
+	var each []string
+	for _, t := range types {
+		total += counts[t]
+		each = append(each, fmt.Sprintf("%s %d", t, counts[t]))
+	}
+	events := "none since start"
+	if total > 0 {
+		events = fmt.Sprintf("%d since start (%s)", total, strings.Join(each, ", "))
+	}
+	if !last.IsZero() {
+		events += ", the last " + now.Sub(last).Round(time.Second).String() + " ago"
+	}
+	return events
 }

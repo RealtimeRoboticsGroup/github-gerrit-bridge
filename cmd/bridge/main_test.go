@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/config"
 )
@@ -36,5 +37,18 @@ func TestSecretFiles(t *testing.T) {
 	cfg.CI.Buildkite = &config.Buildkite{TokenFile: "bk"}
 	if got := secretFiles(cfg); !slices.Contains(got, "peer") || !slices.Contains(got, "bk") {
 		t.Errorf("secret files = %v", got)
+	}
+}
+
+// The Gerrit events line counts each type, most first, and says how long
+// ago the last came.
+func TestGerritEvents(t *testing.T) {
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	if got := gerritEvents(nil, time.Time{}, now); got != "none since start" {
+		t.Errorf("no events: %q", got)
+	}
+	got := gerritEvents(map[string]int{"patchset-created": 2, "comment-added": 5, "change-merged": 2}, now.Add(-3*time.Second), now)
+	if want := "9 since start (comment-added 5, change-merged 2, patchset-created 2), the last 3s ago"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
