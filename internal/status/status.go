@@ -70,9 +70,9 @@ type row struct {
 }
 
 type page struct {
-	Now                                     string
-	Facts                                   []Fact
-	Running, Waiting, Held, Failing, Recent []row
+	Now                               string
+	Facts                             []Fact
+	Running, Waiting, Failing, Recent []row
 }
 
 type resyncs struct {
@@ -142,18 +142,25 @@ func (h *Handler[K]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if e.Took > 0 {
 				r.Took = dur(e.Took)
 			}
-			switch {
-			case e.Resync != "":
-				r.Note = "resync (" + e.Resync + ")"
-			case e.Again:
-				r.Note = "runs again after this run"
+			var notes []string
+			if e.Resync != "" {
+				notes = append(notes, "resync ("+e.Resync+")")
 			}
+			switch {
+			case e.Again:
+				notes = append(notes, "after its current run")
+			case !e.Ready.IsZero():
+				notes = append(notes, "in "+dur(max(0, e.Ready.Sub(now)))+" (ran moments ago)")
+			}
+			r.Note = strings.Join(notes, ", ")
 			out = append(out, r)
 		}
 		return out
 	}
-	p := page{Now: now.Format(time.RFC3339), Running: rows(s.Running), Waiting: rows(s.Waiting),
-		Held: rows(s.Held), Failing: rows(s.Failing), Recent: rows(s.Recent)}
+	// Held keys wait too, for their run or the throttle: after those a
+	// worker may take now, since none will until then.
+	p := page{Now: now.Format(time.RFC3339), Running: rows(s.Running), Waiting: rows(append(s.Waiting, s.Held...)),
+		Failing: rows(s.Failing), Recent: rows(s.Recent)}
 	if h.Facts != nil {
 		p.Facts = h.Facts()
 	}
@@ -173,14 +180,11 @@ func resyncFacts[K comparable](rs Resyncs[K], now time.Time) []Fact {
 		runs += c.Runs
 		caught += c.Caught
 	}
-	last := "never, in " + dur(now.Sub(rs.Since)) + " since start"
+	v := fmt.Sprintf("%d runs; none caught anything in %s since start", runs, dur(now.Sub(rs.Since)))
 	if len(rs.Caught) > 0 {
-		last = dur(now.Sub(rs.Caught[0].At)) + " ago"
+		v = fmt.Sprintf("%d runs; %d caught something, the last %s ago", runs, caught, dur(now.Sub(rs.Caught[0].At)))
 	}
-	return []Fact{
-		{Name: "Resyncs", Value: fmt.Sprintf("%d runs, %d caught something", runs, caught), Link: "resyncs"},
-		{Name: "Last resync catch", Value: last, Link: "resyncs"},
-	}
+	return []Fact{{Name: "Resyncs", Value: v, Link: "resyncs"}}
 }
 
 // serveResyncs shows what resyncs caught: counts by kind, and the last
@@ -359,17 +363,13 @@ th { font-weight: 600; } td.n { font-variant-numeric: tabular-nums; white-space:
 <div class="dim">{{.Now}} · refreshes every 5s</div>
 {{with .Facts}}<table style="width:auto;margin-top:10px">{{range .}}<tr><th>{{.Name}}</th><td>{{if .Link}}<a href="{{.Link}}">{{.Value}}</a>{{else}}{{.Value}}{{end}}</td></tr>{{end}}</table>{{end}}
 {{define "run"}}{{if .Run}}<a href="{{.Run}}">timeline</a>{{end}}{{end}}
-{{define "key"}}{{if .Link}}<a href="{{.Link}}">{{.Key}}</a>{{else}}{{.Key}}{{end}}{{end}}
+{{define "key"}}{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Key}}</a>{{else}}{{.Key}}{{end}}{{end}}
 <h2>Running ({{len .Running}})</h2>
 {{if .Running}}<table><tr><th>Key</th><th>For</th><th>Waited first</th><th></th><th></th></tr>
 {{range .Running}}<tr><td>{{template "key" .}}</td><td class="n">{{.Ago}}</td><td class="n">{{.Waited}}</td><td>{{template "run" .}}</td><td class="err">{{if .Failures}}failed {{.Failures}}× before: {{.Err}}{{end}}</td></tr>{{end}}</table>{{else}}<div class="dim">Idle.</div>{{end}}
 <h2>Waiting ({{len .Waiting}})</h2>
 {{if .Waiting}}<table><tr><th>#</th><th>Key</th><th>Waiting</th><th></th></tr>
 {{range $i, $r := .Waiting}}<tr><td class="n dim">{{$i}}</td><td>{{template "key" $r}}</td><td class="n">{{$r.Ago}}</td><td class="dim">{{$r.Note}}</td></tr>{{end}}</table>{{else}}<div class="dim">Nothing waiting.</div>{{end}}
-<h2>Held ({{len .Held}})</h2>
-<div class="dim">Added, but held back: it is running and will run again, or it ran moments ago.</div>
-{{if .Held}}<table><tr><th>Key</th><th>Added</th><th></th></tr>
-{{range .Held}}<tr><td>{{template "key" .}}</td><td class="n">{{.Ago}} ago</td><td class="dim">{{or .Note "ran moments ago"}}</td></tr>{{end}}</table>{{end}}
 <h2>Failing ({{len .Failing}})</h2>
 {{if .Failing}}<table><tr><th>Key</th><th>Failures</th><th>Last error</th></tr>
 {{range .Failing}}<tr><td>{{template "key" .}}</td><td class="n">{{.Failures}}</td><td class="err">{{.Err}}</td></tr>{{end}}</table>{{else}}<div class="dim">None.</div>{{end}}
@@ -394,7 +394,7 @@ td.w { word-break: break-all; font-family: ui-monospace, monospace; font-size: 1
 <a href="./">← status</a>
 <h1>What resyncs caught</h1>
 <div class="dim">{{.Now}} · refreshes every 30s</div>
-{{define "key"}}{{if .Link}}<a href="{{.Link}}">{{.Key}}</a>{{else}}{{.Key}}{{end}}{{end}}
+{{define "key"}}{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Key}}</a>{{else}}{{.Key}}{{end}}{{end}}
 <div class="dim">Since {{.Since}}: runs only a resync asked for, and those that changed something on Gerrit or GitHub, which an event should have done.</div>
 {{if .Counts}}<table style="width:auto"><tr><th>Why</th><th>Key</th><th>Runs</th><th>Caught</th><th></th><th>Failed</th></tr>
 {{range .Counts}}<tr><td>{{.Reason}}</td><td>{{.Key}}</td><td class="n">{{.Runs}}</td><td class="n">{{.Caught}}</td><td class="n dim">{{.Share}}</td><td class="n">{{.Failed}}</td></tr>{{end}}</table>{{else}}<div class="dim">No resync runs yet.</div>{{end}}
@@ -418,7 +418,7 @@ td.t { width: 28%; min-width: 120px; } .track { position: relative; height: 10px
 .dim { color: var(--dim); } .err { color: var(--bad); }
 </style></head><body>
 <a href="../">← status</a>
-<h1>{{if .Link}}<a href="{{.Link}}">{{.Key}}</a>{{else}}{{.Key}}{{end}}</h1>
+<h1>{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Key}}</a>{{else}}{{.Key}}{{end}}</h1>
 <div class="dim">started {{.Started}}{{with .Waited}} after waiting {{.}} in the queue{{end}} · {{if .Running}}running for {{.Took}} (refreshes){{else}}took {{.Took}}{{end}}</div>
 {{with .Err}}<div class="err">{{.}}</div>{{end}}
 {{with .Totals}}<h2>Where the time went</h2>

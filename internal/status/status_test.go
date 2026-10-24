@@ -26,7 +26,8 @@ func TestPage(t *testing.T) {
 		Queue: fixed{
 			Running: []queue.Entry[string]{{Key: "pr/7", At: now.Add(-90 * time.Second), Waited: 3 * time.Second}},
 			Waiting: []queue.Entry[string]{{Key: "comments/12", At: now.Add(-2 * time.Minute)}, {Key: "branch/main", At: now.Add(-time.Minute), Resync: "periodic"}},
-			Held:    []queue.Entry[string]{{Key: "pr/7", At: now.Add(-10 * time.Second), Again: true}},
+			Held: []queue.Entry[string]{{Key: "pr/7", At: now.Add(-10 * time.Second), Again: true},
+				{Key: "pr/6", At: now.Add(-time.Second), Ready: now.Add(7 * time.Second)}},
 			Failing: []queue.Entry[string]{{Key: "pr/9", Failures: 3, Err: `422 <script>alert(1)</script>`}},
 			Recent: []queue.Entry[string]{{Key: "pr/8", At: now.Add(-5 * time.Second), Took: 1200 * time.Millisecond},
 				{Key: "pr/9", At: now.Add(-6 * time.Second), Waited: 300 * time.Microsecond, Took: 40 * time.Microsecond}},
@@ -45,9 +46,8 @@ func TestPage(t *testing.T) {
 	h.ServeHTTP(w, get("/"))
 	body := w.Body.String()
 	for _, want := range []string{
-		"Running (1)", `<a href="https://github.com/o/r/pull/7">pr/7</a>`, "1m30s", "3s",
-		"Waiting (2)", "comments/12", "2m0s", "resync (periodic)",
-		"Held (1)", "runs again after this run",
+		"Running (1)", `<a href="https://github.com/o/r/pull/7" target="_blank" rel="noopener">pr/7</a>`, "1m30s", "3s",
+		"Waiting (4)", "comments/12", "2m0s", "resync (periodic)", "after its current run", "in 7s (ran moments ago)",
 		"Failing (1)", "&lt;script&gt;", ">3<",
 		"Recently done (2)", "1.2s", "&lt;1ms",
 		"GitHub API", "4000 of 5000 left",
@@ -55,6 +55,12 @@ func TestPage(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)
 		}
+	}
+	if strings.Contains(body, "Held") {
+		t.Error("a separate Held section")
+	}
+	if i, j := strings.Index(body, "branch/main"), strings.Index(body, "in 7s"); i < 0 || j < i {
+		t.Error("a held key listed before those a worker may take now")
 	}
 	if strings.Contains(body, "<script>") {
 		t.Error("an error's text was not escaped")
@@ -84,6 +90,7 @@ func TestRunTimeline(t *testing.T) {
 			{Key: "pr/8", ID: 43, At: now},
 		}},
 		Name: func(k string) string { return k },
+		Link: func(k string) string { return "https://example.test/" + k },
 	}
 	get := func(path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -95,7 +102,7 @@ func TestRunTimeline(t *testing.T) {
 	}
 	w := get("/run/42")
 	body := w.Body.String()
-	for _, want := range []string{"comments/7", "took 2s", "wait for branch main, shared", "pulls/7/comments → 304",
+	for _, want := range []string{`<a href="https://example.test/comments/7" target="_blank" rel="noopener">comments/7</a>`, "took 2s", "wait for branch main, shared", "pulls/7/comments → 304",
 		"GitHub reads", "GitHub writes", "800ms", "git commands", "exit status 1", "&lt;script&gt;", `class="bar wait"`, "padding-left:14px"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("timeline lacks %q", want)
@@ -170,8 +177,7 @@ func TestResyncs(t *testing.T) {
 		h.ServeHTTP(w, get(path))
 		return w.Body.String()
 	}
-	if body := page("/"); !strings.Contains(body, `<a href="resyncs">0 runs, 0 caught something</a>`) ||
-		!strings.Contains(body, `<a href="resyncs">never, in 2h0m0s since start</a>`) {
+	if body := page("/"); !strings.Contains(body, `<a href="resyncs">0 runs; none caught anything in 2h0m0s since start</a>`) {
 		t.Errorf("empty tally's summary: %s", body)
 	}
 	if body := page("/resyncs"); !strings.Contains(body, "Since 2h0m0s ago") || !strings.Contains(body, "No resync runs yet.") {
@@ -183,14 +189,14 @@ func TestResyncs(t *testing.T) {
 		{Key: "branch/main", At: now.Add(-time.Minute), Reason: "periodic", Writes: []string{"github PATCH /repos/o/r/pulls/3", "<b>x</b>"}, N: 5},
 		{Key: "comments/4", At: now.Add(-time.Hour), Reason: "connected", Writes: []string{"gerrit POST x"}, N: 1},
 	}
-	if body := page("/"); !strings.Contains(body, ">45 runs, 2 caught something<") || !strings.Contains(body, ">1m0s ago<") ||
+	if body := page("/"); !strings.Contains(body, ">45 runs; 2 caught something, the last 1m0s ago<") ||
 		strings.Contains(body, "github PATCH") {
 		t.Errorf("summary: %s", body)
 	}
 	body := page("/resyncs")
 	for _, want := range []string{
 		"<td>periodic</td><td>branch</td>", ">40<", ">1<", "2.5%", ">2<",
-		`<a href="https://example.test/branch/main">branch/main</a>`, "1m0s ago",
+		`<a href="https://example.test/branch/main" target="_blank" rel="noopener">branch/main</a>`, "1m0s ago",
 		"github PATCH /repos/o/r/pulls/3", "&lt;b&gt;x&lt;/b&gt;", "and 3 more",
 	} {
 		if !strings.Contains(body, want) {

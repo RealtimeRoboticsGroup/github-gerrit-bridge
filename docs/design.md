@@ -1655,8 +1655,8 @@ Known gaps:
   and HEAD, and only to a loopback Host, so a page that rebinds its own
   name to 127.0.0.1 can't read it from the operator's browser): what each worker is
   running and for how long, what waits in the order workers take it
-  (resync keys marked), what is held back (running and dirty again, or
-  throttled), what is failing with its last error, and the last 100 runs
+  (resync keys marked), then what waits for its own run to finish or for
+  the throttle (each saying which, and when), what is failing with its last error, and the last 100 runs
   with how long each waited and took. It refreshes every 5 s. Each
   running or recent run links a timeline: every Gerrit and GitHub
   request (method, path, query and status; never headers), git command
@@ -1671,7 +1671,9 @@ Known gaps:
   something: a Gerrit or GitHub REST write that succeeded, a GraphQL
   mutation, a push to GitHub or an upload to Gerrit. The bridge's own
   state is not one; a run with nothing to do writes nothing (tested).
-  The status page shows the counts since start and the last 50 catches
+  The status page sums them up at the top (runs, catches, how long since
+  the last), linking `/resyncs`, which shows the counts since start and
+  the last 50 catches
   with what each wrote; each catch is also logged (`resync caught
   something`), so the log keeps them across restarts. A catch can be a
   race, an event that was about to arrive, rather than a lost one.

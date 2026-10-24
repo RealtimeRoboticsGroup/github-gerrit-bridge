@@ -327,7 +327,6 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 						{Name: "Last Gerrit event", Value: last},
 						{Name: "Gerrit events since start", Value: events},
 						{Name: "GitHub API", Value: budget},
-						{Name: "Dry run", Value: fmt.Sprint(dryRun)},
 					}
 				},
 			}}

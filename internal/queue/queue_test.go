@@ -370,8 +370,8 @@ func TestSnapshot(t *testing.T) {
 	if len(s.Failing) != 1 || s.Failing[0].Key != "a" || s.Failing[0].Failures != 1 || s.Failing[0].Err != "boom" {
 		t.Errorf("failing %+v", s.Failing)
 	}
-	if len(s.Held) != 1 || s.Held[0].Key != "a" || s.Held[0].Again {
-		t.Errorf("held after its run %+v", s.Held)
+	if len(s.Held) != 1 || s.Held[0].Key != "a" || s.Held[0].Again || time.Until(s.Held[0].Ready) < 59*time.Minute {
+		t.Errorf("held after its run %+v; want it ready an hour after it started", s.Held)
 	}
 	k, _ := q.Get()
 	q.Forget(k)

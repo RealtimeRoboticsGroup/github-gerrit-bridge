@@ -377,8 +377,9 @@ type Entry[K comparable] struct {
 	// or asked for the run (running, recent).
 	Resync string
 	// Again: held, it runs once more after its current run; else held,
-	// it ran moments ago (MinInterval).
+	// it ran moments ago (MinInterval), and may start at Ready.
 	Again bool
+	Ready time.Time
 	// Failures and Err: consecutive failed runs, and the last one's error.
 	Failures int
 	Err      string
@@ -420,7 +421,11 @@ func (q *Queue[K]) Snapshot() Snapshot[K] {
 	for k := range q.dirty {
 		if !inLine[k] {
 			_, running := q.processing[k]
-			s.Held = append(s.Held, fail(Entry[K]{Key: k, At: q.queuedAt[k], Again: running}))
+			e := Entry[K]{Key: k, At: q.queuedAt[k], Resync: q.lowOnly[k], Again: running}
+			if !running {
+				e.Ready = q.started[k].Add(q.MinInterval)
+			}
+			s.Held = append(s.Held, fail(e))
 		}
 	}
 	slices.SortFunc(s.Held, func(a, b Entry[K]) int { return a.At.Compare(b.At) })
