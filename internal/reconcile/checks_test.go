@@ -137,6 +137,7 @@ func TestLatestBuild(t *testing.T) {
 type checksFakes struct {
 	ch    *gerrit.ChangeInfo
 	set   []string // contexts written
+	shas  []string // and on which commits
 	have  []github.Status
 	group []gerrit.AccountInfo
 }
@@ -151,8 +152,9 @@ func (f *checksFakes) ChangeURL(string, int) string { return "https://g/c/5" }
 func (f *checksFakes) Statuses(context.Context, string) ([]github.Status, error) {
 	return f.have, nil
 }
-func (f *checksFakes) CreateStatus(_ context.Context, _ string, st github.Status) error {
+func (f *checksFakes) CreateStatus(_ context.Context, sha string, st github.Status) error {
 	f.set = append(f.set, st.Context)
+	f.shas = append(f.shas, sha)
 	f.have = append(f.have, st)
 	return nil
 }
@@ -216,6 +218,67 @@ func TestStatusesWithinTheirCausesBudget(t *testing.T) {
 	// A newer upload is its uploader's doing.
 	if who := statusCause(f.ch, gerrit.RevisionInfo{Created: "2026-10-19 13:00:00.000000000", Uploader: mallory}, "gerrit/Code-Review"); who.AccountID != 9 {
 		t.Errorf("upload's status caused by %+v", who)
+	}
+}
+
+// A patch set the bridge does not push to GitHub (someone else's, on a
+// GitHub-born PR) leaves the PR's head an older patch set's: its statuses
+// say they are out of date, not the older votes, until a newer patch set
+// is on GitHub. gerrit/sync is the importer's.
+func TestStatusesOfAnOlderPatchSetSayTheyAreOutOfDate(t *testing.T) {
+	ctx := context.Background()
+	s := newSites(t)
+	store := &state.Store{Repo: s.mirror(ctx)}
+	s.save(ctx, store, 5, &state.Change{State: state.ChangeState{Change: 5, PR: 50},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: "g1", GitHubSHA: "h1"}}})
+	f := &checksFakes{ch: &gerrit.ChangeInfo{Status: "NEW", CurrentRevision: "g2",
+		Revisions: map[string]gerrit.RevisionInfo{
+			"g1": {Number: 1, Created: "2026-10-19 10:00:00.000000000", Uploader: alice},
+			"g2": {Number: 2, Created: "2026-10-19 12:00:00.000000000", Uploader: bob}},
+		Labels: map[string]gerrit.LabelInfo{"Code-Review": {Values: crValues}, "Verified": {Values: vValues}}},
+		have: []github.Status{
+			{Context: "gerrit/Code-Review", State: "success", Description: "+2 Alice"},
+			{Context: "gerrit/Verified", State: "success", Description: "+1 buildkite"},
+			{Context: submittableStatus, State: "success", Description: "Ready to submit"},
+			{Context: SyncStatus, State: "success", Description: "In sync with Gerrit change 5, patch set 1"},
+			{Context: "ci/other", State: "success", Description: "someone else's"},
+		}}
+	c := &Checks{Project: "p", Gerrit: f, GitHub: f, Store: store, CILabels: []string{"Verified"}, CIAccount: "buildkite", Logger: slog.Default(),
+		StatusBudget: &Budget{N: 1, Per: time.Hour}}
+	// Patch set 2's upload makes them: bob's budget, spent.
+	c.StatusBudget.Take(ctx, bob.AccountID)
+	if err := c.Sync(ctx, 5); err != nil || len(f.set) != 0 {
+		t.Fatalf("set %v, err %v; want them to wait for bob's budget", f.set, err)
+	}
+	c.StatusBudget = nil
+	if err := c.Sync(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.set, []string{"gerrit/Code-Review", "gerrit/Verified", submittableStatus}) || !slices.Equal(f.shas, []string{"h1", "h1", "h1"}) {
+		t.Fatalf("set %v on %v, want the gerrit/ statuses but gerrit/sync on h1", f.set, f.shas)
+	}
+	for _, st := range f.have[5:] {
+		if st.State != "pending" || st.Description != "Out of date: Gerrit's patch set 2 is not on GitHub; see its votes there" || st.TargetURL != "https://g/c/5" {
+			t.Errorf("%s = %+v", st.Context, st)
+		}
+	}
+	// Said once: not again on the next sync.
+	f.have, f.set, f.shas = f.have[3:], nil, nil
+	if err := c.Sync(ctx, 5); err != nil || len(f.set) != 0 {
+		t.Fatalf("set again: %v, err %v", f.set, err)
+	}
+	// Once patch set 2 is on GitHub, its own go there.
+	st, err := store.Load(ctx, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Revisions = append(st.Revisions, state.Revision{PatchSet: 2, GerritSHA: "g2", GitHubSHA: "h2"})
+	if err := store.Save(ctx, 5, st, "patch set 2 on GitHub"); err != nil {
+		t.Fatal(err)
+	}
+	f.have = nil
+	if err := c.Sync(ctx, 5); err != nil || len(f.shas) == 0 || slices.ContainsFunc(f.shas, func(sha string) bool { return sha != "h2" }) {
+		t.Fatalf("set %v on %v, err %v; want patch set 2's on h2", f.set, f.shas, err)
 	}
 }
 

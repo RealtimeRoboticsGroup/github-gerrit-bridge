@@ -119,8 +119,21 @@ func (c *Checks) Sync(ctx context.Context, n int) error {
 		}
 	}
 	if sha == "" {
-		c.Logger.Debug("current patch set not on GitHub yet; statuses wait", "change", n)
-		return nil
+		// The PR's head is an older patch set's, whose statuses say its
+		// votes, which Gerrit has moved past. If the current patch set is
+		// on its way, the code mirror calls Sync again when it is there;
+		// if it is not (someone else's, which the bridge does not push to
+		// the author's branch), the PR would show them for good.
+		for _, r := range st.Revisions {
+			if r.GitHubSHA != "" {
+				sha = r.GitHubSHA
+			}
+		}
+		if sha == "" {
+			c.Logger.Debug("current patch set not on GitHub yet; statuses wait", "change", n)
+			return nil
+		}
+		return c.markStale(ctx, n, st.State.PR, rev, sha)
 	}
 
 	trusted, known := c.IsTrusted(ctx, rev.Uploader.AccountID)
@@ -162,6 +175,38 @@ func (c *Checks) Sync(ctx context.Context, n int) error {
 	}
 	// Votes show in gerrit/<label> statuses, and on the mirrored Gerrit
 	// message they came with (Comments): no separate votes comment.
+	return nil
+}
+
+// markStale sets the gerrit/ statuses on sha, an older patch set's
+// commit, to say the current patch set, rev, is only in Gerrit.
+// gerrit/sync is the importer's, which says so itself.
+func (c *Checks) markStale(ctx context.Context, n, pr int, rev gerrit.RevisionInfo, sha string) error {
+	have, err := c.GitHub.Statuses(ctx, sha)
+	if err != nil {
+		return err
+	}
+	desc := fmt.Sprintf("Out of date: Gerrit's patch set %d is not on GitHub; see its votes there", rev.Number)
+	for _, h := range have { // the latest of each context
+		if !strings.HasPrefix(h.Context, statusPrefix) || h.Context == SyncStatus || (h.State == "pending" && h.Description == desc) {
+			continue
+		}
+		s := github.Status{Context: h.Context, State: "pending", Description: desc, TargetURL: c.ChangeURL(n)}
+		if c.DryRun {
+			c.Logger.Info("dry run: would set status", "change", n, "sha", short(sha), "context", s.Context, "state", s.State, "description", s.Description)
+			continue
+		}
+		// Each patch set's upload makes these: its uploader's budget.
+		if who := rev.Uploader; who.AccountID != 0 && who.AccountID != c.BridgeAccount &&
+			(c.CIAccount == "" || who.Username != c.CIAccount) && !c.StatusBudget.Take(ctx, who.AccountID) {
+			c.Logger.Info("status waits: whoever changed it changed too many lately", "change", n, "context", s.Context, "account", who.AccountID)
+			continue
+		}
+		if err := c.GitHub.CreateStatus(ctx, sha, s); err != nil {
+			return err
+		}
+		c.Logger.Info("set status", "change", n, "pr", pr, "context", s.Context, "state", s.State, "description", s.Description)
+	}
 	return nil
 }
 

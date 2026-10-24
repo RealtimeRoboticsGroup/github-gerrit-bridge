@@ -92,9 +92,11 @@ type imported struct {
 	bridgeOwned bool
 	// noSignOff is set when the imported commit has no Signed-off-by.
 	noSignOff bool
-	// gerritAhead is Gerrit's newer patch set, for a fork the bridge may
-	// not push it to.
+	// gerritAhead is Gerrit's newer patch set, if the PR's head is not
+	// it (the bridge will not push someone else's to the author's branch,
+	// nor to a fork that does not allow maintainer edits, needsEdits).
 	gerritAhead int
+	needsEdits  bool
 }
 
 // syncError is an import problem to show on the PR as gerrit/sync.
@@ -433,11 +435,14 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		}
 		done[l] = res
 		desc := fmt.Sprintf("In sync with Gerrit change %d, patch set %d", res.change, res.patchSet)
+		if res.gerritAhead != 0 {
+			desc = fmt.Sprintf("Patch set %d of Gerrit change %d; Gerrit's newer patch set %d is not on GitHub", res.patchSet, res.change, res.gerritAhead)
+			if res.needsEdits {
+				desc += ": allow maintainer edits to sync it"
+			}
+		}
 		if res.bridgeOwned {
 			desc += "; owned by the bridge (link your GitHub account to own it)"
-		}
-		if res.gerritAhead != 0 {
-			desc += fmt.Sprintf("; newer patch set %d is only in Gerrit: allow maintainer edits to sync it", res.gerritAhead)
 		}
 		if res.noSignOff {
 			desc += "; no Signed-off-by: use git commit -s if the project requires it"
@@ -578,14 +583,15 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			return nil, err
 		}
 		res.bridgeOwned = ci.Owner.AccountID == im.Bridge.AccountID
-		if _, _, fork := github.SplitHeadKey(pr.HeadKey(im.GitHub.Owner + "/" + im.GitHub.Repo)); fork {
-			// Listed PRs lack maintainer_can_modify.
-			full, err := im.GitHub.GetPull(ctx, pr.Number)
-			if err != nil {
-				return nil, err
-			}
-			if cur, ok := ci.Current(); ok && !full.MaintainerCanModify && cur.Number > res.patchSet {
-				res.gerritAhead = cur.Number
+		if cur, ok := ci.Current(); ok && cur.Number > res.patchSet {
+			res.gerritAhead = cur.Number
+			if _, _, fork := github.SplitHeadKey(pr.HeadKey(im.GitHub.Owner + "/" + im.GitHub.Repo)); fork {
+				// Listed PRs lack maintainer_can_modify.
+				full, err := im.GitHub.GetPull(ctx, pr.Number)
+				if err != nil {
+					return nil, err
+				}
+				res.needsEdits = !full.MaintainerCanModify
 			}
 		}
 		return res, nil

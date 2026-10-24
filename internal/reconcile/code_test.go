@@ -2028,6 +2028,69 @@ func TestImporterRecordsAHeadThatWentBack(t *testing.T) {
 	}
 }
 
+// A PR whose head Gerrit has moved past (a patch set the bridge does not
+// push to the author's branch: someone else's) says so on gerrit/sync,
+// not that it is in sync.
+func TestSyncStatusSaysGerritIsAhead(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	st, _ := im.Store.Load(ctx, 1)
+	st.State.Origin, st.State.HeadBranch = "github", "feature"
+	if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+		t.Fatal(err)
+	}
+	s.changes[1].Owner = s.accounts["austin"]
+	s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
+	h2 := s.commit(s.rebase(g[0], m1), "one.txt", "new code\n", "More")
+	s.push("github.git", h2, "refs/heads/feature")
+	s.pulls[10].Head.SHA = h2
+	s.webhookPush(im.Pushers, 10, "austin")
+	if err := im.Import(ctx, "main"); err != nil || len(up.uploads) != 1 {
+		t.Fatalf("err %v, uploads %v", err, up.uploads)
+	}
+	sync := func() github.Status {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		var last github.Status
+		for _, st := range s.statuses[h2] {
+			if st.Context == SyncStatus {
+				last = st
+			}
+		}
+		return last
+	}
+	ci := s.changes[1]
+	imported := ci.Revisions[ci.CurrentRevision].Number
+	if got, want := sync().Description, fmt.Sprintf("In sync with Gerrit change 1, patch set %d", imported); !strings.HasPrefix(got, want) {
+		t.Fatalf("gerrit/sync = %q, want %q", got, want)
+	}
+	next := s.commit(g[0], "one.txt", "brt's\n", "One\n\nChange-Id: "+ids[0]+"\n")
+	s.push("gerrit.git", next, fmt.Sprintf("refs/changes/01/1/%d", imported+1))
+	ci.Revisions[next] = gerrit.RevisionInfo{Number: imported + 1, Ref: fmt.Sprintf("refs/changes/01/1/%d", imported+1), Uploader: s.accounts["brt"],
+		Commit: gerrit.CommitInfo{Message: "One\n\nChange-Id: " + ids[0] + "\n"}}
+	ci.CurrentRevision = next
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("Patch set %d of Gerrit change 1; Gerrit's newer patch set %d is not on GitHub", imported, imported+1)
+	if got := sync(); got.State != "success" || !strings.HasPrefix(got.Description, want) || strings.Contains(got.Description, "maintainer edits") {
+		t.Errorf("gerrit/sync = %+v, want %q", got, want)
+	}
+	// From a fork that does not allow maintainer edits, it says to.
+	s.push("github.git", h2, "refs/pull/10/head")
+	for _, edits := range []bool{false, true} {
+		s.mu.Lock()
+		s.pulls[10].Head.Repo.FullName, s.pulls[10].MaintainerCanModify = "austin/fork", edits
+		s.mu.Unlock()
+		if err := im.Import(ctx, "main"); err != nil {
+			t.Fatal(err)
+		}
+		if got := sync(); !strings.HasPrefix(got.Description, want) || strings.Contains(got.Description, ": allow maintainer edits to sync it") == edits {
+			t.Errorf("maintainer edits %v: gerrit/sync = %+v", edits, got)
+		}
+	}
+}
+
 // After a restart, which forgets what gerrit/sync it set, the importer
 // reads what GitHub shows rather than setting it again: each post is
 // another line of the commit's public history, and the slowest call an

@@ -1311,7 +1311,11 @@ defenses, by threat:
   owner, the bridge or in CI's trusted group: anyone else's stays in
   Gerrit, with a notice there once per patch set, and the PR keeps its
   code, base, title and description (third audit, confirmed live: it
-  had pushed a Gerrit user's code into a fork).
+  had pushed a Gerrit user's code into a fork). The PR's head is then an
+  older patch set's: its vote, CI and submittability statuses turn
+  pending, "Out of date: Gerrit's patch set N is not on GitHub", and
+  gerrit/sync names both patch sets, so the PR never shows votes Gerrit
+  has moved past.
 - **PR edits.** A title or description edit makes a new patch set in
   Gerrit, so it is made only as the current patch set's uploader, the
   change's owner or a member of CI's trusted group; anyone else is told
