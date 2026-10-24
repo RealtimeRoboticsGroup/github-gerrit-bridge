@@ -1620,8 +1620,12 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		c.Logger.Info("created PR", "change", a.Change, "pr", pr.Number, "url", pr.HTMLURL)
 		// Its head from the start, in the same save: a review a minute on
 		// is about it, however busy the bridge is before it next reads
-		// the PR.
-		return c.linkHead(ctx, s, a.Change, pr, at)
+		// the PR. And in sync with the change from the start: made from
+		// it, its text and draft state are the change's, so an edit on
+		// GitHub before this run ends is an edit, not drift for Gerrit's
+		// text to undo (in the rehearsal, a retitle while the run went on
+		// was put back).
+		return c.linkNew(ctx, s, a.Change, pr, at)
 	case UpdatePR:
 		if u := a.Update; u.State == nil && u.Base == nil {
 			// Text only: wait if whoever changed it changed too many.
@@ -1699,8 +1703,10 @@ func (c *Code) link(ctx context.Context, s *Snapshot, n int, pr *github.PullRequ
 	return c.linkPR(ctx, n, origin, s.Branch, s.Changes[n].ChangeID, pr)
 }
 
-// linkHead is link, noting the PR's head as seen at at.
-func (c *Code) linkHead(ctx context.Context, s *Snapshot, n int, pr *github.PullRequest, at time.Time) error {
+// linkNew is link for a PR the bridge just made from change n: it notes
+// the PR's head as seen at at, and its text and draft state as in sync
+// with the change's.
+func (c *Code) linkNew(ctx context.Context, s *Snapshot, n int, pr *github.PullRequest, at time.Time) error {
 	origin := "gerrit"
 	if s.githubBorn(n) {
 		origin = "github"
@@ -1712,12 +1718,14 @@ func (c *Code) linkPR(ctx context.Context, n int, origin, branch, changeID strin
 	return c.linkPRAt(ctx, n, origin, branch, changeID, pr, time.Time{})
 }
 
-// linkPRAt links change n to pr, and with at, notes pr's head as seen
-// then, in one save.
+// linkPRAt links change n to pr, in one save. With at, pr is new: its
+// head is noted as seen then, and its text and draft state as in sync.
 func (c *Code) linkPRAt(ctx context.Context, n int, origin, branch, changeID string, pr *github.PullRequest, at time.Time) error {
 	err := c.updateState(ctx, n, fmt.Sprintf("Link PR #%d", pr.Number), func(st *state.Change) {
 		if !at.IsZero() {
 			st.Heads = withHead(st.Heads, pr.Head.SHA, at)
+			st.State.SyncedText = hashString(githubText(pr))
+			st.State.SyncedWIP = wipState(pr.Draft)
 		}
 		st.State.Change = n
 		st.State.ChangeID = changeID

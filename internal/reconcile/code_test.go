@@ -4412,3 +4412,40 @@ func TestWritesAreTracedAndAQuietRunHasNone(t *testing.T) {
 		t.Errorf("a run with nothing to do wrote %q", writes)
 	}
 }
+
+// A PR the bridge makes is in sync with its change from the start: an
+// edit on GitHub before the run that made it ends is the editor's, not
+// drift for Gerrit's text to undo (in the rehearsal, a retitle ten
+// seconds after the PR appeared was put back: the run was still going).
+func TestNewPRIsInSyncFromTheStart(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	msg := "One\n\nDoes one thing.\n\nChange-Id: " + cid(1) + "\n"
+	s.change(1, cid(1), s.commit(m0, "f.txt", "f\n", msg), msg, "NEW")
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := MakePlan(snap)
+	plan.Actions = slices.DeleteFunc(plan.Actions, func(a Action) bool { return a.Kind != PushBranches && a.Kind != CreatePR })
+	if err := c.apply(ctx, snap, plan, newSkips()); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Load(ctx, 1)
+	if err != nil || st.State.PR == 0 {
+		t.Fatalf("state %+v, err %v", st, err)
+	}
+	pr := s.pulls[st.State.PR]
+	if st.State.SyncedText != hashString(githubText(pr)) || st.State.SyncedWIP != wipState(pr.Draft) {
+		t.Fatalf("synced text %q, WIP %q: not in sync with the PR as made", st.State.SyncedText, st.State.SyncedWIP)
+	}
+	// Retitled before the run ends: an edit on GitHub.
+	pr.Title = "One, retitled"
+	if text, _ := editedOnGitHub(snap.Changes[1], st, pr); !text {
+		t.Error("a retitle of a new PR is not an edit on GitHub")
+	}
+}
