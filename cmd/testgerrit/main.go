@@ -236,7 +236,7 @@ func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project
 	owner, name, _ := strings.Cut(repo, "/")
 	return s.WriteProjectConfig(bridgeDir, testgerrit.ProjectConfig{
 		File: project + ".yaml", Project: project, Owner: owner, Repo: name, Listen: listen, StatusListen: statusListen,
-		Identity: ids, ImportCreatedAfter: time.Now(), ResyncInterval: 5 * time.Minute, TokenUser: bot, CIAccount: ciUser,
+		Identity: ids, ImportCreatedAfter: time.Now(), ResyncInterval: 15 * time.Minute, TokenUser: bot, CIAccount: ciUser,
 		Buildkite: buildkiteURL,
 	})
 }
