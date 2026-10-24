@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -1073,7 +1074,7 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 		}
 		var why string
 		if !ok {
-			why = fmt.Sprintf("@%s has no Gerrit account to %s it with", login, action)
+			why = fmt.Sprintf("@%s has no Gerrit account for the bridge to act as.", login)
 		} else {
 			msg := fmt.Sprintf("PR #%d %s on GitHub.", pr.Number, past)
 			err := g.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/%s", n, action), map[string]string{"message": msg}, nil)
@@ -1086,13 +1087,13 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 			if !errors.As(err, &ge) || ge.Status >= 500 {
 				return changed, fmt.Errorf("%s change %d as %s: %w", action, n, user, err)
 			}
-			why = fmt.Sprintf("Gerrit would not let %s %s it (%s)", user, action, forGitHub(strings.TrimSpace(ge.Body)))
+			why = fmt.Sprintf("Gerrit refused it as %s (%s).", user, forGitHub(strings.TrimSpace(ge.Body)))
 		}
-		undo := "Reopening it"
+		undo := "The PR is reopened"
 		if action == "restore" {
-			undo = "Closing it again"
+			undo = "The PR is closed again"
 		}
-		note := fmt.Sprintf("@%s %s this PR, which would %s [change %d](%s) in Gerrit, but %s. %s.\n\n%s",
+		note := fmt.Sprintf("@%s %s this PR, but the bridge can't %s [change %d](%s) in Gerrit to match. %s %s.\n\n%s",
 			login, past, action, n, ch.URL, why, undo, noticeMarker)
 		if _, err := c.GitHub.CreateIssueComment(ctx, pr.Number, note); err != nil {
 			return changed, err
@@ -1266,16 +1267,19 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 }
 
 // asEditor calls changes/n/<endpoint> as GitHub user login's Gerrit
-// account. It returns a notice instead ("@login <did>, which would <would>
-// change N in Gerrit, but ...") when Gerrit refuses, or when the bridge
-// will not act for login:
+// account. It returns a notice instead ("@login <did>, but the bridge
+// can't <would> change N in Gerrit to match. ...") when Gerrit refuses, or
+// when the bridge will not act for login:
 //   - Someone without a Gerrit account acts only on their own PR's
 //     bridge-owned change, and then as the bridge (as their pushes are):
 //     the bridge's account must not lend anyone rights in Gerrit.
 //   - An edit that makes a new patch set (newPatchSet, a commit message
-//     edit) is made only by the current patch set's uploader: CI trusts
-//     the uploader, and retitling someone else's PR on GitHub must not
-//     make the editor vouch for its code.
+//     edit) is made only by the current patch set's uploader, the change's
+//     owner or a member of CI's trusted group. Its code is judged by who
+//     wrote it, past message-only patch sets (codeFrom, and CI's
+//     codeTrusted), so a trusted editor does not vouch for it; but anyone
+//     else's patch set would not be pushed to the author's branch, nor
+//     built.
 func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRequest, gh github.User, newPatchSet bool, method, endpoint string, in any, did, would string) (string, error) {
 	n, login := ch.Number, gh.Login
 	who := "@" + login
@@ -1283,7 +1287,7 @@ func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRe
 		who = "Someone"
 	}
 	refuse := func(why string) string {
-		return fmt.Sprintf("%s %s, which would %s [change %d](%s) in Gerrit, but %s. Putting Gerrit's back.", who, did, would, n, c.changeURL(n), why)
+		return fmt.Sprintf("%s %s, but the bridge can't %s [change %d](%s) in Gerrit to match. %s The PR is set back to match Gerrit.", who, did, would, n, c.changeURL(n), why)
 	}
 	user, ok := "", false
 	if c.Identity != nil && login != "" {
@@ -1291,17 +1295,22 @@ func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRe
 	}
 	g, as := c.Gerrit, "the bridge"
 	switch {
-	case ok && newPatchSet && !strings.EqualFold(user, ch.Uploader):
-		return refuse("only the uploader of its current patch set can make a new one from GitHub, since CI trusts the uploader; edit it in Gerrit"), nil
+	case ok && newPatchSet && !strings.EqualFold(user, ch.Uploader) && !strings.EqualFold(user, ch.Owner):
+		if t, err := c.trustedUser(ctx, user); err != nil {
+			return "", err
+		} else if !t {
+			return refuse("Only the change's owner, the uploader of its latest patch set and members of CI's trusted group can make a new patch set from GitHub. Edit the commit message in Gerrit instead."), nil
+		}
+		g, as = c.Gerrit.As(user), user
 	case ok:
 		g, as = c.Gerrit.As(user), user
 	case login != "" && sameGitHubUser(gh, pr.User) && c.BridgeUser != "" && strings.EqualFold(ch.Owner, c.BridgeUser) &&
 		(!newPatchSet || strings.EqualFold(ch.Uploader, c.BridgeUser)):
 		// Their own PR, which the bridge owns for them.
 	case login == "":
-		return refuse("GitHub does not say who, so there is no Gerrit account to do it as"), nil
+		return refuse("GitHub doesn't say who did it, so there is no Gerrit account to do it as."), nil
 	default:
-		return refuse(fmt.Sprintf("%s has no Gerrit account to do that with", who)), nil
+		return refuse(fmt.Sprintf("%s has no Gerrit account for the bridge to act as.", who)), nil
 	}
 	err := g.Do(ctx, method, fmt.Sprintf("changes/%d/%s", n, endpoint), in, nil)
 	var ge *gerrit.Error
@@ -1310,10 +1319,27 @@ func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRe
 		c.Logger.Info("mirrored GitHub PR edit to Gerrit", "change", n, "endpoint", endpoint, "as", as)
 		return "", nil
 	case errors.As(err, &ge) && ge.Status < 500:
-		return refuse(fmt.Sprintf("Gerrit would not let %s (%s)", as, forGitHub(strings.TrimSpace(ge.Body)))), nil
+		return refuse(fmt.Sprintf("Gerrit refused it as %s (%s).", as, forGitHub(strings.TrimSpace(ge.Body)))), nil
 	default:
 		return "", fmt.Errorf("%s %s change %d as %s: %w", method, endpoint, n, as, err)
 	}
+}
+
+// trustedUser reports whether Gerrit user is in CI's trusted group. Not
+// knowing is an error: the next reconcile asks again.
+func (c *Code) trustedUser(ctx context.Context, user string) (bool, error) {
+	if c.Trusted == nil {
+		return false, nil
+	}
+	var acct gerrit.AccountInfo
+	if err := c.Gerrit.Do(ctx, http.MethodGet, "accounts/"+url.PathEscape(user), nil, &acct); err != nil {
+		return false, fmt.Errorf("Gerrit account %s: %w", user, err)
+	}
+	t, known := c.Trusted(ctx, acct.AccountID)
+	if !known {
+		return false, fmt.Errorf("cannot tell whether %s is in CI's trusted group", user)
+	}
+	return t, nil
 }
 
 // commitMessage is the commit message for a PR's title and description:

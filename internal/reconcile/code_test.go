@@ -110,7 +110,7 @@ func TestCloseGerritRefusesIsExplainedAndUndone(t *testing.T) {
 	if s.changes[7].Status != "NEW" {
 		t.Errorf("status = %s", s.changes[7].Status)
 	}
-	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "Gerrit would not let brt abandon it (abandon not permitted). Reopening it.") {
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@brt closed this PR, but the bridge can't abandon [change 7](https://g/c/p/+/7) in Gerrit to match. Gerrit refused it as brt (abandon not permitted). The PR is reopened.") {
 		t.Errorf("notice = %v", s.comments[70])
 	}
 	// The plan then reopens it.
@@ -125,7 +125,7 @@ func TestCloseByUserWithoutGerritAccountIsUndone(t *testing.T) {
 	if changed, err := c.mirrorPRStates(context.Background(), snap, map[int]bool{}); err != nil || changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
-	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@stranger has no Gerrit account to abandon it with") {
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@stranger has no Gerrit account for the bridge to act as. The PR is reopened.") {
 		t.Errorf("notice = %v", s.comments[70])
 	}
 }
@@ -2420,8 +2420,8 @@ func TestPREditGerritRefusesIsExplained(t *testing.T) {
 	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
-	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@brt edited this PR's title or description, which would change the commit message of [change 7]") ||
-		!strings.Contains(s.comments[70][0], "Gerrit would not let brt (edit not permitted). Putting Gerrit's back.") {
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "@brt edited this PR's title or description, but the bridge can't change the commit message of [change 7]") ||
+		!strings.Contains(s.comments[70][0], "in Gerrit to match. Gerrit refused it as brt (edit not permitted). The PR is set back to match Gerrit.") {
 		t.Errorf("notice = %v", s.comments[70])
 	}
 	// The plan then puts Gerrit's title back.
@@ -2464,19 +2464,48 @@ func TestPRTitleAndBodyEditorsAreEach(t *testing.T) {
 	}
 }
 
-// A commit message edit makes a new patch set, and CI trusts its
-// uploader: retitling someone else's PR on GitHub must not make the editor
-// the uploader of their code.
-func TestPREditByNonUploaderIsRefused(t *testing.T) {
-	s, c, snap := editsWorld(t, "gerrit")
-	s.may[7] = append(s.may[7], "brt")
-	s.pulls[70].Title = "Seven, retitled"
-	s.activity[70] = github.PRActivity{TitleEditor: github.User{Login: "brt"}, BodyEditor: github.User{Login: "brt"}}
-	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 {
-		t.Fatalf("changed=%v err=%v calls=%v", changed, err, s.calls)
-	}
-	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "only the uploader of its current patch set") {
-		t.Errorf("notice = %v", s.comments[70])
+// A commit message edit makes a new patch set with the editor as its
+// uploader. The change's owner, its latest patch set's uploader and CI's
+// trusted group may make one from GitHub; anyone else's would be neither
+// built nor pushed to the author's branch, so they are told to edit in
+// Gerrit. Not knowing who is trusted does nothing yet.
+func TestPREditByOwnerUploaderOrTrusted(t *testing.T) {
+	for _, tc := range []struct {
+		name, owner, uploader, editor string
+		trusted, known                bool
+		mirrored                      bool
+	}{
+		{"the uploader", "austin", "brt", "brt", false, true, true},
+		{"the owner", "austin", "brt", "austin", false, true, true},
+		{"trusted", "austin", "austin", "brt", true, true, true},
+		{"someone else", "austin", "austin", "brt", false, true, false},
+		{"not known whether trusted", "austin", "austin", "brt", true, false, false},
+	} {
+		s, c, snap := editsWorld(t, "gerrit")
+		s.accounts["brt"] = gerrit.AccountInfo{AccountID: 6, Username: "brt"}
+		c.Trusted = func(_ context.Context, account int) (bool, bool) { return account == 6 && tc.trusted, tc.known }
+		snap.Changes[7].Owner, snap.Changes[7].Uploader = tc.owner, tc.uploader
+		s.may[7] = append(s.may[7], "brt")
+		s.pulls[70].Title = "Seven, retitled"
+		s.activity[70] = github.PRActivity{TitleEditor: github.User{Login: tc.editor}, BodyEditor: github.User{Login: tc.editor}}
+		changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{})
+		if !tc.known {
+			if err == nil || len(s.calls) != 0 || len(s.comments[70]) != 0 {
+				t.Errorf("%s: err=%v calls=%v notices=%v; want an error and nothing done", tc.name, err, s.calls, s.comments[70])
+			}
+			continue
+		}
+		if err != nil || changed != tc.mirrored {
+			t.Fatalf("%s: changed=%v err=%v", tc.name, changed, err)
+		}
+		if tc.mirrored && (len(s.calls) != 1 || s.calls[0] != "message 7 as "+tc.editor) {
+			t.Errorf("%s: calls = %v", tc.name, s.calls)
+		}
+		want := "in Gerrit to match. Only the change's owner, the uploader of its latest patch set and members of CI's trusted group can make a new patch set from GitHub. " +
+			"Edit the commit message in Gerrit instead. The PR is set back to match Gerrit."
+		if !tc.mirrored && (len(s.calls) != 0 || len(s.comments[70]) != 1 || !strings.HasPrefix(s.comments[70][0], "@brt edited this PR's title or description, but the bridge can't change the commit message of [change 7]") || !strings.Contains(s.comments[70][0], want)) {
+			t.Errorf("%s: calls = %v, notice = %v", tc.name, s.calls, s.comments[70])
+		}
 	}
 }
 
@@ -2517,7 +2546,7 @@ func TestDraftToggleByNobodyIsRefused(t *testing.T) {
 	if changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{}); err != nil || changed || len(s.calls) != 0 {
 		t.Fatalf("changed=%v err=%v calls=%v", changed, err, s.calls)
 	}
-	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "Someone marked this PR as a draft") || !strings.Contains(s.comments[70][0], "GitHub does not say who") {
+	if len(s.comments[70]) != 1 || !strings.Contains(s.comments[70][0], "Someone marked this PR as a draft") || !strings.Contains(s.comments[70][0], "GitHub doesn't say who did it") {
 		t.Errorf("notice = %v", s.comments[70])
 	}
 }

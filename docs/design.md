@@ -1313,8 +1313,13 @@ defenses, by threat:
   code, base, title and description (third audit, confirmed live: it
   had pushed a Gerrit user's code into a fork).
 - **PR edits.** A title or description edit makes a new patch set in
-  Gerrit, so it is made only as the current patch set's uploader; anyone
-  else is told to edit in Gerrit. Draft toggles and close/reopen run as
+  Gerrit, so it is made only as the current patch set's uploader, the
+  change's owner or a member of CI's trusted group; anyone else is told
+  to edit in Gerrit. The new patch set changes only the message, and CI
+  and the bridge judge its code by whoever wrote it, past such patch
+  sets, so a trusted editor does not vouch for someone else's code; but
+  anyone else's patch set would be neither built nor pushed to the
+  author's branch. Draft toggles and close/reopen run as
   whoever did them. Someone without a Gerrit account (or an edit GitHub
   does not attribute) changes nothing, except on their own PR's
   bridge-owned change, which the bridge edits for them.
