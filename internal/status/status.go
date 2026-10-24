@@ -6,6 +6,7 @@
 package status
 
 import (
+	"fmt"
 	"html/template"
 	"net"
 	"net/http"
@@ -18,8 +19,9 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
-// Fact is one line of the page's summary.
-type Fact struct{ Name, Value string }
+// Fact is one line of the page's summary; Link, if set, is where its
+// details are.
+type Fact struct{ Name, Value, Link string }
 
 // Handler serves the page.
 type Handler[K comparable] struct {
@@ -71,13 +73,12 @@ type page struct {
 	Now                                     string
 	Facts                                   []Fact
 	Running, Waiting, Held, Failing, Recent []row
-	Resyncs                                 *resyncs
 }
 
 type resyncs struct {
-	Since  string
-	Counts []resyncCount
-	Caught []caughtRow
+	Now, Since string
+	Counts     []resyncCount
+	Caught     []caughtRow
 }
 
 type resyncCount struct {
@@ -107,6 +108,10 @@ func (h *Handler[K]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if id, ok := strings.CutPrefix(r.URL.Path, "/run/"); ok {
 		h.serveRun(w, id)
+		return
+	}
+	if r.URL.Path == "/resyncs" && h.Resyncs != nil {
+		h.serveResyncs(w)
 		return
 	}
 	if r.URL.Path != "/" {
@@ -153,25 +158,56 @@ func (h *Handler[K]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.Facts = h.Facts()
 	}
 	if h.Resyncs != nil {
-		rs := h.Resyncs()
-		p.Resyncs = &resyncs{Since: dur(now.Sub(rs.Since)) + " ago"}
-		for _, c := range rs.Counts {
-			rc := resyncCount{ResyncCount: c}
-			if c.Runs > 0 {
-				rc.Share = strconv.FormatFloat(100*float64(c.Caught)/float64(c.Runs), 'f', 1, 64) + "%"
-			}
-			p.Resyncs.Counts = append(p.Resyncs.Counts, rc)
-		}
-		for _, c := range rs.Caught {
-			cr := caughtRow{Key: h.Name(c.Key), Ago: dur(now.Sub(c.At)), Reason: c.Reason, Writes: c.Writes, More: c.N - len(c.Writes)}
-			if h.Link != nil {
-				cr.Link = h.Link(c.Key)
-			}
-			p.Resyncs.Caught = append(p.Resyncs.Caught, cr)
-		}
+		p.Facts = append(p.Facts, resyncFacts(h.Resyncs(), now)...)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.Execute(w, p); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// resyncFacts sums up what resyncs caught, for the top of the page.
+func resyncFacts[K comparable](rs Resyncs[K], now time.Time) []Fact {
+	runs, caught := 0, 0
+	for _, c := range rs.Counts {
+		runs += c.Runs
+		caught += c.Caught
+	}
+	last := "never, in " + dur(now.Sub(rs.Since)) + " since start"
+	if len(rs.Caught) > 0 {
+		last = dur(now.Sub(rs.Caught[0].At)) + " ago"
+	}
+	return []Fact{
+		{Name: "Resyncs", Value: fmt.Sprintf("%d runs, %d caught something", runs, caught), Link: "resyncs"},
+		{Name: "Last resync catch", Value: last, Link: "resyncs"},
+	}
+}
+
+// serveResyncs shows what resyncs caught: counts by kind, and the last
+// catches with what each wrote.
+func (h *Handler[K]) serveResyncs(w http.ResponseWriter) {
+	now := time.Now()
+	if h.Now != nil {
+		now = h.Now()
+	}
+	rs := h.Resyncs()
+	p := &resyncs{Now: now.Format(time.RFC3339), Since: dur(now.Sub(rs.Since)) + " ago"}
+	for _, c := range rs.Counts {
+		rc := resyncCount{ResyncCount: c}
+		if c.Runs > 0 {
+			rc.Share = strconv.FormatFloat(100*float64(c.Caught)/float64(c.Runs), 'f', 1, 64) + "%"
+		}
+		p.Counts = append(p.Counts, rc)
+	}
+	for _, c := range rs.Caught {
+		cr := caughtRow{Key: h.Name(c.Key), Ago: dur(now.Sub(c.At)), Reason: c.Reason, Writes: c.Writes, More: c.N - len(c.Writes)}
+		if h.Link != nil {
+			cr.Link = h.Link(c.Key)
+		}
+		p.Caught = append(p.Caught, cr)
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := resyncTmpl.Execute(w, p); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -318,11 +354,10 @@ h1 { font-size: 18px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 20px 0 6p
 table { border-collapse: collapse; width: 100%; } td, th { text-align: left; padding: 3px 10px 3px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { font-weight: 600; } td.n { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dim { color: var(--dim); } .err { color: var(--bad); word-break: break-word; }
-td.w { word-break: break-all; font-family: ui-monospace, monospace; font-size: 12px; }
 </style></head><body>
 <h1>Bridge status</h1>
 <div class="dim">{{.Now}} · refreshes every 5s</div>
-{{with .Facts}}<table style="width:auto;margin-top:10px">{{range .}}<tr><th>{{.Name}}</th><td>{{.Value}}</td></tr>{{end}}</table>{{end}}
+{{with .Facts}}<table style="width:auto;margin-top:10px">{{range .}}<tr><th>{{.Name}}</th><td>{{if .Link}}<a href="{{.Link}}">{{.Value}}</a>{{else}}{{.Value}}{{end}}</td></tr>{{end}}</table>{{end}}
 {{define "run"}}{{if .Run}}<a href="{{.Run}}">timeline</a>{{end}}{{end}}
 {{define "key"}}{{if .Link}}<a href="{{.Link}}">{{.Key}}</a>{{else}}{{.Key}}{{end}}{{end}}
 <h2>Running ({{len .Running}})</h2>
@@ -341,13 +376,30 @@ td.w { word-break: break-all; font-family: ui-monospace, monospace; font-size: 1
 <h2>Recently done ({{len .Recent}})</h2>
 {{if .Recent}}<table><tr><th>Key</th><th>Started</th><th>Waited</th><th>Took</th><th></th><th></th></tr>
 {{range .Recent}}<tr><td>{{template "key" .}}</td><td class="n">{{.Ago}} ago</td><td class="n">{{.Waited}}</td><td class="n">{{.Took}}</td><td>{{template "run" .}}</td><td class="err">{{.Err}}</td></tr>{{end}}</table>{{end}}
-{{with .Resyncs}}<h2>What resyncs caught</h2>
+</body></html>
+`))
+
+var resyncTmpl = template.Must(template.New("resyncs").Parse(`<!doctype html>
+<html><head><meta charset="utf-8"><meta http-equiv="refresh" content="30">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bridge resyncs</title>
+<style>
+:root { color-scheme: light dark; --line: #8884; --dim: #888; }
+body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; background: Canvas; color: CanvasText; }
+h1 { font-size: 18px; margin: 0 0 4px; }
+table { border-collapse: collapse; width: 100%; margin-top: 10px; } td, th { text-align: left; padding: 3px 10px 3px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; } td.n { font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.w { word-break: break-all; font-family: ui-monospace, monospace; font-size: 12px; } .dim { color: var(--dim); }
+</style></head><body>
+<a href="./">← status</a>
+<h1>What resyncs caught</h1>
+<div class="dim">{{.Now}} · refreshes every 30s</div>
+{{define "key"}}{{if .Link}}<a href="{{.Link}}">{{.Key}}</a>{{else}}{{.Key}}{{end}}{{end}}
 <div class="dim">Since {{.Since}}: runs only a resync asked for, and those that changed something on Gerrit or GitHub, which an event should have done.</div>
 {{if .Counts}}<table style="width:auto"><tr><th>Why</th><th>Key</th><th>Runs</th><th>Caught</th><th></th><th>Failed</th></tr>
 {{range .Counts}}<tr><td>{{.Reason}}</td><td>{{.Key}}</td><td class="n">{{.Runs}}</td><td class="n">{{.Caught}}</td><td class="n dim">{{.Share}}</td><td class="n">{{.Failed}}</td></tr>{{end}}</table>{{else}}<div class="dim">No resync runs yet.</div>{{end}}
 {{if .Caught}}<table><tr><th>Key</th><th>When</th><th>Why</th><th>What it wrote</th></tr>
-{{range .Caught}}<tr><td>{{template "key" .}}</td><td class="n">{{.Ago}} ago</td><td>{{.Reason}}</td><td class="w">{{range .Writes}}{{.}}<br>{{end}}{{with .More}}<span class="dim">and {{.}} more</span>{{end}}</td></tr>{{end}}</table>{{end}}{{end}}
-</body></html>
+{{range .Caught}}<tr><td>{{template "key" .}}</td><td class="n">{{.Ago}} ago</td><td>{{.Reason}}</td><td class="w">{{range .Writes}}{{.}}<br>{{end}}{{with .More}}<span class="dim">and {{.}} more</span>{{end}}</td></tr>{{end}}</table>{{end}}</body></html>
 `))
 
 var runTmpl = template.Must(template.New("run").Parse(`<!doctype html>

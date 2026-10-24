@@ -152,8 +152,9 @@ func TestOnlyReads(t *testing.T) {
 	}
 }
 
-// The page says how many runs each kind of resync made and how many
-// caught something, and what those wrote; with no counts it says none.
+// The top of the page sums up what resyncs caught, linking the details:
+// how many runs each kind of resync made and how many caught something,
+// and what those wrote.
 func TestResyncs(t *testing.T) {
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	rs := Resyncs[string]{Since: now.Add(-2 * time.Hour)}
@@ -164,29 +165,45 @@ func TestResyncs(t *testing.T) {
 		Now:     func() time.Time { return now },
 		Resyncs: func() Resyncs[string] { return rs },
 	}
-	page := func() string {
+	page := func(path string) string {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, get("/"))
+		h.ServeHTTP(w, get(path))
 		return w.Body.String()
 	}
-	if body := page(); !strings.Contains(body, "Since 2h0m0s ago") || !strings.Contains(body, "No resync runs yet.") {
+	if body := page("/"); !strings.Contains(body, `<a href="resyncs">0 runs, 0 caught something</a>`) ||
+		!strings.Contains(body, `<a href="resyncs">never, in 2h0m0s since start</a>`) {
+		t.Errorf("empty tally's summary: %s", body)
+	}
+	if body := page("/resyncs"); !strings.Contains(body, "Since 2h0m0s ago") || !strings.Contains(body, "No resync runs yet.") {
 		t.Errorf("empty tally: %s", body)
 	}
-	rs.Counts = []ResyncCount{{Reason: "periodic", Key: "branch", Runs: 40, Caught: 1, Failed: 2}}
-	rs.Caught = []Caught[string]{{Key: "branch/main", At: now.Add(-time.Minute), Reason: "periodic",
-		Writes: []string{"github PATCH /repos/o/r/pulls/3", "<b>x</b>"}, N: 5}}
-	body := page()
+	rs.Counts = []ResyncCount{{Reason: "periodic", Key: "branch", Runs: 40, Caught: 1, Failed: 2},
+		{Reason: "connected", Key: "comments", Runs: 5, Caught: 1}}
+	rs.Caught = []Caught[string]{
+		{Key: "branch/main", At: now.Add(-time.Minute), Reason: "periodic", Writes: []string{"github PATCH /repos/o/r/pulls/3", "<b>x</b>"}, N: 5},
+		{Key: "comments/4", At: now.Add(-time.Hour), Reason: "connected", Writes: []string{"gerrit POST x"}, N: 1},
+	}
+	if body := page("/"); !strings.Contains(body, ">45 runs, 2 caught something<") || !strings.Contains(body, ">1m0s ago<") ||
+		strings.Contains(body, "github PATCH") {
+		t.Errorf("summary: %s", body)
+	}
+	body := page("/resyncs")
 	for _, want := range []string{
 		"<td>periodic</td><td>branch</td>", ">40<", ">1<", "2.5%", ">2<",
 		`<a href="https://example.test/branch/main">branch/main</a>`, "1m0s ago",
 		"github PATCH /repos/o/r/pulls/3", "&lt;b&gt;x&lt;/b&gt;", "and 3 more",
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
+			t.Errorf("details lack %q", want)
 		}
 	}
 	h.Resyncs = nil
-	if strings.Contains(page(), "What resyncs caught") {
-		t.Error("a section with no tally")
+	if strings.Contains(page("/"), "Resyncs") {
+		t.Error("a summary with no tally")
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, get("/resyncs"))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("details with no tally: %d", w.Code)
 	}
 }
