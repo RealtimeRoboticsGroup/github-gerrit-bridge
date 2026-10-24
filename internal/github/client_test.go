@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 func newClient(t *testing.T, h http.HandlerFunc) *Client {
@@ -715,5 +717,46 @@ func TestDismissals(t *testing.T) {
 		72: {State: "approved", By: "app[bot]", Bot: true, At: time.Date(2026, 10, 19, 13, 0, 0, 0, time.UTC)}}
 	if err != nil || !reflect.DeepEqual(ds, want) {
 		t.Errorf("dismissals %+v, err %v", ds, err)
+	}
+}
+
+// A write is noted in the run's trace once GitHub takes it: not a read,
+// not a GraphQL query (a POST that reads), not a refused write.
+func TestWritesAreTraced(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/o/r/issues/9/comments" {
+			http.Error(w, `{"message":"no"}`, http.StatusForbidden)
+			return
+		}
+		switch r.URL.Path {
+		case "/graphql":
+			io.WriteString(w, `{"data":{}}`)
+		default:
+			io.WriteString(w, `{}`)
+		}
+	})
+	tr := trace.New()
+	ctx := trace.With(context.Background(), tr)
+	if _, err := c.GetPull(ctx, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.GraphQL(ctx, "query { viewer { login } }", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateIssueComment(ctx, 9, "x"); err == nil {
+		t.Fatal("refused comment: no error")
+	}
+	if w, n := tr.Writes(); n != 0 {
+		t.Fatalf("reads and a refused write traced as writes: %q", w)
+	}
+	if _, err := c.CreateIssueComment(ctx, 4, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetDraft(ctx, "PR_1", true); err != nil {
+		t.Fatal(err)
+	}
+	w, n := tr.Writes()
+	if n != 2 || w[0] != "github POST /repos/o/r/issues/4/comments" || w[1] != "github graphql convertPullRequestToDraft" {
+		t.Errorf("writes %q", w)
 	}
 }

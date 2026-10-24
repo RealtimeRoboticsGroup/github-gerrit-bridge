@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 // GraphQLError is an error reported in a GraphQL response body.
@@ -34,6 +36,16 @@ func (c *Client) GraphQL(ctx context.Context, query string, vars map[string]any,
 			ge.Messages = append(ge.Messages, e.Message)
 		}
 		return ge
+	}
+	// A query that reads posts too; only a mutation writes.
+	if m, ok := strings.CutPrefix(strings.TrimSpace(query), "mutation"); ok {
+		if i := strings.Index(m, "{"); i >= 0 {
+			m = strings.TrimSpace(m[i+1:])
+		}
+		if i := strings.IndexAny(m, "( {"); i >= 0 {
+			m = m[:i]
+		}
+		trace.Wrote(ctx, "github graphql "+m)
 	}
 	if out != nil {
 		if err := json.Unmarshal(resp.Data, out); err != nil {

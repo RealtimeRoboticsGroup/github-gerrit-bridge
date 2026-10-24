@@ -32,6 +32,8 @@ type Trace struct {
 	spans   []Span
 	depth   int
 	dropped int
+	writes  []string
+	wrote   int
 }
 
 // New starts a Trace now.
@@ -65,6 +67,36 @@ func (t *Trace) Add(start time.Time, took time.Duration, what string, err error)
 		s.Err = err.Error()
 	}
 	t.spans = append(t.spans, s)
+}
+
+// MaxWrites bounds the writes a Trace names; the rest are counted.
+const MaxWrites = 20
+
+// Wrote records that the run changed something outside the bridge (a
+// comment posted, a vote cast, a branch pushed), as what. Its own state
+// is not such a change. With no Trace in ctx, it records nothing.
+func Wrote(ctx context.Context, what string) {
+	t := From(ctx)
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.writes) < MaxWrites {
+		t.writes = append(t.writes, what)
+	}
+	t.wrote++
+}
+
+// Writes returns what t's run wrote (Wrote), and how many writes there
+// were in all.
+func (t *Trace) Writes() ([]string, int) {
+	if t == nil {
+		return nil, 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string(nil), t.writes...), t.wrote
 }
 
 // Region records what from now until the returned func is called, and

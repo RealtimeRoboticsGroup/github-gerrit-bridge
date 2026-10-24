@@ -263,6 +263,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 		MaxHeaderBytes: 64 << 10}
 
+	tally := reconcile.NewResyncTally()
 	var statusSrv *http.Server
 	if cfg.StatusListen != "" {
 		started := time.Now()
@@ -282,6 +283,19 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 						return fmt.Sprintf("https://github.com/%s/pull/%d", repo, k.PRComments)
 					}
 					return ""
+				},
+				Resyncs: func() status.Resyncs[reconcile.Key] {
+					rs := status.Resyncs[reconcile.Key]{Since: tally.Since()}
+					for k, c := range tally.Counts() {
+						rs.Counts = append(rs.Counts, status.ResyncCount{Reason: k.Reason, Key: k.Key, Runs: c.Runs, Caught: c.Caught, Failed: c.Failed})
+					}
+					slices.SortFunc(rs.Counts, func(a, b status.ResyncCount) int {
+						return cmp.Or(strings.Compare(a.Reason, b.Reason), strings.Compare(a.Key, b.Key))
+					})
+					for _, c := range tally.Caught() {
+						rs.Caught = append(rs.Caught, status.Caught[reconcile.Key]{Key: c.Key, At: c.At, Reason: c.Reason, Writes: c.Writes, N: c.N})
+					}
+					return rs
 				},
 				Facts: func() []status.Fact {
 					last := "never"
@@ -462,7 +476,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	commands.Replies = &reconcile.Budget{N: 20, Per: time.Hour}
 	dispatch := &reconcile.Dispatcher{Code: code, Comments: comments, Commands: commands, Checks: checks, Store: store, Logger: logger,
 		Enqueue: q.Add}
-	wg.Go(func() { reconcile.Work(ctx, q, dispatch, cfg.Workers, logger) })
+	wg.Go(func() { reconcile.Work(ctx, q, dispatch, cfg.Workers, tally, logger) })
 	wg.Go(func() {
 		// Stop if the bridge's account joins CI's trusted group.
 		if err := checks.WatchUntrusted(ctx, self.AccountID, time.Minute); err != nil {

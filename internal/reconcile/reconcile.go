@@ -180,7 +180,7 @@ func (r *Router) RunResync(ctx context.Context, l Lister) error {
 		}
 		backoff = minBackoff
 		for _, k := range keys {
-			r.Queue.AddLow(k) // behind what events queue
+			r.Queue.AddLow(k, reason) // behind what events queue
 		}
 		r.Logger.Info("resync queued", "reason", reason, "keys", len(keys))
 	}
@@ -188,8 +188,9 @@ func (r *Router) RunResync(ctx context.Context, l Lister) error {
 
 // Work runs n workers reconciling keys from q until q is shut down, plus
 // one that takes only urgent keys (a merge racing replication), so they
-// never wait for a worker to come free.
-func Work(ctx context.Context, q *queue.Queue[Key], rec Reconciler, n int, logger *slog.Logger) {
+// never wait for a worker to come free. tally, if set, counts what
+// resyncs catch.
+func Work(ctx context.Context, q *queue.Queue[Key], rec Reconciler, n int, tally *ResyncTally, logger *slog.Logger) {
 	done := make(chan struct{})
 	worker := func(get func() (Key, bool)) {
 		defer func() { done <- struct{}{} }()
@@ -198,7 +199,7 @@ func Work(ctx context.Context, q *queue.Queue[Key], rec Reconciler, n int, logge
 			if !ok {
 				return
 			}
-			reconcileOne(ctx, q, rec, k, logger)
+			reconcileOne(ctx, q, rec, k, tally, logger)
 		}
 	}
 	for range n {
@@ -226,13 +227,22 @@ func waitFor(d time.Duration) error {
 	return &errLater{after: d}
 }
 
+// failed is err, unless it only says some of the work waits.
+func failed(err error) error {
+	var later *errLater
+	if errors.As(err, &later) {
+		return nil
+	}
+	return err
+}
+
 // editSettle is how long a comment must be unchanged before the bridge
 // acts on it as its author where that submits or starts CI: anyone with
 // write access can edit anyone's comment, and GraphQL, which says who
 // last did, may lag REST by a little (design §9; sixth audit).
 const editSettle = 30 * time.Second
 
-func reconcileOne(ctx context.Context, q *queue.Queue[Key], rec Reconciler, k Key, logger *slog.Logger) {
+func reconcileOne(ctx context.Context, q *queue.Queue[Key], rec Reconciler, k Key, tally *ResyncTally, logger *slog.Logger) {
 	defer q.Done(k)
 	defer func() {
 		if p := recover(); p != nil {
@@ -252,6 +262,12 @@ func reconcileOne(ctx context.Context, q *queue.Queue[Key], rec Reconciler, k Ke
 		logger.Info("slow reconcile", "key", k.String(), "waited", waited.Round(time.Millisecond), "took", took.Round(time.Millisecond))
 	} else {
 		logger.Debug("reconciled", "key", k.String(), "waited", waited.Round(time.Millisecond), "took", took.Round(time.Millisecond))
+	}
+	// A run only a resync asked for that changed something did what an
+	// event should have: the resync caught it.
+	if why := q.Resync(k); why != "" && ctx.Err() == nil && tally.record(why, k, t, failed(err)) {
+		writes, n := t.Writes()
+		logger.Info("resync caught something", "key", k.String(), "reason", why, "writes", n, "what", strings.Join(writes, "; "))
 	}
 	var later *errLater
 	if errors.As(err, &later) {

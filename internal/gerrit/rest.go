@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 // Client calls Gerrit's authenticated REST endpoints (/a/...).
@@ -295,6 +297,13 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 	}
 	if resp.StatusCode/100 != 2 {
 		return &Error{Method: method, Path: path, Status: resp.StatusCode, Body: strings.TrimSpace(string(b[:min(len(b), 1000)]))}
+	}
+	if method != http.MethodGet && method != http.MethodHead {
+		what := "gerrit " + method + " " + path
+		if c.RunAs != "" {
+			what += " as " + c.RunAs
+		}
+		trace.Wrote(ctx, what)
 	}
 	if out == nil {
 		return nil

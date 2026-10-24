@@ -9,6 +9,7 @@ import (
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 // Uploader pushes a commit from the mirror to refs/for/<target>, as a
@@ -46,6 +47,19 @@ func uploadResult(out []byte, err error) error {
 	return fmt.Errorf("%w\n%s", err, out)
 }
 
+// uploaded is uploadResult, noting an upload that made a patch set in
+// the run's trace.
+func uploaded(ctx context.Context, user, commit, ref string, out []byte, err error) error {
+	if err == nil {
+		what := "gerrit upload " + commit + " to " + ref
+		if user != "" {
+			what += " as " + user
+		}
+		trace.Wrote(ctx, what)
+	}
+	return uploadResult(out, err)
+}
+
 // HTTPUploader pushes as the bridge account through the mirror's origin.
 type HTTPUploader struct {
 	Mirror *gitmirror.Repo
@@ -61,7 +75,7 @@ func (u HTTPUploader) Upload(ctx context.Context, user, commit, target string, o
 		return err
 	}
 	out, err := u.Mirror.Git(ctx, nil, "push", "origin", commit+":"+ref)
-	return uploadResult(out, err)
+	return uploaded(ctx, "", commit, ref, out, err)
 }
 
 // CanActAs implements Uploader.
@@ -101,7 +115,7 @@ func (u SuexecUploader) Upload(ctx context.Context, user, commit, target string,
 	}
 	out, err := u.Mirror.GitEnv(ctx, []string{"GIT_SSH_COMMAND=" + ssh}, nil,
 		"push", "--receive-pack=suexec --as "+user+" -- git-receive-pack", remote, commit+":"+ref)
-	return uploadResult(out, err)
+	return uploaded(ctx, user, commit, ref, out, err)
 }
 
 // CanActAs implements Uploader.

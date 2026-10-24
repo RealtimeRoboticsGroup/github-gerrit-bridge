@@ -3780,7 +3780,8 @@ func TestOneChangeGitHubRefusesWaitsAlone(t *testing.T) {
 		s.change(1, cid(1), s.commit(m0, "good.txt", "g\n", msg1), msg1, "NEW")
 		msg2 := "Stranger's change\n\nChange-Id: " + cid(2) + "\n"
 		s.change(2, cid(2), s.commit(m0, "fixture.txt", "token = ghp_abcdefghijklmnopqrstuvwxyz0123456789\n", msg2), msg2, "NEW")
-		err := c.Reconcile(ctx, Key{Branch: "main"})
+		tr := trace.New()
+		err := c.Reconcile(trace.With(ctx, tr), Key{Branch: "main"})
 		st1, _ := store.Load(ctx, 1)
 		st2, _ := store.Load(ctx, 2)
 		if hung {
@@ -3791,6 +3792,11 @@ func TestOneChangeGitHubRefusesWaitsAlone(t *testing.T) {
 		}
 		if err != nil || st1.State.PR == 0 {
 			t.Errorf("change 1 never reached GitHub (err %v): change 2's refused push failed the branch's atomic push", err)
+		}
+		// What reached GitHub is a write; what it refused is not.
+		if w, _ := tr.Writes(); !slices.ContainsFunc(w, func(w string) bool { return strings.HasSuffix(w, "(change 1)") }) ||
+			slices.ContainsFunc(w, func(w string) bool { return strings.HasSuffix(w, "(change 2)") || strings.HasSuffix(w, "refs)") }) {
+			t.Errorf("writes %q, want change 1's push alone, not change 2's or the refused push of both", w)
 		}
 		if st2 == nil || st2.State.PR != 0 || st2.State.WithheldNotice != 1 {
 			t.Errorf("change 2's state %+v, want no PR, withheld with a notice", st2)
@@ -4367,5 +4373,42 @@ func TestAnotherPRFromTheSameHeadDoesNotBlockAStackedImport(t *testing.T) {
 	other := &github.PullRequest{Number: 3, Base: github.Ref{Ref: "main"}}
 	if im.rather(other, pr10, map[string]bool{"main": true}) || !im.rather(pr10, other, map[string]bool{"main": true}) {
 		t.Error("an older PR from a linked PR's head took its place")
+	}
+}
+
+// A run's trace names what it changed on Gerrit or GitHub, and not the
+// bridge's own state; a run with nothing to do changes nothing. That is
+// what tells a resync that caught something from one that did not.
+func TestWritesAreTracedAndAQuietRunHasNone(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	msg1 := "One\n\nChange-Id: " + cid(1) + "\n"
+	s.change(1, cid(1), s.commit(m0, "f.txt", "f\n", msg1), msg1, "NEW")
+	tr := trace.New()
+	if err := c.Reconcile(trace.With(ctx, tr), Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	writes, _ := tr.Writes()
+	pushed, opened := false, false
+	for _, w := range writes {
+		pushed = pushed || strings.HasPrefix(w, "git push "+c.GitHubURL)
+		opened = opened || w == "github POST /repos/o/r/pulls"
+		if strings.Contains(w, "refs/bridge") || strings.Contains(w, "origin") {
+			t.Errorf("the bridge's own state counted as a write: %q", w)
+		}
+	}
+	if !pushed || !opened {
+		t.Errorf("writes %q, want the push to GitHub and the new PR", writes)
+	}
+	tr = trace.New()
+	if err := c.Reconcile(trace.With(ctx, tr), Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	if writes, n := tr.Writes(); n != 0 {
+		t.Errorf("a run with nothing to do wrote %q", writes)
 	}
 }

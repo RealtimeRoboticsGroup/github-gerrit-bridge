@@ -21,7 +21,7 @@ type Queue[K comparable] struct {
 
 	order      []K            // keys waiting for a worker, FIFO
 	low        []K            // keys waiting only for AddLow, FIFO
-	lowOnly    map[K]bool     // dirty keys only AddLow asked for
+	lowOnly    map[K]string   // dirty keys only AddLow asked for, and why
 	sinceLow   int            // keys handed out from order since one from low
 	dirty      map[K]struct{} // keys that need processing (queued or re-queued)
 	processing map[K]struct{} // keys a worker holds
@@ -32,6 +32,7 @@ type Queue[K comparable] struct {
 	errs       map[K]string // last error of a key that is failing
 	details    map[K]any    // what a running key's run attached (Attach)
 	ids        map[K]uint64 // a running key's run id
+	resyncs    map[K]string // why a running key runs, if only for AddLow
 	lastID     uint64
 	recent     []Entry[K] // the last runs, oldest first (Snapshot)
 	shutdown   bool
@@ -55,7 +56,7 @@ type Queue[K comparable] struct {
 func New[K comparable]() *Queue[K] {
 	q := &Queue[K]{
 		dirty:      map[K]struct{}{},
-		lowOnly:    map[K]bool{},
+		lowOnly:    map[K]string{},
 		processing: map[K]struct{}{},
 		failures:   map[K]int{},
 		started:    map[K]time.Time{},
@@ -64,6 +65,7 @@ func New[K comparable]() *Queue[K] {
 		errs:       map[K]string{},
 		details:    map[K]any{},
 		ids:        map[K]uint64{},
+		resyncs:    map[K]string{},
 		MinRetry:   time.Second,
 		MaxRetry:   5 * time.Minute,
 	}
@@ -79,7 +81,7 @@ func (q *Queue[K]) Add(k K) {
 		return
 	}
 	if _, ok := q.dirty[k]; ok {
-		if q.lowOnly[k] {
+		if q.lowOnly[k] != "" {
 			// Now an event's too: ahead of the rest of a resync.
 			delete(q.lowOnly, k)
 			if i := slices.Index(q.low, k); i >= 0 {
@@ -93,11 +95,13 @@ func (q *Queue[K]) Add(k K) {
 }
 
 // AddLow is Add for a key nothing is known to have changed (a periodic
-// resync visits them all): it waits behind those that Add queued, but
+// resync visits them all), for why (non-empty: "periodic", say; a key
+// that only AddLow queued runs with it as its Resync): it waits behind
+// those that Add queued, but
 // for one key in every lowShare handed out, so neither waits for good.
 // Throttled keys cannot hold it back, then, nor it them (in the
 // rehearsal, each resync held the PR events after it back minutes).
-func (q *Queue[K]) AddLow(k K) {
+func (q *Queue[K]) AddLow(k K, why string) {
 	if q.Urgent != nil && q.Urgent(k) {
 		q.Add(k)
 		return
@@ -107,7 +111,10 @@ func (q *Queue[K]) AddLow(k K) {
 	if _, ok := q.dirty[k]; ok || q.shutdown {
 		return
 	}
-	q.lowOnly[k] = true
+	if why == "" {
+		why = "resync"
+	}
+	q.lowOnly[k] = why
 	q.mark(k)
 }
 
@@ -134,7 +141,7 @@ func (q *Queue[K]) mark(k K) {
 
 // enqueue puts dirty k in line for a worker. q.mu is held.
 func (q *Queue[K]) enqueue(k K) {
-	if q.lowOnly[k] {
+	if q.lowOnly[k] != "" {
 		q.low = append(q.low, k)
 	} else {
 		q.order = append(q.order, k)
@@ -274,7 +281,10 @@ func (q *Queue[K]) take(i int) K {
 // hand hands out k, taken out of line. q.mu is held.
 func (q *Queue[K]) hand(k K) K {
 	delete(q.dirty, k)
-	delete(q.lowOnly, k)
+	if why := q.lowOnly[k]; why != "" {
+		q.resyncs[k] = why
+		delete(q.lowOnly, k)
+	}
 	q.processing[k] = struct{}{}
 	q.started[k] = time.Now()
 	q.waited[k] = q.started[k].Sub(q.queuedAt[k])
@@ -292,13 +302,21 @@ func (q *Queue[K]) Waited(k K) time.Duration {
 	return q.waited[k]
 }
 
+// Resync is why the key a worker holds runs if only AddLow asked for
+// the run (a periodic resync, say), or "".
+func (q *Queue[K]) Resync(k K) string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.resyncs[k]
+}
+
 // Done releases k. If k was added while it was being processed, it is
 // queued again.
 func (q *Queue[K]) Done(k K) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if start, ok := q.started[k]; ok {
-		q.recent = append(q.recent, Entry[K]{Key: k, ID: q.ids[k], At: start, Waited: q.waited[k], Took: time.Since(start), Err: q.errs[k], Detail: q.details[k]})
+		q.recent = append(q.recent, Entry[K]{Key: k, ID: q.ids[k], At: start, Waited: q.waited[k], Took: time.Since(start), Resync: q.resyncs[k], Err: q.errs[k], Detail: q.details[k]})
 		if len(q.recent) > maxRecent {
 			q.recent = slices.Delete(q.recent, 0, len(q.recent)-maxRecent)
 		}
@@ -307,6 +325,7 @@ func (q *Queue[K]) Done(k K) {
 	delete(q.waited, k)
 	delete(q.details, k)
 	delete(q.ids, k)
+	delete(q.resyncs, k)
 	// started stays: it is k's last start, which throttles Adds that come
 	// after this run as well as those during it. Entries are forgotten
 	// once MinInterval has passed (wait), or swept here.
@@ -354,8 +373,9 @@ type Entry[K comparable] struct {
 	At     time.Time
 	Waited time.Duration // before it started (running, recent)
 	Took   time.Duration // recent
-	// Resync: waiting only for a periodic resync (AddLow), behind events.
-	Resync bool
+	// Resync is why, if only AddLow queued it (waiting, behind events)
+	// or asked for the run (running, recent).
+	Resync string
 	// Again: held, it runs once more after its current run; else held,
 	// it ran moments ago (MinInterval).
 	Again bool
@@ -385,7 +405,7 @@ func (q *Queue[K]) Snapshot() Snapshot[K] {
 		return e
 	}
 	for k := range q.processing {
-		s.Running = append(s.Running, fail(Entry[K]{Key: k, ID: q.ids[k], At: q.started[k], Waited: q.waited[k], Detail: q.details[k]}))
+		s.Running = append(s.Running, fail(Entry[K]{Key: k, ID: q.ids[k], At: q.started[k], Waited: q.waited[k], Resync: q.resyncs[k], Detail: q.details[k]}))
 	}
 	slices.SortFunc(s.Running, func(a, b Entry[K]) int { return a.At.Compare(b.At) })
 	inLine := map[K]bool{}
@@ -395,7 +415,7 @@ func (q *Queue[K]) Snapshot() Snapshot[K] {
 	}
 	for _, k := range q.low {
 		inLine[k] = true
-		s.Waiting = append(s.Waiting, fail(Entry[K]{Key: k, At: q.queuedAt[k], Resync: true}))
+		s.Waiting = append(s.Waiting, fail(Entry[K]{Key: k, At: q.queuedAt[k], Resync: q.lowOnly[k]}))
 	}
 	for k := range q.dirty {
 		if !inLine[k] {

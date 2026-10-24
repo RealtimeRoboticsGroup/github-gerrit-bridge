@@ -294,13 +294,13 @@ func TestMinIntervalBetweenRuns(t *testing.T) {
 func TestAddLow(t *testing.T) {
 	q := New[int]()
 	for k := 100; k < 104; k++ {
-		q.AddLow(k)
+		q.AddLow(k, "periodic")
 	}
 	for k := 1; k <= 7; k++ {
 		q.Add(k)
 	}
 	q.Add(103)
-	q.AddLow(1) // queued already
+	q.AddLow(1, "periodic") // queued already
 	var got []int
 	for q.Len() > 0 {
 		k, _ := q.Get()
@@ -320,7 +320,7 @@ func TestAddLowWhileProcessing(t *testing.T) {
 		q := New[int]()
 		q.Add(1)
 		k, _ := q.Get()
-		q.AddLow(1)
+		q.AddLow(1, "periodic")
 		if add {
 			q.Add(1)
 		}
@@ -340,7 +340,7 @@ func TestSnapshot(t *testing.T) {
 	q.MinInterval = time.Hour
 	q.Add("a")
 	q.Add("b")
-	q.AddLow("r")
+	q.AddLow("r", "periodic")
 	q.Add("c")
 	if k, _ := q.Get(); k != "a" {
 		t.Fatalf("got %q", k)
@@ -356,7 +356,7 @@ func TestSnapshot(t *testing.T) {
 	if got := keys(s.Running); !slices.Equal(got, []string{"a"}) || s.Running[0].At.IsZero() {
 		t.Errorf("running %v", s.Running)
 	}
-	if got := keys(s.Waiting); !slices.Equal(got, []string{"b", "c", "r"}) || s.Waiting[0].Resync || !s.Waiting[2].Resync {
+	if got := keys(s.Waiting); !slices.Equal(got, []string{"b", "c", "r"}) || s.Waiting[0].Resync != "" || s.Waiting[2].Resync != "periodic" {
 		t.Errorf("waiting %+v", s.Waiting)
 	}
 	if len(s.Held) != 1 || s.Held[0].Key != "a" || !s.Held[0].Again {
@@ -424,5 +424,35 @@ func TestSnapshot(t *testing.T) {
 	q.Done("k")
 	if r := q.Snapshot().Recent; len(r) != 2 || r[0].Err != "" || r[1].Err != "boom" {
 		t.Errorf("recent after a success %+v", r)
+	}
+}
+
+// A run only AddLow asked for carries its reason, running and after; one
+// an Add asked for too does not.
+func TestResyncReason(t *testing.T) {
+	q := New[string]()
+	q.AddLow("r", "periodic")
+	q.AddLow("e", "connected")
+	q.Add("e") // an event's too
+	q.AddLow("d", "")
+	got := map[string]string{}
+	for range 3 {
+		k, _ := q.Get()
+		got[k] = q.Resync(k)
+		if s := q.Snapshot(); s.Running[0].Resync != got[k] {
+			t.Errorf("%s running as %q, Resync says %q", k, s.Running[0].Resync, got[k])
+		}
+		q.Done(k)
+	}
+	if got["r"] != "periodic" || got["e"] != "" || got["d"] != "resync" {
+		t.Errorf("reasons %q", got)
+	}
+	if q.Resync("r") != "" {
+		t.Error("a finished run still has a reason")
+	}
+	for _, e := range q.Snapshot().Recent {
+		if e.Resync != got[e.Key] {
+			t.Errorf("recent %s: %q, want %q", e.Key, e.Resync, got[e.Key])
+		}
 	}
 }

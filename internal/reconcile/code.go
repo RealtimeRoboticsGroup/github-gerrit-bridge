@@ -1539,6 +1539,9 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			args := append([]string{"push", "--porcelain", "--atomic", url}, specs[url]...)
 			out, err := c.Mirror.GitEnv(ctx, env, nil, args...)
 			pushed[url] = time.Now()
+			if err == nil {
+				trace.Wrote(ctx, fmt.Sprintf("git push %s (%d refs)", url, len(specs[url])))
+			}
 			if err != nil {
 				if url == c.GitHubURL {
 					// One change GitHub refuses (its push protection on a
@@ -1550,6 +1553,7 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 						out1, err1 := c.Mirror.GitEnv(ctx, env, nil, one...)
 						switch {
 						case err1 == nil:
+							trace.Wrote(ctx, fmt.Sprintf("git push %s (change %d)", url, n))
 						case n == 0 || !strings.Contains(string(out1), "[remote rejected]"):
 							// No one change's, or not refused for what it is
 							// (a branch moved under the lease, the network):

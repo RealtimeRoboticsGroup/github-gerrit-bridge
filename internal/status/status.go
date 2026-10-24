@@ -32,6 +32,31 @@ type Handler[K comparable] struct {
 	Link func(K) string
 	// Now is the clock (tests); nil is time.Now.
 	Now func() time.Time
+	// Resyncs, if set, says what resyncs caught: runs only a resync
+	// asked for, and those that changed something.
+	Resyncs func() Resyncs[K]
+}
+
+// Resyncs is what resyncs caught since Since.
+type Resyncs[K comparable] struct {
+	Since  time.Time
+	Counts []ResyncCount
+	Caught []Caught[K] // newest first
+}
+
+// ResyncCount is the runs of one kind of key for one reason.
+type ResyncCount struct {
+	Reason, Key          string
+	Runs, Caught, Failed int
+}
+
+// Caught is a run a resync asked for that wrote.
+type Caught[K comparable] struct {
+	Key    K
+	At     time.Time
+	Reason string
+	Writes []string
+	N      int // writes in all
 }
 
 // row is an Entry as the page shows it.
@@ -46,6 +71,24 @@ type page struct {
 	Now                                     string
 	Facts                                   []Fact
 	Running, Waiting, Held, Failing, Recent []row
+	Resyncs                                 *resyncs
+}
+
+type resyncs struct {
+	Since  string
+	Counts []resyncCount
+	Caught []caughtRow
+}
+
+type resyncCount struct {
+	ResyncCount
+	Share string // of runs that caught something
+}
+
+type caughtRow struct {
+	Key, Link, Ago, Reason string
+	Writes                 []string
+	More                   int // writes not named
 }
 
 func (h *Handler[K]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -95,8 +138,8 @@ func (h *Handler[K]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				r.Took = dur(e.Took)
 			}
 			switch {
-			case e.Resync:
-				r.Note = "resync"
+			case e.Resync != "":
+				r.Note = "resync (" + e.Resync + ")"
 			case e.Again:
 				r.Note = "runs again after this run"
 			}
@@ -108,6 +151,24 @@ func (h *Handler[K]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Held: rows(s.Held), Failing: rows(s.Failing), Recent: rows(s.Recent)}
 	if h.Facts != nil {
 		p.Facts = h.Facts()
+	}
+	if h.Resyncs != nil {
+		rs := h.Resyncs()
+		p.Resyncs = &resyncs{Since: dur(now.Sub(rs.Since)) + " ago"}
+		for _, c := range rs.Counts {
+			rc := resyncCount{ResyncCount: c}
+			if c.Runs > 0 {
+				rc.Share = strconv.FormatFloat(100*float64(c.Caught)/float64(c.Runs), 'f', 1, 64) + "%"
+			}
+			p.Resyncs.Counts = append(p.Resyncs.Counts, rc)
+		}
+		for _, c := range rs.Caught {
+			cr := caughtRow{Key: h.Name(c.Key), Ago: dur(now.Sub(c.At)), Reason: c.Reason, Writes: c.Writes, More: c.N - len(c.Writes)}
+			if h.Link != nil {
+				cr.Link = h.Link(c.Key)
+			}
+			p.Resyncs.Caught = append(p.Resyncs.Caught, cr)
+		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.Execute(w, p); err != nil {
@@ -257,6 +318,7 @@ h1 { font-size: 18px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 20px 0 6p
 table { border-collapse: collapse; width: 100%; } td, th { text-align: left; padding: 3px 10px 3px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { font-weight: 600; } td.n { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dim { color: var(--dim); } .err { color: var(--bad); word-break: break-word; }
+td.w { word-break: break-all; font-family: ui-monospace, monospace; font-size: 12px; }
 </style></head><body>
 <h1>Bridge status</h1>
 <div class="dim">{{.Now}} · refreshes every 5s</div>
@@ -279,6 +341,12 @@ th { font-weight: 600; } td.n { font-variant-numeric: tabular-nums; white-space:
 <h2>Recently done ({{len .Recent}})</h2>
 {{if .Recent}}<table><tr><th>Key</th><th>Started</th><th>Waited</th><th>Took</th><th></th><th></th></tr>
 {{range .Recent}}<tr><td>{{template "key" .}}</td><td class="n">{{.Ago}} ago</td><td class="n">{{.Waited}}</td><td class="n">{{.Took}}</td><td>{{template "run" .}}</td><td class="err">{{.Err}}</td></tr>{{end}}</table>{{end}}
+{{with .Resyncs}}<h2>What resyncs caught</h2>
+<div class="dim">Since {{.Since}}: runs only a resync asked for, and those that changed something on Gerrit or GitHub, which an event should have done.</div>
+{{if .Counts}}<table style="width:auto"><tr><th>Why</th><th>Key</th><th>Runs</th><th>Caught</th><th></th><th>Failed</th></tr>
+{{range .Counts}}<tr><td>{{.Reason}}</td><td>{{.Key}}</td><td class="n">{{.Runs}}</td><td class="n">{{.Caught}}</td><td class="n dim">{{.Share}}</td><td class="n">{{.Failed}}</td></tr>{{end}}</table>{{else}}<div class="dim">No resync runs yet.</div>{{end}}
+{{if .Caught}}<table><tr><th>Key</th><th>When</th><th>Why</th><th>What it wrote</th></tr>
+{{range .Caught}}<tr><td>{{template "key" .}}</td><td class="n">{{.Ago}} ago</td><td>{{.Reason}}</td><td class="w">{{range .Writes}}{{.}}<br>{{end}}{{with .More}}<span class="dim">and {{.}} more</span>{{end}}</td></tr>{{end}}</table>{{end}}{{end}}
 </body></html>
 `))
 

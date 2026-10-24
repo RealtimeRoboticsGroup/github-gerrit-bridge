@@ -37,3 +37,25 @@ func TestTrace(t *testing.T) {
 	none.Add(time.Now(), 0, "x", nil)
 	Region(context.Background(), "x")()
 }
+
+// A run's writes are named up to MaxWrites and all counted; with no
+// Trace, Wrote records nothing.
+func TestWrites(t *testing.T) {
+	tr := New()
+	ctx := With(context.Background(), tr)
+	Wrote(ctx, "github POST /pulls")
+	if w, n := tr.Writes(); n != 1 || len(w) != 1 || w[0] != "github POST /pulls" {
+		t.Errorf("writes %q, %d", w, n)
+	}
+	for range MaxWrites + 2 {
+		Wrote(ctx, "x")
+	}
+	if w, n := tr.Writes(); n != MaxWrites+3 || len(w) != MaxWrites || w[0] != "github POST /pulls" {
+		t.Errorf("%d writes named, %d counted", len(w), n)
+	}
+	Wrote(context.Background(), "x")
+	var none *Trace
+	if w, n := none.Writes(); w != nil || n != 0 {
+		t.Errorf("nil trace writes %q, %d", w, n)
+	}
+}

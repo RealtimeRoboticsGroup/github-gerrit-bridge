@@ -25,7 +25,7 @@ func TestPage(t *testing.T) {
 	h := &Handler[string]{
 		Queue: fixed{
 			Running: []queue.Entry[string]{{Key: "pr/7", At: now.Add(-90 * time.Second), Waited: 3 * time.Second}},
-			Waiting: []queue.Entry[string]{{Key: "comments/12", At: now.Add(-2 * time.Minute)}, {Key: "branch/main", At: now.Add(-time.Minute), Resync: true}},
+			Waiting: []queue.Entry[string]{{Key: "comments/12", At: now.Add(-2 * time.Minute)}, {Key: "branch/main", At: now.Add(-time.Minute), Resync: "periodic"}},
 			Held:    []queue.Entry[string]{{Key: "pr/7", At: now.Add(-10 * time.Second), Again: true}},
 			Failing: []queue.Entry[string]{{Key: "pr/9", Failures: 3, Err: `422 <script>alert(1)</script>`}},
 			Recent: []queue.Entry[string]{{Key: "pr/8", At: now.Add(-5 * time.Second), Took: 1200 * time.Millisecond},
@@ -46,7 +46,7 @@ func TestPage(t *testing.T) {
 	body := w.Body.String()
 	for _, want := range []string{
 		"Running (1)", `<a href="https://github.com/o/r/pull/7">pr/7</a>`, "1m30s", "3s",
-		"Waiting (2)", "comments/12", "2m0s", "resync",
+		"Waiting (2)", "comments/12", "2m0s", "resync (periodic)",
 		"Held (1)", "runs again after this run",
 		"Failing (1)", "&lt;script&gt;", ">3<",
 		"Recently done (2)", "1.2s", "&lt;1ms",
@@ -149,5 +149,44 @@ func TestOnlyReads(t *testing.T) {
 		if got := w.Code != http.StatusMethodNotAllowed; got != ok {
 			t.Errorf("%s: %d", method, w.Code)
 		}
+	}
+}
+
+// The page says how many runs each kind of resync made and how many
+// caught something, and what those wrote; with no counts it says none.
+func TestResyncs(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	rs := Resyncs[string]{Since: now.Add(-2 * time.Hour)}
+	h := &Handler[string]{
+		Queue:   fixed{},
+		Name:    func(k string) string { return k },
+		Link:    func(k string) string { return "https://example.test/" + k },
+		Now:     func() time.Time { return now },
+		Resyncs: func() Resyncs[string] { return rs },
+	}
+	page := func() string {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, get("/"))
+		return w.Body.String()
+	}
+	if body := page(); !strings.Contains(body, "Since 2h0m0s ago") || !strings.Contains(body, "No resync runs yet.") {
+		t.Errorf("empty tally: %s", body)
+	}
+	rs.Counts = []ResyncCount{{Reason: "periodic", Key: "branch", Runs: 40, Caught: 1, Failed: 2}}
+	rs.Caught = []Caught[string]{{Key: "branch/main", At: now.Add(-time.Minute), Reason: "periodic",
+		Writes: []string{"github PATCH /repos/o/r/pulls/3", "<b>x</b>"}, N: 5}}
+	body := page()
+	for _, want := range []string{
+		"<td>periodic</td><td>branch</td>", ">40<", ">1<", "2.5%", ">2<",
+		`<a href="https://example.test/branch/main">branch/main</a>`, "1m0s ago",
+		"github PATCH /repos/o/r/pulls/3", "&lt;b&gt;x&lt;/b&gt;", "and 3 more",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	h.Resyncs = nil
+	if strings.Contains(page(), "What resyncs caught") {
+		t.Error("a section with no tally")
 	}
 }

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 // DefaultBaseURL is the github.com REST API.
@@ -255,6 +257,9 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) (*htt
 			}
 		}
 		return resp, ae
+	}
+	if method != http.MethodGet && method != http.MethodHead && path != "/graphql" {
+		trace.Wrote(ctx, "github "+method+" "+path)
 	}
 	if out != nil && len(b) > 0 {
 		if err := json.Unmarshal(b, out); err != nil {

@@ -5,10 +5,12 @@ go_library(
     srcs = ["rest.go"],
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit",
     visibility = ["//:__subpackages__"],
+    deps = ["//internal/trace"],
 )
 
 go_test(
     name = "gerrit_test",
     srcs = ["rest_test.go"],
     embed = [":gerrit"],
+    deps = ["//internal/trace"],
 )

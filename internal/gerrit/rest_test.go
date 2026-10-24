@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
 )
 
 func TestQueryChangesPaging(t *testing.T) {
@@ -145,5 +147,37 @@ func TestFileContentIsBounded(t *testing.T) {
 	c := &Client{BaseURL: srv.URL, User: "bridge", Password: "secret"}
 	if _, err := c.FileContent(context.Background(), 5, "abc", "big.bin"); err == nil {
 		t.Error("read a file larger than the bound")
+	}
+}
+
+// A write Gerrit takes is noted in the run's trace, with whom it ran as;
+// reads and refused writes are not.
+func TestWritesAreTraced(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/a/changes/6/revisions/abc/review" {
+			http.Error(w, "blocked", http.StatusForbidden)
+			return
+		}
+		fmt.Fprint(w, ")]}'\n{}")
+	}))
+	defer srv.Close()
+	tr := trace.New()
+	ctx := trace.With(context.Background(), tr)
+	c := &Client{BaseURL: srv.URL, User: "bridge", Password: "secret"}
+	if err := c.Do(ctx, http.MethodGet, "changes/5", nil, &struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Do(ctx, http.MethodPost, "changes/6/revisions/abc/review", struct{}{}, nil); err == nil {
+		t.Fatal("refused review: no error")
+	}
+	if w, n := tr.Writes(); n != 0 {
+		t.Fatalf("a read and a refused write traced as writes: %q", w)
+	}
+	alice := &Client{BaseURL: srv.URL, User: "bridge", Password: "secret", RunAs: "alice"}
+	if err := alice.Do(ctx, http.MethodPost, "changes/5/revisions/abc/review", struct{}{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if w, n := tr.Writes(); n != 1 || w[0] != "gerrit POST changes/5/revisions/abc/review as alice" {
+		t.Errorf("writes %q", w)
 	}
 }

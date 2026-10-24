@@ -1664,6 +1664,17 @@ Known gaps:
   wait and phase (import, observe, apply, each PR imported, each comment
   sync pass), nested and drawn to scale, with totals of where the time
   went. Only those runs' traces are kept, at most 1000 spans each.
+- What resyncs catch, to tell whether `resync_interval` can be longer:
+  every run only a resync asked for (no event asked for that key too) is
+  counted by why (`periodic`, `connected`, `dropped-output`, …) and kind
+  of key (branch, comments), and counted as a catch if it changed
+  something: a Gerrit or GitHub REST write that succeeded, a GraphQL
+  mutation, a push to GitHub or an upload to Gerrit. The bridge's own
+  state is not one; a run with nothing to do writes nothing (tested).
+  The status page shows the counts since start and the last 50 catches
+  with what each wrote; each catch is also logged (`resync caught
+  something`), so the log keeps them across restarts. A catch can be a
+  race, an event that was about to arrive, rather than a lost one.
 - Rate limits: GitHub ETag conditional requests (as built 2026-10-19:
   every GET is revalidated with `If-None-Match`, and GitHub's 304s, which
   do not count against the rate limit, are answered from an in-memory

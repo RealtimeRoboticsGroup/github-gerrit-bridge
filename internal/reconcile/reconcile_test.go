@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"testing"
@@ -196,7 +197,7 @@ func TestUrgentKeysHaveAWorker(t *testing.T) {
 	b := &blocker{release: make(chan struct{}), merged: make(chan struct{})}
 	done := make(chan struct{})
 	go func() {
-		Work(context.Background(), q, b, 1, slog.Default())
+		Work(context.Background(), q, b, 1, nil, slog.Default())
 		close(done)
 	}()
 	q.Add(Key{Comments: 1}) // keeps the one ordinary worker busy
@@ -218,7 +219,7 @@ func TestWorkRetries(t *testing.T) {
 	f := &flaky{calls: map[Key]int{}}
 	done := make(chan struct{})
 	go func() {
-		Work(context.Background(), q, f, 2, slog.Default())
+		Work(context.Background(), q, f, 2, nil, slog.Default())
 		close(done)
 	}()
 	q.Add(Key{Comments: 1})
@@ -278,7 +279,7 @@ func TestWorkComesBackForWhatWaits(t *testing.T) {
 	l := &laterOnce{}
 	done := make(chan struct{})
 	go func() {
-		Work(context.Background(), q, l, 1, slog.Default())
+		Work(context.Background(), q, l, 1, nil, slog.Default())
 		close(done)
 	}()
 	q.Add(Key{Comments: 1})
@@ -391,5 +392,59 @@ func TestUrgentLockGoesFirst(t *testing.T) {
 	case <-got:
 	case <-time.After(time.Second):
 		t.Fatal("the comment sync never got the lock")
+	}
+}
+
+// writer writes (as a run's trace sees it) for the keys in writes.
+type writer struct {
+	writes map[Key]bool
+	fail   map[Key]bool
+}
+
+func (w writer) Reconcile(ctx context.Context, k Key) error {
+	if w.writes[k] {
+		trace.Wrote(ctx, "github PATCH "+k.String())
+	}
+	if w.fail[k] {
+		return errors.New("boom")
+	}
+	return nil
+}
+
+// A run only a resync asked for is counted, and as a catch if it wrote;
+// a run an event asked for is not counted, though a resync asked too.
+func TestResyncTally(t *testing.T) {
+	q := queue.New[Key]()
+	q.MinRetry, q.MaxRetry = time.Hour, time.Hour
+	tally := NewResyncTally()
+	quiet, caught, failing, evented := Key{Branch: "main"}, Key{Branch: "dev"}, Key{Comments: 3}, Key{Branch: "x"}
+	w := writer{writes: map[Key]bool{caught: true, evented: true, failing: true}, fail: map[Key]bool{failing: true}}
+	q.AddLow(quiet, "periodic")
+	q.AddLow(caught, "periodic")
+	q.AddLow(failing, "connected")
+	q.AddLow(evented, "periodic")
+	q.Add(evented)
+	done := make(chan struct{})
+	go func() {
+		Work(context.Background(), q, w, 1, tally, slog.Default())
+		close(done)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(q.Snapshot().Recent) < 4 {
+		time.Sleep(time.Millisecond)
+	}
+	q.ShutDown()
+	<-done
+	want := map[ResyncKind]ResyncCount{
+		{"periodic", "branch"}:    {Runs: 2, Caught: 1},
+		{"connected", "comments"}: {Runs: 1, Caught: 1, Failed: 1},
+	}
+	if got := tally.Counts(); !maps.Equal(got, want) {
+		t.Errorf("counts %v, want %v", got, want)
+	}
+	c := tally.Caught()
+	if len(c) != 2 || c[0].Key != failing || c[1].Key != caught || c[1].Reason != "periodic" ||
+		c[1].N != 1 || !slices.Equal(c[1].Writes, []string{"github PATCH branch/dev"}) {
+		t.Errorf("caught %+v", c)
 	}
 }
