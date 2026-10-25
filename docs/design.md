@@ -1566,7 +1566,9 @@ Known gaps:
 
 Someone who links their GitHub account has their Gerrit comments,
 replies, change messages, Code-Review votes and thread resolutions
-posted on GitHub as themselves, without the attribution header. Everyone
+posted on GitHub as themselves, without the attribution header or any
+note of which patch set they were on (GitHub has no patch sets to speak
+of; Gerrit is a click away). Everyone
 else's are the bot's, as before. Discovery is this doc and the deploy
 notes; nothing on GitHub advertises the link.
 

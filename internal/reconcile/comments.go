@@ -682,14 +682,11 @@ func (c *Comments) recoverThreads(s *commentSnapshot, m *commentMap, threads map
 
 // --- Gerrit -> GitHub ---
 
-// gerritHeader says whose a Gerrit comment is, and where; posted as
-// its author (as, their GitHub account), only which patch set, if not
-// the current one.
+// gerritHeader says whose a Gerrit comment is, and where; posted as its
+// author (as, their GitHub account), nothing: GitHub has no patch sets
+// to speak of, and Gerrit is a click away.
 func (c *Comments) gerritHeader(n int, gc *gerrit.CommentInfo, current int, as int64) string {
 	if as != 0 {
-		if gc.PatchSet != 0 && gc.PatchSet != current {
-			return fmt.Sprintf("<sub>On patch set %d.</sub>", gc.PatchSet)
-		}
 		return ""
 	}
 	ps := ""
@@ -1025,13 +1022,8 @@ func (c *Comments) messageBody(n int, msg gerrit.ChangeMessage, text string, cur
 			votes = ", **" + v + "**"
 		}
 		head = fmt.Sprintf("**%s** ([Gerrit](%s)) on patch set %d%s:\n\n", whoMD(msg.Author), c.messageURL(n, msg), msg.RevisionNumber, votes)
-	default:
-		if msg.RevisionNumber != 0 && msg.RevisionNumber != current {
-			head = fmt.Sprintf("<sub>On patch set %d.</sub>\n\n", msg.RevisionNumber)
-		}
-		if v != "" {
-			head += "**" + v + "**\n\n"
-		}
+	case v != "":
+		head = "**" + v + "**\n\n"
 	}
 	foot := "\n\n" + gerritFooter(n, msg.ID)
 	return head + fitForGitHub(forGitHub(text), maxGitHubComment-len(head)-len(foot)) + foot

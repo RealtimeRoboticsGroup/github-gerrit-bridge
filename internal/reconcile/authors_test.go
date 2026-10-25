@@ -93,7 +93,7 @@ func TestLinkedAuthorsPostAsThemselves(t *testing.T) {
 	if b, _ := body("c1"); !strings.HasPrefix(b, "Why two?") {
 		t.Errorf("c1 body:\n%s", b)
 	}
-	if b, _ := body("c4"); !strings.HasPrefix(b, "<sub>On patch set 1.</sub>\n\nOld patch set.") {
+	if b, _ := body("c4"); !strings.HasPrefix(b, "Old patch set.") {
 		t.Errorf("c4 body:\n%s", b)
 	}
 	if b, _ := body("m1"); !strings.HasPrefix(b, "**Code-Review +1**\n\nSplit it, please.") {
