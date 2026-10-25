@@ -306,6 +306,12 @@ func TestLink(t *testing.T) {
 		return u.Query().Get("state"), cs[0]
 	}
 
+	// GitHub's redirect after an install links nobody, and says how to.
+	if w := do("GET", "/github/link/callback?code=c1&installation_id=5&setup_action=install", nil); w.Code != http.StatusOK ||
+		!strings.Contains(w.Body.String(), "installed") || !strings.Contains(w.Body.String(), `method="post"`) || len(s.All()) != 0 {
+		t.Errorf("after install: %d %s", w.Code, w.Body)
+	}
+
 	// A callback without this browser's cookie (someone else's link) is
 	// refused, and uses the link up.
 	f.codes["c1"] = "alice"

@@ -132,6 +132,12 @@ func (l *Linker) finish(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
 	state := q.Get("state")
+	if state == "" && q.Get("setup_action") != "" {
+		// GitHub's own redirect after someone installs the App, which
+		// links nobody.
+		l.render(w, http.StatusOK, pageData{Text: "The app is installed. Now link your own GitHub account.", Button: true})
+		return
+	}
 	cookie, err := r.Cookie(cookieName)
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/github/link", MaxAge: -1})
 	if err != nil || state == "" || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(state)) != 1 {
