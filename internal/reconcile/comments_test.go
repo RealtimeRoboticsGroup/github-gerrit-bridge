@@ -264,6 +264,9 @@ type fakeGitHub struct {
 	posts    int
 	// as is who posts now (fakeUserClient), if not the bridge.
 	as github.User
+	// refuseVote, if set, is GitHub's answer to an approval or change
+	// request (on one's own PR, say).
+	refuseVote error
 }
 
 func (f *fakeGitHub) id() int64 { f.nextID++; return 1000 + f.nextID }
@@ -479,8 +482,16 @@ func (f *fakeGitHub) CreateReview(_ context.Context, _ int, r github.NewReview) 
 			return nil, errUnprocessable
 		}
 	}
+	if f.refuseVote != nil && r.Event != "COMMENT" {
+		return nil, f.refuseVote
+	}
 	f.posts++
 	rid := f.id()
+	if r.Event != "COMMENT" || r.Body != "" {
+		state := map[string]string{"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}[r.Event]
+		f.reviews = append(f.reviews, github.Review{ID: rid, User: f.who(), State: state, Body: r.Body, CommitID: r.CommitID,
+			SubmittedAt: time.Date(2026, 10, 4, 1, 0, 0, 0, time.UTC)})
+	}
 	for _, d := range r.Comments {
 		id := f.id()
 		f.rcs = append(f.rcs, github.ReviewComment{ID: id, ReviewID: rid, Path: d.Path, Line: d.Line, OriginalLine: d.Line,
