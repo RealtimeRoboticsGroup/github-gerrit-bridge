@@ -267,6 +267,9 @@ type fakeGitHub struct {
 	// refuseVote, if set, is GitHub's answer to an approval or change
 	// request (on one's own PR, say).
 	refuseVote error
+	// refuseUserResolve, if set, is GitHub's answer to a linked user
+	// resolving a thread.
+	refuseUserResolve error
 }
 
 func (f *fakeGitHub) id() int64 { f.nextID++; return 1000 + f.nextID }
@@ -324,6 +327,10 @@ func (u fakeUserClient) CreateIssueComment(ctx context.Context, n int, body stri
 	return out, err
 }
 func (u fakeUserClient) SetThreadResolved(ctx context.Context, id string, resolved bool) (err error) {
+	if u.f.refuseUserResolve != nil {
+		*u.calls++
+		return u.f.refuseUserResolve
+	}
 	if e := u.do(func() { err = u.f.SetThreadResolved(ctx, id, resolved) }); e != nil {
 		return e
 	}
@@ -566,6 +573,10 @@ func (f *fakeGitHub) SetThreadResolved(_ context.Context, id string, resolved bo
 	var root int64
 	fmt.Sscanf(id, "T%d", &root)
 	f.resolved[root] = resolved
+	if f.resolvedBy == nil {
+		f.resolvedBy = map[int64]github.User{}
+	}
+	f.resolvedBy[root] = f.who()
 	return nil
 }
 

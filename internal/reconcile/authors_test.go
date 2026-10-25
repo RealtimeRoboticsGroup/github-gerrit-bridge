@@ -341,3 +341,28 @@ func TestLinkedVotesOnlyTheirOwnCodeReview(t *testing.T) {
 		t.Errorf("PR comments %+v", e.h.ics)
 	}
 }
+
+// A thread resolved in Gerrit by someone linked is resolved on GitHub as
+// them; by the bridge if GitHub will not let them.
+func TestLinkedResolution(t *testing.T) {
+	for _, refused := range []bool{false, true} {
+		e, _ := linkedEnv(t)
+		if refused {
+			e.h.refuseUserResolve = &github.GraphQLError{Messages: []string{"Resource not accessible by integration"}}
+		}
+		e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: "c1", Path: "a.txt", PatchSet: 2, Line: 2, Message: "Please fix.", Updated: e.g.tick(),
+			Unresolved: true, Author: gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}})
+		e.sync(t)
+		root := e.h.rcs[0].ID
+		e.g.user("c2", "a.txt", 2, 2, "Done", "c1", false)
+		e.sync(t)
+		want := aliceGH
+		if refused {
+			want = github.User{Login: "bridge"}
+		}
+		if !e.h.resolved[root] || e.h.resolvedBy[root] != want {
+			t.Errorf("refused %v: resolved %v by %+v", refused, e.h.resolved[root], e.h.resolvedBy[root])
+		}
+		e.settled(t)
+	}
+}

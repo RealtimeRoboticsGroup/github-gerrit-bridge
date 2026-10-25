@@ -2082,10 +2082,11 @@ func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnap
 			t.Resolved = gr
 		case gr != t.Resolved:
 			// Gerrit changed (or both did: Gerrit wins).
-			if err := c.GitHub.SetThreadResolved(ctx, t.GitHubThread, gr); err != nil {
+			as, err := c.resolveAs(ctx, n, s, lastInThread(s, root), t.GitHubThread, gr)
+			if err != nil {
 				return err
 			}
-			c.Logger.Info("mirrored Gerrit resolution to GitHub", "change", n, "pr", pr, "thread", root, "resolved", gr)
+			c.Logger.Info("mirrored Gerrit resolution to GitHub", "change", n, "pr", pr, "thread", root, "resolved", gr, "as", as)
 			t.Resolved = gr
 		default:
 			// GitHub changed.
@@ -2110,6 +2111,35 @@ func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnap
 		}
 	}
 	return nil
+}
+
+// resolveAs resolves (or unresolves) GitHub thread as whoever did in
+// Gerrit, the author of its last comment there, if they linked their
+// GitHub account; as the bridge if not, or if GitHub will not let them
+// (resolving takes write access, or authoring the PR or thread). It
+// returns the GitHub login it did it as, "" for the bridge.
+func (c *Comments) resolveAs(ctx context.Context, n int, s *commentSnapshot, last *gerrit.CommentInfo, thread string, resolved bool) (string, error) {
+	p, err := c.posterFor(ctx, s, last.Author.AccountID)
+	if err != nil {
+		return "", err
+	}
+	if p.api != nil {
+		err := p.api.SetThreadResolved(ctx, thread, resolved)
+		var ae *github.APIError
+		var ge *github.GraphQLError
+		switch {
+		case err == nil:
+			return p.as.Login, nil
+		case errors.As(err, &ae) && (ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden || ae.Status == http.StatusNotFound):
+			c.Logger.Warn("GitHub refused a linked user's token; posting as the bridge", "change", n, "github_login", p.as.Login, "err", err)
+			p.api = nil
+		case errors.As(err, &ge):
+			c.Logger.Info("GitHub would not let a linked user resolve a thread; the bridge does", "change", n, "github_login", p.as.Login, "err", err)
+		default:
+			return "", err
+		}
+	}
+	return "", c.GitHub.SetThreadResolved(ctx, thread, resolved)
 }
 
 func lastInThread(s *commentSnapshot, root string) *gerrit.CommentInfo {
