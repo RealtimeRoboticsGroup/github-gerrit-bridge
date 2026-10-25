@@ -82,7 +82,8 @@ type Authors interface {
 // a Gerrit change and its PR (design §6.1-6.3).
 //
 // Identity: on GitHub the bridge posts as its own account, naming the
-// real author at the top of each comment (design §7, v1). Every mirrored
+// real author at the top of each comment (design §7, v1), or as the
+// author's own GitHub account if they linked it (Authors, §7.2). Every mirrored
 // comment is recognisable without state: GitHub bodies carry a hidden
 // <!-- bridge:gerrit/<change>/<id> --> marker, and Gerrit comments are
 // authored by the bridge account and link the GitHub original. So the

@@ -34,6 +34,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/status"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/usertokens"
 )
 
 func main() {
@@ -247,9 +248,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			ClientAddr: func(r *http.Request) string { return github.ClientAddr(r, cidrs(cfg.GitHub.WebhookTrustedProxies)) },
 		})
 	}
-	// Internal: the deployment exposes only /webhook and /checks/ (the
-	// rate budget and queue depth would tell an attacker when the bridge
-	// is starved).
+	// Internal: the deployment exposes only /webhook, /checks/ and
+	// /github/link (the rate budget and queue depth would tell an
+	// attacker when the bridge is starved).
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		last := "never"
 		if t := stream.LastEvent(); !t.IsZero() {
@@ -406,6 +407,37 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		DryRun:    dryRun,
 		Logger:    logger,
 	}
+	if a := cfg.GitHub.UserApp; a != nil {
+		secret, err := config.ReadSecret(a.ClientSecretFile)
+		if err != nil {
+			return err
+		}
+		key, err := usertokens.ReadKey(a.KeyFile)
+		if err != nil {
+			return err
+		}
+		linked := &usertokens.Store{Path: a.TokensFile, Key: key}
+		if err := linked.Load(); err != nil {
+			return err
+		}
+		app := &github.UserApp{ClientID: a.ClientID, ClientSecret: secret,
+			HTTP: &http.Client{Timeout: time.Minute, Transport: &httplog.Transport{Name: "github-app", Logger: logger}, CheckRedirect: noRedirects}}
+		tokens := &usertokens.Tokens{Store: linked, App: app, Logger: logger,
+			Check: func(ctx context.Context, gh github.User, user string) bool {
+				u, ok := users.GerritUserFor(ctx, gh)
+				return ok && strings.EqualFold(u, user)
+			}}
+		comments.Authors = linkedAuthors{tokens: tokens, gh: gh}
+		// Public: people link their GitHub account here (design §7.2).
+		(&usertokens.Linker{App: app, Tokens: tokens, PublicURL: a.PublicURL, GerritURL: cfg.Gerrit.URL, Logger: logger,
+			GerritUser: users.GerritUserFor,
+			GerritAccount: func(ctx context.Context, user string) (int, error) {
+				var acct gerrit.AccountInfo
+				err := rest.Do(ctx, http.MethodGet, "accounts/"+url.PathEscape(user), nil, &acct)
+				return acct.AccountID, err
+			}}).Register(mux)
+		logger.Info("people can link their GitHub accounts", "url", strings.TrimSuffix(a.PublicURL, "/")+"/github/link", "linked", len(linked.All()))
+	}
 	checks := &reconcile.Checks{
 		Project:      cfg.Gerrit.Project,
 		Gerrit:       rest,
@@ -512,7 +544,27 @@ func secretFiles(cfg *config.Config) []string {
 	if cfg.CI.Buildkite != nil {
 		secrets = append(secrets, cfg.CI.Buildkite.TokenFile)
 	}
+	if a := cfg.GitHub.UserApp; a != nil {
+		secrets = append(secrets, a.ClientSecretFile, a.KeyFile, a.TokensFile)
+	}
 	return secrets
+}
+
+// linkedAuthors posts linked users' content with their own token
+// (design §7.2).
+type linkedAuthors struct {
+	tokens *usertokens.Tokens
+	gh     *github.Client // for where, and how
+}
+
+func (a linkedAuthors) Linked(account int) (github.User, bool) { return a.tokens.Linked(account) }
+
+func (a linkedAuthors) Client(ctx context.Context, account int) (reconcile.UserGitHub, github.User, bool, error) {
+	tok, gh, ok, err := a.tokens.For(ctx, account)
+	if !ok || err != nil {
+		return nil, github.User{}, false, err
+	}
+	return &github.Client{BaseURL: a.gh.BaseURL, Owner: a.gh.Owner, Repo: a.gh.Repo, Tokens: a.tokens.Source(gh.ID, tok), HTTP: a.gh.HTTP}, gh, true, nil
 }
 
 // gerritEvents sums up the Gerrit events seen since start, by type, and

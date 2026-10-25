@@ -54,6 +54,17 @@ github:
   # Gerrit"). Default: the bridge's Gerrit account.
   # committer_name: Gerrit
   # committer_email: gerrit@example.com
+  # People can link their GitHub account at <public_url>/github/link, so
+  # their Gerrit comments, replies and Code-Review votes are posted on
+  # GitHub as them. A GitHub App with only Pull requests and Issues read &
+  # write, installed on the repository, whose callback URL is
+  # <public_url>/github/link/callback (design §7.2).
+  # user_app:
+  #   client_id: Iv23liExample
+  #   client_secret_file: /etc/github-bridge/user-app-secret
+  #   public_url: https://bridge.example.com
+  #   tokens_file: /var/lib/github-bridge/user-tokens
+  #   key_file: /etc/github-bridge/user-tokens-key  # openssl rand -hex 32
 
 identity:
   # GitHub users are matched to the Gerrit account with the same username

@@ -104,6 +104,26 @@ type GitHub struct {
 	// bridge's Gerrit account.
 	CommitterName  string `yaml:"committer_name"`
 	CommitterEmail string `yaml:"committer_email"`
+	// UserApp, if set, lets people link their GitHub account at
+	// /github/link, so their Gerrit comments, replies and Code-Review
+	// votes are posted on GitHub as them (design §7.2).
+	UserApp *UserApp `yaml:"user_app"`
+}
+
+// UserApp is the GitHub App people authorize to post as them: Pull
+// requests and Issues read & write, installed on the repository.
+type UserApp struct {
+	ClientID         string `yaml:"client_id"`
+	ClientSecretFile string `yaml:"client_secret_file"`
+	// PublicURL is the bridge as browsers reach it (https, or a loopback
+	// address): PublicURL/github/link/callback must be one of the App's
+	// callback URLs.
+	PublicURL string `yaml:"public_url"`
+	// TokensFile keeps the linked people's tokens, encrypted with the key
+	// in KeyFile (32 bytes, or 64 hex digits: openssl rand -hex 32). Keep
+	// the key apart from the tokens' backups.
+	TokensFile string `yaml:"tokens_file"`
+	KeyFile    string `yaml:"key_file"`
 }
 
 // Identity maps GitHub users to Gerrit accounts (design §7).
@@ -250,6 +270,19 @@ func (c *Config) validate() error {
 		if b.APIURL != "" {
 			if err := secureURL(b.APIURL); err != nil {
 				errs = append(errs, fmt.Errorf("ci.buildkite.api_url %w", err))
+			}
+		}
+	}
+	if a := c.GitHub.UserApp; a != nil {
+		req("github.user_app.client_id", a.ClientID)
+		req("github.user_app.client_secret_file", a.ClientSecretFile)
+		req("github.user_app.public_url", a.PublicURL)
+		req("github.user_app.tokens_file", a.TokensFile)
+		req("github.user_app.key_file", a.KeyFile)
+		// The callback carries codes that become tokens.
+		if a.PublicURL != "" {
+			if err := secureURL(a.PublicURL); err != nil {
+				errs = append(errs, fmt.Errorf("github.user_app.public_url %w", err))
 			}
 		}
 	}

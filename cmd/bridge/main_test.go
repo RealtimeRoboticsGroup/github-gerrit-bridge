@@ -7,7 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"bytes"
+	"context"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/config"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/usertokens"
+	"path/filepath"
 )
 
 // The bridge's clients never follow a redirect with its credentials.
@@ -50,5 +55,28 @@ func TestGerritEvents(t *testing.T) {
 	got := gerritEvents(map[string]int{"patchset-created": 2, "comment-added": 5, "change-merged": 2}, now.Add(-3*time.Second), now)
 	if want := "9 since start (comment-added 5, change-merged 2, patchset-created 2), the last 3s ago"; got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// A linked user's posts go to the bridged repository with their own
+// token; anyone else's are the bridge's.
+func TestLinkedAuthors(t *testing.T) {
+	ts := &usertokens.Store{Path: filepath.Join(t.TempDir(), "tokens"), Key: bytes.Repeat([]byte{1}, 32)}
+	ts.Put(usertokens.Record{GitHub: github.User{Login: "alice", ID: 42}, GerritAccount: 1000, GerritUser: "alice",
+		Token: github.UserToken{Access: "ghu_alice"}})
+	a := linkedAuthors{tokens: &usertokens.Tokens{Store: ts}, gh: &github.Client{BaseURL: "https://api.example", Owner: "o", Repo: "r"}}
+	api, gh, ok, err := a.Client(context.Background(), 1000)
+	c, _ := api.(*github.Client)
+	if err != nil || !ok || gh.ID != 42 || c == nil || c.Owner != "o" || c.Repo != "r" || c.BaseURL != "https://api.example" {
+		t.Fatalf("client %+v %+v %v %v", c, gh, ok, err)
+	}
+	if tok, _ := c.Tokens.Token(context.Background()); tok != "ghu_alice" {
+		t.Errorf("token %q", tok)
+	}
+	if _, _, ok, _ := a.Client(context.Background(), 1001); ok {
+		t.Error("an unlinked account has a client")
+	}
+	if u, ok := a.Linked(1000); !ok || u.Login != "alice" {
+		t.Errorf("Linked = %+v %v", u, ok)
 	}
 }

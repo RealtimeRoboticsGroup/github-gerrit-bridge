@@ -246,7 +246,18 @@ func TestTokensRenewAndDrop(t *testing.T) {
 	if _, ok := s.Get(42); !ok {
 		t.Error("revoking another token dropped the link")
 	}
-	tk.Revoke(42, "ghu_y")
+	if gh, ok := tk.Linked(1000); !ok || gh.ID != 42 {
+		t.Errorf("Linked = %+v %v", gh, ok)
+	}
+	if _, ok := tk.Linked(1001); ok {
+		t.Error("an unlinked account is linked")
+	}
+	// A 401 on the token GitHub was given drops the link.
+	src := tk.Source(42, "ghu_y")
+	if tok, _ := src.Token(ctx); tok != "ghu_y" {
+		t.Errorf("source token %q", tok)
+	}
+	src.(interface{ Invalidate() }).Invalidate()
 	if _, ok := s.Get(42); ok {
 		t.Error("revoked token kept")
 	}

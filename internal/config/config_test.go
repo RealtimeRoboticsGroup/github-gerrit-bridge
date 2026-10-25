@@ -213,3 +213,32 @@ func TestStatusListenIsLoopbackOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestUserApp(t *testing.T) {
+	app := full + `  user_app:
+    client_id: Iv1.abc
+    client_secret_file: /etc/bridge/app-secret
+    public_url: https://bridge.example.com
+    tokens_file: /var/lib/bridge/user-tokens
+    key_file: /etc/bridge/user-tokens-key
+`
+	c, err := Parse([]byte(app))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := c.GitHub.UserApp; a == nil || a.ClientID != "Iv1.abc" || a.PublicURL != "https://bridge.example.com" || a.KeyFile != "/etc/bridge/user-tokens-key" {
+		t.Errorf("user_app = %+v", c.GitHub.UserApp)
+	}
+	for _, bad := range []struct{ from, to, want string }{
+		{"    key_file: /etc/bridge/user-tokens-key\n", "", "github.user_app.key_file is required"},
+		{"https://bridge.example.com", "http://bridge.example.com", "github.user_app.public_url must be https"},
+		{"    client_id: Iv1.abc\n", "", "github.user_app.client_id is required"},
+	} {
+		if _, err := Parse([]byte(strings.Replace(app, bad.from, bad.to, 1))); err == nil || !strings.Contains(err.Error(), bad.want) {
+			t.Errorf("%q: err %v, want %q", bad.want, err, bad.want)
+		}
+	}
+	if c, err := Parse([]byte(strings.Replace(app, "https://bridge.example.com", "http://127.0.0.1:18081", 1))); err != nil || c.GitHub.UserApp.PublicURL != "http://127.0.0.1:18081" {
+		t.Errorf("loopback: %v", err)
+	}
+}

@@ -144,3 +144,29 @@ func (t *Tokens) Revoke(id int64, access string) {
 		t.logger().Error("saving user tokens", "err", err)
 	}
 }
+
+// Linked is the GitHub account Gerrit account linked, if any.
+func (t *Tokens) Linked(account int) (github.User, bool) {
+	if t == nil || t.Store == nil || account == 0 {
+		return github.User{}, false
+	}
+	r, ok := t.byAccount(account)
+	return r.GitHub, ok
+}
+
+// Source is a token source for GitHub account id's token access: GitHub
+// refusing it (401) drops the link.
+func (t *Tokens) Source(id int64, access string) github.TokenSource {
+	return &source{t: t, id: id, access: access}
+}
+
+type source struct {
+	t      *Tokens
+	id     int64
+	access string
+}
+
+func (s *source) Token(context.Context) (string, error) { return s.access, nil }
+
+// Invalidate is called on a 401.
+func (s *source) Invalidate() { s.t.Revoke(s.id, s.access) }

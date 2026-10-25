@@ -1022,7 +1022,8 @@ never vote. A Run-As refusal falls back to the bridge account, minus any
 vote: the bridge never votes as itself. Verified live: a `retest` posted on
 GitHub by a trusted user started gerrit-buildkite.
 
-**v1: the bot does everything.**
+**v1: the bot does everything** (except for people who link their GitHub
+account, §7.2).
 - On GitHub, a GitHub App posts all mirrored content, with an attribution
   header: **Jane Doe** (via Gerrit).
 - On Gerrit, a service account posts with an attribution line, or as the
@@ -1057,57 +1058,12 @@ Caveats:
 This lives behind an `identity.TokenSource` interface. When there is no
 token, the bridge falls back to the bot.
 
-**Tabled (2026-10-22): what posting as the user would take.** Today every
-Gerrit → GitHub post is the bot's: GitHub has no Run-As, so a post is
-always the token holder's. What the bridge would post as a user is
-comments, thread replies and resolutions, and maybe Gerrit votes as
-reviews. In GitHub's fine-grained terms that is **Pull requests: write**
-(plus **Issues: write** for a PR's conversation comments): neither pushes
-code nor merges.
-
-- **AOS's tokens can't do it as they are.** The plugin is a classic OAuth
-  App, and AOS asks only for `USER_EMAIL`, which cannot comment. Classic
-  scopes have no "comment only": the least that can comment, `public_repo`,
-  is full write to every public repository the user can write to, and the
-  tokens never expire. Holding those for everyone is not worth the
-  attribution.
-- **A GitHub App instead.** Its user tokens carry only what the App may do
-  *and* the user may do, and only on repositories the App is installed on.
-  Create one with Pull requests: read & write, Issues: read & write, and
-  the account permission Email addresses: read (the plugin's email lookup,
-  which `USER_EMAIL` covers today). An org admin installs it on the AOS
-  repositories once.
-- **Probably no plugin change.** `OAuthProtocol` (master) runs the plain
-  web flow (authorize, then code → token with the client ID and secret),
-  which GitHub Apps serve at the same endpoints; it never checks the granted
-  scopes, and Apps ignore the `scope` parameter. So swapping the App's
-  client ID and secret into `gerrit.config` should keep login working.
-  Unchecked: the plugin's other features (repository and PR import, org
-  lists), which may need `repo`/`read:org`; AOS doesn't appear to use them.
-- **Approval is the next login.** GitHub shows each user the App's consent
-  screen at their next Gerrit login; authorizing is the opt-in, and the
-  plugin stores the new token as it does today. Until then a user has the
-  old OAuth App token, which the bridge must tell apart (it can't comment)
-  and fall back to the bot for.
-- **Token expiry is the snag.** App user tokens expire after 8 hours by
-  default, with a refresh token, which the plugin drops (it keeps only
-  `access_token`), while AOS's web sessions last 90 days. Either turn on the
-  App's opt-out of user-token expiry, or have the bridge refresh tokens and
-  keep the refresh tokens itself (a second secret store).
-- **The bridge side.** A `TokenSource` reading the token external IDs
-  (Access Database, or a fetch of `refs/meta/external-ids`) and decrypting
-  them with a copy of the plugin's key file; posting with the user's token
-  when there is one and the bot otherwise; and recognizing its posts by
-  something other than authorship (a marker in the body), since the
-  bot-copy checks (undoing edits to the bot's copy of a Gerrit comment)
-  would no longer apply: a user may edit their own comment.
-- **Costs.** A per-user secret for everyone who opts in (narrow, but still
-  secrets on an Internet-facing service), the key file off the Gerrit host,
-  and a new failure mode: a post going out under the wrong person's token.
-
-Verify against GitHub's current docs before starting: the expiry opt-out
-and the email permission especially. Nothing here was tried live; the test
-Gerrit doesn't use the github plugin's login.
+**Posting as the user: built (2026-10-25) as §7.2,** with the bridge's
+own link page rather than the github plugin's tokens, which on AOS only
+carry `USER_EMAIL` and would need the plugin's key file and Access
+Database. Moving to the plugin's tokens later is a second token source:
+point the plugin at the same GitHub App, and links made at
+`/github/link` keep working.
 
 **Tabled (2026-10-22): a personal mode, reviewing someone else's GitHub
 repository in one's own Gerrit.** One person bridges a repository they
@@ -1605,6 +1561,88 @@ Known gaps:
 - **Dismissals are read from every page of a PR's issue events**, which
   its author can add to (renames, draft toggles); GraphQL's
   `timelineItems` filtered by type would cost less (sixth audit).
+
+### 7.2 Posting as linked users (built 2026-10-25)
+
+Someone who links their GitHub account has their Gerrit comments,
+replies, change messages, Code-Review votes and thread resolutions
+posted on GitHub as themselves, without the attribution header. Everyone
+else's are the bot's, as before. Discovery is this doc and the deploy
+notes; nothing on GitHub advertises the link.
+
+- **The App.** A GitHub App with Pull requests: read & write and Issues:
+  read & write, nothing else, installed on the bridged repository. Its
+  user tokens act as the user, limited to what both the App and the user
+  may do, only where the App is installed; GitHub shows the user's avatar
+  with the App's badge. Expiring tokens stay on: 8 hours, with a 6-month
+  refresh token that GitHub voids on use.
+- **Linking** (`internal/usertokens`). `GET /github/link` only says what
+  linking does: GitHub skips its consent screen for anyone who authorized
+  the App before, so following a link must not link by itself. Its button
+  (`POST`) starts GitHub's web flow with a random state, also set as an
+  HttpOnly cookie on `/github/link`, and PKCE. The callback, once per
+  state and within 10 minutes, needs the cookie to match, trades the code
+  for a token, asks GitHub whom it acts as (`GET /user`), and keeps it for
+  the Gerrit account the identity mapping (§7, pins included) gives that
+  GitHub account then. Nothing is kept for someone without one. Whoever
+  links, the token is their own, and only their own Gerrit account's words
+  are posted with it: someone tricked into following another's link links
+  their own account, and nobody can link anyone else's. Pending links are
+  bounded (1,000).
+- **Keeping tokens.** One file, AES-256-GCM, keyed by a separate key file;
+  written atomically, 0600. One GitHub account per Gerrit account, the one
+  linked last. A token is renewed when it is within 5 minutes of expiry,
+  one renewal at a time, and the new refresh token is saved before the
+  token is used. A link is dropped when GitHub stops taking its refresh
+  token or answers 401 to its token (the App was revoked), when the token
+  acts as another account, or when its refresh token expires. A link is
+  used only while the identity mapping still maps its GitHub account to
+  its Gerrit account, so an account excluded, deactivated or re-pinned
+  since stops posting as them. People unlink by revoking the App in
+  GitHub's settings.
+- **Posting.** Each sync asks once per Gerrit author. Their content goes
+  with their token. If GitHub refuses it (401, 403, 404: the App not
+  installed, say), the bot posts it, with the header, and does the
+  author's remaining posts for the rest of that sync. Not being able to
+  renew a token is an error, and the sync waits rather than posting as
+  the bot for good. Each copy records whose token posted it
+  (`comments.json` `as`). A link to the bot's own login is ignored.
+- **Recognizing its own posts.** A copy posted as a user is the bridge's
+  by its record in the comment map, so it is never mirrored back to
+  Gerrit as their GitHub comment. It also carries the hidden marker, which
+  keeps it out of Gerrit even unmapped, as for any comment whose author
+  wrote a marker. A sync that posted as a user and stopped before saving
+  finds its copies again by marker, but only in that user's own comments,
+  as they wrote them (not edited by anyone else), naming their own Gerrit
+  comment or message. Anyone may write a marker in their own comment;
+  this way it can only stand for their own words.
+- **Edits.** A copy posted as its author is theirs to edit on GitHub.
+  Anyone else's edit is put back, as for the bot's copies, in the
+  author's style (no header).
+- **Votes as reviews.** A linked user's change message with Code-Review
+  +2 becomes their GitHub approval, and a negative vote their change
+  request. It goes on the GitHub commit of the patch set it was given on,
+  with the message's words, if any, as the body. A +1, or a vote of
+  another label, stays a PR comment if it has words, and the statuses show
+  it either way. Excluded: votes the bridge cast itself (a GitHub approval
+  mirrored into Gerrit, tagged `github-bridge:mirror`, which would echo),
+  Gerrit's and CI's. When the vote changes in Gerrit, `dismissStale`
+  dismisses the review that no longer agrees, as for any review.
+  Dismissing such a review, by anyone, withdraws nothing: its vote was
+  given in Gerrit, not cast from GitHub (`mirroredVoteSince`). GitHub
+  refusing the review (approving one's own PR, a commit it does not have)
+  leaves the words a PR comment, as the user.
+- **Resolutions** are made as the author of the thread's last Gerrit
+  comment, which resolved it, and by the bot if GitHub won't let them
+  (resolving takes write access, or authoring the PR or thread).
+- **Exposure.** `/github/link` and its callback join `/webhook` and
+  `/checks/` as the bridge's public routes. The callback's code is
+  single-use and bound to the PKCE verifier. The pages send `no-store`,
+  `no-referrer` and a CSP that forbids scripts and framing.
+- **Costs** (as tabled). A secret per linked user, encrypted at rest with
+  a key kept apart from backups of the file. A post can go out under the
+  wrong person's token only if the identity mapping is wrong, which would
+  already be wrong for Run-As in the other direction.
 
 ## 8. Content conversion (`internal/markup`)
 
