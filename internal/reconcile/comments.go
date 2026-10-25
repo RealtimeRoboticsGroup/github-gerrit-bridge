@@ -903,6 +903,10 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			if gc.Path == gerrit.CommitMsg {
 				ctxLine = c.quote(ctx, n, gc, "commit message")
 			}
+			if parent != nil && parent.Kind == kindIssueComment && s.pull != nil {
+				// PR comments have no threads: say which it answers.
+				ctxLine = strings.TrimSpace(fmt.Sprintf("<sub>In reply to [this comment](%s#issuecomment-%d).</sub> %s", s.pull.HTMLURL, parent.GitHubID, ctxLine))
+			}
 			p, err := c.posterFor(ctx, s, gc.Author.AccountID)
 			if err != nil {
 				return posted, err

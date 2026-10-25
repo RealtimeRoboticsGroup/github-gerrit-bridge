@@ -454,7 +454,7 @@ func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error)
 	return out, nil
 }
 func (f *fakeGitHub) GetPull(_ context.Context, n int) (*github.PullRequest, error) {
-	pr := &github.PullRequest{Number: n, Head: github.Ref{Ref: "topic", SHA: cmp.Or(f.head, "sha2")}}
+	pr := &github.PullRequest{Number: n, HTMLURL: "https://github.com/o/r/pull/1", Head: github.Ref{Ref: "topic", SHA: cmp.Or(f.head, "sha2")}}
 	pr.Head.Repo = &struct {
 		FullName string `json:"full_name"`
 	}{"o/r"}
@@ -756,6 +756,23 @@ func TestCommentOnPatchSetNotOnGitHub(t *testing.T) {
 			e.settled(t)
 		})
 	}
+}
+
+// A reply to a comment that is a PR comment on GitHub, which has no
+// threads, says which it answers.
+func TestReplyToAPRCommentLinksIt(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.g.user("c1", gerrit.PatchSetLevel, 2, 0, "Ready?", "", true)
+	e.g.user("c2", gerrit.PatchSetLevel, 2, 0, "Done", "c1", false)
+	e.g.comments[1].Author = gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}
+	e.sync(t)
+	if len(e.h.ics) != 2 || !strings.Contains(e.h.ics[1].Body, fmt.Sprintf("In reply to [this comment](https://github.com/o/r/pull/1#issuecomment-%d).", e.h.ics[0].ID)) {
+		t.Fatalf("PR comments %+v", e.h.ics)
+	}
+	if strings.Contains(e.h.ics[0].Body, "In reply to") {
+		t.Errorf("not a reply: %s", e.h.ics[0].Body)
+	}
+	e.settled(t)
 }
 
 func TestOutOfHunkFallsBackToFileLevel(t *testing.T) {
