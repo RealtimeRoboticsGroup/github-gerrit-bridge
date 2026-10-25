@@ -714,6 +714,25 @@ func TestGerritLineCommentsBecomeOneReview(t *testing.T) {
 	e.settled(t)
 }
 
+// A reply posted in Gerrit before the bridge mirrored its parent, by
+// someone else (another review), goes in its thread once the parent is
+// on GitHub, not on its own beside it.
+func TestReplyInTheSamePassAsItsParentIsThreaded(t *testing.T) {
+	for _, line := range []int{2, 5} { // in the diff; outside it, file level
+		t.Run(fmt.Sprint(line), func(t *testing.T) {
+			e := newCommentsEnv(t)
+			e.g.user("c1", "a.txt", 2, line, "Why?", "", true)
+			e.g.user("c2", "a.txt", 2, line, "Because.", "c1", false)
+			e.g.comments[1].Author = gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}
+			e.sync(t)
+			if len(e.h.rcs) != 2 || e.h.rcs[1].InReplyTo != e.h.rcs[0].ID || !strings.Contains(e.h.rcs[1].Body, "Because.") {
+				t.Fatalf("got %+v", e.h.rcs)
+			}
+			e.settled(t)
+		})
+	}
+}
+
 func TestOutOfHunkFallsBackToFileLevel(t *testing.T) {
 	e := newCommentsEnv(t)
 	e.g.user("c1", "a.txt", 2, 5, "Line five is outside the diff.", "", true)

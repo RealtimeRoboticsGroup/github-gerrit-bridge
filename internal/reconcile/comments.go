@@ -805,6 +805,24 @@ func (c *Comments) refusedOnGitHub(n int, m *commentMap, id string, err error) b
 	return true
 }
 
+// repliesToQueued reports whether Gerrit comment gc replies, before any
+// mapped comment, to one queued to post later in this pass.
+func repliesToQueued(s *commentSnapshot, m *commentMap, queued map[string]bool, gc *gerrit.CommentInfo) bool {
+	seen := map[string]bool{}
+	for id := gc.InReplyTo; id != "" && !seen[id] && m.byGerrit[id] == nil; {
+		if queued[id] {
+			return true
+		}
+		seen[id] = true
+		p := s.byID[id]
+		if p == nil {
+			return false
+		}
+		id = p.InReplyTo
+	}
+	return false
+}
+
 // githubParent finds the GitHub comment a Gerrit reply belongs under, by
 // walking up its in_reply_to chain to the nearest mapped comment.
 func githubParent(s *commentSnapshot, m *commentMap, gc *gerrit.CommentInfo) *state.Comment {
@@ -830,12 +848,16 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 	}
 	var groups []*group // review batches: one per (Gerrit reply, patch set)
 	gkey := map[string]*group{}
+	queued := map[string]bool{} // in groups, posted after this loop
 	posted := false
 	deferred := 0
 	for i := range s.gerrit {
 		gc := &s.gerrit[i]
 		if c.bridgePost(gc) || m.byGerrit[gc.ID] != nil {
 			continue
+		}
+		if repliesToQueued(s, m, queued, gc) {
+			continue // the next pass, once its parent is on GitHub, threads it
 		}
 		if c.DryRun {
 			c.Logger.Info("dry run: would mirror Gerrit comment to GitHub", "change", n, "pr", pr, "id", gc.ID, "path", gc.Path, "line", gc.Line)
@@ -900,6 +922,7 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 				groups = append(groups, g)
 			}
 			g.items = append(g.items, gc)
+			queued[gc.ID] = true
 		}
 	}
 	for _, msg := range s.messages {
