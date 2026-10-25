@@ -534,6 +534,9 @@ func (f *fakeGitHub) ListReviewCommentsOf(_ context.Context, _ int, review int64
 }
 
 func (f *fakeGitHub) CreateReviewComment(_ context.Context, _ int, rc github.NewReviewComment) (*github.ReviewComment, error) {
+	if f.prCommits != nil && !f.prCommits[rc.CommitID] {
+		return nil, &github.APIError{Status: 422, Message: "The commitOID is not part of the pull request"}
+	}
 	if rc.SubjectType == "file" {
 		if f.diff[rc.Path] == nil {
 			return nil, errUnprocessable
@@ -727,6 +730,28 @@ func TestReplyInTheSamePassAsItsParentIsThreaded(t *testing.T) {
 			e.sync(t)
 			if len(e.h.rcs) != 2 || e.h.rcs[1].InReplyTo != e.h.rcs[0].ID || !strings.Contains(e.h.rcs[1].Body, "Because.") {
 				t.Fatalf("got %+v", e.h.rcs)
+			}
+			e.settled(t)
+		})
+	}
+}
+
+// Gerrit ahead of a fork's branch: a comment on a patch set GitHub lacks
+// goes on the latest one it has, on the line or the file.
+func TestCommentOnPatchSetNotOnGitHub(t *testing.T) {
+	for _, line := range []int{2, 5} { // in the diff; outside it, file level
+		t.Run(fmt.Sprint(line), func(t *testing.T) {
+			e := newCommentsEnv(t)
+			e.h.prCommits = map[string]bool{"sha1": true, "sha2": true}
+			e.g.revs["sha3"] = 3
+			e.g.current = "sha3"
+			e.g.user("c1", "a.txt", 3, line, "Why?", "", true)
+			e.sync(t)
+			if len(e.h.rcs) != 1 || e.h.rcs[0].CommitID != "sha2" || len(e.h.ics) != 0 {
+				t.Fatalf("review comments %+v, PR comments %+v", e.h.rcs, e.h.ics)
+			}
+			if line == 2 && (e.h.rcs[0].Line != 2 || !strings.Contains(e.h.rcs[0].Body, "Ported from patch set 3")) {
+				t.Errorf("not ported: %+v", e.h.rcs[0])
 			}
 			e.settled(t)
 		})

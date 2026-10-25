@@ -295,13 +295,20 @@ func (s *commentSnapshot) ghSHA(ps int) string {
 // GitHub (Gerrit is ahead of a fork's branch), of the latest one before
 // it that did: GitHub takes reviews only of the PR's commits.
 func (s *commentSnapshot) onGitHub(ps int) string {
-	sha := ""
+	_, sha := s.latestOnGitHub(ps)
+	return sha
+}
+
+// latestOnGitHub is the latest patch set up to ps that GitHub has, and
+// its GitHub commit; 0 and "" if none.
+func (s *commentSnapshot) latestOnGitHub(ps int) (int, string) {
+	n, sha := 0, ""
 	for _, r := range s.revisions {
 		if r.PatchSet <= ps && r.GitHubSHA != "" {
-			sha = r.GitHubSHA
+			n, sha = r.PatchSet, r.GitHubSHA
 		}
 	}
-	return sha
+	return n, sha
 }
 
 type commentMap struct {
@@ -1226,7 +1233,7 @@ func (c *Comments) postSingle(ctx context.Context, n, pr int, s *commentSnapshot
 		if ok, err := try(a.comment(gc.Path, ""), a.note, a.suggestion); ok || err != nil {
 			return err
 		}
-		if pt, ok := c.portToCurrent(ctx, n, s, gc, a); ok {
+		if pt, ok := c.portToGitHub(ctx, n, s, gc, a); ok {
 			if ok, err := try(pt.comment(gc.Path, ""), pt.note, pt.suggestion); ok || err != nil {
 				return err
 			}
@@ -1236,7 +1243,7 @@ func (c *Comments) postSingle(ctx context.Context, n, pr int, s *commentSnapshot
 	if a.first != 0 {
 		quote = c.quote(ctx, n, gc, gc.Path)
 	}
-	for _, sha := range []string{a.sha, s.ghSHA(s.current)} {
+	for _, sha := range []string{a.sha, s.onGitHub(s.current)} {
 		if ok, err := try(github.NewReviewComment{CommitID: sha, Path: gc.Path, SubjectType: "file"}, quote, ""); ok || err != nil {
 			return err
 		}
@@ -1259,14 +1266,16 @@ func (c *Comments) postSingle(ctx context.Context, n, pr int, s *commentSnapshot
 	return nil
 }
 
-// portToCurrent moves a comment's lines from its patch set to the current
-// one, if they are unchanged in between.
-func (c *Comments) portToCurrent(ctx context.Context, n int, s *commentSnapshot, gc *gerrit.CommentInfo, a ghAnchor) (ghAnchor, bool) {
-	if gc.PatchSet == s.current || gc.Side == "PARENT" {
+// portToGitHub moves a comment's lines from its patch set to the latest
+// one on GitHub (the current one, unless Gerrit is ahead of a fork's
+// branch), if they are unchanged in between.
+func (c *Comments) portToGitHub(ctx context.Context, n int, s *commentSnapshot, gc *gerrit.CommentInfo, a ghAnchor) (ghAnchor, bool) {
+	to, sha := s.latestOnGitHub(s.current)
+	if to == 0 || gc.PatchSet == to || gc.Side == "PARENT" {
 		return a, false
 	}
 	oldC, err1 := c.Gerrit.FileContent(ctx, n, strconv.Itoa(gc.PatchSet), gc.Path)
-	newC, err2 := c.Gerrit.FileContent(ctx, n, strconv.Itoa(s.current), gc.Path)
+	newC, err2 := c.Gerrit.FileContent(ctx, n, strconv.Itoa(to), gc.Path)
 	if err1 != nil || err2 != nil {
 		return a, false
 	}
@@ -1275,7 +1284,7 @@ func (c *Comments) portToCurrent(ctx context.Context, n int, s *commentSnapshot,
 		return a, false
 	}
 	p := a
-	p.sha, p.first, p.last = s.ghSHA(s.current), first, last
+	p.sha, p.first, p.last = sha, first, last
 	where := fmt.Sprintf("line %d", a.first)
 	if a.last != a.first {
 		where = fmt.Sprintf("lines %d-%d", a.first, a.last)
