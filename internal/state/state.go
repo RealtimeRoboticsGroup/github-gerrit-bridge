@@ -128,6 +128,9 @@ type Comment struct {
 	// Origin is the side the comment was written on.
 	Origin   string `json:"origin"`
 	BodyHash string `json:"body_hash"`
+	// As is the GitHub account a Gerrit comment's copy was posted as,
+	// its author's linked account (design §7.2); 0 for the bridge's own.
+	As int64 `json:"as,omitempty"`
 }
 
 // Vote links a Gerrit vote to the GitHub review that mirrors it

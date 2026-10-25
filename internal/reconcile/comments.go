@@ -58,6 +58,26 @@ type GitHubAPI interface {
 	Pushes(ctx context.Context, repo, ref string) ([]github.Push, error)
 }
 
+// UserGitHub is what posting as a linked user needs from GitHub: a
+// client with their own token (design §7.2).
+type UserGitHub interface {
+	CreateReview(ctx context.Context, n int, r github.NewReview) (*github.Review, error)
+	CreateReviewComment(ctx context.Context, n int, rc github.NewReviewComment) (*github.ReviewComment, error)
+	ReplyToReviewComment(ctx context.Context, n int, id int64, body string) (*github.ReviewComment, error)
+	CreateIssueComment(ctx context.Context, n int, body string) (*github.IssueComment, error)
+	SetThreadResolved(ctx context.Context, threadID string, resolved bool) error
+}
+
+// Authors gives the GitHub accounts Gerrit users linked at /github/link
+// (design §7.2), to post their content on GitHub as them.
+type Authors interface {
+	// Linked is the GitHub account Gerrit account posts as, if linked.
+	Linked(account int) (github.User, bool)
+	// Client returns a client posting as it (ok false: as the bridge);
+	// err is a failure to renew its token that may pass.
+	Client(ctx context.Context, account int) (api UserGitHub, gh github.User, ok bool, err error)
+}
+
 // Comments mirrors review comments, replies and thread resolution between
 // a Gerrit change and its PR (design §6.1-6.3).
 //
@@ -85,6 +105,10 @@ type Comments struct {
 	// Gerrit and its CI see the real author; otherwise as the bridge.
 	Users    Identity
 	GerritAs func(user string) GerritAPI
+	// Authors, if set, posts the Gerrit content of users who linked their
+	// GitHub account as them, without the attribution header; the rest,
+	// and theirs when GitHub refuses their token, as the bridge.
+	Authors Authors
 	// PostBudget, if set, bounds the Gerrit comments and messages of each
 	// author the bridge posts on GitHub; the rest wait for a later sync.
 	PostBudget *Budget
@@ -178,6 +202,55 @@ type commentSnapshot struct {
 	at    time.Time
 	// pull is the PR, read after everything above.
 	pull *github.PullRequest
+	// posters are how each Gerrit account's content is posted this sync.
+	posters map[int]*poster
+}
+
+// poster posts one Gerrit account's content on GitHub: as their linked
+// GitHub account, or (api nil) as the bridge.
+type poster struct {
+	api UserGitHub
+	as  github.User
+}
+
+// posterFor is how Gerrit account's content is posted this sync.
+func (c *Comments) posterFor(ctx context.Context, s *commentSnapshot, account int) (*poster, error) {
+	if p := s.posters[account]; p != nil {
+		return p, nil
+	}
+	p := &poster{}
+	if c.Authors != nil && account != 0 && account != c.BridgeAccount {
+		api, gh, ok, err := c.Authors.Client(ctx, account)
+		if err != nil {
+			return nil, err
+		}
+		if ok && !c.mine(gh.Login) {
+			p.api, p.as = api, gh
+		}
+	}
+	if s.posters == nil {
+		s.posters = map[int]*poster{}
+	}
+	s.posters[account] = p
+	return p, nil
+}
+
+// post makes one post with f as p, or as the bridge if p has no link or
+// GitHub refuses its token (the App not installed, revoked, a repository
+// the user cannot see), which leaves p as the bridge for the rest of the
+// sync. It returns the GitHub account it posted as, 0 for the bridge; f
+// gets it too, to write the body for.
+func (c *Comments) post(n int, p *poster, f func(api UserGitHub, as int64) error) (int64, error) {
+	if p != nil && p.api != nil {
+		err := f(p.api, p.as.ID)
+		var ae *github.APIError
+		if !errors.As(err, &ae) || (ae.Status != http.StatusUnauthorized && ae.Status != http.StatusForbidden && ae.Status != http.StatusNotFound) {
+			return p.as.ID, err
+		}
+		c.Logger.Warn("GitHub refused a linked user's token; posting as the bridge", "change", n, "github_login", p.as.Login, "err", err)
+		p.api = nil
+	}
+	return 0, f(c.GitHub, 0)
 }
 
 // seen is the patch set whose commit GitHub had from minSeen before t
@@ -295,6 +368,7 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 	}
 	var first *commentSnapshot
 	var wait time.Duration
+	posters := map[int]*poster{}
 	for pass := 0; ; pass++ {
 		if pass == 4 {
 			return fmt.Errorf("comments on change %d did not settle", n)
@@ -312,6 +386,7 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 		} else {
 			c.settle(snap, first)
 		}
+		snap.posters = posters
 		c.recover(n, snap, m)
 		c.recoverThreads(snap, m, threads)
 		p1, err := c.gerritToGitHub(ctx, n, pr, snap, m, threads)
@@ -519,6 +594,49 @@ func (c *Comments) recover(n int, s *commentSnapshot, m *commentMap) {
 			mark(ic.Body, kindIssueComment, ic.ID)
 		}
 	}
+	// Or in a linked user's comment, as they wrote it, naming their own
+	// Gerrit comment or message: posted as them, and not yet mapped (the
+	// sync stopped before saving). Anyone may write a marker in their own
+	// comment; this one names only their own words.
+	if c.Authors != nil {
+		authorOf := func(id string) int {
+			if gc := s.byID[id]; gc != nil {
+				return gc.Author.AccountID
+			}
+			for _, msg := range s.messages {
+				if msg.ID == id {
+					return msg.Author.AccountID
+				}
+			}
+			return 0
+		}
+		theirs := func(u github.User, body, kind string, id int64, edits map[int64]string) {
+			if c.byBridge(u.Login) || editedByOther(edits, id, u.Login) {
+				return
+			}
+			for _, sm := range gerritMarker.FindAllStringSubmatch(body, -1) {
+				if sm[1] != strconv.Itoa(n) {
+					continue
+				}
+				if gh, ok := c.Authors.Linked(authorOf(sm[2])); ok && gh.ID == u.ID && u.ID != 0 {
+					mc := state.Comment{GerritID: sm[2], GitHubID: id, Kind: kind, Origin: "gerrit", As: u.ID}
+					if gc := s.byID[sm[2]]; gc != nil {
+						mc.BodyHash = hashString(gc.Message)
+					}
+					m.add(mc)
+				}
+			}
+		}
+		for _, rc := range s.rcs {
+			theirs(rc.User, rc.Body, kindReviewComment, rc.ID, s.edits)
+		}
+		for _, ic := range s.ics {
+			theirs(ic.User, ic.Body, kindIssueComment, ic.ID, s.edits)
+		}
+		for _, rv := range s.reviews {
+			theirs(rv.User, rv.Body, kindReviewBody, rv.ID, s.reviewEdits)
+		}
+	}
 	for _, gc := range s.gerrit {
 		// Only the bridge's own posts carry an attribution header; one
 		// posted as a user starts with their own words, which may imitate
@@ -563,7 +681,16 @@ func (c *Comments) recoverThreads(s *commentSnapshot, m *commentMap, threads map
 
 // --- Gerrit -> GitHub ---
 
-func (c *Comments) gerritHeader(n int, gc *gerrit.CommentInfo, current int) string {
+// gerritHeader says whose a Gerrit comment is, and where; posted as
+// its author (as, their GitHub account), only which patch set, if not
+// the current one.
+func (c *Comments) gerritHeader(n int, gc *gerrit.CommentInfo, current int, as int64) string {
+	if as != 0 {
+		if gc.PatchSet != 0 && gc.PatchSet != current {
+			return fmt.Sprintf("<sub>On patch set %d.</sub>", gc.PatchSet)
+		}
+		return ""
+	}
 	ps := ""
 	if gc.PatchSet != 0 && gc.PatchSet != current {
 		ps = fmt.Sprintf(" on patch set %d", gc.PatchSet)
@@ -575,9 +702,12 @@ func gerritFooter(n int, id string) string { return fmt.Sprintf("<!-- bridge:ger
 
 // ghBody is the GitHub body for a Gerrit comment, with an optional note
 // (quoted code, the true anchor) above the message and an optional
-// suggestion block below it.
-func (c *Comments) ghBody(n int, gc *gerrit.CommentInfo, current int, note, suggestion string) string {
-	head, foot := c.gerritHeader(n, gc, current)+"\n\n", "\n\n"+gerritFooter(n, gc.ID)
+// suggestion block below it, posted as GitHub account as (0: the bridge).
+func (c *Comments) ghBody(n int, gc *gerrit.CommentInfo, current int, note, suggestion string, as int64) string {
+	head, foot := c.gerritHeader(n, gc, current, as), "\n\n"+gerritFooter(n, gc.ID)
+	if head != "" {
+		head += "\n\n"
+	}
 	if note != "" {
 		note = fitForGitHub(forGitHub(note), maxGitHubNote) + "\n\n"
 	}
@@ -711,28 +841,44 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			if rc := s.rcByID[root]; rc != nil && rc.InReplyTo != 0 {
 				root = rc.InReplyTo
 			}
-			out, err := c.GitHub.ReplyToReviewComment(ctx, pr, root, c.ghBody(n, gc, s.current, "", ""))
+			p, err := c.posterFor(ctx, s, gc.Author.AccountID)
+			if err != nil {
+				return posted, err
+			}
+			var out *github.ReviewComment
+			as, err := c.post(n, p, func(api UserGitHub, as int64) (err error) {
+				out, err = api.ReplyToReviewComment(ctx, pr, root, c.ghBody(n, gc, s.current, "", "", as))
+				return err
+			})
 			if c.refusedOnGitHub(n, m, gc.ID, err) {
 				continue
 			}
 			if err != nil {
 				return posted, err
 			}
-			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindReviewComment, Origin: "gerrit", BodyHash: hashString(gc.Message)})
+			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindReviewComment, Origin: "gerrit", BodyHash: hashString(gc.Message), As: as})
 			posted = true
 		case gc.Path == gerrit.PatchSetLevel || parent != nil || gc.Path == gerrit.CommitMsg:
 			ctxLine := ""
 			if gc.Path == gerrit.CommitMsg {
 				ctxLine = c.quote(ctx, n, gc, "commit message")
 			}
-			out, err := c.GitHub.CreateIssueComment(ctx, pr, c.ghBody(n, gc, s.current, ctxLine, ""))
+			p, err := c.posterFor(ctx, s, gc.Author.AccountID)
+			if err != nil {
+				return posted, err
+			}
+			var out *github.IssueComment
+			as, err := c.post(n, p, func(api UserGitHub, as int64) (err error) {
+				out, err = api.CreateIssueComment(ctx, pr, c.ghBody(n, gc, s.current, ctxLine, "", as))
+				return err
+			})
 			if c.refusedOnGitHub(n, m, gc.ID, err) {
 				continue
 			}
 			if err != nil {
 				return posted, err
 			}
-			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindIssueComment, Origin: "gerrit", BodyHash: hashString(gc.Message)})
+			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindIssueComment, Origin: "gerrit", BodyHash: hashString(gc.Message), As: as})
 			posted = true
 		default:
 			k := gc.Author.Username + "|" + gc.Updated + "|" + strconv.Itoa(gc.PatchSet)
@@ -761,21 +907,22 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			deferred++
 			continue
 		}
-		votes := ""
-		if v := messageVotes(msg.Message); v != "" {
-			votes = ", **" + v + "**"
+		p, err := c.posterFor(ctx, s, msg.Author.AccountID)
+		if err != nil {
+			return posted, err
 		}
-		head := fmt.Sprintf("**%s** ([Gerrit](%s)) on patch set %d%s:\n\n", whoMD(msg.Author), c.messageURL(n, msg), msg.RevisionNumber, votes)
-		foot := "\n\n" + gerritFooter(n, msg.ID)
-		body := head + fitForGitHub(forGitHub(text), maxGitHubComment-len(head)-len(foot)) + foot
-		out, err := c.GitHub.CreateIssueComment(ctx, pr, body)
+		var out *github.IssueComment
+		as, err := c.post(n, p, func(api UserGitHub, as int64) (err error) {
+			out, err = api.CreateIssueComment(ctx, pr, c.messageBody(n, msg, text, s.current, as))
+			return err
+		})
 		if c.refusedOnGitHub(n, m, msg.ID, err) {
 			continue
 		}
 		if err != nil {
 			return posted, err
 		}
-		m.add(state.Comment{GerritID: msg.ID, GitHubID: out.ID, Kind: kindIssueComment, Origin: "gerrit"})
+		m.add(state.Comment{GerritID: msg.ID, GitHubID: out.ID, Kind: kindIssueComment, Origin: "gerrit", As: as})
 		posted = true
 	}
 	for _, g := range groups {
@@ -788,6 +935,31 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 		c.Logger.Info("Gerrit comments deferred: their authors posted too many lately", "change", n, "pr", pr, "comments", deferred)
 	}
 	return posted, nil
+}
+
+// messageBody is the GitHub body for Gerrit change message msg, whose
+// text is text, posted as GitHub account as (0: the bridge, which says
+// whose it is).
+func (c *Comments) messageBody(n int, msg gerrit.ChangeMessage, text string, current int, as int64) string {
+	var head string
+	v := messageVotes(msg.Message)
+	switch {
+	case as == 0:
+		votes := ""
+		if v != "" {
+			votes = ", **" + v + "**"
+		}
+		head = fmt.Sprintf("**%s** ([Gerrit](%s)) on patch set %d%s:\n\n", whoMD(msg.Author), c.messageURL(n, msg), msg.RevisionNumber, votes)
+	default:
+		if msg.RevisionNumber != 0 && msg.RevisionNumber != current {
+			head = fmt.Sprintf("<sub>On patch set %d.</sub>\n\n", msg.RevisionNumber)
+		}
+		if v != "" {
+			head += "**" + v + "**\n\n"
+		}
+	}
+	foot := "\n\n" + gerritFooter(n, msg.ID)
+	return head + fitForGitHub(forGitHub(text), maxGitHubComment-len(head)-len(foot)) + foot
 }
 
 func ghSide(gerritSide string) string {
@@ -844,8 +1016,7 @@ func (a ghAnchor) comment(path, body string) github.NewReviewComment {
 func (c *Comments) postReview(ctx context.Context, n, pr int, s *commentSnapshot, m *commentMap, ps int, items []*gerrit.CommentInfo) error {
 	sha := s.ghSHA(ps)
 	var lineItems []*gerrit.CommentInfo
-	var drafts []github.DraftReviewComment
-	sent := map[string]string{} // body -> Gerrit comment id
+	var anchors []ghAnchor
 	for _, gc := range items {
 		a := c.anchorFor(ctx, n, s, gc)
 		if a.first == 0 {
@@ -855,16 +1026,31 @@ func (c *Comments) postReview(ctx context.Context, n, pr int, s *commentSnapshot
 			continue
 		}
 		lineItems = append(lineItems, gc)
-		body := c.ghBody(n, gc, s.current, a.note, a.suggestion)
-		sent[strings.TrimSpace(body)] = gc.ID
-		drafts = append(drafts, a.draft(gc.Path, body))
+		anchors = append(anchors, a)
 	}
-	if len(drafts) == 0 {
+	if len(lineItems) == 0 {
 		return nil
 	}
-	rev, err := c.GitHub.CreateReview(ctx, pr, github.NewReview{CommitID: sha, Event: "COMMENT", Comments: drafts})
+	// One Gerrit reply: one author.
+	p, err := c.posterFor(ctx, s, lineItems[0].Author.AccountID)
+	if err != nil {
+		return err
+	}
+	var rev *github.Review
+	var sent map[string]string // body -> Gerrit comment id
+	as, err := c.post(n, p, func(api UserGitHub, as int64) (err error) {
+		sent = map[string]string{}
+		var drafts []github.DraftReviewComment
+		for i, gc := range lineItems {
+			body := c.ghBody(n, gc, s.current, anchors[i].note, anchors[i].suggestion, as)
+			sent[strings.TrimSpace(body)] = gc.ID
+			drafts = append(drafts, anchors[i].draft(gc.Path, body))
+		}
+		rev, err = api.CreateReview(ctx, pr, github.NewReview{CommitID: sha, Event: "COMMENT", Comments: drafts})
+		return err
+	})
 	if err == nil {
-		c.Logger.Info("mirrored Gerrit comments to GitHub review", "change", n, "pr", pr, "review", rev.ID, "comments", len(drafts))
+		c.Logger.Info("mirrored Gerrit comments to GitHub review", "change", n, "pr", pr, "review", rev.ID, "comments", len(sent), "as", p.as.Login)
 		// Map them now, by the exact text sent: their markers can be
 		// edited by anyone with write access before the next pass reads
 		// them. (If this read fails, the markers are the fallback.)
@@ -876,7 +1062,7 @@ func (c *Comments) postReview(ctx context.Context, n, pr int, s *commentSnapshot
 		for _, rc := range posted {
 			if id, ok := sent[strings.TrimSpace(rc.Body)]; ok {
 				gc := s.byID[id]
-				m.add(state.Comment{GerritID: id, GitHubID: rc.ID, Kind: kindReviewComment, Origin: "gerrit", BodyHash: hashString(gc.Message)})
+				m.add(state.Comment{GerritID: id, GitHubID: rc.ID, Kind: kindReviewComment, Origin: "gerrit", BodyHash: hashString(gc.Message), As: as})
 				delete(sent, strings.TrimSpace(rc.Body))
 			}
 		}
@@ -907,10 +1093,20 @@ func rangeNote(gc *gerrit.CommentInfo) string {
 // step 6); file level with the lines quoted; and a PR comment.
 func (c *Comments) postSingle(ctx context.Context, n, pr int, s *commentSnapshot, m *commentMap, gc *gerrit.CommentInfo) error {
 	a := c.anchorFor(ctx, n, s, gc)
-	try := func(nc github.NewReviewComment) (bool, error) {
-		out, err := c.GitHub.CreateReviewComment(ctx, pr, nc)
+	p, err := c.posterFor(ctx, s, gc.Author.AccountID)
+	if err != nil {
+		return err
+	}
+	// try posts nc, its body written as whoever posts it.
+	try := func(nc github.NewReviewComment, note, suggestion string) (bool, error) {
+		var out *github.ReviewComment
+		as, err := c.post(n, p, func(api UserGitHub, as int64) (err error) {
+			nc.Body = c.ghBody(n, gc, s.current, note, suggestion, as)
+			out, err = api.CreateReviewComment(ctx, pr, nc)
+			return err
+		})
 		if err == nil {
-			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindReviewComment, Origin: "gerrit", BodyHash: hashString(gc.Message)})
+			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindReviewComment, Origin: "gerrit", BodyHash: hashString(gc.Message), As: as})
 			return true, nil
 		}
 		if isUnprocessable(err) {
@@ -919,11 +1115,11 @@ func (c *Comments) postSingle(ctx context.Context, n, pr int, s *commentSnapshot
 		return false, err
 	}
 	if a.first != 0 {
-		if ok, err := try(a.comment(gc.Path, c.ghBody(n, gc, s.current, a.note, a.suggestion))); ok || err != nil {
+		if ok, err := try(a.comment(gc.Path, ""), a.note, a.suggestion); ok || err != nil {
 			return err
 		}
-		if p, ok := c.portToCurrent(ctx, n, s, gc, a); ok {
-			if ok, err := try(p.comment(gc.Path, c.ghBody(n, gc, s.current, p.note, p.suggestion))); ok || err != nil {
+		if pt, ok := c.portToCurrent(ctx, n, s, gc, a); ok {
+			if ok, err := try(pt.comment(gc.Path, ""), pt.note, pt.suggestion); ok || err != nil {
 				return err
 			}
 		}
@@ -933,22 +1129,25 @@ func (c *Comments) postSingle(ctx context.Context, n, pr int, s *commentSnapshot
 		quote = c.quote(ctx, n, gc, gc.Path)
 	}
 	for _, sha := range []string{a.sha, s.ghSHA(s.current)} {
-		nc := github.NewReviewComment{CommitID: sha, Path: gc.Path, Body: c.ghBody(n, gc, s.current, quote, ""), SubjectType: "file"}
-		if ok, err := try(nc); ok || err != nil {
+		if ok, err := try(github.NewReviewComment{CommitID: sha, Path: gc.Path, SubjectType: "file"}, quote, ""); ok || err != nil {
 			return err
 		}
 	}
 	if quote == "" {
 		quote = codeSpan(gc.Path)
 	}
-	ic, err := c.GitHub.CreateIssueComment(ctx, pr, c.ghBody(n, gc, s.current, quote, ""))
+	var ic *github.IssueComment
+	as, err := c.post(n, p, func(api UserGitHub, as int64) (err error) {
+		ic, err = api.CreateIssueComment(ctx, pr, c.ghBody(n, gc, s.current, quote, "", as))
+		return err
+	})
 	if c.refusedOnGitHub(n, m, gc.ID, err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	m.add(state.Comment{GerritID: gc.ID, GitHubID: ic.ID, Kind: kindIssueComment, Origin: "gerrit", BodyHash: hashString(gc.Message)})
+	m.add(state.Comment{GerritID: gc.ID, GitHubID: ic.ID, Kind: kindIssueComment, Origin: "gerrit", BodyHash: hashString(gc.Message), As: as})
 	return nil
 }
 
@@ -2130,17 +2329,19 @@ func (c *Comments) mirrorEdits(ctx context.Context, n, pr int, s *commentSnapsho
 			mc.BodyHash = h
 			posted = true
 		case "gerrit":
-			if editor, ok := s.edits[mc.GitHubID]; ok && !c.byBridge(editor) {
+			if editor, ok := s.edits[mc.GitHubID]; ok && !c.byBridge(editor) && !(mc.As != 0 && strings.EqualFold(editor, login)) {
 				// The GitHub copy of a Gerrit comment was edited on
-				// GitHub: Gerrit comments only change in Gerrit, so put
-				// it back (text and marker).
+				// GitHub by someone other than whoever it was posted as:
+				// Gerrit comments only change in Gerrit, so put it back
+				// (text and marker). One posted as its author is theirs
+				// on GitHub too, to edit.
 				if c.DryRun {
 					c.Logger.Info("dry run: would restore edited copy of a Gerrit comment", "change", n, "github_id", mc.GitHubID, "editor", editor)
 					continue
 				}
 				a := c.anchorFor(ctx, n, s, gc)
 				nb := c.ghBody(n, gc, s.current, strings.TrimSpace(a.note+
-					"\n\n<sub>(Restored by the bridge: this mirrors a Gerrit comment, which can only change in Gerrit.)</sub>"), a.suggestion)
+					"\n\n<sub>(Restored by the bridge: this mirrors a Gerrit comment, which can only change in Gerrit.)</sub>"), a.suggestion, mc.As)
 				if err := c.updateGitHub(ctx, mc, nb); err != nil {
 					return posted, err
 				}
@@ -2159,7 +2360,7 @@ func (c *Comments) mirrorEdits(ctx context.Context, n, pr int, s *commentSnapsho
 			if c.DryRun {
 				continue
 			}
-			nb := c.ghBody(n, gc, s.current, "<sub>(Changed in Gerrit.)</sub>", "")
+			nb := c.ghBody(n, gc, s.current, "<sub>(Changed in Gerrit.)</sub>", "", mc.As)
 			if err := c.updateGitHub(ctx, mc, nb); err != nil {
 				return posted, err
 			}

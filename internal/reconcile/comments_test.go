@@ -262,9 +262,95 @@ type fakeGitHub struct {
 	ancestor map[string]bool   // "a..b"
 	nextID   int64
 	posts    int
+	// as is who posts now (fakeUserClient), if not the bridge.
+	as github.User
 }
 
 func (f *fakeGitHub) id() int64 { f.nextID++; return 1000 + f.nextID }
+
+// who posts: the user a fakeUserClient posts as, else the bridge.
+func (f *fakeGitHub) who() github.User {
+	if f.as.Login != "" {
+		return f.as
+	}
+	return github.User{Login: "bridge"}
+}
+
+// fakeUserClient posts on f as a linked user; refuse, if set, is what
+// GitHub answers instead.
+type fakeUserClient struct {
+	f      *fakeGitHub
+	as     github.User
+	refuse error
+	calls  *int
+}
+
+func (u fakeUserClient) do(f func()) error {
+	*u.calls++
+	if u.refuse != nil {
+		return u.refuse
+	}
+	u.f.as = u.as
+	defer func() { u.f.as = github.User{} }()
+	f()
+	return nil
+}
+
+func (u fakeUserClient) CreateReview(ctx context.Context, n int, r github.NewReview) (out *github.Review, err error) {
+	if e := u.do(func() { out, err = u.f.CreateReview(ctx, n, r) }); e != nil {
+		return nil, e
+	}
+	return out, err
+}
+func (u fakeUserClient) CreateReviewComment(ctx context.Context, n int, rc github.NewReviewComment) (out *github.ReviewComment, err error) {
+	if e := u.do(func() { out, err = u.f.CreateReviewComment(ctx, n, rc) }); e != nil {
+		return nil, e
+	}
+	return out, err
+}
+func (u fakeUserClient) ReplyToReviewComment(ctx context.Context, n int, id int64, body string) (out *github.ReviewComment, err error) {
+	if e := u.do(func() { out, err = u.f.ReplyToReviewComment(ctx, n, id, body) }); e != nil {
+		return nil, e
+	}
+	return out, err
+}
+func (u fakeUserClient) CreateIssueComment(ctx context.Context, n int, body string) (out *github.IssueComment, err error) {
+	if e := u.do(func() { out, err = u.f.CreateIssueComment(ctx, n, body) }); e != nil {
+		return nil, e
+	}
+	return out, err
+}
+func (u fakeUserClient) SetThreadResolved(ctx context.Context, id string, resolved bool) (err error) {
+	if e := u.do(func() { err = u.f.SetThreadResolved(ctx, id, resolved) }); e != nil {
+		return e
+	}
+	return err
+}
+
+// fakeAuthors links Gerrit accounts to GitHub accounts.
+type fakeAuthors struct {
+	f      *fakeGitHub
+	linked map[int]github.User
+	refuse error // what GitHub answers their tokens
+	err    error // renewing a token fails
+	calls  int
+}
+
+func (a *fakeAuthors) Linked(account int) (github.User, bool) {
+	u, ok := a.linked[account]
+	return u, ok
+}
+
+func (a *fakeAuthors) Client(_ context.Context, account int) (UserGitHub, github.User, bool, error) {
+	if a.err != nil {
+		return nil, github.User{}, false, a.err
+	}
+	u, ok := a.linked[account]
+	if !ok {
+		return nil, github.User{}, false, nil
+	}
+	return fakeUserClient{f: a.f, as: u, refuse: a.refuse, calls: &a.calls}, u, true, nil
+}
 
 func (f *fakeGitHub) lineOK(commit, path string, line int) bool {
 	if d, ok := f.diffAt[commit+"/"+path]; ok {
@@ -399,7 +485,7 @@ func (f *fakeGitHub) CreateReview(_ context.Context, _ int, r github.NewReview) 
 		id := f.id()
 		f.rcs = append(f.rcs, github.ReviewComment{ID: id, ReviewID: rid, Path: d.Path, Line: d.Line, OriginalLine: d.Line,
 			Side: d.Side, CommitID: r.CommitID, OriginalCommitID: r.CommitID, Body: d.Body, SubjectType: "line",
-			HTMLURL: fmt.Sprintf("https://github.com/o/r/pull/1#discussion_r%d", id), User: github.User{Login: "bridge"}})
+			HTMLURL: fmt.Sprintf("https://github.com/o/r/pull/1#discussion_r%d", id), User: f.who()})
 	}
 	return &github.Review{ID: rid}, nil
 }
@@ -433,7 +519,7 @@ func (f *fakeGitHub) CreateReviewComment(_ context.Context, _ int, rc github.New
 		st = "line"
 	}
 	c := github.ReviewComment{ID: id, Path: rc.Path, Line: rc.Line, OriginalLine: rc.Line, StartLine: rc.StartLine, Side: rc.Side, CommitID: rc.CommitID,
-		OriginalCommitID: rc.CommitID, Body: rc.Body, SubjectType: st, User: github.User{Login: "bridge"}}
+		OriginalCommitID: rc.CommitID, Body: rc.Body, SubjectType: st, User: f.who()}
 	f.rcs = append(f.rcs, c)
 	return &c, nil
 }
@@ -450,7 +536,7 @@ func (f *fakeGitHub) ReplyToReviewComment(_ context.Context, _ int, id int64, bo
 		return nil, fmt.Errorf("reply to %d: not a thread root", id)
 	}
 	c := github.ReviewComment{ID: f.id(), InReplyTo: id, Path: root.Path, Line: root.Line, OriginalLine: root.OriginalLine,
-		CommitID: root.CommitID, OriginalCommitID: root.OriginalCommitID, Body: body, User: github.User{Login: "bridge"}}
+		CommitID: root.CommitID, OriginalCommitID: root.OriginalCommitID, Body: body, User: f.who()}
 	f.rcs = append(f.rcs, c)
 	return &c, nil
 }
@@ -460,7 +546,7 @@ func (f *fakeGitHub) CreateIssueComment(_ context.Context, _ int, body string) (
 		return nil, errUnprocessable
 	}
 	f.posts++
-	c := github.IssueComment{ID: f.id(), Body: body, User: github.User{Login: "bridge"}}
+	c := github.IssueComment{ID: f.id(), Body: body, User: f.who()}
 	f.ics = append(f.ics, c)
 	return &c, nil
 }
