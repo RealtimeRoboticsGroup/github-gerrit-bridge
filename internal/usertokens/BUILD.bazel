@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "usertokens",
+    srcs = [
+        "link.go",
+        "store.go",
+        "tokens.go",
+    ],
+    importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/usertokens",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/github"],
+)
+
+go_test(
+    name = "usertokens_test",
+    srcs = ["usertokens_test.go"],
+    embed = [":usertokens"],
+    deps = ["//internal/github"],
+)
