@@ -315,6 +315,28 @@ func TestLinkedVoteGitHubRefuses(t *testing.T) {
 		t.Errorf("reviews %+v, PR comments %+v", e.h.reviews, e.h.ics)
 	}
 	e.settled(t)
+	// Asked once each: the refused vote without words is not asked for
+	// again on every pass.
+	if e.h.voteTries != 2 {
+		t.Errorf("asked GitHub for %d reviews, want 2", e.h.voteTries)
+	}
+}
+
+// A vote on a patch set GitHub does not have (Gerrit is ahead of a fork's
+// branch) is a review of the latest one it does.
+func TestLinkedVoteOnPatchSetNotOnGitHub(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.h.prCommits = map[string]bool{"sha1": true, "sha2": true}
+	e.g.revs["sha3"] = 3
+	e.g.current = "sha3"
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.messages = []gerrit.ChangeMessage{
+		{ID: "m1", Author: alice, Message: "Patch Set 3: Code-Review-1", RevisionNumber: 3},
+	}
+	e.sync(t)
+	if len(e.h.reviews) != 1 || e.h.reviews[0].CommitID != "sha2" || e.h.reviews[0].State != "CHANGES_REQUESTED" || e.h.reviews[0].User != aliceGH {
+		t.Errorf("reviews %+v", e.h.reviews)
+	}
 }
 
 // Not every vote is one to post: the bridge's own (a GitHub approval cast

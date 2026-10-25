@@ -267,6 +267,11 @@ type fakeGitHub struct {
 	// refuseVote, if set, is GitHub's answer to an approval or change
 	// request (on one's own PR, say).
 	refuseVote error
+	// prCommits, if set, are the PR's commits: a review of another is
+	// refused, as GitHub does. voteTries counts approvals and change
+	// requests asked for.
+	prCommits map[string]bool
+	voteTries int
 	// refuseUserResolve, if set, is GitHub's answer to a linked user
 	// resolving a thread.
 	refuseUserResolve error
@@ -488,6 +493,12 @@ func (f *fakeGitHub) CreateReview(_ context.Context, _ int, r github.NewReview) 
 		if !f.lineOK(r.CommitID, d.Path, d.Line) {
 			return nil, errUnprocessable
 		}
+	}
+	if r.Event != "COMMENT" {
+		f.voteTries++
+	}
+	if f.prCommits != nil && !f.prCommits[r.CommitID] {
+		return nil, &github.APIError{Status: 422, Message: "The commitOID is not part of the pull request"}
 	}
 	if f.refuseVote != nil && r.Event != "COMMENT" {
 		return nil, f.refuseVote

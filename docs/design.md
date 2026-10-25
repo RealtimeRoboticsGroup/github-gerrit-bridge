@@ -1624,7 +1624,9 @@ notes; nothing on GitHub advertises the link.
 - **Votes as reviews.** A linked user's change message with Code-Review
   +2 becomes their GitHub approval, and a negative vote their change
   request. It goes on the GitHub commit of the patch set it was given on,
-  with the message's words, if any, as the body. A +1, or a vote of
+  or, if that patch set never reached GitHub (Gerrit is ahead of a fork's
+  branch), of the latest one before it that did, with the message's
+  words, if any, as the body. A +1, or a vote of
   another label, stays a PR comment if it has words, and the statuses show
   it either way. Excluded: votes the bridge cast itself (a GitHub approval
   mirrored into Gerrit, tagged `github-bridge:mirror`, which would echo),
@@ -1632,8 +1634,9 @@ notes; nothing on GitHub advertises the link.
   dismisses the review that no longer agrees, as for any review.
   Dismissing such a review, by anyone, withdraws nothing: its vote was
   given in Gerrit, not cast from GitHub (`mirroredVoteSince`). GitHub
-  refusing the review (approving one's own PR, a commit it does not have)
-  leaves the words a PR comment, as the user.
+  refusing the review (approving one's own PR) leaves the words a PR
+  comment, as the user; a vote without words is recorded as refused, so
+  it is not asked for again on every pass.
 - **Resolutions** are made as the author of the thread's last Gerrit
   comment, which resolved it, and by the bot if GitHub won't let them
   (resolving takes write access, or authoring the PR or thread).

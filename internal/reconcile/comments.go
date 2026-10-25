@@ -291,6 +291,19 @@ func (s *commentSnapshot) ghSHA(ps int) string {
 	return s.psToSHA[ps]
 }
 
+// onGitHub is the GitHub commit of patch set ps, or, if ps never reached
+// GitHub (Gerrit is ahead of a fork's branch), of the latest one before
+// it that did: GitHub takes reviews only of the PR's commits.
+func (s *commentSnapshot) onGitHub(ps int) string {
+	sha := ""
+	for _, r := range s.revisions {
+		if r.PatchSet <= ps && r.GitHubSHA != "" {
+			sha = r.GitHubSHA
+		}
+	}
+	return sha
+}
+
 type commentMap struct {
 	byGerrit map[string]*state.Comment
 	byGitHub map[string]*state.Comment // kind/id
@@ -967,7 +980,7 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 // (their token, or the review: on their own PR, or a commit GitHub does
 // not have) leaves the message to be a PR comment, if it has words.
 func (c *Comments) postVote(ctx context.Context, n, pr int, s *commentSnapshot, m *commentMap, p *poster, msg gerrit.ChangeMessage, text, event string) (bool, error) {
-	sha := s.ghSHA(msg.RevisionNumber)
+	sha := s.onGitHub(msg.RevisionNumber)
 	if sha == "" {
 		return false, nil
 	}
@@ -982,6 +995,11 @@ func (c *Comments) postVote(ctx context.Context, n, pr int, s *commentSnapshot, 
 		c.Logger.Warn("GitHub refused a linked user's token; posting as the bridge", "change", n, "github_login", p.as.Login, "err", err)
 		p.api = nil
 		return false, nil
+	case isUnprocessable(err) && text == "":
+		// Only a vote, which the statuses show: once is enough to ask.
+		c.Logger.Info("GitHub refused a vote as a review; not mirroring it", "change", n, "pr", pr, "event", event, "err", err)
+		m.add(state.Comment{GerritID: msg.ID, Kind: kindRefused, Origin: "gerrit"})
+		return true, nil
 	case isUnprocessable(err):
 		c.Logger.Info("GitHub refused a vote as a review; posting it as a comment", "change", n, "pr", pr, "event", event, "err", err)
 		return false, nil
