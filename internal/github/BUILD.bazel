@@ -9,6 +9,7 @@ go_library(
         "reviews.go",
         "stacks.go",
         "token.go",
+        "userauth.go",
         "webhook.go",
     ],
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/github",
@@ -20,6 +21,7 @@ go_test(
     name = "github_test",
     srcs = [
         "client_test.go",
+        "userauth_test.go",
         "webhook_test.go",
     ],
     embed = [":github"],
