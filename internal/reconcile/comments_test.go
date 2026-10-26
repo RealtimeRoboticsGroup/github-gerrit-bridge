@@ -828,12 +828,12 @@ func TestCommitMessageCommentQuotesItsLines(t *testing.T) {
 		parents, line, ps int
 		want, wantNot     string
 	}{
-		{"subject", 1, 7, 2, "`commit message`:\n```\nLine 6\n```\n\nThe 6?", "L7"},
-		{"merge", 2, 8, 2, "`commit message`:\n```\nLine 6\n```\n\nThe 6?", "L8"},
-		{"blank", 1, 8, 2, "`commit message`\n\nThe 6?", "```"},
-		{"header", 1, 2, 2, "`commit message`\n\nThe 6?", "```"},
+		{"subject", 1, 7, 2, "`Commit message`:\n```\nLine 6\n```\n\nThe 6?", "L7"},
+		{"merge", 2, 8, 2, "`Commit message`:\n```\nLine 6\n```\n\nThe 6?", "L8"},
+		{"blank", 1, 8, 2, "`Commit message`\n\nThe 6?", "```"},
+		{"header", 1, 2, 2, "`Commit message`\n\nThe 6?", "```"},
 		// A patch set Gerrit did not list: its header is not known.
-		{"unknown", 1, 6, 3, "`commit message`\n\nThe 6?", "```"},
+		{"unknown", 1, 6, 3, "`Commit message`\n\nThe 6?", "```"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newCommentsEnv(t)

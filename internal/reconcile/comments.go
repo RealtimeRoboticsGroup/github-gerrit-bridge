@@ -1351,7 +1351,7 @@ func (c *Comments) quote(ctx context.Context, n int, gc *gerrit.CommentInfo, lab
 // content is the message alone, so the header's lines are not quoted; nor
 // are line numbers, which are of nothing on GitHub.
 func (c *Comments) commitMsgQuote(ctx context.Context, n int, s *commentSnapshot, gc *gerrit.CommentInfo) string {
-	where := codeSpan("commit message")
+	where := codeSpan("Commit message")
 	parents, ok := s.parents[gc.PatchSet]
 	first, last := gc.Line, gc.Line
 	if r := gc.Range; r != nil {
