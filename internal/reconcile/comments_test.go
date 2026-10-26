@@ -762,14 +762,15 @@ func TestCommentOnPatchSetNotOnGitHub(t *testing.T) {
 // threads, says which it answers.
 func TestReplyToAPRCommentLinksIt(t *testing.T) {
 	e := newCommentsEnv(t)
-	e.g.user("c1", gerrit.PatchSetLevel, 2, 0, "Ready?", "", true)
+	e.g.user("c1", gerrit.PatchSetLevel, 2, 0, "Ready?\nLine 2 has a @joiner.\n3\n4\n5", "", true)
 	e.g.user("c2", gerrit.PatchSetLevel, 2, 0, "Done", "c1", false)
 	e.g.comments[1].Author = gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}
 	e.sync(t)
-	if len(e.h.ics) != 2 || !strings.Contains(e.h.ics[1].Body, fmt.Sprintf("In reply to [this comment](https://github.com/o/r/pull/1#issuecomment-%d).", e.h.ics[0].ID)) {
+	want := fmt.Sprintf("[alice said](https://github.com/o/r/pull/1#issuecomment-%d):\n> Ready?\n> Line 2 has a @joiner.\n> 3\n> 4\n> …\n\nDone", e.h.ics[0].ID)
+	if len(e.h.ics) != 2 || !strings.Contains(e.h.ics[1].Body, "\n\n"+strings.Replace(want, "@", "@\u200d", 1)) {
 		t.Fatalf("PR comments %+v", e.h.ics)
 	}
-	if strings.Contains(e.h.ics[0].Body, "In reply to") {
+	if strings.Contains(e.h.ics[0].Body, " said](") {
 		t.Errorf("not a reply: %s", e.h.ics[0].Body)
 	}
 	e.settled(t)
@@ -777,6 +778,41 @@ func TestReplyToAPRCommentLinksIt(t *testing.T) {
 
 // A comment on part of a line is on the line: GitHub has no columns, and
 // Gerrit has the exact range.
+// A reply in Gerrit to a GitHub PR comment quotes its author's words, not
+// the bridge's copy of them.
+func TestReplyToAGitHubPRCommentQuotesIt(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.h.ics = append(e.h.ics, github.IssueComment{ID: 7, Body: "Can we land this?", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#issuecomment-7"})
+	e.sync(t)
+	var mirror string
+	for _, gc := range e.g.comments {
+		if gc.Author.AccountID == bridgeID {
+			mirror = gc.ID
+		}
+	}
+	e.g.user("c1", gerrit.PatchSetLevel, 2, 0, "Yes.", mirror, false)
+	e.sync(t)
+	last := e.h.ics[len(e.h.ics)-1].Body
+	if !strings.Contains(last, "[bob said](https://github.com/o/r/pull/1#issuecomment-7):\n> Can we land this?\n\nYes.") {
+		t.Fatalf("reply %q", last)
+	}
+	e.settled(t)
+}
+
+// The quote's name is inert Markdown, and a long line is cut.
+func TestReplyQuoteNameAndLength(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.g.user("c1", gerrit.PatchSetLevel, 2, 0, strings.Repeat("a", 250), "", true)
+	e.g.comments[0].Author = gerrit.AccountInfo{AccountID: 2, Name: "Carol](https://evil)"}
+	e.g.user("c2", gerrit.PatchSetLevel, 2, 0, "Done", "c1", false)
+	e.sync(t)
+	want := fmt.Sprintf("[Carol\\]\\(https://evil\\) said](https://github.com/o/r/pull/1#issuecomment-%d):\n> %s…\n\nDone", e.h.ics[0].ID, strings.Repeat("a", 200))
+	if len(e.h.ics) != 2 || !strings.Contains(e.h.ics[1].Body, want) {
+		t.Fatalf("reply %q", e.h.ics[len(e.h.ics)-1].Body)
+	}
+}
+
 func TestPartOfALineIsTheLine(t *testing.T) {
 	e := newCommentsEnv(t)
 	e.g.user("c1", "a.txt", 2, 3, "This word.", "", true)

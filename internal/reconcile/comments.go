@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -812,6 +813,38 @@ func (c *Comments) refusedOnGitHub(n int, m *commentMap, id string, err error) b
 	return true
 }
 
+// replyQuote opens a Gerrit reply to a comment that is a PR comment on
+// GitHub, which has no threads: who said it, linked to it, and what.
+func replyQuote(s *commentSnapshot, parent *state.Comment) string {
+	who, text := "", ""
+	for _, ic := range s.ics {
+		if ic.ID == parent.GitHubID {
+			who, text = ic.User.Login, ic.Body
+		}
+	}
+	// A Gerrit comment's own words, not the bridge's header around them.
+	if gc := s.byID[parent.GerritID]; gc != nil && (parent.Origin == "gerrit" || text == "") {
+		who, text = cmp.Or(gc.Author.Username, gc.Author.Name), gc.Message
+	}
+	said := "said"
+	if who != "" {
+		said = inlineName(who) + " said"
+	}
+	var q strings.Builder
+	lines := strings.Split(strings.TrimSpace(lineBreaks.Replace(text)), "\n")
+	for i, l := range lines {
+		if i == maxReplyQuote {
+			q.WriteString("\n> …")
+			break
+		}
+		q.WriteString("\n> " + shorten(l, 200))
+	}
+	return fmt.Sprintf("[%s](%s#issuecomment-%d):%s", said, s.pull.HTMLURL, parent.GitHubID, q.String())
+}
+
+// maxReplyQuote is how many lines of the comment it answers a reply quotes.
+const maxReplyQuote = 4
+
 // repliesToQueued reports whether Gerrit comment gc replies, before any
 // mapped comment, to one queued to post later in this pass.
 func repliesToQueued(s *commentSnapshot, m *commentMap, queued map[string]bool, gc *gerrit.CommentInfo) bool {
@@ -904,8 +937,7 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 				ctxLine = c.quote(ctx, n, gc, "commit message")
 			}
 			if parent != nil && parent.Kind == kindIssueComment && s.pull != nil {
-				// PR comments have no threads: say which it answers.
-				ctxLine = strings.TrimSpace(fmt.Sprintf("<sub>In reply to [this comment](%s#issuecomment-%d).</sub> %s", s.pull.HTMLURL, parent.GitHubID, ctxLine))
+				ctxLine = strings.TrimSpace(replyQuote(s, parent) + "\n\n" + ctxLine)
 			}
 			p, err := c.posterFor(ctx, s, gc.Author.AccountID)
 			if err != nil {
