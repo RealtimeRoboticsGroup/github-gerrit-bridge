@@ -192,8 +192,10 @@ type commentSnapshot struct {
 	threads            []github.ReviewThread
 	psToSHA            map[int]string
 	shaToPS            map[string]int
-	current            int
-	revision           string
+	// parents counts each patch set's commit's parents.
+	parents  map[int]int
+	current  int
+	revision string
 	// labels are the current patch set's votes.
 	labels map[string]gerrit.LabelInfo
 	// wait is how long what was left out for now waits (tooFresh).
@@ -525,13 +527,15 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	for i := range s.gerrit {
 		s.byID[s.gerrit[i].ID] = &s.gerrit[i]
 	}
-	ch, err := c.Gerrit.GetChange(ctx, n, "ALL_REVISIONS", "MESSAGES", "DETAILED_ACCOUNTS", "DETAILED_LABELS")
+	ch, err := c.Gerrit.GetChange(ctx, n, "ALL_REVISIONS", "ALL_COMMITS", "MESSAGES", "DETAILED_ACCOUNTS", "DETAILED_LABELS")
 	if err != nil {
 		return nil, err
 	}
+	s.parents = map[int]int{}
 	for sha, r := range ch.Revisions {
 		s.psToSHA[r.Number] = sha
 		s.shaToPS[sha] = r.Number
+		s.parents[r.Number] = len(r.Commit.Parents)
 	}
 	s.revision = ch.CurrentRevision
 	s.messages = ch.Messages
@@ -934,7 +938,7 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 		case gc.Path == gerrit.PatchSetLevel || parent != nil || gc.Path == gerrit.CommitMsg:
 			ctxLine := ""
 			if gc.Path == gerrit.CommitMsg {
-				ctxLine = c.quote(ctx, n, gc, "commit message")
+				ctxLine = c.commitMsgQuote(ctx, n, s, gc)
 			}
 			if parent != nil && parent.Kind == kindIssueComment && s.pull != nil {
 				ctxLine = strings.TrimSpace(replyQuote(s, parent) + "\n\n" + ctxLine)
@@ -1338,10 +1342,46 @@ func (c *Comments) quote(ctx context.Context, n int, gc *gerrit.CommentInfo, lab
 	if err != nil {
 		return where
 	}
-	lines := strings.Split(string(content), "\n")
+	return quoteLines(where, string(content), first, last)
+}
+
+// commitMsgQuote is quote for a comment on the commit message, whose
+// lines Gerrit numbers in its view of it: under a header of a line per
+// parent, Author, AuthorDate, Commit, CommitDate and a blank line. Its
+// content is the message alone, so the header's lines are not quoted; nor
+// are line numbers, which are of nothing on GitHub.
+func (c *Comments) commitMsgQuote(ctx context.Context, n int, s *commentSnapshot, gc *gerrit.CommentInfo) string {
+	where := codeSpan("commit message")
+	parents, ok := s.parents[gc.PatchSet]
+	first, last := gc.Line, gc.Line
+	if r := gc.Range; r != nil {
+		first, last = r.StartLine, r.EndLine
+		if r.EndCharacter == 0 && r.EndLine > r.StartLine {
+			last-- // the range ends at the start of EndLine
+		}
+	}
+	header := parents + 5
+	first, last = max(first-header, 1), last-header
+	if !ok || gc.Side == "PARENT" {
+		return where
+	}
+	content, err := c.Gerrit.FileContent(ctx, n, strconv.Itoa(gc.PatchSet), gc.Path)
+	if err != nil {
+		return where
+	}
+	return quoteLines(where, string(content), first, last)
+}
+
+// quoteLines is where, and lines first to last (from 1) of content as
+// code, if any of them has something in it.
+func quoteLines(where, content string, first, last int) string {
+	lines := strings.Split(content, "\n")
 	var code strings.Builder
 	for i := first; i <= last && i <= len(lines) && i-first < 10; i++ {
 		code.WriteString(shorten(lines[i-1], 300) + "\n")
+	}
+	if strings.TrimSpace(code.String()) == "" {
+		return where
 	}
 	f := suggestionFence(code.String())
 	return where + ":\n" + f + "\n" + code.String() + f

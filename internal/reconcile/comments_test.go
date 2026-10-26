@@ -24,6 +24,8 @@ import (
 const bridgeID = 99
 
 type fakeGerrit struct {
+	// parents counts patch sets' commits' parents (default 1).
+	parents map[int]int
 	// onList, if set, runs whenever comments are listed.
 	onList func()
 	// noFixes makes SetReview fail like a site without the fix
@@ -201,7 +203,11 @@ func (f *fakeGerrit) GetChange(context.Context, int, ...string) (*gerrit.ChangeI
 		ci.Labels[label] = l
 	}
 	for sha, ps := range f.revs {
-		ci.Revisions[sha] = gerrit.RevisionInfo{Number: ps, Created: f.created[ps]}
+		ri := gerrit.RevisionInfo{Number: ps, Created: f.created[ps]}
+		ri.Commit.Parents = make([]struct {
+			Commit string `json:"commit"`
+		}, cmp.Or(f.parents[ps], 1))
+		ci.Revisions[sha] = ri
 	}
 	return ci, nil
 }
@@ -810,6 +816,49 @@ func TestReplyQuoteNameAndLength(t *testing.T) {
 	want := fmt.Sprintf("[Carol\\]\\(https://evil\\) said](https://github.com/o/r/pull/1#issuecomment-%d):\n> %s…\n\nDone", e.h.ics[0].ID, strings.Repeat("a", 200))
 	if len(e.h.ics) != 2 || !strings.Contains(e.h.ics[1].Body, want) {
 		t.Fatalf("reply %q", e.h.ics[len(e.h.ics)-1].Body)
+	}
+}
+
+// A comment on the commit message quotes the lines it is on: Gerrit
+// numbers them under its header, a line per parent and five more, which
+// its content API leaves out. A blank line, or the header, is not quoted.
+func TestCommitMessageCommentQuotesItsLines(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		parents, line, ps int
+		want, wantNot     string
+	}{
+		{"subject", 1, 7, 2, "`commit message`:\n```\nLine 6\n```\n\nThe 6?", "L7"},
+		{"merge", 2, 8, 2, "`commit message`:\n```\nLine 6\n```\n\nThe 6?", "L8"},
+		{"blank", 1, 8, 2, "`commit message`\n\nThe 6?", "```"},
+		{"header", 1, 2, 2, "`commit message`\n\nThe 6?", "```"},
+		// A patch set Gerrit did not list: its header is not known.
+		{"unknown", 1, 6, 3, "`commit message`\n\nThe 6?", "```"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newCommentsEnv(t)
+			e.g.parents = map[int]int{2: tc.parents}
+			e.g.files[fmt.Sprint(tc.ps)+"/"+gerrit.CommitMsg] = "Line 6\n\nChange-Id: I1\n"
+			e.g.user("c1", gerrit.CommitMsg, tc.ps, tc.line, "The 6?", "", true)
+			e.sync(t)
+			if len(e.h.ics) != 1 || !strings.Contains(e.h.ics[0].Body, tc.want) || strings.Contains(e.h.ics[0].Body, tc.wantNot) {
+				t.Fatalf("PR comments %+v", e.h.ics)
+			}
+		})
+	}
+}
+
+// A comment on a blank line quotes no empty box.
+func TestBlankLineIsNotQuoted(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.g.files["a.txt"] = "one\n\nthree\nfour\nfive\n"
+	e.g.user("c1", "a.txt", 2, 5, "Gap?", "", true)
+	e.g.comments[0].Line = 2
+	e.h.diff["a.txt"] = map[int]bool{} // not in the diff: file level, quoted
+	e.h.diff["a.txt"][9] = true
+	e.sync(t)
+	if len(e.h.rcs) != 1 || strings.Contains(e.h.rcs[0].Body, "```") || !strings.Contains(e.h.rcs[0].Body, "`a.txt` L2\n\nGap?") {
+		t.Fatalf("got %+v", e.h.rcs)
 	}
 }
 
