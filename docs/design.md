@@ -688,9 +688,8 @@ Translating a Gerrit comment `(patchset P, path, side, range)` into GitHub:
    both cases the trees match, so the line numbers do too.
 2. `side`: Gerrit `REVISION` → `RIGHT`; Gerrit `PARENT` → `LEFT`.
 3. Range: `start_line = range.start_line`, `line = range.end_line`. GitHub
-   has no column precision, so the exact character range is kept in the
-   hidden marker, and the selected text is quoted in the body when the range
-   covers part of a line.
+   has no column precision, so a range covering part of a line covers the
+   whole line there; Gerrit has the exact range, for whoever cares.
 4. **Diff-hunk constraint.** GitHub only accepts line comments on lines that
    appear in the PR's diff (changed lines plus context). Gerrit accepts
    comments on any line. If the line is outside the hunks, post a

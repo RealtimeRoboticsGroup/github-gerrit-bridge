@@ -1105,7 +1105,6 @@ func (c *Comments) anchorFor(ctx context.Context, n int, s *commentSnapshot, gc 
 		if r.EndCharacter == 0 && r.EndLine > r.StartLine {
 			a.last-- // the range ends at the start of EndLine
 		}
-		a.note = rangeNote(gc)
 	}
 	if sug, first, last, ok := c.toSuggestion(ctx, n, gc); ok {
 		a.first, a.last, a.suggestion, a.note = first, last, sug, ""
@@ -1197,14 +1196,6 @@ func (c *Comments) postReview(ctx context.Context, n, pr int, s *commentSnapshot
 		}
 	}
 	return nil
-}
-
-func rangeNote(gc *gerrit.CommentInfo) string {
-	r := gc.Range
-	if r == nil || (r.StartCharacter == 0 && r.EndCharacter == 0) {
-		return ""
-	}
-	return fmt.Sprintf("<sub>Gerrit range: L%d:%d–L%d:%d</sub>", r.StartLine, r.StartCharacter, r.EndLine, r.EndCharacter)
 }
 
 // postSingle posts one comment, trying in turn: its own lines on its own

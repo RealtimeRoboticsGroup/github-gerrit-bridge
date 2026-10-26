@@ -775,6 +775,19 @@ func TestReplyToAPRCommentLinksIt(t *testing.T) {
 	e.settled(t)
 }
 
+// A comment on part of a line is on the line: GitHub has no columns, and
+// Gerrit has the exact range.
+func TestPartOfALineIsTheLine(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.g.user("c1", "a.txt", 2, 3, "This word.", "", true)
+	e.g.comments[0].Range = &gerrit.Range{StartLine: 2, StartCharacter: 1, EndLine: 3, EndCharacter: 2}
+	e.sync(t)
+	if len(e.h.rcs) != 1 || e.h.rcs[0].Line != 3 || strings.Contains(e.h.rcs[0].Body, "range") || !strings.HasPrefix(e.h.rcs[0].Body, "**Alice Trusted (alice)**") {
+		t.Fatalf("got %+v", e.h.rcs)
+	}
+	e.settled(t)
+}
+
 func TestOutOfHunkFallsBackToFileLevel(t *testing.T) {
 	e := newCommentsEnv(t)
 	e.g.user("c1", "a.txt", 2, 5, "Line five is outside the diff.", "", true)
