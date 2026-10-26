@@ -818,9 +818,8 @@ func (c *Comments) refusedOnGitHub(n int, m *commentMap, id string, err error) b
 }
 
 // replyQuote opens a Gerrit reply to a comment that is a PR comment on
-// GitHub, which has no threads: who said it, linked to it, and what,
-// under where, the lines both are on (quoted), if any.
-func replyQuote(s *commentSnapshot, parent *state.Comment, where string) string {
+// GitHub, which has no threads: who said it, linked to it, and what.
+func replyQuote(s *commentSnapshot, parent *state.Comment) string {
 	who, text := "", ""
 	for _, ic := range s.ics {
 		if ic.ID == parent.GitHubID {
@@ -836,11 +835,6 @@ func replyQuote(s *commentSnapshot, parent *state.Comment, where string) string 
 		said = inlineName(who) + " said"
 	}
 	var q strings.Builder
-	if where != "" {
-		for _, l := range strings.Split(where, "\n") {
-			q.WriteString("\n> " + l)
-		}
-	}
 	lines := strings.Split(strings.TrimSpace(lineBreaks.Replace(text)), "\n")
 	for i, l := range lines {
 		if i == maxReplyQuote {
@@ -943,11 +937,12 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			posted = true
 		case gc.Path == gerrit.PatchSetLevel || parent != nil || gc.Path == gerrit.CommitMsg:
 			ctxLine := ""
-			if gc.Path == gerrit.CommitMsg {
+			switch {
+			case parent != nil && parent.Kind == kindIssueComment && s.pull != nil:
+				// The thread's first comment says where it is.
+				ctxLine = replyQuote(s, parent)
+			case gc.Path == gerrit.CommitMsg:
 				ctxLine = c.commitMsgQuote(ctx, n, s, gc)
-			}
-			if parent != nil && parent.Kind == kindIssueComment && s.pull != nil {
-				ctxLine = replyQuote(s, parent, ctxLine)
 			}
 			p, err := c.posterFor(ctx, s, gc.Author.AccountID)
 			if err != nil {

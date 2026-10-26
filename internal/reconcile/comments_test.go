@@ -848,16 +848,16 @@ func TestCommitMessageCommentQuotesItsLines(t *testing.T) {
 	}
 }
 
-// A reply to a commit message comment quotes the lines with what it
-// answers, not as its own words.
+// A reply to a commit message comment quotes what it answers, not the
+// lines again: the thread's first comment says where it is.
 func TestReplyToACommitMessageCommentQuotesItsLines(t *testing.T) {
 	e := newCommentsEnv(t)
 	e.g.files["2/"+gerrit.CommitMsg] = "Line 6\n\nChange-Id: I1\n"
 	e.g.user("c1", gerrit.CommitMsg, 2, 7, "More detail please.", "", true)
 	e.g.user("c2", gerrit.CommitMsg, 2, 7, "Done", "c1", false)
 	e.sync(t)
-	want := fmt.Sprintf("[alice said](https://github.com/o/r/pull/1#issuecomment-%d):\n> `Commit message`:\n> ```\n> Line 6\n> ```\n> More detail please.\n\nDone", e.h.ics[0].ID)
-	if len(e.h.ics) != 2 || !strings.Contains(e.h.ics[1].Body, want) {
+	want := fmt.Sprintf("[alice said](https://github.com/o/r/pull/1#issuecomment-%d):\n> More detail please.\n\nDone", e.h.ics[0].ID)
+	if len(e.h.ics) != 2 || !strings.Contains(e.h.ics[0].Body, "Line 6") || !strings.Contains(e.h.ics[1].Body, want) || strings.Contains(e.h.ics[1].Body, "Line 6") {
 		t.Fatalf("reply %q", e.h.ics[len(e.h.ics)-1].Body)
 	}
 }
