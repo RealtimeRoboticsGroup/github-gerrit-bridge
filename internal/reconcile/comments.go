@@ -1325,17 +1325,15 @@ func (c *Comments) portToGitHub(ctx context.Context, n int, s *commentSnapshot, 
 	return p, true
 }
 
-// quote renders the commented lines as "`path` L3-L5" plus the lines, as
-// code: they are someone's file, not Markdown or HTML to render.
+// quote renders the commented lines as "`path`" plus the lines, as code
+// numbered as in the file: they are someone's file, not Markdown or HTML
+// to render.
 func (c *Comments) quote(ctx context.Context, n int, gc *gerrit.CommentInfo, label string) string {
 	first, last := gc.Line, gc.Line
 	if r := gc.Range; r != nil {
 		first, last = r.StartLine, r.EndLine
 	}
-	where := fmt.Sprintf("%s L%d", codeSpan(label), first)
-	if last != first {
-		where += fmt.Sprintf("-L%d", last)
-	}
+	where := lineSpan(codeSpan(label), first, last)
 	if first == 0 || gc.Side == "PARENT" {
 		return where
 	}
@@ -1343,7 +1341,7 @@ func (c *Comments) quote(ctx context.Context, n int, gc *gerrit.CommentInfo, lab
 	if err != nil {
 		return where
 	}
-	return quoteLines(where, string(content), first, last)
+	return quoteLines(codeSpan(label), where, string(content), first, last, 0)
 }
 
 // commitMsgQuote is quote for a comment on the commit message, whose
@@ -1360,15 +1358,9 @@ func (c *Comments) commitMsgQuote(ctx context.Context, n int, s *commentSnapshot
 			last-- // the range ends at the start of EndLine
 		}
 	}
-	where := fmt.Sprintf("%s L%d", codeSpan("Commit message"), first)
-	if last != first {
-		where += fmt.Sprintf("-L%d", last)
-	}
-	if first == 0 {
-		where = codeSpan("Commit message")
-	}
+	label := codeSpan("Commit message")
+	where := lineSpan(label, first, last)
 	header := parents + 5
-	first, last = max(first-header, 1), last-header
 	if !ok || gc.Side == "PARENT" {
 		return where
 	}
@@ -1376,22 +1368,39 @@ func (c *Comments) commitMsgQuote(ctx context.Context, n int, s *commentSnapshot
 	if err != nil {
 		return where
 	}
-	return quoteLines(where, string(content), first, last)
+	return quoteLines(label, where, string(content), max(first-header, 1), last-header, header)
 }
 
-// quoteLines is where, and lines first to last (from 1) of content as
-// code, if any of them has something in it.
-func quoteLines(where, content string, first, last int) string {
-	lines := strings.Split(content, "\n")
-	var code strings.Builder
-	for i := first; i <= last && i <= len(lines) && i-first < 10; i++ {
-		code.WriteString(shorten(lines[i-1], 300) + "\n")
+// lineSpan is label with lines first to last: "`a.go` L3-L5".
+func lineSpan(label string, first, last int) string {
+	if first == 0 {
+		return label
 	}
-	if strings.TrimSpace(code.String()) == "" {
+	if last != first {
+		return fmt.Sprintf("%s L%d-L%d", label, first, last)
+	}
+	return fmt.Sprintf("%s L%d", label, first)
+}
+
+// quoteLines is label and lines first to last (from 1) of content as
+// code, each after its number (plus shift), if any of them has something
+// in it; else where, which says the lines.
+func quoteLines(label, where, content string, first, last, shift int) string {
+	lines := strings.Split(content, "\n")
+	var text []string
+	for i := first; i <= last && i <= len(lines) && i-first < 10; i++ {
+		text = append(text, shorten(lines[i-1], 300))
+	}
+	if strings.TrimSpace(strings.Join(text, "")) == "" {
 		return where
 	}
+	width := len(strconv.Itoa(first + len(text) - 1 + shift))
+	var code strings.Builder
+	for i, l := range text {
+		fmt.Fprintf(&code, "%*d │ %s\n", width, first+i+shift, l)
+	}
 	f := suggestionFence(code.String())
-	return where + ":\n" + f + "\n" + code.String() + f
+	return label + ":\n" + f + "\n" + code.String() + f
 }
 
 func isUnprocessable(err error) bool {

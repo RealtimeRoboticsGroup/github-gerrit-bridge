@@ -829,8 +829,8 @@ func TestCommitMessageCommentQuotesItsLines(t *testing.T) {
 		want, wantNot     string
 	}{
 		// Line numbers are Gerrit's, header and all.
-		{"subject", 1, 7, 2, "`Commit message` L7:\n```\nLine 6\n```\n\nThe 6?", "L1"},
-		{"merge", 2, 8, 2, "`Commit message` L8:\n```\nLine 6\n```\n\nThe 6?", "L1"},
+		{"subject", 1, 7, 2, "`Commit message`:\n```\n7 │ Line 6\n```\n\nThe 6?", "1 │"},
+		{"merge", 2, 8, 2, "`Commit message`:\n```\n8 │ Line 6\n```\n\nThe 6?", "1 │"},
 		{"blank", 1, 8, 2, "`Commit message` L8\n\nThe 6?", "```"},
 		{"header", 1, 2, 2, "`Commit message` L2\n\nThe 6?", "```"},
 		// A patch set Gerrit did not list: its header is not known.
@@ -856,7 +856,7 @@ func TestCommitMessageRangeSaysItsLines(t *testing.T) {
 	e.g.user("c1", gerrit.CommitMsg, 2, 10, "Reword.", "", true)
 	e.g.comments[0].Range = &gerrit.Range{StartLine: 9, StartCharacter: 0, EndLine: 11, EndCharacter: 0}
 	e.sync(t)
-	if len(e.h.ics) != 1 || !strings.Contains(e.h.ics[0].Body, "`Commit message` L9-L10:\n```\nBody one\nBody two\n```") {
+	if len(e.h.ics) != 1 || !strings.Contains(e.h.ics[0].Body, "`Commit message`:\n```\n 9 │ Body one\n10 │ Body two\n```") {
 		t.Fatalf("PR comments %+v", e.h.ics)
 	}
 }
@@ -907,7 +907,7 @@ func TestOutOfHunkFallsBackToFileLevel(t *testing.T) {
 	if len(e.h.rcs) != 1 || e.h.rcs[0].SubjectType != "file" {
 		t.Fatalf("got %+v", e.h.rcs)
 	}
-	if !strings.Contains(e.h.rcs[0].Body, "`a.txt` L5:\n```\nfive\n```") {
+	if !strings.Contains(e.h.rcs[0].Body, "`a.txt`:\n```\n5 │ five\n```") {
 		t.Errorf("no quote of the true anchor:\n%s", e.h.rcs[0].Body)
 	}
 	e.settled(t)
@@ -1732,7 +1732,7 @@ func TestGerritCommentsGitHubWouldRefuse(t *testing.T) {
 	}
 	e.g.files["evil.txt"] = "</a><a href=\"https://evil\">Approved</a>\n```\n"
 	q := e.c.quote(context.Background(), 5, &gerrit.CommentInfo{Path: "evil.txt", PatchSet: 2, Line: 1, Range: &gerrit.Range{StartLine: 1, EndLine: 2}}, "evil.txt")
-	if !strings.Contains(q, "````\n</a>") || !strings.HasSuffix(q, "````") {
+	if !strings.Contains(q, "````\n1 │ </a>") || !strings.HasSuffix(q, "````") {
 		t.Errorf("quote = %q, want the lines in a fence they cannot close", q)
 	}
 }
