@@ -147,12 +147,14 @@ type SubmitRequirementResult struct {
 
 // ChangeMessage is an entry in a change's log.
 type ChangeMessage struct {
-	ID             string      `json:"id"`
-	Author         AccountInfo `json:"author"`
-	Message        string      `json:"message"`
-	Tag            string      `json:"tag"`
-	Date           string      `json:"date"`
-	RevisionNumber int         `json:"_revision_number"`
+	ID     string      `json:"id"`
+	Author AccountInfo `json:"author"`
+	// RealAuthor is who posted it, if not Author (Run-As).
+	RealAuthor     *AccountInfo `json:"real_author,omitempty"`
+	Message        string       `json:"message"`
+	Tag            string       `json:"tag"`
+	Date           string       `json:"date"`
+	RevisionNumber int          `json:"_revision_number"`
 }
 
 // Current returns the current revision, if it was requested.

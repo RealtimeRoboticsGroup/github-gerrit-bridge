@@ -1766,6 +1766,22 @@ func TestGerritCommentsWithinTheAuthorsBudget(t *testing.T) {
 	}
 }
 
+// A message the bridge made as someone (Run-As) is not mirrored, tagged
+// or not: Gerrit adds an untagged one for the attention set when the
+// bridge replies on an old patch set.
+func TestMessageMadeByTheBridgeAsSomeoneIsNotMirrored(t *testing.T) {
+	e := newCommentsEnv(t)
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.messages = append(e.g.messages,
+		gerrit.ChangeMessage{ID: "m1", Author: alice, RealAuthor: &gerrit.AccountInfo{AccountID: bridgeID}, RevisionNumber: 2,
+			Message: "(Performed by <GERRIT_ACCOUNT_99> on behalf of <GERRIT_ACCOUNT_1>)"},
+		gerrit.ChangeMessage{ID: "m2", Author: alice, RevisionNumber: 2, Message: "Patch Set 2:\n\nHers."})
+	e.sync(t)
+	if len(e.h.ics) != 1 || !strings.Contains(e.h.ics[0].Body, "Hers.") {
+		t.Fatalf("PR comments %+v", e.h.ics)
+	}
+}
+
 func TestCommentEditedBeforeMirroringIsNotPostedAsTheAuthor(t *testing.T) {
 	e := newCommentsEnv(t)
 	e.runAs()
