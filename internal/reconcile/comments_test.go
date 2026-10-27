@@ -828,12 +828,13 @@ func TestCommitMessageCommentQuotesItsLines(t *testing.T) {
 		parents, line, ps int
 		want, wantNot     string
 	}{
-		{"subject", 1, 7, 2, "`Commit message`:\n```\nLine 6\n```\n\nThe 6?", "L7"},
-		{"merge", 2, 8, 2, "`Commit message`:\n```\nLine 6\n```\n\nThe 6?", "L8"},
-		{"blank", 1, 8, 2, "`Commit message`\n\nThe 6?", "```"},
-		{"header", 1, 2, 2, "`Commit message`\n\nThe 6?", "```"},
+		// Line numbers are Gerrit's, header and all.
+		{"subject", 1, 7, 2, "`Commit message` L7:\n```\nLine 6\n```\n\nThe 6?", "L1"},
+		{"merge", 2, 8, 2, "`Commit message` L8:\n```\nLine 6\n```\n\nThe 6?", "L1"},
+		{"blank", 1, 8, 2, "`Commit message` L8\n\nThe 6?", "```"},
+		{"header", 1, 2, 2, "`Commit message` L2\n\nThe 6?", "```"},
 		// A patch set Gerrit did not list: its header is not known.
-		{"unknown", 1, 6, 3, "`Commit message`\n\nThe 6?", "```"},
+		{"unknown", 1, 6, 3, "`Commit message` L6\n\nThe 6?", "```"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newCommentsEnv(t)
@@ -845,6 +846,18 @@ func TestCommitMessageCommentQuotesItsLines(t *testing.T) {
 				t.Fatalf("PR comments %+v", e.h.ics)
 			}
 		})
+	}
+}
+
+// A commit message range says its lines, as Gerrit numbers them.
+func TestCommitMessageRangeSaysItsLines(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.g.files["2/"+gerrit.CommitMsg] = "Subject\n\nBody one\nBody two\n\nChange-Id: I1\n"
+	e.g.user("c1", gerrit.CommitMsg, 2, 10, "Reword.", "", true)
+	e.g.comments[0].Range = &gerrit.Range{StartLine: 9, StartCharacter: 0, EndLine: 11, EndCharacter: 0}
+	e.sync(t)
+	if len(e.h.ics) != 1 || !strings.Contains(e.h.ics[0].Body, "`Commit message` L9-L10:\n```\nBody one\nBody two\n```") {
+		t.Fatalf("PR comments %+v", e.h.ics)
 	}
 }
 

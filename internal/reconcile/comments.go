@@ -1349,10 +1349,9 @@ func (c *Comments) quote(ctx context.Context, n int, gc *gerrit.CommentInfo, lab
 // commitMsgQuote is quote for a comment on the commit message, whose
 // lines Gerrit numbers in its view of it: under a header of a line per
 // parent, Author, AuthorDate, Commit, CommitDate and a blank line. Its
-// content is the message alone, so the header's lines are not quoted; nor
-// are line numbers, which are of nothing on GitHub.
+// content is the message alone, so the header's lines are not quoted. The
+// line numbers given are Gerrit's, to find the comment there.
 func (c *Comments) commitMsgQuote(ctx context.Context, n int, s *commentSnapshot, gc *gerrit.CommentInfo) string {
-	where := codeSpan("Commit message")
 	parents, ok := s.parents[gc.PatchSet]
 	first, last := gc.Line, gc.Line
 	if r := gc.Range; r != nil {
@@ -1360,6 +1359,13 @@ func (c *Comments) commitMsgQuote(ctx context.Context, n int, s *commentSnapshot
 		if r.EndCharacter == 0 && r.EndLine > r.StartLine {
 			last-- // the range ends at the start of EndLine
 		}
+	}
+	where := fmt.Sprintf("%s L%d", codeSpan("Commit message"), first)
+	if last != first {
+		where += fmt.Sprintf("-L%d", last)
+	}
+	if first == 0 {
+		where = codeSpan("Commit message")
 	}
 	header := parents + 5
 	first, last = max(first-header, 1), last-header
