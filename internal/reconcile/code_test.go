@@ -786,6 +786,33 @@ func TestPREditBecomesCommitMessageAsTheEditor(t *testing.T) {
 	}
 }
 
+// A sign-off written in a PR description goes in the commit message, as
+// the first import's do: the PR text leaves sign-offs out, so one added
+// alone is an edit too.
+func TestPREditAddsItsSignOffs(t *testing.T) {
+	for _, origin := range []string{"gerrit", "github"} {
+		s, c, snap := editsWorld(t, origin)
+		ci := s.changes[7]
+		title, body := prTextFromMessage(ci.Revisions[ci.CurrentRevision].Commit.Message)
+		s.pulls[70].Title = title
+		s.pulls[70].Body = body + "\n\nSigned-off-by: Austin <austin@example.com>\nSigned-off-by: Phil <phil@example.com>\n\n" + linksStart + "\nblock\n" + linksEnd
+		s.activity[70] = github.PRActivity{BodyEditor: github.User{Login: "austin"}}
+		changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{})
+		if err != nil || !changed {
+			t.Fatalf("%s: changed=%v err=%v", origin, changed, err)
+		}
+		ci = s.changes[7]
+		got := ci.Revisions[ci.CurrentRevision].Commit.Message
+		if !strings.HasSuffix(got, "\nChange-Id: "+cid(7)+"\nSigned-off-by: Austin <austin@example.com>\nSigned-off-by: Phil <phil@example.com>\n") ||
+			strings.Count(got, "Austin <austin") != 1 || !strings.Contains(got, body) {
+			t.Errorf("%s: message\n%s", origin, got)
+		}
+		if len(s.calls) != 1 || s.calls[0] != "message 7 as austin" {
+			t.Errorf("%s: calls = %v", origin, s.calls)
+		}
+	}
+}
+
 // A PR GitHub will not take an edit for is that change's problem only,
 // and a stack it will not make is nobody's.
 func TestOnePRGitHubRefusesDoesNotStopTheRest(t *testing.T) {
@@ -2675,6 +2702,16 @@ func TestCommitMessage(t *testing.T) {
 		{"New", "", "New\n\nChange-Id: I1\nSigned-off-by: A <a@x>\nGitHub-PR: u\n"},
 	} {
 		got := commitMessage(tc.title, tc.body, cur)
+		if got != tc.want {
+			t.Errorf("commitMessage(%q, %q) =\n%q\nwant\n%q", tc.title, tc.body, got, tc.want)
+		}
+		// Sign-offs added go after its own; with none, first.
+		if got := commitMessage(tc.title, tc.body, cur, "Signed-off-by: B <b@x>"); got != strings.Replace(tc.want, "A <a@x>\n", "A <a@x>\nSigned-off-by: B <b@x>\n", 1) {
+			t.Errorf("with a sign-off added: %q", got)
+		}
+		if got := commitMessage(tc.title, tc.body, "Old\n\nChange-Id: I1\n", "Signed-off-by: B <b@x>"); !strings.HasSuffix(got, "\nSigned-off-by: B <b@x>\nChange-Id: I1\n") {
+			t.Errorf("with a sign-off added to none: %q", got)
+		}
 		if got != tc.want {
 			t.Errorf("commitMessage(%q, %q) =\n%q\nwant\n%q", tc.title, tc.body, got, tc.want)
 		}

@@ -1126,13 +1126,38 @@ func githubText(pr *github.PullRequest) string {
 	return strings.TrimSpace(pr.Title) + "\x00" + prBodyForMessage(pr.Body)
 }
 
+// githubTextFor is githubText, plus the sign-offs PR pr's description adds
+// to commit message: the PR text leaves sign-offs out, as Gerrit's
+// business, but one written in it is news for Gerrit.
+func githubTextFor(pr *github.PullRequest, message string) string {
+	t := githubText(pr)
+	if add := signOffsToAdd(pr, message); len(add) > 0 {
+		t += "\x00" + strings.Join(add, "\n")
+	}
+	return t
+}
+
+// signOffsToAdd are the sign-offs PR pr's description has that commit
+// message lacks.
+func signOffsToAdd(pr *github.PullRequest, message string) []string {
+	user, _ := splitBody(pr.Body)
+	have := signOffs(message)
+	var add []string
+	for _, so := range signOffs(user) {
+		if !slices.Contains(have, so) {
+			add = append(add, so)
+		}
+	}
+	return add
+}
+
 func wipState(wip bool) string { return map[bool]string{true: "wip", false: "ready"}[wip] }
 
 // editedOnGitHub reports whether PR pr's text, or its draft state,
 // differs from change ch's because of an edit on GitHub since they were
 // last in sync (mirrorPREdits).
 func editedOnGitHub(ch *GerritChange, st *state.Change, pr *github.PullRequest) (text, draft bool) {
-	gt, ht := hashString(gerritText(ch.Message)), hashString(githubText(pr))
+	gt, ht := hashString(gerritText(ch.Message)), hashString(githubTextFor(pr, ch.Message))
 	gw, hw := wipState(ch.WIP), wipState(pr.Draft)
 	return gt != ht && st.State.SyncedText != "" && ht != st.State.SyncedText,
 		gw != hw && st.State.SyncedWIP != "" && hw != st.State.SyncedWIP
@@ -1174,7 +1199,7 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 		if pr.State != "open" {
 			continue
 		}
-		gt, ht := hashString(gerritText(ch.Message)), hashString(githubText(pr))
+		gt, ht := hashString(gerritText(ch.Message)), hashString(githubTextFor(pr, ch.Message))
 		gw, hw := wipState(ch.WIP), wipState(pr.Draft)
 		textEdited, draftToggled := editedOnGitHub(ch, st, pr)
 		if !textEdited && !draftToggled {
@@ -1206,7 +1231,8 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 				notes = append(notes, fmt.Sprintf("This PR's title or description was edited on GitHub while [change %d](%s)'s commit message changed in Gerrit; Gerrit's is kept.", n, ch.URL))
 			default:
 				title, body := strings.TrimSpace(pr.Title), prBodyForMessage(pr.Body)
-				msg := commitMessage(title, body, ch.Message)
+				add := signOffsToAdd(pr, ch.Message)
+				msg := commitMessage(title, body, ch.Message, add...)
 				// Each part edited is its editor's (fourth audit: whoever
 				// renamed a PR was taken for whoever edited its body).
 				gTitle, gBody := prTextFromMessage(ch.Message)
@@ -1214,7 +1240,7 @@ func (c *Code) mirrorPREdits(ctx context.Context, s *Snapshot, handled map[int]b
 				if title != gTitle {
 					editors = append(editors, act.TitleEditor)
 				}
-				if body != gBody {
+				if body != gBody || len(add) > 0 {
 					editors = append(editors, act.BodyEditor)
 				}
 				var editor github.User
@@ -1355,13 +1381,20 @@ func (c *Code) trustedUser(ctx context.Context, user string) (bool, error) {
 // commitMessage is the commit message for a PR's title and description:
 // those, plus the bridge's trailers (Change-Id, sign-offs, GitHub-PR)
 // from the current message, kept in the last paragraph if the description
-// already ends in trailers.
-func commitMessage(title, body, current string) string {
+// already ends in trailers, and the sign-offs signed added after its own.
+func commitMessage(title, body, current string, signed ...string) string {
 	msg := title
 	if body != "" {
 		msg += "\n\n" + body
 	}
 	trailers := bridgeTrailers.FindAllString(strings.ReplaceAll(current, "\r\n", "\n"), -1)
+	at := 0 // after the last sign-off, or first
+	for i, t := range trailers {
+		if signedOffBy.MatchString(t) {
+			at = i + 1
+		}
+	}
+	trailers = slices.Insert(trailers, at, signed...)
 	if len(trailers) == 0 {
 		return msg + "\n"
 	}

@@ -660,7 +660,9 @@ Each side always links to the other, so users can find it.
   editor through Run-As, or as the bridge for someone without a Gerrit
   account, as pushes are; the trailers are kept. If Gerrit refuses, or
   both sides changed, a notice says so and Gerrit's version goes back on
-  the PR. Draft and WIP work the same way (`synced_wip`): toggling either
+  the PR. A `Signed-off-by` written in the description is added to the
+  commit message's sign-offs (alone, it is an edit too); the description
+  never shows them, so one cannot be removed from GitHub. Draft and WIP work the same way (`synced_wip`): toggling either
   sets the other, as the person who did it. Later imported patch sets keep
   the change's commit message, adding the new commits' sign-offs.
 - **GitHub checks:** every `gerrit/*` check run's `details_url` points at
