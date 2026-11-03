@@ -303,7 +303,10 @@ exactly one Gerrit change**:
         which we recommend (see §5.4). If the commits carry different
         Change-Ids, use the bottom commit's ID and warn in the
         `gerrit/sync` check.
-     3. Otherwise, `I<sha1(repo, PR node id)>`. This is deterministic.
+     3. Otherwise, `I<HMAC-SHA256(key, repo, PR node id)>`, cut to 40 hex
+        digits. This is deterministic, and nobody can work it out ahead of
+        the bridge to claim it first: the key comes from the webhook
+        secret. With no key the bridge derives none.
      If that Change-Id already belongs to a *different* PR or to a change
      the bridge didn't create, refuse and explain in `gerrit/sync`. That
      prevents two PRs from fighting over one change.

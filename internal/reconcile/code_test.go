@@ -413,7 +413,7 @@ func gerritBornWorld(t *testing.T, stacked bool) (s *sites, im *Importer, up *fa
 	up = &fakeUploader{s: s, m: c.Mirror}
 	im = &Importer{Project: "p", Gerrit: c.Gerrit, GitHub: c.GitHub, GitHubURL: c.GitHubURL, Mirror: c.Mirror, Store: store,
 		Uploader: up, Identity: c.Identity, Bridge: gerrit.AccountInfo{AccountID: 1, Name: "Bridge", Email: "bridge@example.com"},
-		DefaultBranch: "main", Pushers: &Pushers{}, Logger: slog.Default()}
+		DefaultBranch: "main", Pushers: &Pushers{}, ChangeIDKey: []byte("k"), Logger: slog.Default()}
 	return s, im, up, m1, g, ids
 }
 
@@ -957,7 +957,7 @@ func TestSquattedChangeIDFallsBackToTheKeyedOne(t *testing.T) {
 			t.Fatalf("%s's change: err %v, uploads %v", owner, err, up.uploads)
 		}
 		got := s.git("m.git", "log", "-1", "--format=%B", strings.Fields(up.uploads[0])[1])
-		if id, _ := footerChangeID(got); id != im.derivedChangeID(pr) {
+		if id, _ := footerChangeID(got); id != mustDerive(t, im, pr) {
 			t.Errorf("%s's change: uploaded with Change-Id %s, want the PR's keyed one", owner, id)
 		}
 	}
@@ -2267,7 +2267,7 @@ func TestFirstUploadRacedOntoSomeoneElsesChangeIsNotLinked(t *testing.T) {
 	if len(up.uploads) != 1 {
 		t.Fatalf("uploads = %v", up.uploads)
 	}
-	if id, _ := footerChangeID(s.git("m.git", "log", "-1", "--format=%B", strings.Fields(up.uploads[0])[1])); id != im.derivedChangeID(pr) {
+	if id, _ := footerChangeID(s.git("m.git", "log", "-1", "--format=%B", strings.Fields(up.uploads[0])[1])); id != mustDerive(t, im, pr) {
 		t.Errorf("uploaded again with Change-Id %s, want the PR's keyed one", id)
 	}
 }

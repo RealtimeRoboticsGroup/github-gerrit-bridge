@@ -2,6 +2,9 @@ package reconcile
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -320,14 +323,32 @@ func TestCheckSizeCountsOnlyTheLayer(t *testing.T) {
 }
 
 // A PR's derived Change-Id cannot be worked out without the bridge's key,
-// so nobody can upload a change with it first.
+// so nobody can upload a change with it first: keyed with HMAC-SHA256, and
+// with no key there is none (not an unkeyed hash anyone can work out).
 func TestDerivedChangeIDIsKeyed(t *testing.T) {
 	pr := &github.PullRequest{NodeID: "PR_kwDO"}
 	plain := &Importer{GitHub: &github.Client{Owner: "o", Repo: "r"}}
+	if id, err := plain.derivedChangeID(pr); err == nil {
+		t.Errorf("derived %s with no key", id)
+	}
 	keyed := &Importer{GitHub: plain.GitHub, ChangeIDKey: []byte("secret")}
 	other := &Importer{GitHub: plain.GitHub, ChangeIDKey: []byte("other")}
-	a, b, c := plain.derivedChangeID(pr), keyed.derivedChangeID(pr), other.derivedChangeID(pr)
-	if a == b || b == c || b != keyed.derivedChangeID(pr) || !canonicalChangeID.MatchString("Change-Id: "+b) {
-		t.Errorf("derived %s, keyed %s, other key %s", a, b, c)
+	b, c := mustDerive(t, keyed, pr), mustDerive(t, other, pr)
+	mac := hmac.New(sha256.New, []byte("secret"))
+	mac.Write([]byte("o/r\x00PR_kwDO"))
+	if want := fmt.Sprintf("I%x", mac.Sum(nil)[:20]); b != want {
+		t.Errorf("derived %s, want HMAC-SHA256 %s", b, want)
 	}
+	if b == c || b != mustDerive(t, keyed, pr) || !canonicalChangeID.MatchString("Change-Id: "+b) {
+		t.Errorf("keyed %s, other key %s", b, c)
+	}
+}
+
+func mustDerive(t *testing.T, im *Importer, pr *github.PullRequest) string {
+	t.Helper()
+	id, err := im.derivedChangeID(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
 }

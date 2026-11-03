@@ -5,7 +5,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/hmac"
-	"crypto/sha1"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -627,7 +627,9 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		}
 	}
 	if changeID == "" {
-		changeID = im.derivedChangeID(pr)
+		if changeID, err = im.derivedChangeID(pr); err != nil {
+			return nil, err
+		}
 	}
 	find := func(id string) (*gerrit.ChangeInfo, error) {
 		existing, err := im.Gerrit.QueryChanges(ctx, fmt.Sprintf("project:%s branch:%s change:%s",
@@ -663,7 +665,10 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		// which anyone can read once they are pushed (fourth audit): the
 		// PR gets its own, which nobody can work out.
 		im.Logger.Warn("the PR's Change-Id is another change's; using its own", "pr", pr.Number, "change", cur.Number, "change_id", changeID)
-		changeID, fromCommits = im.derivedChangeID(pr), false
+		if changeID, err = im.derivedChangeID(pr); err != nil {
+			return nil, err
+		}
+		fromCommits = false
 		if cur, err = find(changeID); err != nil {
 			return nil, err
 		}
@@ -1223,14 +1228,15 @@ var (
 // derivedChangeID is the Change-Id of a PR whose commits name none. Keyed
 // with ChangeIDKey, so nobody can work it out from the PR and upload a
 // change with it first, which would keep the PR from being imported.
-func (im *Importer) derivedChangeID(pr *github.PullRequest) string {
-	msg := []byte(im.GitHub.Owner + "/" + im.GitHub.Repo + "\x00" + pr.NodeID)
+// Without a key there is none: an unkeyed hash anyone can work out.
+// HMAC-SHA256, cut to the 40 hex digits a Change-Id has.
+func (im *Importer) derivedChangeID(pr *github.PullRequest) (string, error) {
 	if len(im.ChangeIDKey) == 0 {
-		return fmt.Sprintf("I%x", sha1.Sum(msg))
+		return "", errors.New("no key for derived Change-Ids")
 	}
-	mac := hmac.New(sha1.New, im.ChangeIDKey)
-	mac.Write(msg)
-	return fmt.Sprintf("I%x", mac.Sum(nil))
+	mac := hmac.New(sha256.New, im.ChangeIDKey)
+	mac.Write([]byte(im.GitHub.Owner + "/" + im.GitHub.Repo + "\x00" + pr.NodeID))
+	return fmt.Sprintf("I%x", mac.Sum(nil)[:20]), nil
 }
 
 // pusherWait is how long after a PR opens its first import waits for
