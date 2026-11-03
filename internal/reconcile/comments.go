@@ -1420,7 +1420,7 @@ func isUnprocessable(err error) bool {
 // (Run-As) it needs no attribution; posted by the bridge it says who
 // wrote it, and where.
 func gerritBody(login, url, body string, asAuthor bool) string {
-	body = limitComment(strings.TrimSpace(body), url)
+	body = limitComment(strings.TrimSpace(noAttachments(body, url)), url)
 	if asAuthor {
 		return body
 	}
@@ -2534,7 +2534,7 @@ func (c *Comments) mirrorEdits(ctx context.Context, n, pr int, s *commentSnapsho
 			f := false
 			ci := gerrit.CommentInput{
 				InReplyTo: gc.ID, Line: gc.Line, Range: gc.Range, Side: gc.Side,
-				Message:    fmt.Sprintf("**@%s**'s comment was edited on GitHub ([GitHub](%s)):\n\n%s", login, prURL, forGerrit(limitComment(strings.TrimSpace(body), url))),
+				Message:    fmt.Sprintf("**@%s**'s comment was edited on GitHub ([GitHub](%s)):\n\n%s", login, prURL, forGerrit(limitComment(strings.TrimSpace(noAttachments(body, url)), url))),
 				Unresolved: &f,
 			}
 			if mc.Kind == kindReviewComment {

@@ -352,3 +352,12 @@ func mustDerive(t *testing.T, im *Importer, pr *github.PullRequest) string {
 	}
 	return id
 }
+
+// A file uploaded with a PR's description does not reach the commit
+// message, which would keep it in the history for good.
+func TestPRDescriptionAttachmentsStayOnGitHub(t *testing.T) {
+	got := prBodyForMessage("Fixes it.\n\n![shot](https://github.com/user-attachments/assets/77)\nhttps://github.com/user-attachments/files/1/a.log")
+	if want := "Fixes it.\n\n(attachment not copied from GitHub: shot)\n(attachment not copied from GitHub)"; got != want {
+		t.Errorf("message body %q, want %q", got, want)
+	}
+}

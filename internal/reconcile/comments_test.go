@@ -2615,3 +2615,51 @@ func TestDismissalLeavesAVoteGivenAfterAnApprovalThatCastNone(t *testing.T) {
 		t.Errorf("the dismissal of an approval that cast no vote withdrew bob's own Gerrit +2: now %+d (votes %v)", v, e.g.votes)
 	}
 }
+
+// A file uploaded with a GitHub comment is not copied to Gerrit, nor
+// linked from it: a note points to the comment on GitHub, whatever the
+// Markdown, HTML or host it came in.
+func TestGitHubAttachmentsAreNotCopied(t *testing.T) {
+	body := "See ![Screen shot](https://github.com/user-attachments/assets/0f1e-22) and\n" +
+		`<img width="300" alt="x" src="https://github.com/user-attachments/assets/abc">` + "\n" +
+		"[log.txt](https://github.com/user-attachments/files/123/log.txt)\n" +
+		"old: https://user-images.githubusercontent.com/1/2.png and " +
+		"![](https://private-user-images.githubusercontent.com/1/3.png?jwt=eyJ)\n" +
+		"[a]: https://github.com/o/r/assets/1/uuid\n" +
+		"<video src=https://github.com/o/r/files/9/v.mp4>\n" +
+		"keep https://github.com/o/r/pull/1 and https://example.com/a.png"
+	for _, asAuthor := range []bool{false, true} {
+		got := gerritBody("bob", "https://github.com/o/r/pull/1#issuecomment-5", body, asAuthor)
+		for _, bad := range []string{"user-attachments", "githubusercontent", "/assets/", "/files/", "jwt", "<img", "<video"} {
+			if strings.Contains(got, bad) {
+				t.Errorf("as author %v: %q in %q", asAuthor, bad, got)
+			}
+		}
+		for _, want := range []string{"[attachment on GitHub: Screen shot](https://github.com/o/r/pull/1#issuecomment-5)",
+			"[attachment on GitHub: log.txt](", "keep https://github.com/o/r/pull/1 and https://example.com/a.png"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("as author %v: no %q in %q", asAuthor, want, got)
+			}
+		}
+		if n := strings.Count(got, "attachment on GitHub"); n != 7 {
+			t.Errorf("as author %v: %d notes in %q", asAuthor, n, got)
+		}
+	}
+}
+
+// Nor is one put into Gerrit by an edit of the comment.
+func TestEditedGitHubAttachmentIsNotCopied(t *testing.T) {
+	e := newCommentsEnv(t)
+	id := e.h.human("a.txt", 3, "sha2", "first", 0)
+	e.sync(t)
+	for i := range e.h.rcs {
+		if e.h.rcs[i].ID == id {
+			e.h.rcs[i].Body = "now ![shot](https://github.com/user-attachments/assets/9a)"
+		}
+	}
+	e.sync(t)
+	gc := e.g.comments[len(e.g.comments)-1]
+	if !strings.Contains(gc.Message, "edited on GitHub") || strings.Contains(gc.Message, "user-attachments") || !strings.Contains(gc.Message, "[attachment on GitHub: shot](") {
+		t.Errorf("edit posted as %q", gc.Message)
+	}
+}

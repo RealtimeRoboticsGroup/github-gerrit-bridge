@@ -1417,7 +1417,8 @@ func prBodyForMessage(body string) string {
 	// Nor the bridge's own trailer: a PR naming another would make its
 	// change look like that PR's import.
 	user = githubPRLine.ReplaceAllString(user, "")
-	return strings.TrimSpace(user)
+	// Nor files uploaded with it, which would be in the history for good.
+	return strings.TrimSpace(noAttachments(user, ""))
 }
 
 var githubPRLine = regexp.MustCompile(`(?m)^GitHub-PR:.*$`)

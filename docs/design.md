@@ -1507,6 +1507,12 @@ defenses, by threat:
 - **Mentions.** Gerrit text posted on GitHub under the bridge's name, and
   GitHub text the bridge posts in Gerrit as itself, has its `@mentions`
   broken (§8), so nobody can make the bridge notify people or teams.
+- **Attachments.** Files uploaded to GitHub with a comment or a PR
+  description (images, videos, logs; any `user-attachments`,
+  `user-images`, `<owner>/<repo>/assets|files` or asset-storage URL, in
+  Markdown, HTML or bare) are neither copied to Gerrit nor linked from
+  it. In comments each becomes a link to the comment on GitHub; in a
+  commit message, which is history for good, a note with no link.
 - `/submit` first asks Gerrit whether the user may submit, and only then
   reshapes PRs (§6.7). It submits the patch set its author saw: one
   uploaded after the comment, or a comment more than a day old (the

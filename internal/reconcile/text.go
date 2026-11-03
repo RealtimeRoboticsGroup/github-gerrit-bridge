@@ -167,3 +167,42 @@ func longestBacktickRun(s string) int {
 func suggestionFence(text string) string {
 	return strings.Repeat("`", max(3, longestBacktickRun(text)+1))
 }
+
+// githubAttachment matches a file uploaded to GitHub with a comment or a
+// description: images, videos, any attached file, under each host and
+// path GitHub has used.
+const githubAttachment = `(?i:https?://(?:` +
+	`github\.com/user-attachments/` +
+	`|github\.com/[\w.-]+/[\w.-]+/(?:assets|files)/` +
+	`|(?:private-)?user-images\.githubusercontent\.com/` +
+	`|[\w.-]*objects\.githubusercontent\.com/` +
+	`|github-production-user-asset-[\w-]+\.s3\.amazonaws\.com/` +
+	`))[^\s)<>"'\]]*`
+
+var (
+	// An image or link to one, in Markdown: ![alt](url "title") or [text](url).
+	attachmentLink = regexp.MustCompile(`!?\[([^\]\n]*)\]\(\s*<?` + githubAttachment + `>?(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)`)
+	// An HTML tag naming one: <img src=…>, <video src=…>, <a href=…>.
+	attachmentTag = regexp.MustCompile(`<[^<>]*` + githubAttachment + `[^<>]*>`)
+	attachmentURL = regexp.MustCompile(githubAttachment)
+)
+
+// noAttachments is GitHub text with each file uploaded with it replaced by
+// a note: no file is copied, nor linked, from Gerrit. url, if set, is
+// where the text is on GitHub, for those who want to see the file there.
+func noAttachments(s, url string) string {
+	note := func(name string) string {
+		if name = strings.TrimSpace(name); name != "" {
+			name = ": " + inlineName(name)
+		}
+		if url == "" {
+			return "(attachment not copied from GitHub" + name + ")"
+		}
+		return "[attachment on GitHub" + name + "](" + url + ")"
+	}
+	s = attachmentLink.ReplaceAllStringFunc(s, func(m string) string {
+		return note(attachmentLink.FindStringSubmatch(m)[1])
+	})
+	s = attachmentTag.ReplaceAllLiteralString(s, note(""))
+	return attachmentURL.ReplaceAllLiteralString(s, note(""))
+}
