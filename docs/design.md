@@ -1601,8 +1601,12 @@ notes; nothing on GitHub advertises the link.
   GitHub account then. Nothing is kept for someone without one. Whoever
   links, the token is their own, and only their own Gerrit account's words
   are posted with it: someone tricked into following another's link links
-  their own account, and nobody can link anyone else's. Pending links are
-  bounded (1,000).
+  their own account, and nobody can link anyone else's. A link being made
+  is kept only by the browser: the state carries its start time, signed
+  with a key the bridge makes at start-up, and the PKCE verifier is
+  derived from it, so starting links (which anyone can) costs the bridge
+  nothing; only states GitHub authorized are remembered, to use once
+  (tenth audit: a table of 1,000 pending links could be kept full).
 - **Keeping tokens.** One file, AES-256-GCM, keyed by a separate key file;
   written atomically, 0600. One GitHub account per Gerrit account, the one
   linked last. A token is renewed when it is within 5 minutes of expiry,

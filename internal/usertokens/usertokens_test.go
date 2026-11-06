@@ -3,6 +3,7 @@ package usertokens
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -345,11 +346,8 @@ func TestLink(t *testing.T) {
 		}
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
-		l.mu.Lock()
-		n := len(l.pending)
-		l.mu.Unlock()
-		if w.Code != http.StatusForbidden || len(w.Result().Cookies()) != 0 || n != 0 {
-			t.Errorf("POST with %v: %d, cookies %v, %d pending", h, w.Code, w.Result().Cookies(), n)
+		if w.Code != http.StatusForbidden || len(w.Result().Cookies()) != 0 {
+			t.Errorf("POST with %v: %d, cookies %v", h, w.Code, w.Result().Cookies())
 		}
 	}
 	for _, h := range []map[string]string{{"Sec-Fetch-Site": "same-origin"}, {"Origin": "HTTPS://bridge.example"}} {
@@ -371,7 +369,7 @@ func TestLink(t *testing.T) {
 	}
 
 	// A callback without this browser's cookie (someone else's link) is
-	// refused, and uses the link up.
+	// refused.
 	f.codes["c1"] = "alice"
 	state, cookie := start()
 	if w := do("GET", "/github/link/callback?code=c1&state="+state, &http.Cookie{Name: cookieName, Value: "other"}); w.Code != http.StatusBadRequest {
@@ -419,14 +417,35 @@ func TestLink(t *testing.T) {
 	}
 	l.now = nil
 
-	// Pending links are bounded.
-	l.mu.Lock()
-	for i := len(l.pending); i < maxPending; i++ {
-		l.pending[fmt.Sprint(i)] = pendingLink{at: time.Now()}
+	// A state the bridge did not make, or one altered, is refused, even
+	// with a cookie to match.
+	state, _ = start()
+	b, _ := base64.RawURLEncoding.DecodeString(state)
+	b[10] ^= 1
+	for _, bad := range []string{base64.RawURLEncoding.EncodeToString(b), "x", "AAAA", strings.Repeat("A", 54)} {
+		if w := do("GET", "/github/link/callback?code=c1&state="+bad, &http.Cookie{Name: cookieName, Value: bad}); w.Code != http.StatusBadRequest {
+			t.Errorf("forged state %q: %d", bad, w.Code)
+		}
 	}
+	if len(s.All()) != 1 {
+		t.Errorf("linked by a forged state: %+v", s.All())
+	}
+
+	// Starting a link keeps nothing on the bridge: anyone can, as often
+	// as they like, and still others can link.
+	for range 5000 {
+		do("POST", "/github/link", nil)
+	}
+	l.mu.Lock()
+	n := len(l.used)
 	l.mu.Unlock()
-	if w := do("POST", "/github/link", nil); w.Code != http.StatusServiceUnavailable {
-		t.Errorf("over the bound: %d", w.Code)
+	if n != 2 { // alice's and bob's, which GitHub authorized
+		t.Errorf("%d states kept", n)
+	}
+	s.Delete(42)
+	state, cookie = start()
+	if w := do("GET", "/github/link/callback?code=c1&state="+state, cookie); !strings.Contains(w.Body.String(), "Linked") {
+		t.Errorf("after many starts: %d %s", w.Code, w.Body)
 	}
 }
 

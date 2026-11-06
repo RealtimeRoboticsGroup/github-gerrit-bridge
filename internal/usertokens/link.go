@@ -2,9 +2,12 @@ package usertokens
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -37,22 +40,67 @@ type Linker struct {
 	GerritURL string
 	Logger    *slog.Logger
 
+	// A link in progress is kept by nobody but the browser: its state
+	// says when it started, signed with key (made at start-up), and its
+	// PKCE verifier is derived from it. Anyone can start one, so starts
+	// cost the bridge nothing (tenth audit: a table of them could be
+	// filled). used holds the states of links completed, for linkTTL.
+	keyOnce sync.Once
+	key     []byte
 	mu      sync.Mutex
-	pending map[string]pendingLink // by state
+	used    map[string]time.Time
 	now     func() time.Time
 }
 
-type pendingLink struct {
-	verifier string
-	at       time.Time
-}
-
-// Pending links expire, and are bounded: anyone can start one.
 const (
 	linkTTL    = 10 * time.Minute
-	maxPending = 1000
 	cookieName = "bridge_link"
+	stateLen   = 8 + 16 + 16 // start time, random, MAC
 )
+
+func (l *Linker) mac(parts ...[]byte) []byte {
+	l.keyOnce.Do(func() {
+		l.key = make([]byte, 32)
+		if _, err := rand.Read(l.key); err != nil {
+			panic(err)
+		}
+	})
+	m := hmac.New(sha256.New, l.key)
+	for _, p := range parts {
+		m.Write(p)
+		m.Write([]byte{0})
+	}
+	return m.Sum(nil)
+}
+
+// newState is a state for a link starting at now.
+func (l *Linker) newState(now time.Time) (string, error) {
+	b := make([]byte, stateLen)
+	binary.BigEndian.PutUint64(b, uint64(now.Unix()))
+	if _, err := rand.Read(b[8:24]); err != nil {
+		return "", err
+	}
+	copy(b[24:], l.mac([]byte("state"), b[:24]))
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// stateOK reports whether state is one the bridge made, less than
+// linkTTL ago.
+func (l *Linker) stateOK(state string) bool {
+	b, err := base64.RawURLEncoding.DecodeString(state)
+	if err != nil || len(b) != stateLen || !hmac.Equal(b[24:], l.mac([]byte("state"), b[:24])[:16]) {
+		return false
+	}
+	age := l.clock().Sub(time.Unix(int64(binary.BigEndian.Uint64(b)), 0))
+	return age >= -time.Minute && age <= linkTTL
+}
+
+// verifier is state's PKCE verifier, and its challenge.
+func (l *Linker) verifier(state string) (verifier, challenge string) {
+	verifier = base64.RawURLEncoding.EncodeToString(l.mac([]byte("pkce"), []byte(state)))
+	sum := sha256.Sum256([]byte(verifier))
+	return verifier, base64.RawURLEncoding.EncodeToString(sum[:])
+}
 
 func (l *Linker) clock() time.Time {
 	if l.now != nil {
@@ -98,36 +146,12 @@ func (l *Linker) start(w http.ResponseWriter, r *http.Request) {
 		l.page(w, http.StatusForbidden, "Start linking from this page.", "/github/link")
 		return
 	}
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		l.page(w, http.StatusInternalServerError, "Something went wrong; try again.", "")
-		return
-	}
-	state := base64.RawURLEncoding.EncodeToString(b)
-	verifier, challenge, err := github.NewVerifier()
+	state, err := l.newState(l.clock())
 	if err != nil {
 		l.page(w, http.StatusInternalServerError, "Something went wrong; try again.", "")
 		return
 	}
-	now := l.clock()
-	l.mu.Lock()
-	if l.pending == nil {
-		l.pending = map[string]pendingLink{}
-	}
-	for s, p := range l.pending {
-		if now.Sub(p.at) > linkTTL {
-			delete(l.pending, s)
-		}
-	}
-	full := len(l.pending) >= maxPending
-	if !full {
-		l.pending[state] = pendingLink{verifier: verifier, at: now}
-	}
-	l.mu.Unlock()
-	if full {
-		l.page(w, http.StatusServiceUnavailable, "Too many links are being made right now; try again in a few minutes.", "")
-		return
-	}
+	_, challenge := l.verifier(state)
 	// The state is also this browser's cookie: a callback made in
 	// another browser (someone else's link) is refused.
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: state, Path: "/github/link", MaxAge: int(linkTTL / time.Second),
@@ -166,11 +190,7 @@ func (l *Linker) finish(w http.ResponseWriter, r *http.Request) {
 		l.page(w, http.StatusBadRequest, "This link was started in another browser, or has expired. Start again from the beginning.", "/github/link")
 		return
 	}
-	l.mu.Lock()
-	p, ok := l.pending[state]
-	delete(l.pending, state) // once
-	l.mu.Unlock()
-	if !ok || l.clock().Sub(p.at) > linkTTL {
+	if !l.stateOK(state) {
 		l.page(w, http.StatusBadRequest, "This link has expired. Start again from the beginning.", "/github/link")
 		return
 	}
@@ -183,10 +203,17 @@ func (l *Linker) finish(w http.ResponseWriter, r *http.Request) {
 		l.page(w, http.StatusBadRequest, "GitHub sent no code. Start again from the beginning.", "/github/link")
 		return
 	}
-	tok, err := l.App.Exchange(ctx, code, p.verifier, l.callback())
+	verifier, _ := l.verifier(state)
+	tok, err := l.App.Exchange(ctx, code, verifier, l.callback())
 	if err != nil {
 		l.logger().Warn("linking a GitHub account: exchanging the code", "err", err)
 		l.page(w, http.StatusBadGateway, "GitHub would not finish the link. Start again from the beginning.", "/github/link")
+		return
+	}
+	// Once: only after GitHub took the code, so only links GitHub
+	// authorized are kept.
+	if !l.use(state) {
+		l.page(w, http.StatusBadRequest, "This link has expired. Start again from the beginning.", "/github/link")
 		return
 	}
 	gh, err := l.App.TokenUser(ctx, tok.Access)
@@ -216,6 +243,26 @@ func (l *Linker) finish(w http.ResponseWriter, r *http.Request) {
 	l.logger().Info("linked a GitHub account", "github_login", gh.Login, "github_id", gh.ID, "gerrit_user", user, "gerrit_account", account)
 	l.page(w, http.StatusOK, "Linked: your comments and votes in Gerrit as "+user+" are now posted on GitHub as @"+gh.Login+
 		". To stop, revoke the app under GitHub's Settings, Applications, Authorized GitHub Apps.", "")
+}
+
+// use marks state used, reporting whether it was not already.
+func (l *Linker) use(state string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.clock()
+	for s, at := range l.used {
+		if now.Sub(at) > 2*linkTTL {
+			delete(l.used, s)
+		}
+	}
+	if _, ok := l.used[state]; ok {
+		return false
+	}
+	if l.used == nil {
+		l.used = map[string]time.Time{}
+	}
+	l.used[state] = now
+	return true
 }
 
 type pageData struct {
