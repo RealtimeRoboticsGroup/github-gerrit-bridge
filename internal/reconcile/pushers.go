@@ -29,8 +29,8 @@ const maxPushers = 10000
 // latest push wins, as in GitHub's activity log. Forgetting the oldest
 // only makes Lookup say nobody, which leaves the upload to the bridge.
 func (p *Pushers) Record(repo, ref, before, after string, actor github.User) {
-	if repo == "" || ref == "" || after == "" || actor.Login == "" {
-		return
+	if repo == "" || ref == "" || actor.Login == "" || badPush(github.Push{Before: before, After: after}) {
+		return // nothing git could misread is kept (tenth audit)
 	}
 	k := push{strings.ToLower(repo), ref, after}
 	p.mu.Lock()

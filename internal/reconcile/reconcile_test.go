@@ -310,51 +310,58 @@ func TestPushersFromWebhooks(t *testing.T) {
 	// What a synchronize pushed is its after: the PR's head may already
 	// be a later push's.
 	r.Delivery(&github.Delivery{Event: "pull_request", Action: "synchronize", PR: 3,
-		Payload: []byte(`{"sender":{"login":"bob","id":2},"before":"aaa","after":"abc","pull_request":{"number":3,` + head("b", "later") + `}}`)})
+		Payload: []byte(`{"sender":{"login":"bob","id":2},"before":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","after":"abc0000000000000000000000000000000000000","pull_request":{"number":3,` + head("b", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee") + `}}`)})
 	r.Delivery(&github.Delivery{Event: "push",
-		Payload: []byte(`{"sender":{"login":"carol","id":3},"before":"ddd","after":"def","ref":"refs/heads/x","repository":{"full_name":"O/R"}}`)})
+		Payload: []byte(`{"sender":{"login":"carol","id":3},"before":"dddddddddddddddddddddddddddddddddddddddd","after":"def0000000000000000000000000000000000000","ref":"refs/heads/x","repository":{"full_name":"O/R"}}`)})
 	r.Delivery(&github.Delivery{Event: "pull_request", Action: "edited", PR: 3,
-		Payload: []byte(`{"sender":{"login":"mallory"},"pull_request":{"number":3,` + head("b", "abc") + `}}`)})
+		Payload: []byte(`{"sender":{"login":"mallory"},"pull_request":{"number":3,` + head("b", "abc0000000000000000000000000000000000000") + `}}`)})
 	// Opening or reopening a PR is not pushing its head (anyone may open
 	// one from someone else's branch), and a push to another branch is
 	// not a push to this one.
 	r.Delivery(&github.Delivery{Event: "pull_request", Action: "opened", PR: 4,
-		Payload: []byte(`{"sender":{"login":"maint"},"pull_request":{"number":4,` + head("g", "ghi") + `}}`)})
+		Payload: []byte(`{"sender":{"login":"maint"},"pull_request":{"number":4,` + head("g", "9999999999999999999999999999999999999999") + `}}`)})
 	r.Delivery(&github.Delivery{Event: "pull_request", Action: "reopened", PR: 4,
-		Payload: []byte(`{"sender":{"login":"maint"},"pull_request":{"number":4,` + head("g", "ghi") + `}}`)})
+		Payload: []byte(`{"sender":{"login":"maint"},"pull_request":{"number":4,` + head("g", "9999999999999999999999999999999999999999") + `}}`)})
 	r.Delivery(&github.Delivery{Event: "push",
-		Payload: []byte(`{"sender":{"login":"maint"},"after":"abc","ref":"refs/heads/test-it","repository":{"full_name":"fork/r"}}`)})
+		Payload: []byte(`{"sender":{"login":"maint"},"after":"abc0000000000000000000000000000000000000","ref":"refs/heads/test-it","repository":{"full_name":"fork/r"}}`)})
 	for _, c := range []struct {
 		repo, ref, sha string
 		want           github.Push
 	}{
-		{"fork/r", "refs/heads/b", "abc", github.Push{Before: "aaa", After: "abc", Actor: github.User{Login: "bob", ID: 2}}},
-		{"o/r", "refs/heads/x", "def", github.Push{Before: "ddd", After: "def", Actor: github.User{Login: "carol", ID: 3}}},
-		{"fork/r", "refs/heads/g", "ghi", github.Push{}},
-		{"fork/r", "refs/heads/test-it", "abc", github.Push{After: "abc", Actor: github.User{Login: "maint"}}},
-		{"o/r", "refs/heads/b", "abc", github.Push{}},
-		{"fork/r", "refs/heads/b", "later", github.Push{}},
+		{"fork/r", "refs/heads/b", "abc0000000000000000000000000000000000000", github.Push{Before: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", After: "abc0000000000000000000000000000000000000", Actor: github.User{Login: "bob", ID: 2}}},
+		{"o/r", "refs/heads/x", "def0000000000000000000000000000000000000", github.Push{Before: "dddddddddddddddddddddddddddddddddddddddd", After: "def0000000000000000000000000000000000000", Actor: github.User{Login: "carol", ID: 3}}},
+		{"fork/r", "refs/heads/g", "9999999999999999999999999999999999999999", github.Push{}},
+		{"fork/r", "refs/heads/test-it", "abc0000000000000000000000000000000000000", github.Push{After: "abc0000000000000000000000000000000000000", Actor: github.User{Login: "maint"}}},
+		{"o/r", "refs/heads/b", "abc0000000000000000000000000000000000000", github.Push{}},
+		{"fork/r", "refs/heads/b", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", github.Push{}},
 	} {
 		if got, ok := r.Pushers.Lookup(c.repo, c.ref, c.sha); got != c.want || ok != (c.want != github.Push{}) {
 			t.Errorf("%s %s %s: %+v %v, want %+v", c.repo, c.ref, c.sha, got, ok, c.want)
 		}
 	}
 	p := &Pushers{}
+	id := func(i int) string { return fmt.Sprintf("%040x", i) }
 	pusher := func(sha string) string {
 		got, _ := p.Lookup("o/r", "refs/heads/x", sha)
 		return got.Actor.Login
 	}
 	for i := range maxPushers + 10 {
-		p.Record("o/r", "refs/heads/x", "", fmt.Sprint(i), github.User{Login: "x"})
+		p.Record("o/r", "refs/heads/x", "", id(i), github.User{Login: "x"})
 	}
-	if pusher("0") != "" || pusher(fmt.Sprint(maxPushers+9)) != "x" || len(p.byPush) != maxPushers || len(p.order) != maxPushers {
+	if pusher(id(0)) != "" || pusher(id(maxPushers+9)) != "x" || len(p.byPush) != maxPushers || len(p.order) != maxPushers {
 		t.Error("pusher log not bounded")
 	}
 	// The latest push wins, as in GitHub's activity log, and takes no
 	// more room.
-	p.Record("o/r", "refs/heads/x", "", fmt.Sprint(maxPushers+9), github.User{Login: "y"})
-	if pusher(fmt.Sprint(maxPushers+9)) != "y" || pusher("10") != "x" {
+	p.Record("o/r", "refs/heads/x", "", id(maxPushers+9), github.User{Login: "y"})
+	if pusher(id(maxPushers+9)) != "y" || pusher(id(10)) != "x" {
 		t.Error("a second push of the same commit to the same branch was not its pusher's")
+	}
+	// Nothing git could misread is kept.
+	p.Record("o/r", "refs/heads/x", "", "--all", github.User{Login: "x"})
+	p.Record("o/r", "refs/heads/x", "HEAD", id(1), github.User{Login: "z"})
+	if pusher("--all") != "" || pusher(id(1)) == "z" {
+		t.Error("a push with ids that are not commit ids was kept")
 	}
 }
 

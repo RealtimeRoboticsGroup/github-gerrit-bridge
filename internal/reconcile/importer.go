@@ -1326,7 +1326,6 @@ func (im *Importer) pushedBy(ctx context.Context, pr *github.PullRequest, h stri
 			// Not listed yet (a webhook said), unless it was listed
 			// later than the push followed: then which came first?
 			p, found = im.Pushers.Lookup(repo, ref, at)
-			found = found && !badPush(p)
 		}
 		if !found || p.Actor.Login == "" || (by.Login != "" && !sameGitHubUser(by, p.Actor)) {
 			return github.User{}, nil
@@ -1355,9 +1354,6 @@ func (im *Importer) carriesOthers(ctx context.Context, pushes []github.Push, rep
 	}
 	theirs := map[string]bool{}
 	for _, p := range pushes {
-		if badPush(p) {
-			return true // not known: it may
-		}
 		if !sameGitHubUser(p.Actor, by) {
 			theirs[p.After] = true
 		}
