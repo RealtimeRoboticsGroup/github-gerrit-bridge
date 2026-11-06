@@ -1208,7 +1208,8 @@ defenses, by threat:
   was at code the target branch already has (anyone may open a PR from
   someone else's branch, and a branch may move before the bridge sees
   the PR; third audit; or someone else may have pushed to it first:
-  seventh audit); for its first ten
+  seventh audit), and nobody else has edited its title or description,
+  which are the first patch set's message (tenth audit); for its first ten
   minutes a PR whose pusher GitHub does not name yet waits, since a
   fork's push sends no webhook and the activity log can lag. A later push builds on the patch set
   GitHub last had (not a newer one only Gerrit has, such as someone

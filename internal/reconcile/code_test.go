@@ -4640,3 +4640,32 @@ func TestRetitleWithUploadURLInMessageIsMirrored(t *testing.T) {
 		t.Errorf("changed=%v err=%v calls=%v comments=%v message %q", changed, err, s.calls, s.comments[70], msg)
 	}
 }
+
+// A PR's first upload is its author's only if its title and description
+// are theirs too: the first patch set's message is them, and someone
+// else's words (a maintainer's sign-off in the author's name, say) are
+// not to be uploaded as the author's (tenth audit).
+func TestFirstUploadNeedsTheAuthorsText(t *testing.T) {
+	for _, tc := range []struct {
+		act  github.PRActivity
+		want string
+	}{
+		{github.PRActivity{}, "austin"},
+		{github.PRActivity{TitleEditor: github.User{Login: "Austin"}, BodyEditor: github.User{Login: "austin"}}, "austin"},
+		{github.PRActivity{BodyEditor: github.User{Login: "brt"}}, ""},
+		{github.PRActivity{TitleEditor: github.User{Login: "brt"}}, ""},
+	} {
+		s, im, up, m1, _, _ := gerritBornWorld(t, false)
+		h := s.commit(m1, "new.txt", "n\n", "New")
+		s.push("github.git", h, "refs/heads/topic")
+		s.pr(60, "topic", h, "main", "austin").Body = "Does it.\n\nSigned-off-by: Austin <austin@example.com>"
+		s.pushed("o/r", "refs/heads/topic", h, "austin")
+		s.activity[60] = tc.act
+		if err := im.Import(context.Background(), "main"); err != nil {
+			t.Fatal(err)
+		}
+		if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], tc.want+" ") {
+			t.Errorf("activity %+v: uploads = %v, want one as %q", tc.act, up.uploads, tc.want)
+		}
+	}
+}

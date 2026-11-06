@@ -1019,7 +1019,24 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		return "", "", nil
 	}
 	if base == "" {
-		return im.firstUploader(ctx, pr, h, parent, parentTip)
+		user, login, err := im.firstUploader(ctx, pr, h, parent, parentTip)
+		if err != nil || user == "" {
+			return user, login, err
+		}
+		// The first patch set's message is the PR's title and
+		// description: someone else's words in it are not to be
+		// uploaded as the author's (tenth audit), as for later edits
+		// (mirrorPREdits).
+		act, err := im.GitHub.Activity(ctx, pr.Number)
+		if err != nil {
+			return "", "", err
+		}
+		if editedBy(act.TitleEditor, pr.User) || editedBy(act.BodyEditor, pr.User) {
+			im.Logger.Info("the PR's text was edited by someone else: the bridge uploads it", "pr", pr.Number, "author", pr.User.Login,
+				"title_editor", act.TitleEditor.Login, "body_editor", act.BodyEditor.Login)
+			return "", login, nil
+		}
+		return user, login, nil
 	}
 	rev := cur.Revisions[base]
 	prev, prevID := rev.Uploader.Username, rev.Uploader.AccountID
@@ -1170,6 +1187,12 @@ func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h
 		return "", login, nil
 	}
 	return author, pr.User.Login, nil
+}
+
+// editedBy reports whether editor, from PR activity, edited the PR: not
+// nobody (no edit since it was opened), and not author.
+func editedBy(editor, author github.User) bool {
+	return (editor.ID != 0 || editor.Login != "") && !sameGitHubUser(editor, author)
 }
 
 // parentTrusted reports whether parent is on Gerrit's branch, no older
