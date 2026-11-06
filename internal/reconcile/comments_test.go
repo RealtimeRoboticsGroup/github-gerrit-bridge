@@ -2715,3 +2715,27 @@ func TestReviewBatchesAreByAccount(t *testing.T) {
 		t.Errorf("two authors' comments in %d reviews: %+v", len(reviews), e.h.rcs)
 	}
 }
+
+// A new GitHub thread resolved before the bridge recorded it (resolved
+// right after it was posted) is resolved in Gerrit too, not unresolved
+// on GitHub: only a thread whose record was lost starts as GitHub has it
+// (the tenth round's rehearsal).
+func TestNewThreadResolvedOnGitHubStaysResolved(t *testing.T) {
+	e := newCommentsEnv(t)
+	root := e.h.human("a.txt", 3, "sha2", "Hmm?", 0)
+	calls := 0
+	e.g.onList = func() {
+		if calls++; calls == 2 { // mirrored unresolved, then resolved
+			e.h.resolved[root] = true
+		}
+	}
+	e.sync(t)
+	e.g.onList = nil
+	e.sync(t)
+	if !e.h.resolved[root] {
+		t.Error("the bridge unresolved it on GitHub")
+	}
+	if gc := e.g.comments[len(e.g.comments)-1]; gc.Message != "Resolved on GitHub." || gc.Unresolved {
+		t.Errorf("Gerrit's last comment %+v", gc)
+	}
+}
