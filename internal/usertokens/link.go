@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -91,6 +92,12 @@ func (l *Linker) intro(w http.ResponseWriter, r *http.Request) {
 }
 
 func (l *Linker) start(w http.ResponseWriter, r *http.Request) {
+	if !l.sameOrigin(r) {
+		// A form on another site: GitHub may skip its consent screen, so
+		// it would link without the user asking to (tenth audit).
+		l.page(w, http.StatusForbidden, "Start linking from this page.", "/github/link")
+		return
+	}
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		l.page(w, http.StatusInternalServerError, "Something went wrong; try again.", "")
@@ -126,6 +133,21 @@ func (l *Linker) start(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: state, Path: "/github/link", MaxAge: int(linkTTL / time.Second),
 		HttpOnly: true, Secure: strings.HasPrefix(l.PublicURL, "https://"), SameSite: http.SameSiteLaxMode})
 	http.Redirect(w, r, l.App.AuthorizeURL(l.callback(), state, challenge), http.StatusFound)
+}
+
+// sameOrigin reports whether r was sent by the bridge's own page, as the
+// browser says: Sec-Fetch-Site, or for browsers without it, Origin.
+// Neither (not a browser) is refused.
+func (l *Linker) sameOrigin(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin":
+		return true
+	case "":
+	default:
+		return false
+	}
+	u, err := url.Parse(l.PublicURL)
+	return err == nil && strings.EqualFold(r.Header.Get("Origin"), u.Scheme+"://"+u.Host)
 }
 
 func (l *Linker) finish(w http.ResponseWriter, r *http.Request) {

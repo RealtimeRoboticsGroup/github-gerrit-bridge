@@ -278,6 +278,9 @@ func TestLink(t *testing.T) {
 	l.Register(mux)
 	do := func(method, target string, cookie *http.Cookie) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, target, nil)
+		if method == "POST" {
+			req.Header.Set("Origin", "https://bridge.example")
+		}
 		if cookie != nil {
 			req.AddCookie(cookie)
 		}
@@ -304,6 +307,40 @@ func TestLink(t *testing.T) {
 			t.Fatalf("cookie %+v", cs)
 		}
 		return u.Query().Get("state"), cs[0]
+	}
+
+	// Only the bridge's own page starts a link: a form on another site
+	// would link with no click where GitHub skips its consent screen.
+	for _, h := range []map[string]string{
+		{"Origin": "https://evil.example"},
+		{"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+		{"Origin": "https://bridge.example", "Sec-Fetch-Site": "same-site"},
+		{"Origin": "null"},
+		{},
+	} {
+		req := httptest.NewRequest("POST", "/github/link", nil)
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		l.mu.Lock()
+		n := len(l.pending)
+		l.mu.Unlock()
+		if w.Code != http.StatusForbidden || len(w.Result().Cookies()) != 0 || n != 0 {
+			t.Errorf("POST with %v: %d, cookies %v, %d pending", h, w.Code, w.Result().Cookies(), n)
+		}
+	}
+	for _, h := range []map[string]string{{"Sec-Fetch-Site": "same-origin"}, {"Origin": "HTTPS://bridge.example"}} {
+		req := httptest.NewRequest("POST", "/github/link", nil)
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusFound {
+			t.Errorf("POST with %v: %d", h, w.Code)
+		}
 	}
 
 	// GitHub's redirect after an install links nobody, and says how to.

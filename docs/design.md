@@ -1591,7 +1591,9 @@ notes; nothing on GitHub advertises the link.
 - **Linking** (`internal/usertokens`). `GET /github/link` only says what
   linking does: GitHub skips its consent screen for anyone who authorized
   the App before, so following a link must not link by itself. Its button
-  (`POST`) starts GitHub's web flow with a random state, also set as an
+  (`POST`, refused unless the browser says it came from the bridge's own
+  page, by `Sec-Fetch-Site` or `Origin`, so a form on another site can't
+  press it: tenth audit) starts GitHub's web flow with a random state, also set as an
   HttpOnly cookie on `/github/link`, and PKCE. The callback, once per
   state and within 10 minutes, needs the cookie to match, trades the code
   for a token, asks GitHub whom it acts as (`GET /user`), and keeps it for
