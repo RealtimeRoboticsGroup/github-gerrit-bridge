@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/trace"
@@ -16,6 +17,18 @@ func TestSuexecRefusesNamesGerritReadsAsOtherAccounts(t *testing.T) {
 	for _, user := range []string{"1000000", "self", "me", "a b", "-x", "a;b"} {
 		if err := u.Upload(context.Background(), user, "abc", "main", nil); err == nil {
 			t.Errorf("uploaded as %q", user)
+		}
+	}
+}
+
+// Uploads with the peer key read no ssh config, take only the pinned
+// host key, and drop a connection that stalls (tenth audit).
+func TestUploadSSHCommand(t *testing.T) {
+	got := SuexecUploader{KnownHostsFile: "/k h", PeerKeyFile: "/p"}.sshCommand()
+	for _, want := range []string{"-F /dev/null", "BatchMode=yes", "StrictHostKeyChecking=yes", "IdentitiesOnly=yes",
+		"ServerAliveInterval=15", "ServerAliveCountMax=4", "UserKnownHostsFile='/k h'", "-i '/p'"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in %q", want, got)
 		}
 	}
 }

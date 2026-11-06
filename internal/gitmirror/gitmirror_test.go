@@ -50,6 +50,11 @@ func TestInitIdempotentAndRevParse(t *testing.T) {
 	if out, _ := r.Git(ctx, nil, "config", "http.followRedirects"); strings.TrimSpace(string(out)) != "false" {
 		t.Errorf("http.followRedirects = %q", out)
 	}
+	for k, want := range map[string]string{"http.lowSpeedLimit": "1000", "http.lowSpeedTime": "60"} {
+		if out, _ := r.Git(ctx, nil, "config", k); strings.TrimSpace(string(out)) != want {
+			t.Errorf("%s = %q, want %s (a stalled transfer is given up)", k, out, want)
+		}
+	}
 	if fi, err := os.Stat(r.Dir); err != nil || fi.Mode().Perm() != 0o700 {
 		t.Errorf("mirror mode %v (%v), want 0700", fi.Mode().Perm(), err)
 	}

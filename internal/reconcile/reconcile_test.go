@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -453,5 +454,43 @@ func TestResyncTally(t *testing.T) {
 	if len(c) != 2 || c[0].Key != failing || c[1].Key != caught || c[1].Reason != "periodic" ||
 		c[1].N != 1 || !slices.Equal(c[1].Writes, []string{"github PATCH branch/dev"}) {
 		t.Errorf("caught %+v", c)
+	}
+}
+
+// stuck blocks until its run's deadline.
+type stuck struct{}
+
+func (stuck) Reconcile(ctx context.Context, _ Key) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// A run that stalls is cut off at its deadline and fails, to be retried,
+// rather than holding its worker for good (tenth audit).
+func TestStuckRunIsCutOff(t *testing.T) {
+	defer func(d time.Duration) { runDeadline = d }(runDeadline)
+	runDeadline = 50 * time.Millisecond
+	q := queue.New[Key]()
+	q.MinRetry, q.MaxRetry = time.Hour, time.Hour
+	done := make(chan struct{})
+	go func() {
+		Work(context.Background(), q, stuck{}, 1, nil, slog.Default())
+		close(done)
+	}()
+	q.Add(Key{Comments: 1})
+	deadline := time.Now().Add(5 * time.Second)
+	var errs []string
+	for time.Now().Before(deadline) && len(errs) == 0 {
+		for _, e := range q.Snapshot().Recent {
+			if e.Err != "" {
+				errs = append(errs, e.Err)
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	q.ShutDown()
+	<-done
+	if len(errs) == 0 || !strings.Contains(errs[0], "took longer than") {
+		t.Errorf("errors %q", errs)
 	}
 }

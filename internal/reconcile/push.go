@@ -95,6 +95,14 @@ type SuexecUploader struct {
 
 var suexecUser = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]*$`)
 
+// sshCommand is the GIT_SSH_COMMAND for uploads with the peer key. Git
+// runs it through the shell: the paths are quoted. A connection that
+// stalls is dropped (tenth audit), not held.
+func (u SuexecUploader) sshCommand() string {
+	return "ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" +
+		" -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile=" + shellQuote(u.KnownHostsFile) + " -i " + shellQuote(u.PeerKeyFile)
+}
+
 // Upload implements Uploader.
 func (u SuexecUploader) Upload(ctx context.Context, user, commit, target string, opts []string) error {
 	if user == "" {
@@ -106,9 +114,7 @@ func (u SuexecUploader) Upload(ctx context.Context, user, commit, target string,
 		return fmt.Errorf("refusing to upload as %q: not a plain username", user)
 	}
 	remote := "ssh://" + url.PathEscape("Gerrit Code Review") + "@" + u.Address + "/" + u.Project
-	// Git runs GIT_SSH_COMMAND through the shell: the paths are quoted.
-	ssh := "ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=30 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" +
-		" -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile=" + shellQuote(u.KnownHostsFile) + " -i " + shellQuote(u.PeerKeyFile)
+	ssh := u.sshCommand()
 	ref, err := refsFor(target, opts)
 	if err != nil {
 		return err

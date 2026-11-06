@@ -107,6 +107,13 @@ func (r *Repo) Init(ctx context.Context) error {
 	if _, err := r.Git(ctx, nil, "config", "http.followRedirects", "false"); err != nil {
 		return err
 	}
+	// A transfer slower than 1 KB/s for a minute is a stalled one: given
+	// up, not waited on for good (tenth audit).
+	for k, v := range map[string]string{"http.lowSpeedLimit": "1000", "http.lowSpeedTime": "60"} {
+		if _, err := r.Git(ctx, nil, "config", k, v); err != nil {
+			return err
+		}
+	}
 	// No reachability bitmaps when packing a push: with them git leaves
 	// out every object any ref Gerrit advertised reaches, but Gerrit
 	// (JGit) counts as known only what its own walk from those refs

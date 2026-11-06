@@ -1506,6 +1506,10 @@ defenses, by threat:
   refusals. Mirrored Gerrit comments, messages and `gerrit/<Label>`
   statuses show the username beside the (free-form) full name, with
   Markdown in names escaped.
+- **Stalls.** A run has a 30-minute deadline, after which it fails and
+  is retried; uploads' ssh drops a connection silent for a minute, and
+  git gives up a transfer slower than 1 KB/s for a minute, so a stalled
+  connection never holds a worker for good (tenth audit).
 - **Ids and refs from GitHub.** A PR whose head is not a full commit id,
   or whose branch name git could read as an option, a range or a second
   ref, is not imported, and a push whose ids are not full commit ids is

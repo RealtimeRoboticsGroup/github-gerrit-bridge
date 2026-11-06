@@ -242,7 +242,14 @@ func failed(err error) error {
 // last did, may lag REST by a little (design §9; sixth audit).
 const editSettle = 30 * time.Second
 
-func reconcileOne(ctx context.Context, q *queue.Queue[Key], rec Reconciler, k Key, tally *ResyncTally, logger *slog.Logger) {
+// runDeadline bounds one run: a connection that stalls (git, ssh, a
+// Gerrit restart) must not hold a worker for good while /healthz says
+// ok (tenth audit). A run cut off is retried, and picks up where it was.
+var runDeadline = 30 * time.Minute
+
+func reconcileOne(parent context.Context, q *queue.Queue[Key], rec Reconciler, k Key, tally *ResyncTally, logger *slog.Logger) {
+	ctx, cancel := context.WithTimeout(parent, runDeadline)
+	defer cancel()
 	defer q.Done(k)
 	defer func() {
 		if p := recover(); p != nil {
@@ -265,7 +272,7 @@ func reconcileOne(ctx context.Context, q *queue.Queue[Key], rec Reconciler, k Ke
 	}
 	// A run only a resync asked for that changed something did what an
 	// event should have: the resync caught it.
-	if why := q.Resync(k); why != "" && ctx.Err() == nil && tally.record(why, k, t, failed(err)) {
+	if why := q.Resync(k); why != "" && parent.Err() == nil && tally.record(why, k, t, failed(err)) {
 		writes, n := t.Writes()
 		logger.Info("resync caught something", "key", k.String(), "reason", why, "writes", n, "what", strings.Join(writes, "; "))
 	}
@@ -277,8 +284,11 @@ func reconcileOne(ctx context.Context, q *queue.Queue[Key], rec Reconciler, k Ke
 		return
 	}
 	if err != nil {
+		if parent.Err() != nil {
+			return // shutting down
+		}
 		if ctx.Err() != nil {
-			return
+			err = fmt.Errorf("took longer than %v: %w", runDeadline, err)
 		}
 		q.Failed(k, err.Error())
 		d := q.Retry(k)
