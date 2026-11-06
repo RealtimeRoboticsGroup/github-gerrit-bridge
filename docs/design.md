@@ -1193,7 +1193,10 @@ defenses, by threat:
   by someone else within moments of being posted could, if GraphQL had
   not yet caught up, be mirrored as its author. **Accepted** (ninth
   audit): a live probe saw no lag, and such a comment can neither run CI
-  nor submit.
+  nor submit. A PR description wrongly credited to a trusted user does
+  make a message-only patch set as them, which CI builds (61d1b95), but
+  of code that already counted as trusted: its tree and parents cannot
+  change (tenth audit).
 - **Edits to the bridge's own GitHub comments.** A Gerrit comment's GitHub
   copy can be edited by anyone with write access, which would put words in
   a Gerrit reviewer's mouth or change its `bridge:gerrit/…` marker. Gerrit
