@@ -95,13 +95,28 @@ type fakeGitHub struct {
 	codes    map[string]string // code -> login
 	rename   string            // if set, /user answers this login
 	otherID  bool              // if set, /user answers another account
+	// gate, if set, holds each refresh's answer: it receives once the
+	// answer is made, and the answer goes once it receives again.
+	gate chan struct{}
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
 	f := &fakeGitHub{users: map[string]github.User{}, codes: map[string]string{}}
+	var handle func(w http.ResponseWriter, r *http.Request)
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := httptest.NewRecorder()
 		f.mu.Lock()
-		defer f.mu.Unlock()
+		handle(rec, r)
+		gate := f.gate
+		f.mu.Unlock()
+		if gate != nil && r.PostForm.Get("grant_type") == "refresh_token" {
+			gate <- struct{}{}
+			<-gate
+		}
+		w.WriteHeader(rec.Code)
+		w.Write(rec.Body.Bytes())
+	}))
+	handle = func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/login/oauth/access_token":
 			r.ParseForm()
@@ -148,7 +163,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
+	}
 	t.Cleanup(f.srv.Close)
 	return f
 }
@@ -412,5 +427,65 @@ func TestLink(t *testing.T) {
 	l.mu.Unlock()
 	if w := do("POST", "/github/link", nil); w.Code != http.StatusServiceUnavailable {
 		t.Errorf("over the bound: %d", w.Code)
+	}
+}
+
+// A link made while the same Gerrit account's token is being renewed
+// stands: the renewal does not write back the old link over it (tenth
+// audit).
+func TestLinkDuringRenewalStands(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeGitHub(t)
+	s := &Store{Path: filepath.Join(t.TempDir(), "tokens"), Key: testKey()}
+	now := time.Now()
+	f.refresh = "ghr_0"
+	f.users["ghu_0"] = github.User{Login: "alice", ID: 42}
+	s.Put(Record{GitHub: github.User{Login: "alice", ID: 42}, GerritAccount: 1000, GerritUser: "alice",
+		Token: github.UserToken{Access: "ghu_0", AccessExpires: now, Refresh: "ghr_0", RefreshExpires: now.Add(time.Hour)}})
+	tk := &Tokens{Store: s, App: f.app()}
+	l := &Linker{App: f.app(), Tokens: tk, PublicURL: "https://bridge.example",
+		GerritUser:    func(_ context.Context, gh github.User) (string, bool) { return gh.Login, true },
+		GerritAccount: func(context.Context, string) (int, error) { return 1000, nil }}
+	mux := http.NewServeMux()
+	l.Register(mux)
+
+	gate := make(chan struct{})
+	f.mu.Lock()
+	f.gate = gate
+	f.mu.Unlock()
+	renewed := make(chan struct{})
+	go func() {
+		defer close(renewed)
+		tk.For(ctx, 1000)
+	}()
+	<-gate // the refresh is answered, not yet received
+
+	req := httptest.NewRequest("POST", "/github/link", nil)
+	req.Header.Set("Origin", "https://bridge.example")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	u, _ := url.Parse(w.Header().Get("Location"))
+	f.mu.Lock()
+	f.codes["c"] = "bob"
+	f.mu.Unlock()
+	linked := make(chan *httptest.ResponseRecorder)
+	go func() {
+		req := httptest.NewRequest("GET", "/github/link/callback?code=c&state="+u.Query().Get("state"), nil)
+		req.AddCookie(w.Result().Cookies()[0])
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		linked <- w
+	}()
+	time.Sleep(200 * time.Millisecond) // the link saves now, unless it waits
+	gate <- struct{}{}
+	<-renewed
+	if w := <-linked; !strings.Contains(w.Body.String(), "Linked") {
+		t.Fatalf("link: %d %s", w.Code, w.Body)
+	}
+	if r, ok := s.Get(7); !ok || r.GerritAccount != 1000 {
+		t.Errorf("bob's new link is gone: %+v", s.All())
+	}
+	if _, ok := s.Get(42); ok {
+		t.Errorf("alice's old link came back: %+v", s.All())
 	}
 }

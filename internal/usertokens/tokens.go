@@ -21,7 +21,7 @@ type Tokens struct {
 	Check  func(ctx context.Context, gh github.User, gerritUser string) bool
 	Logger *slog.Logger
 
-	mu  sync.Mutex // one refresh at a time: each voids the last token
+	mu  sync.Mutex // one refresh or link at a time: each voids the last token
 	now func() time.Time
 }
 
@@ -143,6 +143,14 @@ func (t *Tokens) Revoke(id int64, access string) {
 	if err := t.Store.Delete(id); err != nil {
 		t.logger().Error("saving user tokens", "err", err)
 	}
+}
+
+// Link keeps a new link, between renewals: one in flight would write back
+// the link it renews over it (tenth audit).
+func (t *Tokens) Link(rec Record) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.Store.Put(rec)
 }
 
 // Linked is the GitHub account Gerrit account linked, if any, and only

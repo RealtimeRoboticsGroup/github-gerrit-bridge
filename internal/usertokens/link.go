@@ -208,7 +208,7 @@ func (l *Linker) finish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec := Record{GitHub: gh, GerritAccount: account, GerritUser: user, Token: tok, Linked: l.clock()}
-	if err := l.Tokens.Store.Put(rec); err != nil {
+	if err := l.Tokens.Link(rec); err != nil {
 		l.logger().Error("saving a linked GitHub account", "github_login", gh.Login, "err", err)
 		l.page(w, http.StatusInternalServerError, "The bridge could not save the link. Try again later.", "")
 		return

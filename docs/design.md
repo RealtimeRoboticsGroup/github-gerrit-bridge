@@ -1606,7 +1606,8 @@ notes; nothing on GitHub advertises the link.
 - **Keeping tokens.** One file, AES-256-GCM, keyed by a separate key file;
   written atomically, 0600. One GitHub account per Gerrit account, the one
   linked last. A token is renewed when it is within 5 minutes of expiry,
-  one renewal at a time, and the new refresh token is saved before the
+  one renewal at a time (a new link waits for one in flight, which would
+  write the link it renewed back over it), and the new refresh token is saved before the
   token is used. A link is dropped when GitHub stops taking its refresh
   token or answers 401 to its token (the App was revoked), when the token
   acts as another account, or when its refresh token expires. A link is
