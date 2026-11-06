@@ -1645,9 +1645,12 @@ notes; nothing on GitHub advertises the link.
 - **Votes as reviews.** A linked user's change message with Code-Review
   +2 becomes their GitHub approval, and a negative vote their change
   request. It goes on the GitHub commit of the patch set it was given on,
-  or, if that patch set never reached GitHub (Gerrit is ahead of a fork's
-  branch), of the latest one before it that did, with the message's
-  words, if any, as the body. A +1, or a vote of
+  with the message's words, if any, as the body. If that patch set never
+  reached GitHub (Gerrit is ahead of a fork's branch, or it is a
+  stranger's), there is no review: on another commit it would be their
+  approval of code they never saw there (tenth audit). Its words go as a
+  comment headed with the vote and "on patch set N, which is not on
+  GitHub". A +1, or a vote of
   another label, stays a PR comment if it has words, and the statuses show
   it either way. Excluded: votes the bridge cast itself (a GitHub approval
   mirrored into Gerrit, tagged `github-bridge:mirror`, which would echo),

@@ -323,7 +323,9 @@ func TestLinkedVoteGitHubRefuses(t *testing.T) {
 }
 
 // A vote on a patch set GitHub does not have (Gerrit is ahead of a fork's
-// branch) is a review of the latest one it does.
+// branch, or a stranger's patch set) is no review of another commit, which
+// would be its voter's approval of code they never saw there (tenth
+// audit): its words are a comment that says which patch set it is on.
 func TestLinkedVoteOnPatchSetNotOnGitHub(t *testing.T) {
 	e, _ := linkedEnv(t)
 	e.h.prCommits = map[string]bool{"sha1": true, "sha2": true}
@@ -331,11 +333,16 @@ func TestLinkedVoteOnPatchSetNotOnGitHub(t *testing.T) {
 	e.g.current = "sha3"
 	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
 	e.g.messages = []gerrit.ChangeMessage{
-		{ID: "m1", Author: alice, Message: "Patch Set 3: Code-Review-1", RevisionNumber: 3},
+		{ID: "m1", Author: alice, Message: "Patch Set 3: Code-Review+2\n\nShip it.", RevisionNumber: 3},
+		{ID: "m2", Author: alice, Message: "Patch Set 3: Code-Review-1", RevisionNumber: 3},
 	}
 	e.sync(t)
-	if len(e.h.reviews) != 1 || e.h.reviews[0].CommitID != "sha2" || e.h.reviews[0].State != "CHANGES_REQUESTED" || e.h.reviews[0].User != aliceGH {
-		t.Errorf("reviews %+v", e.h.reviews)
+	if len(e.h.reviews) != 0 {
+		t.Errorf("a vote on patch set 3 went on another commit as a review: %+v", e.h.reviews)
+	}
+	if len(e.h.ics) != 1 || e.h.ics[0].User != aliceGH || !strings.HasPrefix(e.h.ics[0].Body, "**Code-Review +2** on [patch set 3](") ||
+		!strings.Contains(e.h.ics[0].Body, "not on GitHub") || !strings.Contains(e.h.ics[0].Body, "Ship it.") {
+		t.Errorf("PR comments %+v", e.h.ics)
 	}
 }
 

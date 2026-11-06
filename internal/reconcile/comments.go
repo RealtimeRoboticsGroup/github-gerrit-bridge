@@ -1038,7 +1038,7 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 		}
 		var out *github.IssueComment
 		as, err := c.post(n, p, func(api UserGitHub, as int64) (err error) {
-			out, err = api.CreateIssueComment(ctx, pr, c.messageBody(n, msg, text, s.current, as))
+			out, err = api.CreateIssueComment(ctx, pr, c.messageBody(n, msg, text, s, as))
 			return err
 		})
 		if c.refusedOnGitHub(n, m, msg.ID, err) {
@@ -1068,11 +1068,14 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 // (their token, or the review: on their own PR, or a commit GitHub does
 // not have) leaves the message to be a PR comment, if it has words.
 func (c *Comments) postVote(ctx context.Context, n, pr int, s *commentSnapshot, m *commentMap, p *poster, msg gerrit.ChangeMessage, text, event string) (bool, error) {
-	sha := s.onGitHub(msg.RevisionNumber)
-	if sha == "" {
+	ps, sha := s.latestOnGitHub(msg.RevisionNumber)
+	if sha == "" || ps != msg.RevisionNumber {
+		// Only on the commit it was given on: on an older one, it
+		// would be their approval of code they never saw there (tenth
+		// audit). Its words go as a comment that names the patch set.
 		return false, nil
 	}
-	rev, err := p.api.CreateReview(ctx, pr, github.NewReview{CommitID: sha, Event: event, Body: c.messageBody(n, msg, text, s.current, p.as.ID)})
+	rev, err := p.api.CreateReview(ctx, pr, github.NewReview{CommitID: sha, Event: event, Body: c.messageBody(n, msg, text, s, p.as.ID)})
 	var ae *github.APIError
 	switch {
 	case err == nil:
@@ -1124,7 +1127,7 @@ func codeReviewVote(message string) int {
 // messageBody is the GitHub body for Gerrit change message msg, whose
 // text is text, posted as GitHub account as (0: the bridge, which says
 // whose it is).
-func (c *Comments) messageBody(n int, msg gerrit.ChangeMessage, text string, current int, as int64) string {
+func (c *Comments) messageBody(n int, msg gerrit.ChangeMessage, text string, s *commentSnapshot, as int64) string {
 	var head string
 	v := messageVotes(msg.Message)
 	switch {
@@ -1136,6 +1139,11 @@ func (c *Comments) messageBody(n int, msg gerrit.ChangeMessage, text string, cur
 		head = fmt.Sprintf("**%s** ([Gerrit](%s)) on patch set %d%s:\n\n", whoMD(msg.Author), c.messageURL(n, msg), msg.RevisionNumber, votes)
 	case v != "":
 		head = "**" + v + "**\n\n"
+		if ps, _ := s.latestOnGitHub(msg.RevisionNumber); ps != msg.RevisionNumber {
+			// Votes on code GitHub does not have: posted as their
+			// author, they must not read as theirs on this PR's.
+			head = fmt.Sprintf("**%s** on [patch set %d](%s), which is not on GitHub\n\n", v, msg.RevisionNumber, c.messageURL(n, msg))
+		}
 	}
 	foot := "\n\n" + gerritFooter(n, msg.ID)
 	return head + fitForGitHub(forGitHub(text), maxGitHubComment-len(head)-len(foot)) + foot
