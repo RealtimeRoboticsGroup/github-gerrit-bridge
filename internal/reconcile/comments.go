@@ -2251,6 +2251,11 @@ func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnap
 // (resolving takes write access, or authoring the PR or thread). It
 // returns the GitHub login it did it as, "" for the bridge.
 func (c *Comments) resolveAs(ctx context.Context, n int, s *commentSnapshot, last *gerrit.CommentInfo, thread string, resolved bool) (string, error) {
+	if c.bridgePost(last) {
+		// The bridge's own copy of a GitHub comment, posted as its
+		// author: they resolved nothing in Gerrit (tenth audit).
+		return "", c.GitHub.SetThreadResolved(ctx, thread, resolved)
+	}
 	p, err := c.posterFor(ctx, s, last.Author.AccountID)
 	if err != nil {
 		return "", err

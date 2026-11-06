@@ -388,3 +388,40 @@ func TestLinkedResolution(t *testing.T) {
 		e.settled(t)
 	}
 }
+
+// A Gerrit thread whose last comment is the bridge's copy of alice's
+// GitHub reply, posted as her, is not resolved on GitHub with her token:
+// she resolved nothing in Gerrit (tenth audit).
+func TestBridgeCopyDoesNotResolveAsItsAuthor(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.g.maxVote = 2
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	e.c.GerritAs = func(user string) GerritAPI {
+		return fakeAs{e.g, gerrit.AccountInfo{AccountID: 1, Username: user, Name: "Alice Trusted"}}
+	}
+	e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: "c1", Path: "a.txt", PatchSet: 2, Line: 2, Message: "Please fix.", Updated: e.g.tick(),
+		Unresolved: true, Author: gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}})
+	e.sync(t)
+	root := e.h.rcs[0].ID
+	// On GitHub: dave resolves the thread, alice replies in it.
+	e.h.resolved[root] = true
+	e.h.resolvedBy = map[int64]github.User{root: {Login: "dave", ID: 5}}
+	id := e.h.human("a.txt", 2, "sha2", "I agree.", root)
+	for i := range e.h.rcs {
+		if e.h.rcs[i].ID == id {
+			e.h.rcs[i].User = aliceGH
+		}
+	}
+	calls := 0
+	e.g.onList = func() {
+		calls++
+		if calls == 2 { // erin unresolves between passes
+			e.h.resolved[root] = false
+			e.h.resolvedBy[root] = github.User{Login: "erin", ID: 6}
+		}
+	}
+	e.sync(t)
+	if e.h.resolvedBy[root] == aliceGH {
+		t.Errorf("thread resolved on GitHub with alice's token; alice resolved nothing")
+	}
+}

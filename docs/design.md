@@ -1656,7 +1656,9 @@ notes; nothing on GitHub advertises the link.
   it is not asked for again on every pass.
 - **Resolutions** are made as the author of the thread's last Gerrit
   comment, which resolved it, and by the bot if GitHub won't let them
-  (resolving takes write access, or authoring the PR or thread).
+  (resolving takes write access, or authoring the PR or thread), or if
+  that comment is the bridge's own copy of a GitHub comment (tenth
+  audit: its author resolved nothing in Gerrit).
 - **Exposure.** `/github/link` and its callback join `/webhook` and
   `/checks/` as the bridge's public routes. The callback's code is
   single-use and bound to the PKCE verifier. The pages send `no-store`,
