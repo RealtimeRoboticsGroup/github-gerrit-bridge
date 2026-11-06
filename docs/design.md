@@ -1439,7 +1439,8 @@ defenses, by threat:
   (`resync_interval`, default 30m). Payloads are only hints: actors and
   content are re-read from the API.
 - **The server.** Listens on `127.0.0.1:8080` by default, plain HTTP: a
-  TLS proxy in front should expose only `/webhook` and `/checks/`.
+  TLS proxy in front should expose only `/webhook`, `/checks/` and, with
+  linked accounts (§7.2), `/github/link` and `/github/link/callback`.
   `/healthz` (rate budget, queue depth) is for probes and monitoring
   inside the deployment, not for the proxy to expose. The bridge's HTTP
   clients never follow redirects (credentials go only where it sent
@@ -1956,8 +1957,9 @@ Abandon and Toggle Work In Progress for Administrators.
   sign-up still works without it; and set
   `auth.userNameCaseInsensitive = true`, as the test site does, or a
   case variant of a trusted username makes the bridge unmap that user.
-- **The bridge behind a TLS proxy** that forwards only `/webhook` and
-  `/checks/`, buffers request bodies, and is listed in
+- **The bridge behind a TLS proxy** that forwards only `/webhook`,
+  `/checks/` and (with linked accounts) `/github/link` and its callback,
+  buffers request bodies, and is listed in
   `github.webhook_trusted_proxies`; `listen` stays on loopback.
   **`github.webhook_allowed_networks`** set to GitHub's hook ranges
   (`GET /meta`, `hooks`): otherwise anyone can make the bridge read
