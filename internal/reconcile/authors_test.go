@@ -434,34 +434,8 @@ func TestBridgeCopyDoesNotResolveAsItsAuthor(t *testing.T) {
 }
 
 // A resolution the bridge made on GitHub with alice's token is not taken
-// for hers, to undo Carol's unresolving in Gerrit as alice, once the
-// thread's record is lost (tenth audit)...
-func TestBridgeResolutionAsSomeoneIsNotTheirsAfterStateLoss(t *testing.T) {
-	e, _ := linkedEnv(t)
-	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
-	e.c.GerritAs = func(user string) GerritAPI {
-		return fakeAs{e.g, gerrit.AccountInfo{AccountID: 1, Username: user, Name: "Alice Trusted"}}
-	}
-	e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: "c1", Path: "a.txt", PatchSet: 2, Line: 2, Message: "Please fix.", Updated: e.g.tick(),
-		Unresolved: true, Author: gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}})
-	e.sync(t)
-	root := e.h.rcs[0].ID
-	e.g.user("c2", "a.txt", 2, 2, "Done", "c1", false)
-	e.sync(t)
-	if e.h.resolvedBy[root] != aliceGH {
-		t.Fatalf("setup: %+v", e.h.resolvedBy[root])
-	}
-	updateStateFn(context.Background(), e.st, 5, "wipe", func(s *state.Change) { s.Threads = nil })
-	e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: "c3", Path: "a.txt", PatchSet: 2, Line: 2, InReplyTo: "c2", Message: "Not done.", Updated: e.g.tick(),
-		Unresolved: true, Author: gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}})
-	e.sync(t)
-	last := e.g.comments[len(e.g.comments)-1]
-	if last.Author.Username == "alice" && !last.Unresolved {
-		t.Errorf("the bridge's own resolution with alice's token came back as alice resolving in Gerrit")
-	}
-}
-
-// ...or not saved, because a later one failed.
+// for hers, to undo Carol's unresolving in Gerrit as alice, when it was
+// not recorded because a later one failed (tenth audit).
 func TestBridgeResolutionAsSomeoneIsKeptWhenALaterOneFails(t *testing.T) {
 	e, _ := linkedEnv(t)
 	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}

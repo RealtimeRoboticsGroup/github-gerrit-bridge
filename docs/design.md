@@ -1683,9 +1683,10 @@ notes; nothing on GitHub advertises the link.
   (resolving takes write access, or authoring the PR or thread), or if
   that comment is the bridge's own copy of a GitHub comment (tenth
   audit: its author resolved nothing in Gerrit). A resolution is recorded as
-  soon as it is made, and a thread whose record was lost starts as
-  GitHub has it, so one the bridge made with someone's token never reads
-  later as theirs on GitHub (tenth audit).
+  soon as it is made, even if a later one fails, so one the bridge made
+  with someone's token never reads later as theirs on GitHub (tenth
+  audit). Known gap: if a thread's record is lost outright
+  (`refs/bridge` wiped), such a resolution would read as theirs.
 - **Exposure.** `/github/link` and its callback join `/webhook` and
   `/checks/` as the bridge's public routes. The callback's code is
   single-use and bound to the PKCE verifier. The pages send `no-store`,

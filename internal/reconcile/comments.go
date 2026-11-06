@@ -386,12 +386,6 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 		return nil
 	}
 	m := newCommentMap(st.Comments)
-	// Comments mapped before this sync: a thread of one with no record
-	// lost it; any other is new.
-	mapped := map[string]bool{}
-	for _, mc := range st.Comments {
-		mapped[mc.GerritID] = true
-	}
 	threads := map[string]*state.Thread{}
 	for i := range st.Threads {
 		t := st.Threads[i]
@@ -430,7 +424,7 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 		}
 		snap.posters = posters
 		c.recover(ctx, n, snap, m)
-		c.recoverThreads(snap, m, threads, mapped)
+		c.recoverThreads(snap, m, threads)
 		p1, err := c.gerritToGitHub(ctx, n, pr, snap, m, threads)
 		if err != nil {
 			return err
@@ -702,7 +696,7 @@ func (c *Comments) recover(ctx context.Context, n int, s *commentSnapshot, m *co
 
 // recoverThreads links every mapped Gerrit thread root to its GitHub
 // review thread.
-func (c *Comments) recoverThreads(s *commentSnapshot, m *commentMap, threads map[string]*state.Thread, mapped map[string]bool) {
+func (c *Comments) recoverThreads(s *commentSnapshot, m *commentMap, threads map[string]*state.Thread) {
 	byRoot := map[int64]github.ReviewThread{}
 	for _, t := range s.threads {
 		byRoot[t.RootID] = t
@@ -716,12 +710,11 @@ func (c *Comments) recoverThreads(s *commentSnapshot, m *commentMap, threads map
 		th, onGitHub := byRoot[mc.GitHubID]
 		if t == nil {
 			// A new thread starts unresolved on GitHub, so whichever side
-			// resolved it since is the change. One mapped before whose
-			// record was lost starts as GitHub has it: a difference is
-			// then Gerrit's, and nothing GitHub shows (a resolution the
-			// bridge made with someone's token, say) is taken for theirs
-			// (tenth audit).
-			t = &state.Thread{GerritRoot: gid, GitHubRootID: mc.GitHubID, Resolved: mapped[gid] && onGitHub && th.IsResolved}
+			// resolved it since is the change. (Its record may be made
+			// a sync after its comment was mirrored, once someone
+			// resolved it: telling a lost record from that is not
+			// possible here.)
+			t = &state.Thread{GerritRoot: gid, GitHubRootID: mc.GitHubID}
 			threads[gid] = t
 		}
 		if onGitHub {
