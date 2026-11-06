@@ -1512,7 +1512,11 @@ defenses, by threat:
   `user-images`, `<owner>/<repo>/assets|files` or asset-storage URL, in
   Markdown, HTML or bare) are neither copied to Gerrit nor linked from
   it. In comments each becomes a link to the comment on GitHub; in a
-  commit message, which is history for good, a note with no link.
+  commit message, which is history for good, a note with no link, its
+  name plain text. The PR keeps its own description while that differs
+  from the commit message only by those notes, so its screenshots stay
+  on GitHub, and texts are compared cleaned on both sides, so neither
+  reads as an edit (tenth audit).
 - `/submit` first asks Gerrit whether the user may submit, and only then
   reshapes PRs (§6.7). It submits the patch set its author saw: one
   uploaded after the comment, or a comment more than a day old (the

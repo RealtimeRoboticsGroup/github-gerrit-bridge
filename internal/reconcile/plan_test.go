@@ -1413,3 +1413,36 @@ func TestForeignParentIsNotMergedIntoAChildsBranch(t *testing.T) {
 		t.Errorf("feature = %s, alice = %s: the foreign patch set s2 reached an author's branch", w.branch["feature"], w.branch["alice"])
 	}
 }
+
+// A PR's own description keeps the files uploaded with it, though the
+// commit message has notes in their place (tenth audit: the planner put
+// the notes on GitHub too, and the screenshots were gone from the PR).
+// Any other difference still shows the commit message.
+func TestPlanKeepsThePRsOwnAttachments(t *testing.T) {
+	w := newWorld(t)
+	w.upload(1, "a1", "m0")
+	w.gerrit[1].Message = "Change 1\n\nShot: (attachment not copied from GitHub: shot)\n\nChange-Id: " + w.gerrit[1].ChangeID
+	w.converge()
+	pr := w.pr(1)
+	_, block, _ := strings.Cut(pr.Body, linksStart)
+	own := "Shot: ![shot](https://github.com/user-attachments/assets/1)"
+	pr.Body = own + "\n\n" + linksStart + block
+	w.converge()
+	if !strings.HasPrefix(w.pr(1).Body, own+"\n\n"+linksStart) {
+		t.Errorf("the PR's screenshot is gone: %q", w.pr(1).Body)
+	}
+	pr = w.pr(1)
+	pr.Body = "Shot: ![other](https://github.com/user-attachments/assets/2) and more\n\n" + linksStart + block
+	w.converge()
+	if !strings.HasPrefix(w.pr(1).Body, "Shot: (attachment not copied from GitHub: shot)") {
+		t.Errorf("a description Gerrit did not take stands: %q", w.pr(1).Body)
+	}
+	// Only uploads are kept: with none, the PR shows the commit message
+	// (here, without the sign-off that is Gerrit's business).
+	pr = w.pr(1)
+	pr.Body = "Shot: (attachment not copied from GitHub: shot)\nSigned-off-by: A <a@example.com>\n\n" + linksStart + block
+	w.converge()
+	if strings.Contains(w.pr(1).Body, "Signed-off-by") {
+		t.Errorf("the PR's own text stands: %q", w.pr(1).Body)
+	}
+}

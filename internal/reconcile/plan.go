@@ -508,6 +508,11 @@ func MakePlan(s *Snapshot) *Plan {
 		// edits made on GitHub reach Gerrit first (Code.mirrorPREdits), so
 		// what is here is the newer of the two.
 		body, hash := composeBody(c.Message, block)
+		if pr != nil {
+			if user, _ := splitBody(pr.Body); keepsAttachments(user, c.Message) {
+				body = fitForGitHub(user, maxPRBody-len(block)-2) + "\n\n" + block
+			}
+		}
 		d.Body, d.BodyHash = body, hash
 		p.Desired[n] = d
 

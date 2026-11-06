@@ -1119,7 +1119,18 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 // a PR's own, each as one comparable string.
 func gerritText(message string) string {
 	title, body := prTextFromMessage(message)
-	return title + "\x00" + body
+	// Cleaned as the PR's own is (tenth audit: a commit message with an
+	// upload's URL never matched its PR's text).
+	return title + "\x00" + noAttachments(body, "")
+}
+
+// keepsAttachments reports whether description, a PR's own (without the
+// links block), is commit message's description with the files uploaded
+// to GitHub left in: GitHub keeps showing it as it is, rather than the
+// notes the commit message has in their place.
+func keepsAttachments(description, message string) bool {
+	_, body := prTextFromMessage(message)
+	return attachmentURL.MatchString(description) && prBodyForMessage(description) == noAttachments(body, "")
 }
 
 func githubText(pr *github.PullRequest) string {

@@ -192,7 +192,20 @@ var (
 // where the text is on GitHub, for those who want to see the file there.
 func noAttachments(s, url string) string {
 	note := func(name string) string {
-		if name = strings.TrimSpace(name); name != "" {
+		name = strings.Join(strings.Fields(name), " ")
+		if name == "" {
+			// No name.
+		} else if url == "" {
+			// Plain text, for the commit message.
+			if name = strings.TrimSpace(strings.Map(func(r rune) rune {
+				if strings.ContainsRune("()[]<>`", r) {
+					return -1
+				}
+				return r
+			}, name)); name != "" {
+				name = ": " + name
+			}
+		} else {
 			name = ": " + inlineName(name)
 		}
 		if url == "" {

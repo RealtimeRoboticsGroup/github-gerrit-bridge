@@ -4593,3 +4593,50 @@ func TestNewPRIsInSyncFromTheStart(t *testing.T) {
 		t.Error("a retitle of a new PR is not an edit on GitHub")
 	}
 }
+
+// A description and commit message that both hold an upload's URL (a PR
+// synced before attachments were cleaned) agree: no edit is mirrored
+// (tenth audit: only the PR's side was cleaned, and every such PR got a
+// patch set on rollout).
+func TestUploadURLInBothTextsIsNoEdit(t *testing.T) {
+	s, c, snap := editsWorld(t, "github")
+	img := "![shot](https://github.com/user-attachments/assets/77)"
+	msg := "Seven\n\nDoes seven things.\n" + img + "\n\nChange-Id: " + cid(7) + "\nSigned-off-by: Austin <austin@example.com>\n"
+	snap.Changes[7].Message = msg
+	rv := s.changes[7].Revisions[s.changes[7].CurrentRevision]
+	rv.Commit.Message = msg
+	s.changes[7].Revisions[s.changes[7].CurrentRevision] = rv
+	s.pulls[70].Body = "Does seven things.\n" + img + "\n\n" + linksStart + "\nblock\n" + linksEnd
+	// synced as of the old code: githubText then had the URL
+	snap.State[7].State.SyncedText = hashString(gerritText(msg))
+	s.activity[70] = github.PRActivity{BodyEditor: github.User{Login: "austin"}}
+	if text, _ := editedOnGitHub(snap.Changes[7], snap.State[7], s.pulls[70]); text {
+		t.Error("taken for an edit on GitHub")
+	}
+	changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{})
+	if changed || err != nil || len(s.calls) != 0 {
+		t.Errorf("changed=%v err=%v calls=%v", changed, err, s.calls)
+	}
+}
+
+// A retitle on GitHub of a change whose commit message holds an upload's
+// URL is mirrored (tenth audit: it was refused for good, as if Gerrit's
+// message had changed).
+func TestRetitleWithUploadURLInMessageIsMirrored(t *testing.T) {
+	s, c, snap := editsWorld(t, "gerrit")
+	img := "![shot](https://github.com/user-attachments/assets/77)"
+	msg := "Seven\n\nDoes seven things.\n" + img + "\n\nChange-Id: " + cid(7) + "\nSigned-off-by: Austin <austin@example.com>\n"
+	snap.Changes[7].Message = msg
+	rv := s.changes[7].Revisions[s.changes[7].CurrentRevision]
+	rv.Commit.Message = msg
+	s.changes[7].Revisions[s.changes[7].CurrentRevision] = rv
+	s.pulls[70].Body = "Does seven things.\n" + img + "\n\n" + linksStart + "\nblock\n" + linksEnd
+	snap.State[7].State.SyncedText = hashString(githubText(s.pulls[70]))
+	s.pulls[70].Title = "Seven, better"
+	s.activity[70] = github.PRActivity{TitleEditor: github.User{Login: "austin"}, BodyEditor: github.User{Login: "austin"}}
+	changed, err := c.mirrorPREdits(context.Background(), snap, map[int]bool{})
+	ci := s.changes[7]
+	if msg := ci.Revisions[ci.CurrentRevision].Commit.Message; !changed || err != nil || !strings.HasPrefix(msg, "Seven, better\n") {
+		t.Errorf("changed=%v err=%v calls=%v comments=%v message %q", changed, err, s.calls, s.comments[70], msg)
+	}
+}

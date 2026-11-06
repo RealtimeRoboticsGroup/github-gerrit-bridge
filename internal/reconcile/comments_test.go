@@ -2667,3 +2667,12 @@ func TestEditedGitHubAttachmentIsNotCopied(t *testing.T) {
 		t.Errorf("edit posted as %q", gc.Message)
 	}
 }
+
+// An attachment's name in a commit message's note is plain text: no
+// Markdown or HTML escapes, nor mention-breaking joiners, in the history.
+func TestAttachmentNoteInCommitMessageIsPlain(t *testing.T) {
+	got := prBodyForMessage("![@bob's shot_1 & co (v2)](https://github.com/user-attachments/assets/1)\n![ ()<> ](https://github.com/user-attachments/assets/2)")
+	if want := "(attachment not copied from GitHub: @bob's shot_1 & co v2)\n(attachment not copied from GitHub)"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
