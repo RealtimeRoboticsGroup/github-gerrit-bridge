@@ -73,7 +73,7 @@ type UserGitHub interface {
 // (design §7.2), to post their content on GitHub as them.
 type Authors interface {
 	// Linked is the GitHub account Gerrit account posts as, if linked.
-	Linked(account int) (github.User, bool)
+	Linked(ctx context.Context, account int) (github.User, bool)
 	// Client returns a client posting as it (ok false: as the bridge);
 	// err is a failure to renew its token that may pass.
 	Client(ctx context.Context, account int) (api UserGitHub, gh github.User, ok bool, err error)
@@ -411,7 +411,7 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 			c.settle(snap, first)
 		}
 		snap.posters = posters
-		c.recover(n, snap, m)
+		c.recover(ctx, n, snap, m)
 		c.recoverThreads(snap, m, threads)
 		p1, err := c.gerritToGitHub(ctx, n, pr, snap, m, threads)
 		if err != nil {
@@ -592,7 +592,7 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 }
 
 // recover adds mappings that the markers prove but state lacks.
-func (c *Comments) recover(n int, s *commentSnapshot, m *commentMap) {
+func (c *Comments) recover(ctx context.Context, n int, s *commentSnapshot, m *commentMap) {
 	mark := func(body string, kind string, id int64) {
 		for _, sm := range gerritMarker.FindAllStringSubmatch(body, -1) {
 			if sm[1] == strconv.Itoa(n) {
@@ -644,7 +644,7 @@ func (c *Comments) recover(n int, s *commentSnapshot, m *commentMap) {
 				if sm[1] != strconv.Itoa(n) {
 					continue
 				}
-				if gh, ok := c.Authors.Linked(authorOf(sm[2])); ok && gh.ID == u.ID && u.ID != 0 {
+				if gh, ok := c.Authors.Linked(ctx, authorOf(sm[2])); ok && gh.ID == u.ID && u.ID != 0 {
 					mc := state.Comment{GerritID: sm[2], GitHubID: id, Kind: kind, Origin: "gerrit", As: u.ID}
 					if gc := s.byID[sm[2]]; gc != nil {
 						mc.BodyHash = hashString(gc.Message)
@@ -982,7 +982,7 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 		// review, with or without words.
 		event := ""
 		if c.Authors != nil && c.ownMessage(msg) {
-			if _, linked := c.Authors.Linked(msg.Author.AccountID); linked {
+			if _, linked := c.Authors.Linked(ctx, msg.Author.AccountID); linked {
 				switch v := codeReviewVote(msg.Message); {
 				case v >= 2:
 					event = "APPROVE"

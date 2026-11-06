@@ -145,13 +145,19 @@ func (t *Tokens) Revoke(id int64, access string) {
 	}
 }
 
-// Linked is the GitHub account Gerrit account linked, if any.
-func (t *Tokens) Linked(account int) (github.User, bool) {
+// Linked is the GitHub account Gerrit account linked, if any, and only
+// while the identity mapping still maps them, as For (tenth audit: a
+// stale link let its GitHub account's comment pass for the copy of the
+// Gerrit account's).
+func (t *Tokens) Linked(ctx context.Context, account int) (github.User, bool) {
 	if t == nil || t.Store == nil || account == 0 {
 		return github.User{}, false
 	}
 	r, ok := t.byAccount(account)
-	return r.GitHub, ok
+	if !ok || (t.Check != nil && !t.Check(ctx, r.GitHub, r.GerritUser)) {
+		return github.User{}, false
+	}
+	return r.GitHub, true
 }
 
 // Source is a token source for GitHub account id's token access: GitHub

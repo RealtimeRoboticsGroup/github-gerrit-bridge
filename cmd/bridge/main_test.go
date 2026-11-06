@@ -76,7 +76,7 @@ func TestLinkedAuthors(t *testing.T) {
 	if _, _, ok, _ := a.Client(context.Background(), 1001); ok {
 		t.Error("an unlinked account has a client")
 	}
-	if u, ok := a.Linked(1000); !ok || u.Login != "alice" {
+	if u, ok := a.Linked(context.Background(), 1000); !ok || u.Login != "alice" {
 		t.Errorf("Linked = %+v %v", u, ok)
 	}
 }

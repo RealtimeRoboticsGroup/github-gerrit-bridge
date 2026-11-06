@@ -557,7 +557,9 @@ type linkedAuthors struct {
 	gh     *github.Client // for where, and how
 }
 
-func (a linkedAuthors) Linked(account int) (github.User, bool) { return a.tokens.Linked(account) }
+func (a linkedAuthors) Linked(ctx context.Context, account int) (github.User, bool) {
+	return a.tokens.Linked(ctx, account)
+}
 
 func (a linkedAuthors) Client(ctx context.Context, account int) (reconcile.UserGitHub, github.User, bool, error) {
 	tok, gh, ok, err := a.tokens.For(ctx, account)

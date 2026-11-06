@@ -246,12 +246,18 @@ func TestTokensRenewAndDrop(t *testing.T) {
 	if _, ok := s.Get(42); !ok {
 		t.Error("revoking another token dropped the link")
 	}
-	if gh, ok := tk.Linked(1000); !ok || gh.ID != 42 {
+	if gh, ok := tk.Linked(ctx, 1000); !ok || gh.ID != 42 {
 		t.Errorf("Linked = %+v %v", gh, ok)
 	}
-	if _, ok := tk.Linked(1001); ok {
+	if _, ok := tk.Linked(ctx, 1001); ok {
 		t.Error("an unlinked account is linked")
 	}
+	// Nor is one whose GitHub account no longer maps to it.
+	maps = false
+	if gh, ok := tk.Linked(ctx, 1000); ok {
+		t.Errorf("Linked = %+v though the account no longer maps", gh)
+	}
+	maps = true
 	// A 401 on the token GitHub was given drops the link.
 	src := tk.Source(42, "ghu_y")
 	if tok, _ := src.Token(ctx); tok != "ghu_y" {

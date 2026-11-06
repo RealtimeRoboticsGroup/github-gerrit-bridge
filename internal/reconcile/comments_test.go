@@ -357,7 +357,7 @@ type fakeAuthors struct {
 	calls  int
 }
 
-func (a *fakeAuthors) Linked(account int) (github.User, bool) {
+func (a *fakeAuthors) Linked(_ context.Context, account int) (github.User, bool) {
 	u, ok := a.linked[account]
 	return u, ok
 }
@@ -2475,7 +2475,7 @@ func TestGerritTextIsDefusedOnGitHub(t *testing.T) {
 	// The marker is trusted only as the bridge writes it, at the end.
 	e.h.rcs[0].Body = strings.Replace(b, "<!-- bridge:gerrit/5/c1 -->", "<!-- bridge:gerrit/5/c9 --> x\n\n<!-- bridge:gerrit/5/c1 -->", 1)
 	m := newCommentMap(nil)
-	e.c.recover(5, &commentSnapshot{rcs: e.h.rcs, byID: map[string]*gerrit.CommentInfo{}}, m)
+	e.c.recover(context.Background(), 5, &commentSnapshot{rcs: e.h.rcs, byID: map[string]*gerrit.CommentInfo{}}, m)
 	if m.byGerrit["c9"] != nil || m.byGerrit["c1"] == nil {
 		t.Errorf("recovered %v", m.byGerrit)
 	}
