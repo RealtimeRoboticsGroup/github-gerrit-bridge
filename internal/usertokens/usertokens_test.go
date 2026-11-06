@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -96,6 +97,8 @@ type fakeGitHub struct {
 	codes    map[string]string // code -> login
 	rename   string            // if set, /user answers this login
 	otherID  bool              // if set, /user answers another account
+	// refreshes counts refresh requests.
+	refreshes int
 	// gate, if set, holds each refresh's answer: it receives once the
 	// answer is made, and the answer goes once it receives again.
 	gate chan struct{}
@@ -124,6 +127,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 			login := ""
 			switch {
 			case r.PostForm.Get("grant_type") == "refresh_token":
+				f.refreshes++
 				if r.PostForm.Get("refresh_token") != f.refresh {
 					fmt.Fprint(w, `{"error":"bad_refresh_token"}`)
 					return
@@ -506,5 +510,35 @@ func TestLinkDuringRenewalStands(t *testing.T) {
 	}
 	if _, ok := s.Get(42); ok {
 		t.Errorf("alice's old link came back: %+v", s.All())
+	}
+}
+
+// Renewals of one token at once make one refresh: GitHub voids a refresh
+// token on use, so a second with it would be refused and drop the link.
+func TestConcurrentRenewalsRefreshOnce(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeGitHub(t)
+	s := &Store{Path: filepath.Join(t.TempDir(), "tokens"), Key: testKey()}
+	now := time.Now()
+	f.refresh = "ghr_0"
+	f.users["ghu_0"] = github.User{Login: "alice", ID: 42}
+	s.Put(Record{GitHub: github.User{Login: "alice", ID: 42}, GerritAccount: 1000, GerritUser: "alice",
+		Token: github.UserToken{Access: "ghu_0", AccessExpires: now, Refresh: "ghr_0", RefreshExpires: now.Add(time.Hour)}})
+	tk := &Tokens{Store: s, App: f.app()}
+	var wg sync.WaitGroup
+	oks := make([]bool, 8)
+	for i := range oks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, oks[i], _ = tk.For(ctx, 1000)
+		}()
+	}
+	wg.Wait()
+	f.mu.Lock()
+	n := f.refreshes
+	f.mu.Unlock()
+	if _, ok := s.Get(42); !ok || n != 1 || slices.Contains(oks, false) {
+		t.Errorf("link kept %v, %d refreshes, ok %v", ok, n, oks)
 	}
 }
