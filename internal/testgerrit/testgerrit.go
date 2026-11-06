@@ -340,8 +340,10 @@ func (s *Server) waitReady(ctx context.Context) error {
 		}
 		resp, err := http.Get(s.URL + "/config/server/version")
 		if err == nil {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
 			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
+			// Gerrit's answer, not another server's on the port.
+			if resp.StatusCode == http.StatusOK && strings.HasPrefix(string(b), ")]}'") {
 				return nil
 			}
 		}
