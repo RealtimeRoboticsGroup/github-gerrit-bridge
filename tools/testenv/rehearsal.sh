@@ -94,16 +94,18 @@ step "2. Comments, replies, suggestions and resolution"
 gerrit_as AustinSchuh POST "changes/${C2}/revisions/current/review" \
   "{\"comments\":{\"chain-${RUN}-2.txt\":[{\"line\":1,\"message\":\"Rehearsal ${RUN}: tighten this line?\",\"unresolved\":true}]}}" >/dev/null
 ghc() { me api "repos/${R}/pulls/${P2}/comments" --jq ".[] | select(.body | contains(\"Rehearsal ${RUN}: tighten\")) | $1" | head -1; }
-by_bot() { [[ "$(ghc .user.login)" == realtimeroboticsbot ]]; }
-wait_for "Gerrit comment appears on GitHub, posted by the bot" by_bot
+# AustinSchuh linked his GitHub account (/github/link): his words are his.
+by_him() { [[ "$(ghc .user.login)" == AustinSchuh ]]; }
+wait_for "Gerrit comment appears on GitHub, posted as AustinSchuh (linked)" by_him
 ROOT=$(ghc .id)
-# Anyone with write access can edit the bot's comments; Gerrit's stay Gerrit's.
-me api -X PATCH "repos/${R}/pulls/comments/${ROOT}" -f body="Rehearsal ${RUN}: rewritten on GitHub" --silent
+# Anyone with write access can edit anyone's comments; Gerrit's stay
+# Gerrit's, but for their author's own edits.
+brt api -X PATCH "repos/${R}/pulls/comments/${ROOT}" -f body="Rehearsal ${RUN}: rewritten on GitHub" --silent
 restored() {
   local b; b=$(me api "repos/${R}/pulls/comments/${ROOT}" --jq .body)
   [[ "$b" == *"Restored by the bridge"* && "$b" == *"tighten this line"* && "$b" != *"rewritten on GitHub"* ]]
 }
-wait_for "an edit on GitHub to the bot's copy of a Gerrit comment is undone" restored
+wait_for "AustinSchuhBRT's edit on GitHub of AustinSchuh's Gerrit comment is undone" restored
 brt api "repos/${R}/pulls/${P2}/comments/${ROOT}/replies" -f body="Rehearsal ${RUN}: done, thanks." --silent
 by_brt() { gerrit "changes/${C2}/comments" | jq -e ".[][] | select(.message == \"Rehearsal ${RUN}: done, thanks.\") | select(.author.username == \"AustinSchuhBRT\")"; }
 wait_for "GitHub reply lands in the Gerrit thread as AustinSchuhBRT (Run-As), without an attribution header" by_brt
@@ -260,7 +262,7 @@ brt api -X PATCH "repos/${R}/pulls/${FQ}" -F maintainer_can_modify=false --silen
 gerrit_ps "fork-${RUN}-locked.txt"
 sync_says() { local sha; sha=$(me api "repos/${R}/pulls/${FQ}" --jq .head.sha)
   me api "repos/${R}/commits/${sha}/status" --jq '.statuses[] | select(.context=="gerrit/sync") | .description' | grep -q "$1"; }
-wait_for "without maintainer edits, gerrit/sync says the newer patch set is only in Gerrit" sync_says "only in Gerrit"
+wait_for "without maintainer edits, gerrit/sync says the newer patch set is not on GitHub" sync_says "is not on GitHub"
 on_fork "fork-${RUN}-locked.txt" && fail "pushed to a fork that does not allow it" || pass "nothing pushed to the fork"
 # Abandoning in Gerrit closes the PR (and frees the fork's main for the next run).
 gerrit_as AustinSchuhBRT POST "changes/${FK}/abandon" "{}" >/dev/null
@@ -342,7 +344,7 @@ K1=$(change "${W1}"); X1=$(pr_for "${W1}")
 gstatus() { [[ "$(gerrit "changes/${K1}" | jq -r .status)" == "$1" ]]; }
 prstate() { [[ "$(me api "repos/${R}/pulls/${X1}" --jq .state)" == "$1" ]]; }
 brt api -X PATCH "repos/${R}/pulls/${X1}" -f state=closed --silent
-refused() { prstate open && gstatus NEW && me api "repos/${R}/issues/${X1}/comments" --jq '.[].body' | grep -q "would not let AustinSchuhBRT abandon it"; }
+refused() { prstate open && gstatus NEW && me api "repos/${R}/issues/${X1}/comments" --jq '.[].body' | grep -q "bridge can't abandon .* Gerrit refused it as AustinSchuhBRT"; }
 wait_for "AustinSchuhBRT may not abandon AustinSchuh's change: the PR is reopened, saying why" refused
 me api -X PATCH "repos/${R}/pulls/${X1}" -f state=closed --silent
 abandoned() { gstatus ABANDONED && [[ "$(gerrit "changes/${K1}/detail?o=DETAILED_ACCOUNTS" | jq -r '.messages[-1].author.username')" == AustinSchuh ]]; }
