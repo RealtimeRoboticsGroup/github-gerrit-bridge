@@ -500,3 +500,27 @@ func TestBridgeResolutionAsSomeoneIsKeptWhenALaterOneFails(t *testing.T) {
 		t.Error("Carol's unresolving was not mirrored")
 	}
 }
+
+// A linked user's +2, posted as their GitHub approval, lowered to +1: the
+// approval is dismissed, not left standing for a vote they no longer give
+// (tenth audit).
+func TestLoweredVoteDismissesTheApprovalItPosted(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.messages = []gerrit.ChangeMessage{
+		{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2},
+	}
+	e.g.vote("alice", "Code-Review", 2)
+	e.sync(t)
+	if len(e.h.reviews) != 1 || e.h.reviews[0].State != "APPROVED" || e.h.reviews[0].User != aliceGH {
+		t.Fatalf("setup: %+v", e.h.reviews)
+	}
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "m2", Author: alice, Message: "Patch Set 2: Code-Review+1", RevisionNumber: 2})
+	e.g.vote("alice", "Code-Review", 1)
+	e.sync(t)
+	if len(e.h.dismissed) == 0 {
+		t.Errorf("alice's approval stands on GitHub though her Gerrit vote is +1")
+	}
+}

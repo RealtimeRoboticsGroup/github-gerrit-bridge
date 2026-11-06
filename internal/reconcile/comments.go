@@ -1963,7 +1963,14 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 				v, voted = a.Value, true
 			}
 		}
-		if (rv.State == "APPROVED" && v > 0) || (rv.State == "CHANGES_REQUESTED" && v < 0) {
+		// An approval the bridge posted for a Gerrit +2 stands for a +2;
+		// one cast from GitHub, for the positive vote it cast (tenth
+		// audit: a +2 lowered to +1 left the approval standing).
+		approves := 1
+		if mc.Origin == "gerrit" {
+			approves = 2
+		}
+		if (rv.State == "APPROVED" && v >= approves) || (rv.State == "CHANGES_REQUESTED" && v < 0) {
 			continue
 		}
 		now := "has no Code-Review vote"

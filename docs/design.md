@@ -1649,7 +1649,8 @@ notes; nothing on GitHub advertises the link.
   mirrored into Gerrit, tagged `github-bridge:mirror`, which would echo),
   Gerrit's and CI's. When the vote changes in Gerrit, `dismissStale`
   dismisses the review that no longer agrees, as for any review.
-  Dismissing such a review, by anyone, withdraws nothing: its vote was
+  Such an approval stands only while their vote is +2: lowered (to +1,
+  say), it is dismissed (tenth audit). Dismissing such a review, by anyone, withdraws nothing: its vote was
   given in Gerrit, not cast from GitHub (`mirroredVoteSince`). GitHub
   refusing the review (approving one's own PR) leaves the words a PR
   comment, as the user; a vote without words is recorded as refused, so
