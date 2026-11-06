@@ -425,3 +425,78 @@ func TestBridgeCopyDoesNotResolveAsItsAuthor(t *testing.T) {
 		t.Errorf("thread resolved on GitHub with alice's token; alice resolved nothing")
 	}
 }
+
+// A resolution the bridge made on GitHub with alice's token is not taken
+// for hers, to undo Carol's unresolving in Gerrit as alice, once the
+// thread's record is lost (tenth audit)...
+func TestBridgeResolutionAsSomeoneIsNotTheirsAfterStateLoss(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	e.c.GerritAs = func(user string) GerritAPI {
+		return fakeAs{e.g, gerrit.AccountInfo{AccountID: 1, Username: user, Name: "Alice Trusted"}}
+	}
+	e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: "c1", Path: "a.txt", PatchSet: 2, Line: 2, Message: "Please fix.", Updated: e.g.tick(),
+		Unresolved: true, Author: gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}})
+	e.sync(t)
+	root := e.h.rcs[0].ID
+	e.g.user("c2", "a.txt", 2, 2, "Done", "c1", false)
+	e.sync(t)
+	if e.h.resolvedBy[root] != aliceGH {
+		t.Fatalf("setup: %+v", e.h.resolvedBy[root])
+	}
+	updateStateFn(context.Background(), e.st, 5, "wipe", func(s *state.Change) { s.Threads = nil })
+	e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: "c3", Path: "a.txt", PatchSet: 2, Line: 2, InReplyTo: "c2", Message: "Not done.", Updated: e.g.tick(),
+		Unresolved: true, Author: gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}})
+	e.sync(t)
+	last := e.g.comments[len(e.g.comments)-1]
+	if last.Author.Username == "alice" && !last.Unresolved {
+		t.Errorf("the bridge's own resolution with alice's token came back as alice resolving in Gerrit")
+	}
+}
+
+// ...or not saved, because a later one failed.
+func TestBridgeResolutionAsSomeoneIsKeptWhenALaterOneFails(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	e.c.GerritAs = func(user string) GerritAPI {
+		return fakeAs{e.g, gerrit.AccountInfo{AccountID: 1, Username: user, Name: "Alice Trusted"}}
+	}
+	carol := gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}
+	for _, id := range []string{"c1", "d1"} {
+		e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: id, Path: "a.txt", PatchSet: 2, Line: 2, Message: "Please fix.", Updated: e.g.tick(),
+			Unresolved: true, Author: carol})
+	}
+	e.sync(t)
+	roots := map[string]int64{}
+	for _, rc := range e.h.rcs {
+		for _, id := range []string{"c1", "d1"} {
+			if strings.Contains(rc.Body, "bridge:gerrit/5/"+id+" ") {
+				roots[id] = rc.ID
+			}
+		}
+	}
+	if len(roots) != 2 {
+		t.Fatalf("roots %v", roots)
+	}
+	e.g.user("c2", "a.txt", 2, 2, "Done", "c1", false)
+	e.g.user("d2", "a.txt", 2, 2, "Done", "d1", false)
+	e.h.resolveErr = map[int64]error{roots["d1"]: errors.New("GitHub is down")}
+	if err := e.c.Sync(context.Background(), 5); err == nil {
+		t.Fatal("the failed resolution was not reported")
+	}
+	if e.h.resolvedBy[roots["c1"]] != aliceGH {
+		t.Fatalf("setup: %+v", e.h.resolvedBy)
+	}
+	e.h.resolveErr = nil
+	e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: "c3", Path: "a.txt", PatchSet: 2, Line: 2, InReplyTo: "c2", Message: "Not done.", Updated: e.g.tick(),
+		Unresolved: true, Author: carol})
+	e.sync(t)
+	for _, gc := range e.g.comments {
+		if gc.Author.Username == "alice" && strings.Contains(gc.Message, "on GitHub") {
+			t.Errorf("the bridge's resolution came back as alice's: %+v", gc)
+		}
+	}
+	if e.h.resolved[roots["c1"]] {
+		t.Error("Carol's unresolving was not mirrored")
+	}
+}

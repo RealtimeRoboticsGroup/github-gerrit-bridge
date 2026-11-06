@@ -390,6 +390,17 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 		t := st.Threads[i]
 		threads[t.GerritRoot] = &t
 	}
+	save := func() error {
+		var ts []state.Thread
+		for _, t := range threads {
+			ts = append(ts, *t)
+		}
+		sort.Slice(ts, func(i, j int) bool { return ts[i].GerritRoot < ts[j].GerritRoot })
+		return updateStateFn(ctx, c.Store, n, "Sync comments", func(s *state.Change) {
+			s.Comments = m.list()
+			s.Threads = ts
+		})
+	}
 	var first *commentSnapshot
 	var wait time.Duration
 	posters := map[int]*poster{}
@@ -433,7 +444,16 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 		if p1 || p2 {
 			continue
 		}
-		if err := c.syncResolution(ctx, n, pr, snap, threads); err != nil {
+		resolved, err := c.syncResolution(ctx, n, pr, snap, threads)
+		if resolved {
+			// Kept at once, even if a later one failed: a resolution
+			// made as someone and not recorded would read next time as
+			// their own on GitHub (tenth audit).
+			if serr := save(); err == nil {
+				err = serr
+			}
+		}
+		if err != nil {
 			return err
 		}
 		if err := c.dismissStale(ctx, n, pr, snap, m); err != nil {
@@ -441,15 +461,7 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 		}
 		break
 	}
-	var ts []state.Thread
-	for _, t := range threads {
-		ts = append(ts, *t)
-	}
-	sort.Slice(ts, func(i, j int) bool { return ts[i].GerritRoot < ts[j].GerritRoot })
-	if err := updateStateFn(ctx, c.Store, n, "Sync comments", func(s *state.Change) {
-		s.Comments = m.list()
-		s.Threads = ts
-	}); err != nil {
+	if err := save(); err != nil {
 		return err
 	}
 	return waitFor(wait)
@@ -694,12 +706,17 @@ func (c *Comments) recoverThreads(s *commentSnapshot, m *commentMap, threads map
 			continue
 		}
 		t := threads[gid]
+		th, onGitHub := byRoot[mc.GitHubID]
 		if t == nil {
-			// A new thread starts unresolved on GitHub.
-			t = &state.Thread{GerritRoot: gid, GitHubRootID: mc.GitHubID}
+			// A new thread starts unresolved on GitHub. One whose record
+			// was lost starts as GitHub has it: a difference is then
+			// Gerrit's, and nothing GitHub shows (a resolution the
+			// bridge made with someone's token, say) is taken for theirs
+			// (tenth audit).
+			t = &state.Thread{GerritRoot: gid, GitHubRootID: mc.GitHubID, Resolved: onGitHub && th.IsResolved}
 			threads[gid] = t
 		}
-		if th, ok := byRoot[mc.GitHubID]; ok {
+		if onGitHub {
 			t.GitHubThread = th.ID
 		}
 	}
@@ -2190,7 +2207,9 @@ func gerritResolved(s *commentSnapshot, root string) bool {
 	return !last.Unresolved
 }
 
-func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnapshot, threads map[string]*state.Thread) error {
+// syncResolution mirrors thread resolutions, reporting whether it did any.
+func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnapshot, threads map[string]*state.Thread) (bool, error) {
+	changed := false
 	ghResolved := map[string]bool{}
 	resolver := map[string]github.User{} // thread -> who resolved it
 	for _, t := range s.threads {
@@ -2216,10 +2235,10 @@ func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnap
 			// Gerrit changed (or both did: Gerrit wins).
 			as, err := c.resolveAs(ctx, n, s, lastInThread(s, root), t.GitHubThread, gr)
 			if err != nil {
-				return err
+				return changed, err
 			}
 			c.Logger.Info("mirrored Gerrit resolution to GitHub", "change", n, "pr", pr, "thread", root, "resolved", gr, "as", as)
-			t.Resolved = gr
+			t.Resolved, changed = gr, true
 		default:
 			// GitHub changed.
 			last := lastInThread(s, root)
@@ -2236,13 +2255,13 @@ func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnap
 				}}},
 			})
 			if err != nil {
-				return err
+				return changed, err
 			}
 			c.Logger.Info("mirrored GitHub resolution to Gerrit", "change", n, "pr", pr, "thread", root, "resolved", hr)
-			t.Resolved = hr
+			t.Resolved, changed = hr, true
 		}
 	}
-	return nil
+	return changed, nil
 }
 
 // resolveAs resolves (or unresolves) GitHub thread as whoever did in

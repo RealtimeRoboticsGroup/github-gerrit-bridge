@@ -260,6 +260,7 @@ type fakeGitHub struct {
 	head       string
 	resolved   map[int64]bool        // thread root -> resolved
 	resolvedBy map[int64]github.User // thread root -> who resolved it
+	resolveErr map[int64]error       // thread root -> SetThreadResolved's answer
 	// diff lines per path that accept line comments; diffAt overrides it
 	// per "commit/path".
 	diff     map[string]map[int]bool
@@ -592,6 +593,9 @@ func (f *fakeGitHub) CreateIssueComment(_ context.Context, _ int, body string) (
 func (f *fakeGitHub) SetThreadResolved(_ context.Context, id string, resolved bool) error {
 	var root int64
 	fmt.Sscanf(id, "T%d", &root)
+	if err := f.resolveErr[root]; err != nil {
+		return err
+	}
 	f.resolved[root] = resolved
 	if f.resolvedBy == nil {
 		f.resolvedBy = map[int64]github.User{}
