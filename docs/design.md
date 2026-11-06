@@ -1505,6 +1505,11 @@ defenses, by threat:
   refusals. Mirrored Gerrit comments, messages and `gerrit/<Label>`
   statuses show the username beside the (free-form) full name, with
   Markdown in names escaped.
+- **Ids and refs from GitHub.** A PR whose head is not a full commit id,
+  or whose branch name git could read as an option, a range or a second
+  ref, is not imported, and a push whose ids are not full commit ids is
+  not followed (so it is the bridge's): GitHub never sends either, but
+  nothing else would stop one reaching git (tenth audit).
 - **Mentions.** Gerrit text posted on GitHub under the bridge's name, and
   GitHub text the bridge posts in Gerrit as itself, has its `@mentions`
   broken (§8), so nobody can make the bridge notify people or teams.

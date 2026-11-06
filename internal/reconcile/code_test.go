@@ -4669,3 +4669,61 @@ func TestFirstUploadNeedsTheAuthorsText(t *testing.T) {
 		}
 	}
 }
+
+// Only full commit ids and plain branch names from GitHub reach git:
+// never one it could read as an option or another ref, which GitHub
+// never sends, but nothing checked (tenth audit).
+func TestAPIRefsGitCouldMisreadNeverReachIt(t *testing.T) {
+	for _, bad := range []func(pr *github.PullRequest){
+		func(pr *github.PullRequest) { pr.Head.SHA = "--output=x" },
+		func(pr *github.PullRequest) { pr.Head.SHA = pr.Head.SHA[:12] },
+		func(pr *github.PullRequest) { pr.Head.Ref = "topic:refs/heads/main" },
+		func(pr *github.PullRequest) { pr.Head.Ref = "-topic" },
+	} {
+		s, im, up, m1, _, _ := gerritBornWorld(t, false)
+		h := s.commit(m1, "new.txt", "n\n", "New")
+		s.push("github.git", h, "refs/heads/topic")
+		s.pushed("o/r", "refs/heads/topic", h, "austin")
+		bad(s.pr(60, "topic", h, "main", "austin"))
+		if err := im.Import(context.Background(), "main"); err != nil {
+			t.Fatal(err)
+		}
+		if len(up.uploads) != 0 {
+			t.Errorf("imported: %v", up.uploads)
+		}
+	}
+	// A push whose ids are not commit ids is not followed: who pushed is
+	// not known, so the bridge uploads it.
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	h := s.commit(m1, "new.txt", "n\n", "New")
+	s.push("github.git", h, "refs/heads/topic")
+	s.pushed("o/r", "refs/heads/topic", h, "austin")
+	s.pushLog["o/r refs/heads/topic"][0].before = m1[:12] // short, which git would resolve
+	s.pr(60, "topic", h, "main", "austin")
+	if err := im.Import(context.Background(), "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], " ") {
+		t.Errorf("uploads = %v, want one as the bridge", up.uploads)
+	}
+}
+
+func TestAPIIdsGitCouldMisread(t *testing.T) {
+	full := strings.Repeat("ab", 20)
+	for p, bad := range map[github.Push]bool{
+		{Before: full, After: full}:              false,
+		{Before: "", After: full}:                false,
+		{Before: full[:12], After: full}:         true,
+		{Before: full, After: "--all"}:           true,
+		{Before: "refs/heads/main", After: full}: true,
+	} {
+		if badPush(p) != bad {
+			t.Errorf("badPush(%+v) = %v", p, !bad)
+		}
+	}
+	for ref, ok := range map[string]bool{"topic": true, "feature/x-1.2": true, "-x": false, "a..b": false, "a:b": false, "a@{1}": false, "a b": false, "a\x00b": false, "": false} {
+		if safeHeadRef(ref) != ok {
+			t.Errorf("safeHeadRef(%q) = %v", ref, !ok)
+		}
+	}
+}

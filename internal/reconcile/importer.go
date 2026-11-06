@@ -231,6 +231,13 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 	byHead := map[string]*github.PullRequest{}
 	for i := range prs {
 		pr := &prs[i]
+		if !fullSHA.MatchString(pr.Head.SHA) || !safeHeadRef(pr.Head.Ref) {
+			// Only ever a full SHA and a branch name reach git, never
+			// something it could read as an option or another ref (tenth
+			// audit).
+			im.Logger.Warn("GitHub gave a PR head git could misread; not importing it", "pr", pr.Number)
+			continue
+		}
 		// Fork PRs are imported too (their authors may not be able to
 		// push to the repository), keyed by fork and branch.
 		if pr.HeadRepo() == "" {
@@ -1189,6 +1196,23 @@ func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h
 	return author, pr.User.Login, nil
 }
 
+// fullSHA is a commit id as git prints it in full.
+var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+
+// safeHeadRef reports whether a PR's head branch can go in a refspec as
+// it is: nothing git reads as an option, a range, a revision expression
+// or a second ref.
+func safeHeadRef(ref string) bool {
+	return ref != "" && !strings.HasPrefix(ref, "-") && !strings.Contains(ref, "..") && !strings.Contains(ref, "@{") &&
+		!strings.ContainsFunc(ref, func(r rune) bool { return r < 0x20 || r == 0x7f || strings.ContainsRune(" :^~?*[\\", r) })
+}
+
+// badPush reports whether a push the activity log or a webhook gave has
+// commit ids git could misread: it is not followed.
+func badPush(p github.Push) bool {
+	return !fullSHA.MatchString(p.After) || (p.Before != "" && !fullSHA.MatchString(p.Before))
+}
+
 // editedBy reports whether editor, from PR activity, edited the PR: not
 // nobody (no edit since it was opened), and not author.
 func editedBy(editor, author github.User) bool {
@@ -1287,6 +1311,7 @@ func (im *Importer) pushedBy(ctx context.Context, pr *github.PullRequest, h stri
 	if err != nil {
 		return github.User{}, fmt.Errorf("who pushed %s to #%d: %w", short(h), pr.Number, err)
 	}
+	pushes = slices.DeleteFunc(slices.Clone(pushes), badPush)
 	var by github.User
 	at, older := h, 0 // pushes[older:] came before the last one followed
 	for range maxPushes {
@@ -1301,6 +1326,7 @@ func (im *Importer) pushedBy(ctx context.Context, pr *github.PullRequest, h stri
 			// Not listed yet (a webhook said), unless it was listed
 			// later than the push followed: then which came first?
 			p, found = im.Pushers.Lookup(repo, ref, at)
+			found = found && !badPush(p)
 		}
 		if !found || p.Actor.Login == "" || (by.Login != "" && !sameGitHubUser(by, p.Actor)) {
 			return github.User{}, nil
@@ -1329,6 +1355,9 @@ func (im *Importer) carriesOthers(ctx context.Context, pushes []github.Push, rep
 	}
 	theirs := map[string]bool{}
 	for _, p := range pushes {
+		if badPush(p) {
+			return true // not known: it may
+		}
 		if !sameGitHubUser(p.Actor, by) {
 			theirs[p.After] = true
 		}
