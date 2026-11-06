@@ -261,6 +261,8 @@ type fakeGitHub struct {
 	resolved   map[int64]bool        // thread root -> resolved
 	resolvedBy map[int64]github.User // thread root -> who resolved it
 	resolveErr map[int64]error       // thread root -> SetThreadResolved's answer
+	// refuseReviewEdit makes UpdateReview answer 403.
+	refuseReviewEdit bool
 	// diff lines per path that accept line comments; diffAt overrides it
 	// per "commit/path".
 	diff     map[string]map[int]bool
@@ -404,6 +406,22 @@ func (f *fakeGitHub) UpdateIssueComment(_ context.Context, id int64, body string
 		if f.ics[i].ID == id {
 			f.ics[i].Body = body
 			f.edited(id, "bridge")
+		}
+	}
+	return nil
+}
+
+func (f *fakeGitHub) UpdateReview(_ context.Context, _ int, id int64, body string) error {
+	if f.refuseReviewEdit {
+		return &github.APIError{Status: 403}
+	}
+	for i := range f.reviews {
+		if f.reviews[i].ID == id {
+			f.reviews[i].Body = body
+			if f.reviewEdits == nil {
+				f.reviewEdits = map[int64]string{}
+			}
+			f.reviewEdits[id] = "bridge"
 		}
 	}
 	return nil

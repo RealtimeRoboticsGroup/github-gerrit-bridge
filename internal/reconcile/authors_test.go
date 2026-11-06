@@ -531,3 +531,53 @@ func TestLoweredVoteDismissesTheApprovalItPosted(t *testing.T) {
 		t.Errorf("alice's approval stands on GitHub though her Gerrit vote is +1")
 	}
 }
+
+// A change message's GitHub copy, as alice or as the bot, edited by
+// someone else is put back, like any other copy (tenth audit)...
+func TestMessageCopyEditedByOtherIsRestored(t *testing.T) {
+	for _, linked := range []bool{true, false} {
+		e, a := linkedEnv(t)
+		if !linked {
+			delete(a.linked, 1)
+		}
+		e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"},
+			Message: "Patch Set 2:\n\nLooks wrong to me.", RevisionNumber: 2}}
+		e.sync(t)
+		e.h.ics[0].Body = strings.Replace(e.h.ics[0].Body, "Looks wrong to me.", "Ship it, I approve.", 1)
+		e.h.edited(e.h.ics[0].ID, "mallory")
+		e.sync(t)
+		if strings.Contains(e.h.ics[0].Body, "Ship it") {
+			t.Errorf("linked %v: someone else's edit of alice's message copy stands (by %s): %q", linked, e.h.ics[0].User.Login, e.h.ics[0].Body)
+		}
+	}
+}
+
+// ...and so is the text of an approval posted as her.
+func TestVoteReviewEditedByOtherIsRestored(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"},
+		Message: "Patch Set 2: Code-Review+2\n\nOnly the docs need work.", RevisionNumber: 2}}
+	e.sync(t)
+	if len(e.h.reviews) != 1 || e.h.reviews[0].State != "APPROVED" {
+		t.Fatalf("setup: %+v", e.h.reviews)
+	}
+	id := e.h.reviews[0].ID
+	e.h.reviews[0].Body = strings.Replace(e.h.reviews[0].Body, "Only the docs need work.", "No need to test this.", 1)
+	e.h.reviewEdits = map[int64]string{id: "mallory"}
+	e.sync(t)
+	if b := e.h.reviews[0].Body; strings.Contains(b, "No need") || !strings.Contains(b, "Only the docs need work.") {
+		t.Errorf("someone else's edit of alice's approval stands: %q", b)
+	}
+	// GitHub refusing to restore it does not stop the sync.
+	e.h.refuseReviewEdit = true
+	e.h.reviewEdits = map[int64]string{id: "mallory"}
+	e.sync(t)
+	e.h.refuseReviewEdit = false
+	// Her own edit is hers.
+	e.h.reviews[0].Body = strings.Replace(e.h.reviews[0].Body, "Only the docs", "Only the docs and tests", 1)
+	e.h.reviewEdits = map[int64]string{id: aliceGH.Login}
+	e.sync(t)
+	if !strings.Contains(e.h.reviews[0].Body, "Only the docs and tests") {
+		t.Errorf("alice's own edit was undone: %q", e.h.reviews[0].Body)
+	}
+}

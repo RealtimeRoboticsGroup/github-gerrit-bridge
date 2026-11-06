@@ -1641,7 +1641,9 @@ notes; nothing on GitHub advertises the link.
   this way it can only stand for their own words.
 - **Edits.** A copy posted as its author is theirs to edit on GitHub.
   Anyone else's edit is put back, as for the bot's copies, in the
-  author's style (no header).
+  author's style (no header). That includes copies of change messages
+  and the text of a vote's review (tenth audit: only inline comments'
+  copies were put back); if GitHub won't let the bot, it is logged.
 - **Votes as reviews.** A linked user's change message with Code-Review
   +2 becomes their GitHub approval, and a negative vote their change
   request. It goes on the GitHub commit of the patch set it was given on,

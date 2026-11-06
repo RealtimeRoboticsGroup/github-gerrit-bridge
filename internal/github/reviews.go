@@ -238,6 +238,12 @@ func (c *Client) UpdateReviewComment(ctx context.Context, id int64, body string)
 }
 
 // UpdateIssueComment replaces an issue comment's body.
+// UpdateReview replaces the body of review id on PR pr.
+func (c *Client) UpdateReview(ctx context.Context, pr int, id int64, body string) error {
+	_, err := c.Do(ctx, http.MethodPut, c.RepoPath(fmt.Sprintf("pulls/%d/reviews/%d", pr, id)), map[string]string{"body": body}, nil)
+	return err
+}
+
 func (c *Client) UpdateIssueComment(ctx context.Context, id int64, body string) error {
 	_, err := c.Do(ctx, http.MethodPatch, c.RepoPath("issues/comments/"+strconv.FormatInt(id, 10)), map[string]string{"body": body}, nil)
 	return err

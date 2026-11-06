@@ -51,6 +51,7 @@ type GitHubAPI interface {
 	SetThreadResolved(ctx context.Context, threadID string, resolved bool) error
 	UpdateReviewComment(ctx context.Context, id int64, body string) error
 	UpdateIssueComment(ctx context.Context, id int64, body string) error
+	UpdateReview(ctx context.Context, pr int, id int64, body string) error
 	DismissReview(ctx context.Context, n int, id int64, message string) error
 	Dismissals(ctx context.Context, n int) (map[int64]github.Dismissal, error)
 	FileAt(ctx context.Context, ref, path string) ([]byte, error)
@@ -2552,6 +2553,15 @@ func (c *Comments) mirrorEdits(ctx context.Context, n, pr int, s *commentSnapsho
 		mc := m.byGitHub[k]
 		gc := s.byID[mc.GerritID]
 		body, login, url, ok := s.githubBody(mc.Kind, mc.GitHubID)
+		if ok && gc == nil && mc.Origin == "gerrit" {
+			// A change message's copy (a PR comment, or a vote's
+			// review), as its author's or the bot's: like any other copy,
+			// put back if someone else edited it (tenth audit).
+			if err := c.restoreMessageCopy(ctx, n, pr, s, mc, login); err != nil {
+				return posted, err
+			}
+			continue
+		}
 		if !ok || gc == nil {
 			continue
 		}
@@ -2640,6 +2650,51 @@ func (c *Comments) mirrorEdits(ctx context.Context, n, pr int, s *commentSnapsho
 		}
 	}
 	return posted, nil
+}
+
+// restoreMessageCopy puts back the GitHub copy mc of a change message,
+// posted as login, if someone else edited it on GitHub: messages only
+// change in Gerrit. One posted as its author is theirs to edit.
+func (c *Comments) restoreMessageCopy(ctx context.Context, n, pr int, s *commentSnapshot, mc *state.Comment, login string) error {
+	var msg *gerrit.ChangeMessage
+	for i := range s.messages {
+		if s.messages[i].ID == mc.GerritID {
+			msg = &s.messages[i]
+		}
+	}
+	edits := s.edits
+	if mc.Kind == kindReviewBody {
+		edits = s.reviewEdits
+	} else if mc.Kind != kindIssueComment {
+		return nil
+	}
+	editor, edited := edits[mc.GitHubID]
+	if msg == nil || !edited || c.byBridge(editor) || (mc.As != 0 && strings.EqualFold(editor, login)) {
+		return nil
+	}
+	if c.DryRun {
+		c.Logger.Info("dry run: would restore edited copy of a Gerrit message", "change", n, "github_id", mc.GitHubID, "editor", editor)
+		return nil
+	}
+	body := c.messageBody(n, *msg, c.messageText(*msg), s, mc.As)
+	var err error
+	if mc.Kind == kindReviewBody {
+		err = c.GitHub.UpdateReview(ctx, pr, mc.GitHubID, body)
+	} else {
+		err = c.GitHub.UpdateIssueComment(ctx, mc.GitHubID, body)
+	}
+	var ae *github.APIError
+	if errors.As(err, &ae) && ae.Status >= 400 && ae.Status < 500 {
+		// GitHub won't (a review only its author may edit, say): that
+		// must not stop the change's sync.
+		c.Logger.Warn("GitHub refused to restore a Gerrit message's copy edited on GitHub", "change", n, "github_id", mc.GitHubID, "editor", editor, "err", err)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	c.Logger.Warn("restored a Gerrit message's GitHub copy edited on GitHub", "change", n, "pr", pr, "github_id", mc.GitHubID, "editor", editor)
+	return nil
 }
 
 // updateGitHub replaces the body of the bridge's GitHub copy mc.
