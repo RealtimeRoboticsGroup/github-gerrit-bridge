@@ -980,7 +980,7 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindIssueComment, Origin: "gerrit", BodyHash: hashString(gc.Message), As: as})
 			posted = true
 		default:
-			k := gc.Author.Username + "|" + gc.Updated + "|" + strconv.Itoa(gc.PatchSet)
+			k := strconv.Itoa(gc.Author.AccountID) + "|" + gc.Updated + "|" + strconv.Itoa(gc.PatchSet)
 			g := gkey[k]
 			if g == nil {
 				g = &group{ps: gc.PatchSet}

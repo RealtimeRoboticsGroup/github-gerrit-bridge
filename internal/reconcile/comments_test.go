@@ -2694,3 +2694,24 @@ func TestAttachmentNoteInCommitMessageIsPlain(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// Gerrit comments are batched into one GitHub review per author by
+// account id, never by username, which two accounts may share (none), and
+// each batch is posted with its first comment's author's token (tenth
+// audit).
+func TestReviewBatchesAreByAccount(t *testing.T) {
+	e := newCommentsEnv(t)
+	at := e.g.tick()
+	for i, id := range []int{2, 3} {
+		e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: fmt.Sprintf("n%d", i), Path: "a.txt", PatchSet: 2, Line: 2 + i,
+			Message: "Hmm.", Updated: at, Unresolved: true, Author: gerrit.AccountInfo{AccountID: id, Name: fmt.Sprint("No name ", id)}})
+	}
+	e.sync(t)
+	reviews := map[int64]bool{}
+	for _, rc := range e.h.rcs {
+		reviews[rc.ReviewID] = true
+	}
+	if len(e.h.rcs) != 2 || len(reviews) != 2 {
+		t.Errorf("two authors' comments in %d reviews: %+v", len(reviews), e.h.rcs)
+	}
+}
