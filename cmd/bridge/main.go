@@ -89,10 +89,8 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		return err
 	}
 
-	for _, f := range secretFiles(cfg) {
-		if f != "" && config.LooseSecret(f) {
-			logger.Warn("secret file is readable by others; make it 0600 (the peer key can act as anyone in Gerrit)", "file", f)
-		}
+	if err := checkSecrets(cfg, logger); err != nil {
+		return err
 	}
 	gerritPassword, err := config.ReadSecret(cfg.Gerrit.HTTPPasswordFile)
 	if err != nil {
@@ -548,6 +546,27 @@ func secretFiles(cfg *config.Config) []string {
 		secrets = append(secrets, a.ClientSecretFile, a.KeyFile, a.TokensFile)
 	}
 	return secrets
+}
+
+// checkSecrets refuses keys readable by others: the peer key acts as
+// anyone in Gerrit, the SSH key as the bridge, and the token key opens
+// every linked user's GitHub token (tenth audit). Other secrets readable
+// by others are warned about.
+func checkSecrets(cfg *config.Config, logger *slog.Logger) error {
+	keys := []string{cfg.Gerrit.SSH.KeyFile, cfg.Gerrit.SSH.PeerKeyFile}
+	if a := cfg.GitHub.UserApp; a != nil {
+		keys = append(keys, a.KeyFile)
+	}
+	for _, f := range secretFiles(cfg) {
+		if f == "" || !config.LooseSecret(f) {
+			continue
+		}
+		if slices.Contains(keys, f) {
+			return fmt.Errorf("%s is readable by others: make it 0600", f)
+		}
+		logger.Warn("secret file is readable by others; make it 0600", "file", f)
+	}
+	return nil
 }
 
 // linkedAuthors posts linked users' content with their own token

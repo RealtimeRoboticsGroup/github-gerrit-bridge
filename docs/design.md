@@ -1873,6 +1873,9 @@ Abandon and Toggle Work In Progress for Administrators.
 - **The peer key** (`gerrit.ssh.peer_key_file`) can run any SSH command as
   any account, administrators included: a credential for the whole site.
   Keep it only on the bridge's host, mode 600, and rotate it if in doubt.
+  The bridge will not start if it, the SSH key or the user-token key is
+  readable by others (tenth audit); other secrets readable by others are
+  warned about.
 - **Submit for a submitter group**, not Registered Users (AOS already
   does). Submit also lets one rebase anyone's change on behalf of its
   uploader: with it, anyone could put their code under a trusted

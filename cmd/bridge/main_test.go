@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/config"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/usertokens"
+	"os"
 	"path/filepath"
 )
 
@@ -42,6 +44,40 @@ func TestSecretFiles(t *testing.T) {
 	cfg.CI.Buildkite = &config.Buildkite{TokenFile: "bk"}
 	if got := secretFiles(cfg); !slices.Contains(got, "peer") || !slices.Contains(got, "bk") {
 		t.Errorf("secret files = %v", got)
+	}
+}
+
+// A key readable by others stops the bridge; another secret is warned
+// about (tenth audit).
+func TestLooseKeysAreRefused(t *testing.T) {
+	dir := t.TempDir()
+	file := func(name string, mode os.FileMode) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x"), mode); err != nil {
+			t.Fatal(err)
+		}
+		os.Chmod(p, mode)
+		return p
+	}
+	for _, set := range []func(cfg *config.Config, p string){
+		func(cfg *config.Config, p string) { cfg.Gerrit.SSH.PeerKeyFile = p },
+		func(cfg *config.Config, p string) { cfg.Gerrit.SSH.KeyFile = p },
+		func(cfg *config.Config, p string) { cfg.GitHub.UserApp = &config.UserApp{KeyFile: p} },
+	} {
+		cfg := &config.Config{}
+		set(cfg, file("key", 0o640))
+		if err := checkSecrets(cfg, slog.Default()); err == nil {
+			t.Errorf("a loose key passed: %+v", cfg)
+		}
+		set(cfg, file("tight", 0o600))
+		if err := checkSecrets(cfg, slog.Default()); err != nil {
+			t.Errorf("a 0600 key: %v", err)
+		}
+	}
+	cfg := &config.Config{}
+	cfg.Gerrit.HTTPPasswordFile = file("pw", 0o644)
+	if err := checkSecrets(cfg, slog.Default()); err != nil {
+		t.Errorf("a loose password stops the bridge: %v", err)
 	}
 }
 
