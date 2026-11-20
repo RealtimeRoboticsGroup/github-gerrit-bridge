@@ -185,6 +185,7 @@ func TestPublishable(t *testing.T) {
 // account, nor with the bridge's token.
 func TestGitHubMergerMergesAsTheCommenter(t *testing.T) {
 	var auth []string
+	commits := "[]"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPut && r.URL.Path == "/repos/o/r/pulls/7/merge":
@@ -196,7 +197,7 @@ func TestGitHubMergerMergesAsTheCommenter(t *testing.T) {
 			}
 			io.WriteString(w, `{"sha":"m1","merged":true}`)
 		case r.URL.Path == "/repos/o/r/pulls/7/commits":
-			io.WriteString(w, `[{"sha":"a","parents":[{"sha":"p"}]},{"sha":"b","parents":[{"sha":"a"},{"sha":"s"}]}]`)
+			io.WriteString(w, commits)
 		default:
 			t.Errorf("asked %s %s", r.Method, r.URL)
 		}
@@ -235,7 +236,15 @@ func TestGitHubMergerMergesAsTheCommenter(t *testing.T) {
 	if len(auth) != 1 {
 		t.Errorf("merged %d times, want only alice's", len(auth))
 	}
-	if has, err := m.HasMergeCommits(ctx, 7); !has || err != nil {
-		t.Errorf("merge commits: %v %v", has, err)
+	// Only git subtree's commits make it a subtree: an "Update branch"
+	// merge does not.
+	for list, want := range map[string]bool{
+		`[{"sha":"a","commit":{"message":"x"},"parents":[{"sha":"p"}]},{"sha":"b","commit":{"message":"Merge branch 'main' into topic"},"parents":[{"sha":"a"},{"sha":"m"}]}]`:                                                                                                     false,
+		`[{"sha":"s","commit":{"message":"Squashed 'third_party/x/' content from commit abc\n\ngit-subtree-dir: third_party/x\ngit-subtree-split: abc"},"parents":[]},{"sha":"b","commit":{"message":"Merge commit 's' as 'third_party/x'"},"parents":[{"sha":"a"},{"sha":"s"}]}]`: true,
+	} {
+		commits = list
+		if has, err := m.HasSubtree(ctx, 7); has != want || err != nil {
+			t.Errorf("subtree %v, want %v (%v): %s", has, want, err, list)
+		}
 	}
 }

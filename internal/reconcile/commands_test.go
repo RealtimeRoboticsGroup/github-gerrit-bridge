@@ -362,7 +362,7 @@ func TestSubmitOnlyAsThePinnedGitHubAccount(t *testing.T) {
 
 type fakeMerger struct {
 	linked map[string]bool // GitHub logins with a linked token
-	merges bool            // the PR has merge commits
+	merges bool            // the PR pulls in a subtree
 	err    error
 	calls  []github.MergeInput
 	as     []string
@@ -379,7 +379,7 @@ func (f *fakeMerger) Merge(_ context.Context, u github.User, pr int, head string
 	return "merged1", true, nil
 }
 
-func (f *fakeMerger) HasMergeCommits(context.Context, int) (bool, error) { return f.merges, nil }
+func (f *fakeMerger) HasSubtree(context.Context, int) (bool, error) { return f.merges, nil }
 
 // mergeCommands is newCommands where GitHub owns the branches: change 5's
 // Change-Id is known, and its PR has a title and description.

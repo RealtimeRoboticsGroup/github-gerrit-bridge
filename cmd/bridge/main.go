@@ -681,10 +681,14 @@ func (m githubMerger) Merge(ctx context.Context, u github.User, pr int, head str
 	return sha, true, err
 }
 
-func (m githubMerger) HasMergeCommits(ctx context.Context, pr int) (bool, error) {
+func (m githubMerger) HasSubtree(ctx context.Context, pr int) (bool, error) {
 	commits, err := m.gh.PullCommits(ctx, pr)
-	return slices.ContainsFunc(commits, func(c github.PullCommit) bool { return len(c.Parents) > 1 }), err
+	return slices.ContainsFunc(commits, func(c github.PullCommit) bool { return subtreeDir.MatchString(c.Commit.Message) }), err
 }
+
+// subtreeDir is git subtree's trailer naming the directory a commit pulls
+// a subtree into.
+var subtreeDir = regexp.MustCompile(`(?m)^git-subtree-dir: \S`)
 
 // linkedAuthors posts linked users' content with their own token
 // (design §7.2).

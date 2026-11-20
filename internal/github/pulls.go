@@ -125,7 +125,10 @@ func (c *Client) MergePull(ctx context.Context, n int, m MergeInput) (string, er
 
 // PullCommit is one of a PR's own commits.
 type PullCommit struct {
-	SHA     string `json:"sha"`
+	SHA    string `json:"sha"`
+	Commit struct {
+		Message string `json:"message"`
+	} `json:"commit"`
 	Parents []struct {
 		SHA string `json:"sha"`
 	} `json:"parents"`

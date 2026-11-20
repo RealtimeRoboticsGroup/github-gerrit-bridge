@@ -78,9 +78,9 @@ type GitHubMerger interface {
 	// is false if u has no token, or no longer the Gerrit account it was
 	// linked from.
 	Merge(ctx context.Context, u github.User, pr int, head string, m github.MergeInput) (sha string, linked bool, err error)
-	// HasMergeCommits reports whether PR pr's own commits include a
-	// merge (a subtree pulled in).
-	HasMergeCommits(ctx context.Context, pr int) (bool, error)
+	// HasSubtree reports whether PR pr's own commits pull in a subtree
+	// (git subtree's commits, which name it with git-subtree-dir).
+	HasSubtree(ctx context.Context, pr int) (bool, error)
 }
 
 // CommandsGitHub is what commands need from GitHub.
@@ -363,9 +363,12 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, he
 // at the head they could have seen, the change's current patch set. Its
 // commit message is the PR's description, ending with the change's
 // Change-Id, so Gerrit closes the change as merged when the merge reaches
-// its branch. A PR that pulls in a merge of its own (a subtree) is merged
-// with a merge commit, keeping its history; the rest are squashed.
-// Gerrit-born PRs always are: their history is the patch sets'.
+// its branch. A GitHub-born PR that pulls in a subtree (git subtree's
+// commits, whose history later subtree pulls need) is merged with a merge
+// commit; everything else is squashed, whatever merges it has (an
+// "Update branch", the bridge's own patch-set history): a merge commit
+// would bring every commit of it, Change-Id footers that close other
+// changes included. Gerrit-born PRs' history is the patch sets'.
 func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, heads []state.Head, pr *github.PullRequest) string {
 	_, sha, st, reply := c.seen(ctx, n, ic, heads)
 	if reply != "" {
@@ -382,7 +385,7 @@ func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, hea
 	}
 	method := "squash"
 	if st.State.Origin == "github" {
-		has, err := c.Merger.HasMergeCommits(ctx, pr.Number)
+		has, err := c.Merger.HasSubtree(ctx, pr.Number)
 		if err != nil {
 			c.Logger.Warn("/submit: listing the PR's commits", "change", n, "pr", pr.Number, "err", err)
 			return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not read this PR's commits (see its log). Post it again, or use the merge button.", ic.User.Login)
