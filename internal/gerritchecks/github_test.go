@@ -3,9 +3,12 @@ package gerritchecks
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -120,14 +123,21 @@ func TestClip(t *testing.T) {
 type fakeSource struct {
 	commits map[string]string // Gerrit commit -> GitHub commit
 	pr      *github.PullRequest
+	mu      sync.Mutex
 	calls   int
+	block   chan struct{} // if set, CheckRuns waits for it
 }
 
 func (f *fakeSource) Commit(_ context.Context, change int, sha string) (string, int, error) {
 	return f.commits[sha], 7, nil
 }
 func (f *fakeSource) CheckRuns(context.Context, string) ([]github.CheckRun, error) {
+	if f.block != nil {
+		<-f.block
+	}
+	f.mu.Lock()
 	f.calls++
+	f.mu.Unlock()
 	return []github.CheckRun{{ID: 1, Name: "build", Status: "completed", Conclusion: "failure"}}, nil
 }
 func (f *fakeSource) Statuses(context.Context, string) ([]github.Status, error) { return nil, nil }
@@ -146,13 +156,20 @@ type sessionChanges struct {
 	reads *int
 }
 
-func (s sessionChanges) viewer(session string) Changes {
-	return readCounter{s.sees[session], s.reads}
+func (s sessionChanges) viewer(session string) ViewerChanges {
+	sees, in := s.sees[session]
+	return readCounter{sees, s.reads, in}
 }
 
 type readCounter struct {
 	fakeChanges
-	n *int
+	n  *int
+	in bool // the session is someone's
+}
+
+func (r readCounter) SignedIn(context.Context) (bool, error) {
+	*r.n++
+	return r.in, nil
 }
 
 func (r readCounter) GetChange(ctx context.Context, n int, o ...string) (*gerrit.ChangeInfo, error) {
@@ -191,11 +208,17 @@ func TestViewerHandler(t *testing.T) {
 	if w, _ := get("/checks/5/2", "x{y}"); w.Code != http.StatusUnauthorized || reads != 0 {
 		t.Errorf("not a session: %d, %d reads", w.Code, reads)
 	}
+	// One Gerrit does not know (expired, made up) is nobody's, though
+	// Gerrit would read it as anonymous.
+	if w, _ := get("/checks/5/2", "expired"); w.Code != http.StatusUnauthorized {
+		t.Errorf("unknown session: %d", w.Code)
+	}
 	w, resp := get("/checks/5/2", "alice-session")
 	if w.Code != 200 || len(resp.Runs) != 2 || resp.Runs[0].CheckName != "build" || resp.Runs[1].CheckName != "GitHub merge" {
 		t.Fatalf("alice: %d %s", w.Code, w.Body)
 	}
-	if w.Header().Get("Access-Control-Allow-Origin") != "" || w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("Vary") != "Cookie" {
+	if w.Header().Get("Access-Control-Allow-Origin") != "" || w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("Vary") != "Cookie" ||
+		w.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Errorf("headers %v: want no CORS, and no shared caching", w.Header())
 	}
 	// Bob may not see it: not even what is cached for alice.
@@ -205,7 +228,7 @@ func TestViewerHandler(t *testing.T) {
 	// Gerrit is asked every time: alice's access can end at any time.
 	readsBefore := reads
 	sc.sees["alice-session"] = fakeChanges{}
-	if w, _ := get("/checks/5/2", "alice-session"); w.Code != http.StatusNotFound || reads != readsBefore+1 {
+	if w, _ := get("/checks/5/2", "alice-session"); w.Code != http.StatusNotFound || reads != readsBefore+2 {
 		t.Errorf("alice, no longer allowed: %d (%d reads)", w.Code, reads-readsBefore)
 	}
 	if src.calls != 1 {
@@ -226,7 +249,7 @@ func TestViewerHandler(t *testing.T) {
 // Gerrit refusing a viewer (a session it no longer takes, say) is not
 // seeing the change, not a failure.
 func TestViewerRefusedIsNotFound(t *testing.T) {
-	h := &Handler{Project: "p", GitHub: &fakeSource{}, Viewer: func(string) Changes { return refusing{} }}
+	h := &Handler{Project: "p", GitHub: &fakeSource{}, Viewer: func(string) ViewerChanges { return refusing{} }}
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.SetPathValue("change", "5")
@@ -239,6 +262,8 @@ func TestViewerRefusedIsNotFound(t *testing.T) {
 }
 
 type refusing struct{}
+
+func (refusing) SignedIn(context.Context) (bool, error) { return true, nil }
 
 func (refusing) GetChange(context.Context, int, ...string) (*gerrit.ChangeInfo, error) {
 	return nil, &gerrit.Error{Status: http.StatusForbidden}
@@ -264,7 +289,7 @@ func TestViewerRequestsAreBounded(t *testing.T) {
 			refused++
 		}
 	}
-	if refused != 5 || reads != maxViewerRequestsPerClient {
+	if refused != 5 || reads != 2*maxViewerRequestsPerClient {
 		t.Errorf("refused %d, reads %d", refused, reads)
 	}
 }
@@ -286,5 +311,110 @@ func TestGitHubLinksAreWebLinks(t *testing.T) {
 	runs := GitHubRuns([]github.CheckRun{{ID: 1, Name: "a", Status: "in_progress", HTMLURL: "javascript:x", DetailsURL: "https://ci.example.com/1"}}, nil, nil, "c", 1, 1)
 	if runs[0].CheckLink != "https://ci.example.com/1" {
 		t.Errorf("fallback to the details link: %q", runs[0].CheckLink)
+	}
+}
+
+// Sessions Gerrit does not know (anyone can send one, from many
+// addresses) spend only viewers' own Gerrit budget, and are turned away
+// after one read: they do not starve signed-in viewers.
+func TestUnknownSessionsDoNotStarveViewers(t *testing.T) {
+	reads := 0
+	five := &gerrit.ChangeInfo{Project: "p", Revisions: map[string]gerrit.RevisionInfo{"g1": {Number: 1}}}
+	sc := sessionChanges{sees: map[string]fakeChanges{"alice": {5: five}}, reads: &reads}
+	h := &Handler{Project: "p", GitHub: &fakeSource{commits: map[string]string{"g1": "c1"}}, Viewer: sc.viewer, Logger: slog.Default()}
+	get := func(addr, session string) int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = addr
+		r.SetPathValue("change", "5")
+		r.SetPathValue("patchset", "1")
+		r.Header.Set("Cookie", gerrit.SessionCookie+"="+session)
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	for i := range 10 {
+		for range maxViewerRequestsPerClient {
+			get(fmt.Sprintf("192.0.2.%d:1", i), "garbage")
+		}
+	}
+	if code := get("198.51.100.1:1", "alice"); code != 200 {
+		t.Errorf("alice after strangers' made-up sessions: %d", code)
+	}
+}
+
+// One viewer's uncached answers are bounded, so they cannot spend
+// everyone's GitHub budget; and requests for an answer being computed
+// wait for it rather than asking GitHub again.
+func TestViewerFillsAreBoundedAndShared(t *testing.T) {
+	reads := 0
+	revs := map[string]gerrit.RevisionInfo{}
+	commits := map[string]string{}
+	for i := 1; i <= 30; i++ {
+		revs[fmt.Sprint("g", i)] = gerrit.RevisionInfo{Number: i}
+		commits[fmt.Sprint("g", i)] = fmt.Sprint("c", i)
+	}
+	five := &gerrit.ChangeInfo{Project: "p", Revisions: revs}
+	sc := sessionChanges{sees: map[string]fakeChanges{"mallory": {5: five}, "bob": {5: five}}, reads: &reads}
+	src := &fakeSource{commits: commits}
+	h := &Handler{Project: "p", GitHub: src, Viewer: sc.viewer, Logger: slog.Default()}
+	get := func(addr, session string, ps int) int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = addr
+		r.SetPathValue("change", "5")
+		r.SetPathValue("patchset", fmt.Sprint(ps))
+		r.Header.Set("Cookie", gerrit.SessionCookie+"="+session)
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	refused := 0
+	for ps := 1; ps <= 25; ps++ {
+		if get("192.0.2.1:1", "mallory", ps) == http.StatusTooManyRequests {
+			refused++
+		}
+	}
+	if refused != 25-maxViewerFillsPerClient || src.calls != maxViewerFillsPerClient {
+		t.Errorf("refused %d, GitHub asked %d times", refused, src.calls)
+	}
+	if code := get("198.51.100.1:1", "bob", 30); code != 200 {
+		t.Errorf("bob after mallory: %d", code)
+	}
+	// Ten at once for one uncomputed answer: GitHub is asked once.
+	block := make(chan struct{})
+	src.block, src.calls = block, 0
+	var wg sync.WaitGroup
+	for i := range 10 {
+		wg.Go(func() { get(fmt.Sprintf("203.0.113.%d:1", i), "bob", 29) })
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(block)
+	wg.Wait()
+	if src.calls != 1 {
+		t.Errorf("GitHub asked %d times for one answer", src.calls)
+	}
+}
+
+// Signed-in viewers' change reads come from viewers' own budget, not the
+// anonymous one's, which is far smaller.
+func TestViewerReadsHaveTheirOwnBudget(t *testing.T) {
+	reads := 0
+	five := &gerrit.ChangeInfo{Project: "p", Revisions: map[string]gerrit.RevisionInfo{"g1": {Number: 1}}}
+	sc := sessionChanges{sees: map[string]fakeChanges{"alice": {5: five}}, reads: &reads}
+	h := &Handler{Project: "p", GitHub: &fakeSource{commits: map[string]string{"g1": "c1"}}, Viewer: sc.viewer, Logger: slog.Default()}
+	busy := 0
+	for i := range maxGerritPerMinute + 50 {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = fmt.Sprintf("10.0.%d.%d:1", i/200, i%200)
+		r.SetPathValue("change", "5")
+		r.SetPathValue("patchset", "1")
+		r.Header.Set("Cookie", gerrit.SessionCookie+"=alice")
+		h.ServeHTTP(w, r)
+		if w.Code != 200 {
+			busy++
+		}
+	}
+	if busy != 0 {
+		t.Errorf("%d viewers turned away", busy)
 	}
 }

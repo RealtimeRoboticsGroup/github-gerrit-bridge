@@ -211,3 +211,27 @@ func TestViewerReadsAsTheViewer(t *testing.T) {
 		t.Errorf("a write as the viewer: %v (sent %v)", err, got != nil)
 	}
 }
+
+// Gerrit reads an unknown session as anonymous, who has no account.
+func TestSignedIn(t *testing.T) {
+	status := 200
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/accounts/self" {
+			t.Errorf("asked %s", r.URL.Path)
+		}
+		w.WriteHeader(status)
+		io.WriteString(w, ")]}'\n{\"_account_id\":7}")
+	}))
+	defer srv.Close()
+	v := (&Client{BaseURL: srv.URL}).Viewer("s")
+	for code, want := range map[int]bool{200: true, 401: false, 403: false, 404: false} {
+		status = code
+		if in, err := v.SignedIn(context.Background()); in != want || err != nil {
+			t.Errorf("%d: %v %v", code, in, err)
+		}
+	}
+	status = 500
+	if _, err := v.SignedIn(context.Background()); err == nil {
+		t.Error("a failure is not an error")
+	}
+}

@@ -35,6 +35,14 @@ type Changes interface {
 	GetChange(ctx context.Context, change int, opts ...string) (*gerrit.ChangeInfo, error)
 }
 
+// ViewerChanges reads changes as a signed-in user would.
+type ViewerChanges interface {
+	Changes
+	// SignedIn reports whether Gerrit takes the session as someone's (an
+	// unknown or expired one reads as anonymous).
+	SignedIn(ctx context.Context) (bool, error)
+}
+
 // Link is a Gerrit checks Link.
 type Link struct {
 	URL     string `json:"url"`
@@ -185,7 +193,7 @@ type Handler struct {
 	// origin): each request is answered only if Gerrit shows them the
 	// change, asked each time. For a repository that is not public, whose
 	// checks are not the bridge's to publish.
-	Viewer func(session string) Changes
+	Viewer func(session string) ViewerChanges
 	// Label is the label CI votes, shown next to the runs.
 	Label string
 	// AllowOrigin is the Gerrit web origin, for CORS when the bridge is
@@ -205,9 +213,21 @@ type Handler struct {
 	window time.Time
 	calls  int
 	reads  int
+	// viewerReads counts Gerrit reads made as viewers this minute: their
+	// own budget, so sessions Gerrit does not know (anyone can send one)
+	// cannot spend what anonymous requests need, nor the other way.
+	viewerReads int
+	// flights are the answers being computed, by key: a request for one
+	// waits for it rather than computing it again.
+	flights map[[2]int]*flight
 	// misses counts each client's uncached requests this minute.
 	misses map[string]int
 	now    func() time.Time // tests
+}
+
+type flight struct {
+	done chan struct{}
+	e    entry
 }
 
 type entry struct {
@@ -233,9 +253,15 @@ const (
 	maxMissesPerClient = 30
 	maxClients         = 10000
 	// maxViewerRequestsPerClient bounds one client's requests a minute
-	// with Viewer, cached or not: each reads Gerrit as its viewer. Higher:
-	// a team behind one address polls from each open change.
+	// with Viewer, cached or not: each reads Gerrit as its viewer (twice).
+	// Higher: a team behind one address polls from each open change.
+	// maxViewerReadsPerMinute bounds all viewers' Gerrit reads, and
+	// maxViewerFillsPerClient one client's uncached answers (each up to
+	// three GitHub calls), so one viewer cannot spend everyone's GitHub
+	// budget.
 	maxViewerRequestsPerClient = 120
+	maxViewerReadsPerMinute    = 2000
+	maxViewerFillsPerClient    = 10
 )
 
 // sessionValue is what a Gerrit session cookie looks like: anything else
@@ -281,7 +307,7 @@ func (h *Handler) missUpTo(client string, limit int) bool {
 // roll starts a new minute's budgets if one has passed. h.mu is held.
 func (h *Handler) roll() {
 	if now := h.clock(); now.Sub(h.window) >= time.Minute {
-		h.window, h.calls, h.reads, h.misses = now, 0, 0, nil
+		h.window, h.calls, h.reads, h.viewerReads, h.misses = now, 0, 0, 0, nil
 	}
 }
 
@@ -330,13 +356,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", int(cacheTTL.Seconds())))
+	if e.status < 500 {
+		w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", int(cacheTTL.Seconds())))
+	}
 	write(w, e)
 }
 
 // write writes e as the answer.
 func write(w http.ResponseWriter, e entry) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(e.status)
 	w.Write(e.body)
 }
@@ -364,11 +393,31 @@ func (h *Handler) client(r *http.Request) string {
 // (done is false if that many are), and caches it unless it failed for
 // now (5xx).
 func (h *Handler) fill(key [2]int, compute func(context.Context) entry) (e entry, done bool) {
+	h.mu.Lock()
+	if f := h.flights[key]; f != nil {
+		h.mu.Unlock()
+		<-f.done
+		return f.e, true
+	}
 	select {
 	case h.busy <- struct{}{}:
 	default:
+		h.mu.Unlock()
 		return entry{}, false
 	}
+	if h.flights == nil {
+		h.flights = map[[2]int]*flight{}
+	}
+	f := &flight{done: make(chan struct{})}
+	h.flights[key] = f
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		delete(h.flights, key)
+		h.mu.Unlock()
+		f.e = e
+		close(f.done)
+	}()
 	// Not the request's context: a client that hangs up must not leave a
 	// failure behind for everyone.
 	e = compute(context.Background())
@@ -406,13 +455,30 @@ func (h *Handler) serveViewer(w http.ResponseWriter, r *http.Request, change, ps
 		write(w, failure(http.StatusUnauthorized, "sign in to Gerrit to see checks"))
 		return
 	}
-	if !h.missUpTo(h.client(r), maxViewerRequestsPerClient) {
+	client := h.client(r)
+	if !h.missUpTo(client, maxViewerRequestsPerClient) {
 		http.Error(w, "busy", http.StatusTooManyRequests)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	sha, e := h.patchSet(ctx, h.Viewer(c.Value), change, ps, false)
+	viewer := h.Viewer(c.Value)
+	// Signed in, not just carrying a cookie: Gerrit reads a session it
+	// does not know (expired, made up) as anonymous, who may see more
+	// than nobody.
+	if !h.take(&h.viewerReads, maxViewerReadsPerMinute) {
+		write(w, failure(http.StatusServiceUnavailable, "busy"))
+		return
+	}
+	if in, err := viewer.SignedIn(ctx); err != nil {
+		h.Logger.Warn("checks: asking Gerrit who the viewer is", "err", err)
+		write(w, failure(http.StatusBadGateway, "cannot reach Gerrit"))
+		return
+	} else if !in {
+		write(w, failure(http.StatusUnauthorized, "sign in to Gerrit to see checks"))
+		return
+	}
+	sha, e := h.patchSet(ctx, viewer, change, ps, false)
 	if e != nil {
 		write(w, *e)
 		return
@@ -422,6 +488,10 @@ func (h *Handler) serveViewer(w http.ResponseWriter, r *http.Request, change, ps
 	cached, ok := h.cache[key]
 	h.mu.Unlock()
 	if !ok || time.Since(cached.at) > cacheTTL {
+		if !h.missUpTo("fill "+client, maxViewerFillsPerClient) {
+			http.Error(w, "busy", http.StatusTooManyRequests)
+			return
+		}
 		var done bool
 		if cached, done = h.fill(key, func(ctx context.Context) entry {
 			ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -449,7 +519,11 @@ func (h *Handler) patchSet(ctx context.Context, g Changes, change, ps int, asBri
 		e := failure(status, msg)
 		return "", &e
 	}
-	if !h.read() {
+	budget := h.read
+	if !asBridge {
+		budget = func() bool { return h.take(&h.viewerReads, maxViewerReadsPerMinute) }
+	}
+	if !budget() {
 		return fail(http.StatusServiceUnavailable, "busy")
 	}
 	ch, err := g.GetChange(ctx, change, "ALL_REVISIONS")

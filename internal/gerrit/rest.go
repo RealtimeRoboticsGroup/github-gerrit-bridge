@@ -46,6 +46,17 @@ func (c *Client) Anon() *Client {
 // SessionCookie is the cookie that holds a Gerrit web session.
 const SessionCookie = "GerritAccount"
 
+// SignedIn reports whether Gerrit takes the client's session as someone's:
+// it reads an unknown or expired one as anonymous, who has no account.
+func (c *Client) SignedIn(ctx context.Context) (bool, error) {
+	err := c.Do(ctx, http.MethodGet, "accounts/self", nil, &AccountInfo{})
+	var ge *Error
+	if errors.As(err, &ge) && ge.Status/100 == 4 {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // Viewer returns a client that reads as whoever has Gerrit web session
 // session: it sees only what they can.
 func (c *Client) Viewer(session string) *Client {

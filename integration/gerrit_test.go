@@ -1019,6 +1019,12 @@ func TestGitHubOwnedOnGerrit(t *testing.T) {
 	// Reading as a viewer's session sees what they may: alice her private
 	// change, bob nothing of it; a session Gerrit does not know, nothing.
 	priv := number(idPriv)
+	if in, err := bridge.Viewer(devSession(t, env.Alice)).SignedIn(ctx); !in || err != nil {
+		t.Errorf("alice's session is not signed in: %v", err)
+	}
+	if in, err := bridge.Viewer("not-a-session").SignedIn(ctx); in || err != nil {
+		t.Errorf("an unknown session is signed in: %v %v", in, err)
+	}
 	if _, err := bridge.Viewer(devSession(t, env.Alice)).GetChange(ctx, priv, "ALL_REVISIONS"); err != nil {
 		t.Errorf("alice reading her private change with her session: %v", err)
 	}

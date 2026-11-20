@@ -195,6 +195,15 @@ func TestHandlerDoesNotCacheFailures(t *testing.T) {
 	if code := get(context.Background()); code != http.StatusBadGateway {
 		t.Fatalf("Gerrit down: %d", code)
 	}
+	// Nor cacheable by a proxy.
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/checks/5/1", nil)
+	r.SetPathValue("change", "5")
+	r.SetPathValue("patchset", "1")
+	h.ServeHTTP(w, r)
+	if cc := w.Header().Get("Cache-Control"); w.Code != http.StatusBadGateway || cc != "" {
+		t.Errorf("failure %d sent Cache-Control %q", w.Code, cc)
+	}
 	gc.down = false
 	if code := get(context.Background()); code != 200 {
 		t.Errorf("after Gerrit came back: %d (a failure was cached)", code)

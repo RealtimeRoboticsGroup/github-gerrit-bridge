@@ -259,7 +259,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		// (config checks it), and Gerrit is asked as them each time.
 		mux.Handle("GET /checks/{change}/{patchset}", &gerritchecks.Handler{
 			Project: cfg.Gerrit.Project, GitHub: reconcile.GitHubChecks{Store: store, Client: gh},
-			Viewer:     func(session string) gerritchecks.Changes { return rest.Viewer(session) },
+			Viewer:     func(session string) gerritchecks.ViewerChanges { return rest.Viewer(session) },
 			Logger:     logger,
 			ClientAddr: func(r *http.Request) string { return github.ClientAddr(r, cidrs(cfg.GitHub.WebhookTrustedProxies)) },
 		})
