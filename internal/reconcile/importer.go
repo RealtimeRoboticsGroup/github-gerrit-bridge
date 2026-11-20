@@ -731,7 +731,8 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			// not restored over the push either (fifth audit: restored as
 			// the bridge's, it reached the author's branch).
 			rev, _ := cur.Current()
-			ok, _ := authorsCode(ctx, pushTrust(im.Publishable, im.Trusted), im.Bridge.AccountID, cur.Owner.AccountID, revisionsByNumber(cur), rev.Number)
+			owner := ownerPass(im.Publishable != nil, cur.Owner.AccountID, st.State.HeadBranch)
+			ok, _ := authorsCode(ctx, pushTrust(im.Publishable, im.Trusted), im.Bridge.AccountID, owner, revisionsByNumber(cur), rev.Number)
 			foreign = !ok
 		} else if im.Publishable != nil {
 			// Where GitHub owns the branches, a Gerrit-born change's patch

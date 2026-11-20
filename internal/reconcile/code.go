@@ -570,6 +570,20 @@ func (c *Code) deferOverBudget(ctx context.Context, s *Snapshot) {
 	}
 }
 
+// ownerPass is the owner whose Gerrit patch sets may go to a GitHub-born
+// change's PR branch, head, as theirs (mayPushToAuthor): owner, or, where
+// GitHub owns the branches and head is the repository's own branch, none
+// (0). That branch runs the repository's workflows with its secrets, so
+// owning the change is no pass there, only being able to push to it (the
+// owner may have lost write access since); a fork's branch is its
+// author's.
+func ownerPass(githubOwned bool, owner int, head string) int {
+	if githubOwned && !isForkHead(head) {
+		return 0
+	}
+	return owner
+}
+
 // pushTrust is who, besides a change's owner and the bridge, may have
 // Gerrit patch sets pushed to a GitHub-born PR's branch: CI's trusted
 // group, or, where GitHub owns the branches, publishable, which must be
@@ -654,7 +668,12 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 		if ch.Status != "NEW" || !s.githubBorn(n) {
 			continue
 		}
-		ok, known := mayPushToAuthor(ctx, c.pushTrust(), c.BridgeAccount, ch.OwnerID, ch.UploaderID, ch.RealUploaderID)
+		head := ""
+		if st := s.State[n]; st != nil {
+			head = st.State.HeadBranch
+		}
+		owner := ownerPass(c.GitHubOwned, ch.OwnerID, head)
+		ok, known := mayPushToAuthor(ctx, c.pushTrust(), c.BridgeAccount, owner, ch.UploaderID, ch.RealUploaderID)
 		if ok && (ch.PatchSet > 1 || ch.Kind != "REWORK") {
 			// Whose code, and parent, is it? (A REWORK can keep a parent
 			// someone else chose: sixth audit.)
@@ -664,7 +683,7 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 				s.Foreign[n] = true
 				continue
 			}
-			ok, known = authorsCode(ctx, c.pushTrust(), c.BridgeAccount, ch.OwnerID, revisionsByNumber(ci), ch.PatchSet)
+			ok, known = authorsCode(ctx, c.pushTrust(), c.BridgeAccount, owner, revisionsByNumber(ci), ch.PatchSet)
 		}
 		if ok {
 			continue

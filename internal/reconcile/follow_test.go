@@ -307,11 +307,20 @@ func TestMergedOnGitHubReconcile(t *testing.T) {
 // markForeign, and never restores (Gerrit wins) the code of a trusted
 // member whose GitHub account may not push.
 func TestImporterForeignIsByPublishable(t *testing.T) {
-	for _, publishable := range []bool{false, true} {
+	for _, tc := range []struct {
+		publishable, owner bool
+		restored           bool
+	}{{false, false, false}, {true, false, true}, {false, true, false}} {
+		publishable := tc.publishable
 		s, im, up, m1, g, ids := gerritBornWorld(t, false)
 		ctx := context.Background()
 		im.Trusted = func(_ context.Context, account int) (bool, bool) { return account == 9, true }
 		im.Publishable = func(_ context.Context, account int) (bool, bool) { return publishable && account == 9, true }
+		uploader := gerrit.AccountInfo{AccountID: 9, Username: "trusted"}
+		if tc.owner {
+			// The owner's own: no pass on the repository's own branch.
+			uploader = s.accounts["austin"]
+		}
 		st, _ := im.Store.Load(ctx, 1)
 		st.State.Origin, st.State.HeadBranch = "github", "feature"
 		if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
@@ -325,7 +334,7 @@ func TestImporterForeignIsByPublishable(t *testing.T) {
 		code := s.commit(g[0], "one.txt", "theirs\n", "Their message\n\nChange-Id: "+ids[0]+"\n")
 		s.push("gerrit.git", code, "refs/changes/01/1/2")
 		ci.Revisions[code] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Ref: "refs/changes/01/1/2",
-			Uploader: gerrit.AccountInfo{AccountID: 9, Username: "trusted"}, Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, code))}
+			Uploader: uploader, Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, code))}
 		ci.CurrentRevision = code
 		s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
 		h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
@@ -341,8 +350,8 @@ func TestImporterForeignIsByPublishable(t *testing.T) {
 				restored = true
 			}
 		}
-		if restored != publishable {
-			t.Errorf("publishable %v: their code restored %v (uploads %v)", publishable, restored, up.uploads)
+		if restored != tc.restored {
+			t.Errorf("%+v: their code restored %v (uploads %v)", tc, restored, up.uploads)
 		}
 	}
 }
@@ -351,15 +360,23 @@ func TestImporterForeignIsByPublishable(t *testing.T) {
 // is publishable without a way to tell.
 func TestForeignIsByPublishableWhereGitHubOwns(t *testing.T) {
 	ctx := context.Background()
+	nobody := func(context.Context, int) (bool, bool) { return false, true }
 	for _, tc := range []struct {
 		owned       bool
 		publishable func(context.Context, int) (bool, bool)
+		uploader    int    // 5 is the owner
+		head        string // the PR's
 		foreign     bool
 	}{
-		{false, nil, false}, // CI's trusted group decides
-		{true, func(context.Context, int) (bool, bool) { return false, true }, true},
-		{true, func(context.Context, int) (bool, bool) { return true, true }, false},
-		{true, nil, true},
+		{false, nil, 7, "feature", false}, // CI's trusted group decides
+		{true, nobody, 7, "feature", true},
+		{true, func(context.Context, int) (bool, bool) { return true, true }, 7, "feature", false},
+		{true, nil, 7, "feature", true},
+		// The owner's own upload: no pass on the repository's branch
+		// (they may have lost write access); on their fork's, theirs.
+		{false, nil, 5, "feature", false},
+		{true, nobody, 5, "feature", true},
+		{true, nobody, 5, "someone/r:feature", false},
 	} {
 		s := newSites(t)
 		c, _ := s.code(ctx)
@@ -367,13 +384,13 @@ func TestForeignIsByPublishableWhereGitHubOwns(t *testing.T) {
 		c.GitHubOwned, c.Publishable = tc.owned, tc.publishable
 		c.Trusted = func(_ context.Context, account int) (bool, bool) { return account == 7, true }
 		snap := &Snapshot{Changes: map[int]*GerritChange{1: {Number: 1, Status: "NEW", Revision: "r1", PatchSet: 1,
-			OwnerID: 5, UploaderID: 7, Kind: "REWORK"}},
-			State: map[int]*state.Change{1: {State: state.ChangeState{Change: 1, Origin: "github"}}}}
+			OwnerID: 5, UploaderID: tc.uploader, Kind: "REWORK"}},
+			State: map[int]*state.Change{1: {State: state.ChangeState{Change: 1, Origin: "github", HeadBranch: tc.head}}}}
 		if err := c.markForeign(ctx, snap); err != nil {
 			t.Fatal(err)
 		}
 		if snap.Foreign[1] != tc.foreign {
-			t.Errorf("owned %v, publishable set %v: foreign %v, want %v", tc.owned, tc.publishable != nil, snap.Foreign[1], tc.foreign)
+			t.Errorf("%+v: foreign %v, want %v", tc, snap.Foreign[1], tc.foreign)
 		}
 	}
 }
