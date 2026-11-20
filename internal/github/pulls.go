@@ -104,6 +104,38 @@ func (c *Client) ListPulls(ctx context.Context, state string) ([]PullRequest, er
 	return list[PullRequest](ctx, c, c.RepoPath("pulls?state="+state))
 }
 
+// MergeInput is how to merge a PR: Method is "squash" or "merge"; the
+// merge happens only if the PR's head is still SHA.
+type MergeInput struct {
+	Title   string `json:"commit_title"`
+	Message string `json:"commit_message"`
+	SHA     string `json:"sha"`
+	Method  string `json:"merge_method"`
+}
+
+// MergePull merges PR n as the client's token's user, and returns the
+// commit the merge made.
+func (c *Client) MergePull(ctx context.Context, n int, m MergeInput) (string, error) {
+	var out struct {
+		SHA string `json:"sha"`
+	}
+	_, err := c.Do(ctx, http.MethodPut, c.RepoPath("pulls/"+strconv.Itoa(n)+"/merge"), m, &out)
+	return out.SHA, err
+}
+
+// PullCommit is one of a PR's own commits.
+type PullCommit struct {
+	SHA     string `json:"sha"`
+	Parents []struct {
+		SHA string `json:"sha"`
+	} `json:"parents"`
+}
+
+// PullCommits lists PR n's own commits (GitHub lists at most 250).
+func (c *Client) PullCommits(ctx context.Context, n int) ([]PullCommit, error) {
+	return list[PullCommit](ctx, c, c.RepoPath("pulls/"+strconv.Itoa(n)+"/commits"))
+}
+
 // NewPull is the body of a create-pull-request call.
 type NewPull struct {
 	Title string `json:"title"`

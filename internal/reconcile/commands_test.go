@@ -359,3 +359,133 @@ func TestSubmitOnlyAsThePinnedGitHubAccount(t *testing.T) {
 		}
 	}
 }
+
+type fakeMerger struct {
+	linked map[string]bool // GitHub logins with a linked token
+	merges bool            // the PR has merge commits
+	err    error
+	calls  []github.MergeInput
+	as     []string
+}
+
+func (f *fakeMerger) Merge(_ context.Context, u github.User, pr int, head string, m github.MergeInput) (string, bool, error) {
+	if !f.linked[u.Login] {
+		return "", false, nil
+	}
+	f.calls, f.as = append(f.calls, m), append(f.as, u.Login)
+	if f.err != nil {
+		return "", true, f.err
+	}
+	return "merged1", true, nil
+}
+
+func (f *fakeMerger) HasMergeCommits(context.Context, int) (bool, error) { return f.merges, nil }
+
+// mergeCommands is newCommands where GitHub owns the branches: change 5's
+// Change-Id is known, and its PR has a title and description.
+func mergeCommands(t *testing.T, origin string) (*Commands, *fakeGitHub, *fakeSubmitter, *fakeMerger) {
+	c, h, sub := newCommands(t)
+	ctx := context.Background()
+	st, _ := c.Store.Load(ctx, 5)
+	st.State.ChangeID, st.State.Origin = cid(5), origin
+	if err := c.Store.Save(ctx, 5, st, "change id"); err != nil {
+		t.Fatal(err)
+	}
+	h.title, h.body = "Fix the arm", "It was bent.\n\n"+linksStart+"\nblock\n"+linksEnd+"\n\nChange-Id: "+cid(5)
+	m := &fakeMerger{linked: map[string]bool{"AustinSchuh": true}}
+	c.Merger, c.LinkURL = m, "https://bridge.example.com/github/link"
+	return c, h, sub, m
+}
+
+// Design §3.1: where GitHub owns the branches, /submit merges the PR on
+// GitHub as its commenter, with their own linked token, at the head they
+// saw, squashed into a commit whose message is the description ending
+// with the Change-Id; nothing is submitted in Gerrit.
+func TestSubmitMergesOnGitHub(t *testing.T) {
+	c, h, sub, m := mergeCommands(t, "gerrit")
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if len(sub.calls) != 0 {
+		t.Errorf("submitted in Gerrit: %v", sub.calls)
+	}
+	want := github.MergeInput{Title: "Fix the arm (#1)", Message: "It was bent.\n\nChange-Id: " + cid(5), SHA: "sha2", Method: "squash"}
+	if len(m.calls) != 1 || m.calls[0] != want || m.as[0] != "AustinSchuh" {
+		t.Errorf("merges %+v as %v, want %+v as AustinSchuh", m.calls, m.as, want)
+	}
+	if last := h.ics[len(h.ics)-1].Body; !strings.Contains(last, "merged on GitHub as you (squashed), as merged1") {
+		t.Errorf("reply = %q", last)
+	}
+}
+
+// A GitHub-born PR that pulls in a merge (a subtree) keeps it: merged with
+// a merge commit. A Gerrit-born one's merges are its patch sets' history,
+// and it is squashed regardless.
+func TestSubmitKeepsASubtreesMerge(t *testing.T) {
+	for origin, want := range map[string]string{"github": "merge", "gerrit": "squash"} {
+		c, h, _, m := mergeCommands(t, origin)
+		m.merges = true
+		h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+		if err := c.Run(context.Background(), 5); err != nil {
+			t.Fatal(err)
+		}
+		if len(m.calls) != 1 || m.calls[0].Method != want {
+			t.Errorf("%s-born: merges %+v, want %s", origin, m.calls, want)
+		}
+	}
+}
+
+// Someone without a linked GitHub account is told how to link one; GitHub's
+// refusal is quoted; and the patch set must be the one they saw, as for a
+// Gerrit submit.
+func TestSubmitMergeRefusals(t *testing.T) {
+	c, h, _, m := mergeCommands(t, "gerrit")
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "stranger", ID: 9}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if last := h.ics[len(h.ics)-1].Body; len(m.calls) != 0 || !strings.Contains(last, "link it at https://bridge.example.com/github/link") {
+		t.Errorf("unlinked: merges %v, reply %q", m.calls, last)
+	}
+
+	c, h, _, m = mergeCommands(t, "gerrit")
+	m.err = &github.APIError{Status: 405, Message: "At least 1 approving review is required by reviewers with write access."}
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if last := h.ics[len(h.ics)-1].Body; !strings.Contains(last, "> At least 1 approving review is required") {
+		t.Errorf("refused: reply %q", last)
+	}
+
+	c, h, sub, m := mergeCommands(t, "gerrit")
+	sub.rev, sub.uploaded = "sha3", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) // newer than GitHub's head
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}, CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if last := h.ics[len(h.ics)-1].Body; len(m.calls) != 0 || !strings.Contains(last, "was not on GitHub when you wrote it") {
+		t.Errorf("unseen patch set: merges %v, reply %q", m.calls, last)
+	}
+}
+
+// No merge without a Change-Id as Gerrit makes them for its trailer: the
+// change would not close in Gerrit, and anything else would ride into
+// the commit.
+func TestSubmitMergeNeedsTheChangeID(t *testing.T) {
+	c, h, _, m := mergeCommands(t, "gerrit")
+	ctx := context.Background()
+	st, _ := c.Store.Load(ctx, 5)
+	st.State.ChangeID = "I5\n\nSigned-off-by: x"
+	if err := c.Store.Save(ctx, 5, st, "odd id"); err != nil {
+		t.Fatal(err)
+	}
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	if err := c.Run(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.calls) != 0 {
+		t.Errorf("merged %+v", m.calls)
+	}
+}

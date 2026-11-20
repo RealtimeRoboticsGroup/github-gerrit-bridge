@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -175,5 +177,65 @@ func TestPublishable(t *testing.T) {
 	}
 	if asked != 3 {
 		t.Errorf("asked GitHub %d times, want 3 (not for the unlinked)", asked)
+	}
+}
+
+// /submit's merge goes out with the commenter's own linked token, at the
+// head they saw; never for someone whose link is to another GitHub
+// account, nor with the bridge's token.
+func TestGitHubMergerMergesAsTheCommenter(t *testing.T) {
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/repos/o/r/pulls/7/merge":
+			auth = append(auth, r.Header.Get("Authorization"))
+			var in github.MergeInput
+			json.NewDecoder(r.Body).Decode(&in)
+			if in.SHA != "head1" {
+				t.Errorf("merged at %q", in.SHA)
+			}
+			io.WriteString(w, `{"sha":"m1","merged":true}`)
+		case r.URL.Path == "/repos/o/r/pulls/7/commits":
+			io.WriteString(w, `[{"sha":"a","parents":[{"sha":"p"}]},{"sha":"b","parents":[{"sha":"a"},{"sha":"s"}]}]`)
+		default:
+			t.Errorf("asked %s %s", r.Method, r.URL)
+		}
+	}))
+	defer srv.Close()
+	bot := &github.Client{BaseURL: srv.URL, Owner: "o", Repo: "r", Tokens: github.StaticToken("bot-token")}
+	m := githubMerger{
+		gerritUser: func(_ context.Context, u github.User) (string, bool) {
+			return map[string]string{"alice": "alice", "carol": "carol"}[u.Login], u.Login != "bob"
+		},
+		account: func(_ context.Context, user string) (int, error) {
+			return map[string]int{"alice": 1, "carol": 3}[user], nil
+		},
+		tokenFor: func(_ context.Context, account int) (string, github.User, bool, error) {
+			switch account {
+			case 1:
+				return "alice-token", github.User{Login: "alice", ID: 11}, true, nil
+			case 3: // linked to another GitHub account than the commenter
+				return "carol-token", github.User{Login: "carol-old", ID: 99}, true, nil
+			}
+			return "", github.User{}, false, nil
+		},
+		source: func(_ int64, tok string) github.TokenSource { return github.StaticToken(tok) },
+		gh:     bot,
+	}
+	ctx := context.Background()
+	sha, linked, err := m.Merge(ctx, github.User{Login: "alice", ID: 11}, 7, "head1", github.MergeInput{Method: "squash"})
+	if err != nil || !linked || sha != "m1" || len(auth) != 1 || auth[0] != "Bearer alice-token" {
+		t.Errorf("alice: %q %v %v, auth %v", sha, linked, err, auth)
+	}
+	for _, u := range []github.User{{Login: "bob", ID: 12}, {Login: "carol", ID: 13}, {Login: "alice", ID: 0}} {
+		if _, linked, err := m.Merge(ctx, u, 7, "head1", github.MergeInput{}); linked || err != nil {
+			t.Errorf("%s: linked %v %v", u.Login, linked, err)
+		}
+	}
+	if len(auth) != 1 {
+		t.Errorf("merged %d times, want only alice's", len(auth))
+	}
+	if has, err := m.HasMergeCommits(ctx, 7); !has || err != nil {
+		t.Errorf("merge commits: %v %v", has, err)
 	}
 }

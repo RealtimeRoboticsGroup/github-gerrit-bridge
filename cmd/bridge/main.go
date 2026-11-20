@@ -424,6 +424,12 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		DryRun:    dryRun,
 		Logger:    logger,
 	}
+	gerritAccount := func(ctx context.Context, user string) (int, error) {
+		var acct gerrit.AccountInfo
+		err := rest.Do(ctx, http.MethodGet, "accounts/"+url.PathEscape(user), nil, &acct)
+		return acct.AccountID, err
+	}
+	var merger reconcile.GitHubMerger
 	if a := cfg.GitHub.UserApp; a != nil {
 		secret, err := config.ReadSecret(a.ClientSecretFile)
 		if err != nil {
@@ -451,15 +457,12 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			pub := publishable(tokens.Linked, gh.CanPush, logger)
 			code.Publishable, code.Importer.Publishable = pub, pub
 			code.LinkURL = strings.TrimSuffix(a.PublicURL, "/") + "/github/link"
+			// /submit merges on GitHub, as whoever asked.
+			merger = githubMerger{gerritUser: users.GerritUserFor, account: gerritAccount, tokenFor: tokens.For, source: tokens.Source, gh: gh}
 		}
 		// Public: people link their GitHub account here (design §7.2).
 		(&usertokens.Linker{App: app, Tokens: tokens, PublicURL: a.PublicURL, GerritURL: cfg.Gerrit.URL, Logger: logger,
-			GerritUser: users.GerritUserFor,
-			GerritAccount: func(ctx context.Context, user string) (int, error) {
-				var acct gerrit.AccountInfo
-				err := rest.Do(ctx, http.MethodGet, "accounts/"+url.PathEscape(user), nil, &acct)
-				return acct.AccountID, err
-			}}).Register(mux)
+			GerritUser: users.GerritUserFor, GerritAccount: gerritAccount}).Register(mux)
 		logger.Info("people can link their GitHub accounts", "url", strings.TrimSuffix(a.PublicURL, "/")+"/github/link", "linked", len(linked.All()))
 	}
 	checks := &reconcile.Checks{
@@ -505,6 +508,8 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Store:        store,
 		Identity:     users,
 		BeforeSubmit: code.PrepareSubmit,
+		Merger:       merger,
+		LinkURL:      code.LinkURL,
 		BridgeLogin:  login,
 		DryRun:       dryRun,
 		Logger:       logger,
@@ -639,6 +644,46 @@ func checkSecrets(cfg *config.Config, logger *slog.Logger) error {
 		logger.Warn("secret file is readable by others; make it 0600", "file", f)
 	}
 	return nil
+}
+
+// githubMerger merges PRs on GitHub as whoever asked (/submit where GitHub
+// owns the branches, design §3.1), with the token they linked: GitHub's
+// rules for them decide, as for their own button press. Their GitHub
+// account must still be the one their Gerrit account is matched to, and
+// the one they linked.
+type githubMerger struct {
+	gerritUser func(context.Context, github.User) (string, bool)
+	account    func(context.Context, string) (int, error)
+	tokenFor   func(context.Context, int) (string, github.User, bool, error)
+	source     func(int64, string) github.TokenSource
+	gh         *github.Client // where, and how; and the bot's reads
+}
+
+func (m githubMerger) Merge(ctx context.Context, u github.User, pr int, head string, in github.MergeInput) (string, bool, error) {
+	user, ok := m.gerritUser(ctx, u)
+	if !ok {
+		return "", false, nil
+	}
+	account, err := m.account(ctx, user)
+	if err != nil {
+		return "", true, err
+	}
+	tok, linked, ok, err := m.tokenFor(ctx, account)
+	if err != nil {
+		return "", true, err
+	}
+	if !ok || linked.ID != u.ID {
+		return "", false, nil
+	}
+	in.SHA = head
+	as := &github.Client{BaseURL: m.gh.BaseURL, Owner: m.gh.Owner, Repo: m.gh.Repo, Tokens: m.source(linked.ID, tok), HTTP: m.gh.HTTP}
+	sha, err := as.MergePull(ctx, pr, in)
+	return sha, true, err
+}
+
+func (m githubMerger) HasMergeCommits(ctx context.Context, pr int) (bool, error) {
+	commits, err := m.gh.PullCommits(ctx, pr)
+	return slices.ContainsFunc(commits, func(c github.PullCommit) bool { return len(c.Parents) > 1 }), err
 }
 
 // linkedAuthors posts linked users' content with their own token

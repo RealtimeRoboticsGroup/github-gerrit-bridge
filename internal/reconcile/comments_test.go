@@ -238,6 +238,8 @@ func (f *fakeGerrit) user(id, path string, ps, line int, msg, inReplyTo string, 
 type fakeGitHub struct {
 	// issueListings counts ListIssueComments calls.
 	issueListings int
+	// title and body are the PR's (GetPull).
+	title, body string
 	// refuse makes CreateIssueComment refuse (422) bodies containing it.
 	refuse string
 	// pushes is the activity log of the PR's branch, newest first.
@@ -479,7 +481,8 @@ func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error)
 	return out, nil
 }
 func (f *fakeGitHub) GetPull(_ context.Context, n int) (*github.PullRequest, error) {
-	pr := &github.PullRequest{Number: n, HTMLURL: "https://github.com/o/r/pull/1", Head: github.Ref{Ref: "topic", SHA: cmp.Or(f.head, "sha2")}}
+	pr := &github.PullRequest{Number: n, HTMLURL: "https://github.com/o/r/pull/1", Head: github.Ref{Ref: "topic", SHA: cmp.Or(f.head, "sha2")},
+		Title: f.title, Body: f.body}
 	pr.Head.Repo = &struct {
 		FullName string `json:"full_name"`
 	}{"o/r"}

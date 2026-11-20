@@ -70,6 +70,19 @@ func (r RunAsSubmitter) SubmitAs(ctx context.Context, user string, change int, r
 	return err
 }
 
+// GitHubMerger merges PRs on GitHub as whoever asked, where GitHub owns
+// the branches (design §3.1).
+type GitHubMerger interface {
+	// Merge merges PR pr as GitHub user u, with their own linked token
+	// (GitHub's rules for them decide), if its head is still head. linked
+	// is false if u has no token, or no longer the Gerrit account it was
+	// linked from.
+	Merge(ctx context.Context, u github.User, pr int, head string, m github.MergeInput) (sha string, linked bool, err error)
+	// HasMergeCommits reports whether PR pr's own commits include a
+	// merge (a subtree pulled in).
+	HasMergeCommits(ctx context.Context, pr int) (bool, error)
+}
+
 // CommandsGitHub is what commands need from GitHub.
 type CommandsGitHub interface {
 	ListIssueComments(ctx context.Context, n int) ([]github.IssueComment, error)
@@ -95,6 +108,11 @@ type Commands struct {
 	// BeforeSubmit, if set, runs before the bridge submits a change
 	// (Code.PrepareSubmit).
 	BeforeSubmit func(ctx context.Context, n int) error
+	// Merger, if set, is what /submit does instead of a Gerrit submit:
+	// GitHub owns the branches, and the PR is merged there, as whoever
+	// asked. LinkURL is where people link their GitHub accounts.
+	Merger  GitHubMerger
+	LinkURL string
 	// BridgeLogin is the bridge's GitHub login: only its replies mark a
 	// command handled.
 	BridgeLogin string
@@ -201,6 +219,8 @@ func (c *Commands) run(ctx context.Context, n int, alone bool, read *prRead) err
 		if editedByOther(edits, ic.ID, ic.User.Login) {
 			// Anyone with write access can edit anyone's comment.
 			reply = fmt.Sprintf("@%s: `/submit` was not run because the comment was edited. Post it as a new comment.", ic.User.Login)
+		} else if c.Merger != nil {
+			reply = c.merge(ctx, n, ic, heads, read.pull)
 		} else {
 			reply = c.submit(ctx, n, ic, heads)
 		}
@@ -257,25 +277,23 @@ func latest(a, b time.Time) time.Time {
 	return a
 }
 
-func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, heads []state.Head) string {
-	user, ok := c.Identity.GerritUserFor(ctx, ic.User)
-	if !ok {
-		return fmt.Sprintf("@%s: `/submit` needs a linked Gerrit account, and yours is not linked. "+
-			"Ask an admin to add you to the bridge's identity map, or submit in Gerrit.", ic.User.Login)
-	}
+// seen is the current patch set of change n (rev) and the PR head that is
+// it (sha), if the /submit in ic is for it: what its author could have
+// seen. If not, reply says why.
+func (c *Commands) seen(ctx context.Context, n int, ic github.IssueComment, heads []state.Head) (rev, sha string, st *state.Change, reply string) {
 	// A command is for the patch set its author saw: not for one uploaded
 	// after it, nor, long after, for whatever the change has become (the
 	// bridge was down, say).
 	rev, uploaded, err := c.Submitter.Current(ctx, n)
 	if err != nil {
 		c.Logger.Warn("finding the patch set to submit", "change", n, "err", err)
-		return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not reach Gerrit (see its log). Post it again.", ic.User.Login)
+		return "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: the bridge could not reach Gerrit (see its log). Post it again.", ic.User.Login)
 	}
 	if ic.CreatedAt.Before(uploaded) {
-		return fmt.Sprintf("@%s: `/submit` was not run: change %d has a patch set newer than your comment. Post it again to submit that.", ic.User.Login, n)
+		return "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: change %d has a patch set newer than your comment. Post it again to submit that.", ic.User.Login, n)
 	}
 	if age := c.now().Sub(ic.CreatedAt); age > maxCommandAge {
-		return fmt.Sprintf("@%s: `/submit` was not run: it is more than %v old. Post it again.", ic.User.Login, maxCommandAge)
+		return "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: it is more than %v old. Post it again.", ic.User.Login, maxCommandAge)
 	}
 	// And one the commenter could have seen: the PR's head from a minute
 	// (minSeen) before they wrote it until now (state.Head). A patch set
@@ -283,15 +301,28 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, he
 	// yet, one pushed moments before it was not read (fourth audit), and
 	// the branch may have gone back to an older patch set's commit, or on
 	// to one never imported (seventh audit).
-	st, err := c.Store.Load(ctx, n)
+	st, err = c.Store.Load(ctx, n)
 	if err != nil {
 		c.Logger.Warn("reading state for /submit", "change", n, "err", err)
-		return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not read its state (see its log). Post it again.", ic.User.Login)
+		return "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: the bridge could not read its state (see its log). Post it again.", ic.User.Login)
 	}
-	sha := headThroughout(heads, ic.CreatedAt.Add(-minSeen), c.now())
+	sha = headThroughout(heads, ic.CreatedAt.Add(-minSeen), c.now())
 	seen := sha != "" && (sha == rev || slices.ContainsFunc(st.Revisions, func(r state.Revision) bool { return r.GitHubSHA == sha && r.GerritSHA == rev }))
 	if !seen {
-		return fmt.Sprintf("@%s: `/submit` was not run: change %d's current patch set was not on GitHub when you wrote it (not yet, only just, or not at all: see the change). Submit it in Gerrit, or post again once it is here.", ic.User.Login, n)
+		return "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: change %d's current patch set was not on GitHub when you wrote it (not yet, only just, or not at all: see the change). Submit it in Gerrit, or post again once it is here.", ic.User.Login, n)
+	}
+	return rev, sha, st, ""
+}
+
+func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, heads []state.Head) string {
+	user, ok := c.Identity.GerritUserFor(ctx, ic.User)
+	if !ok {
+		return fmt.Sprintf("@%s: `/submit` needs a linked Gerrit account, and yours is not linked. "+
+			"Ask an admin to add you to the bridge's identity map, or submit in Gerrit.", ic.User.Login)
+	}
+	rev, _, _, reply := c.seen(ctx, n, ic, heads)
+	if reply != "" {
+		return reply
 	}
 	// Check first, so PRs are only reshaped for a submit that will happen.
 	if ok, why, err := c.Submitter.CanSubmitAs(ctx, user, n, rev); err != nil || !ok {
@@ -308,7 +339,7 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, he
 			c.Logger.Warn("preparing PRs for submit", "change", n, "err", err)
 		}
 	}
-	err = c.Submitter.SubmitAs(ctx, user, n, rev)
+	err := c.Submitter.SubmitAs(ctx, user, n, rev)
 	if err == nil {
 		c.Logger.Info("submitted from GitHub", "change", n, "by", ic.User.Login, "as", user)
 		return fmt.Sprintf("@%s: submitted change %d in Gerrit as %s, with any changes below it. "+
@@ -324,4 +355,63 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, he
 	}
 	return fmt.Sprintf("@%s: Gerrit did not submit change %d:\n\n> %s", ic.User.Login, n,
 		strings.ReplaceAll(forGitHub(reason), "\n", "\n> "))
+}
+
+// merge is /submit where GitHub owns the branches (design §3.1): the PR
+// is merged on GitHub with the commenter's own linked token, so GitHub's
+// branch protection decides as it would for their button press, and only
+// at the head they could have seen, the change's current patch set. Its
+// commit message is the PR's description, ending with the change's
+// Change-Id, so Gerrit closes the change as merged when the merge reaches
+// its branch. A PR that pulls in a merge of its own (a subtree) is merged
+// with a merge commit, keeping its history; the rest are squashed.
+// Gerrit-born PRs always are: their history is the patch sets'.
+func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, heads []state.Head, pr *github.PullRequest) string {
+	_, sha, st, reply := c.seen(ctx, n, ic, heads)
+	if reply != "" {
+		return reply
+	}
+	if pr == nil || pr.Number != st.State.PR || !changeIDPattern.MatchString(st.State.ChangeID) {
+		c.Logger.Warn("/submit: PR or Change-Id unknown", "change", n, "pr", st.State.PR)
+		return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not tell which PR or change this is (see its log). Use the merge button.", ic.User.Login)
+	}
+	method := "squash"
+	if st.State.Origin == "github" {
+		has, err := c.Merger.HasMergeCommits(ctx, pr.Number)
+		if err != nil {
+			c.Logger.Warn("/submit: listing the PR's commits", "change", n, "pr", pr.Number, "err", err)
+			return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not read this PR's commits (see its log). Post it again, or use the merge button.", ic.User.Login)
+		}
+		if has {
+			method = "merge"
+		}
+	}
+	msg := prBodyForMessage(pr.Body)
+	if msg != "" {
+		msg += "\n\n"
+	}
+	in := github.MergeInput{Method: method, SHA: sha,
+		Title:   fmt.Sprintf("%s (#%d)", strings.TrimSpace(pr.Title), pr.Number),
+		Message: msg + "Change-Id: " + st.State.ChangeID}
+	merged, linked, err := c.Merger.Merge(ctx, ic.User, pr.Number, sha, in)
+	switch {
+	case !linked && err == nil:
+		link := "link it"
+		if c.LinkURL != "" {
+			link = "link it at " + c.LinkURL
+		}
+		return fmt.Sprintf("@%s: `/submit` merges on GitHub as you, with your linked GitHub account, and yours is not linked: %s, or use the merge button.", ic.User.Login, link)
+	case err == nil:
+		c.Logger.Info("merged on GitHub for /submit", "change", n, "pr", pr.Number, "by", ic.User.Login, "method", method, "commit", merged)
+		return fmt.Sprintf("@%s: merged on GitHub as you (%s), as %s. Gerrit shows change %d merged once it has the commit.", ic.User.Login, map[string]string{"squash": "squashed", "merge": "with a merge commit"}[method], merged, n)
+	}
+	c.Logger.Warn("merge on GitHub for /submit failed", "change", n, "pr", pr.Number, "by", ic.User.Login, "err", err)
+	// GitHub's own refusals are for the user (not mergeable, a newer
+	// head, their permissions); anything else stays in the log.
+	why := "The bridge could not reach GitHub (see its log)."
+	var ae *github.APIError
+	if errors.As(err, &ae) && ae.Status < 500 && ae.Message != "" {
+		why = ae.Message
+	}
+	return fmt.Sprintf("@%s: GitHub did not merge this PR:\n\n> %s", ic.User.Login, strings.ReplaceAll(forGitHub(why), "\n", "\n> "))
 }

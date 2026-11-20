@@ -831,3 +831,31 @@ func TestCheckRuns(t *testing.T) {
 		t.Errorf("got %+v", runs)
 	}
 }
+
+// A merge names its method, message and the head it is for; a PR's
+// commits come with their parents.
+func TestMergePullAndCommits(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/repos/o/r/pulls/7/merge":
+			var in map[string]string
+			json.NewDecoder(r.Body).Decode(&in)
+			if in["merge_method"] != "squash" || in["sha"] != "abc" || in["commit_title"] != "T (#7)" || in["commit_message"] != "M\n\nChange-Id: I1" {
+				t.Errorf("merge body %v", in)
+			}
+			io.WriteString(w, `{"sha":"def","merged":true}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/pulls/7/commits":
+			io.WriteString(w, `[{"sha":"a","parents":[{"sha":"p"}]},{"sha":"b","parents":[{"sha":"a"},{"sha":"s"}]}]`)
+		default:
+			t.Errorf("asked %s %s", r.Method, r.URL)
+		}
+	})
+	sha, err := c.MergePull(context.Background(), 7, MergeInput{Title: "T (#7)", Message: "M\n\nChange-Id: I1", SHA: "abc", Method: "squash"})
+	if err != nil || sha != "def" {
+		t.Errorf("merge: %q %v", sha, err)
+	}
+	commits, err := c.PullCommits(context.Background(), 7)
+	if err != nil || len(commits) != 2 || len(commits[1].Parents) != 2 || commits[1].Parents[1].SHA != "s" {
+		t.Errorf("commits: %+v %v", commits, err)
+	}
+}
