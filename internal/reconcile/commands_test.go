@@ -489,3 +489,17 @@ func TestSubmitMergeNeedsTheChangeID(t *testing.T) {
 		t.Errorf("merged %+v", m.calls)
 	}
 }
+
+// A stacked PR would merge into the one below it, not the branch: /submit
+// refuses it.
+func TestSubmitMergeOnlyIntoTheBranch(t *testing.T) {
+	c, h, _, m := mergeCommands(t, "gerrit")
+	h.base = "gerrit/I2"
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if last := h.ics[len(h.ics)-1].Body; len(m.calls) != 0 || !strings.Contains(last, "Merge the PRs below it first") {
+		t.Errorf("merges %v, reply %q", m.calls, last)
+	}
+}

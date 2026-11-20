@@ -375,6 +375,11 @@ func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, hea
 		c.Logger.Warn("/submit: PR or Change-Id unknown", "change", n, "pr", st.State.PR)
 		return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not tell which PR or change this is (see its log). Use the merge button.", ic.User.Login)
 	}
+	if pr.Base.Ref != st.State.Branch {
+		// A stacked PR would merge into the one below it, not the
+		// branch: its change would not merge.
+		return fmt.Sprintf("@%s: `/submit` was not run: this PR is based on `%s`, not `%s`. Merge the PRs below it first.", ic.User.Login, forGitHub(pr.Base.Ref), st.State.Branch)
+	}
 	method := "squash"
 	if st.State.Origin == "github" {
 		has, err := c.Merger.HasMergeCommits(ctx, pr.Number)

@@ -210,45 +210,57 @@ func mirrorStates(t *testing.T, c *Code, follow bool) {
 	}
 }
 
-// Design §3.1: a PR merged on GitHub whose commit lost its Change-Id
-// (edited out in the merge dialog) leaves its change open in Gerrit: it
-// is abandoned, saying where it merged.
-func TestMergedOnGitHubWithoutChangeIDIsAbandoned(t *testing.T) {
+// Design §3.1: a PR merged on GitHub whose commit Gerrit did not take as
+// the change's (its Change-Id edited out, or co-author lines after it)
+// leaves the change open in Gerrit: the bridge marks it merged at that
+// commit (Gerrit's check-and-fix), saying where it merged.
+func TestMergedOnGitHubIsMarkedMerged(t *testing.T) {
+	s, c, merged := mergedSites(t, "One (#10)\n\nChange-Id: "+cid(1)+"\n\n---------\n\nCo-authored-by: Bob <bob@example.com>\n")
+	s.maintainServer = true
+	mirrorStates(t, c, true)
+	if ci := s.changes[1]; ci.Status != "MERGED" || ci.CurrentRevision != merged {
+		t.Fatalf("change 1 is %s at %s, want MERGED at %s", ci.Status, ci.CurrentRevision, merged)
+	}
+	want := "Merged on GitHub by @\u200dalice in PR #10, as " + merged + " on main."
+	if msgs := s.reviewMsgs[1]; len(msgs) == 0 || msgs[len(msgs)-1] != want {
+		t.Errorf("notices %q, want %q", msgs, want)
+	}
+}
+
+// Without Maintain Server, Gerrit will not: the change is abandoned, the
+// note saying where it merged.
+func TestMergedOnGitHubIsAbandonedIfGerritWillNot(t *testing.T) {
 	s, c, merged := mergedSites(t, "One (#10)\n\nThe trailer was edited out.\n")
 	mirrorStates(t, c, true)
 	if got := s.changes[1].Status; got != "ABANDONED" {
 		t.Fatalf("change 1 is %s, want ABANDONED", got)
 	}
-	want := "Merged on GitHub by @‍alice in PR #10, as " + merged + " on main, but its commit does not say this change's Change-Id (" + cid(1) + ")"
+	want := "Merged on GitHub by @\u200dalice in PR #10, as " + merged + " on main, but Gerrit could not show it merged."
 	if !strings.HasPrefix(s.actionMsgs[1], want) {
 		t.Errorf("message %q, want it to start %q", s.actionMsgs[1], want)
 	}
 }
 
-// Said so when the commit has its Change-Id and Gerrit still did not
-// close it (another branch's change of the same Change-Id, say).
-func TestMergedOnGitHubWithChangeIDStillOpenIsAbandoned(t *testing.T) {
-	s, c, _ := mergedSites(t, "One (#10)\n\nChange-Id: "+cid(1)+"\n")
-	mirrorStates(t, c, true)
-	if got := s.changes[1].Status; got != "ABANDONED" || !strings.Contains(s.actionMsgs[1], "but Gerrit did not close it as merged") {
-		t.Errorf("change 1 is %s, message %q", got, s.actionMsgs[1])
+// A PR merged into another branch (a stacked PR into the one below) does
+// not merge as its change: abandoned, saying where it went, at once.
+func TestMergedOnGitHubIntoAnotherBranchIsAbandoned(t *testing.T) {
+	s, c, _ := mergedSites(t, "One (#10)\n")
+	s.maintainServer = true
+	s.pulls[10].Base.Ref = "gerrit/I2"
+	mirrorStates(t, c, false)
+	if got := s.changes[1].Status; got != "ABANDONED" || !strings.Contains(s.actionMsgs[1], "PR #10 into gerrit/I2, not main") {
+		t.Errorf("change 1 is %s: %q", got, s.actionMsgs[1])
 	}
 }
 
 // Not before the merge is on Gerrit's branch (Gerrit may yet close it as
-// merged), nor where Gerrit owns the branch, nor for a merge into another
-// PR's branch.
+// merged), nor where Gerrit owns the branch.
 func TestMergedOnGitHubWaitsForItsMerge(t *testing.T) {
 	s, c, _ := mergedSites(t, "One (#10)\n")
 	mirrorStates(t, c, false)
 	if got := s.changes[1].Status; got != "NEW" {
 		t.Errorf("not followed yet: change 1 is %s", got)
 	}
-	c.GitHubOwned = false
-	if err := c.Follow(context.Background(), "main"); err != nil {
-		t.Fatal(err)
-	}
-	c.GitHubOwned = true
 	if err := c.Follow(context.Background(), "main"); err != nil {
 		t.Fatal(err)
 	}
@@ -258,12 +270,6 @@ func TestMergedOnGitHubWaitsForItsMerge(t *testing.T) {
 		t.Errorf("Gerrit owns main: change 1 is %s", got)
 	}
 	c.GitHubOwned = true
-	s.pulls[10].Base.Ref = "gerrit/I2"
-	mirrorStates(t, c, false)
-	if got := s.changes[1].Status; got != "NEW" {
-		t.Errorf("merged into another PR's branch: change 1 is %s", got)
-	}
-	s.pulls[10].Base.Ref = "main"
 	mirrorStates(t, c, false)
 	if got := s.changes[1].Status; got != "ABANDONED" {
 		t.Errorf("merged and followed: change 1 is %s", got)
@@ -445,7 +451,9 @@ func TestGerritWinsNeverRestoresUnpublishedCode(t *testing.T) {
 		publishable := tc.publishable
 		s, im, up, m1, g, ids := gerritBornWorld(t, false)
 		ctx := context.Background()
-		im.Publishable = func(_ context.Context, account int) (bool, bool) { return account == 5 || (publishable && account == 9), true }
+		im.Publishable = func(_ context.Context, account int) (bool, bool) {
+			return account == 5 || (publishable && account == 9), true
+		}
 		ci := s.changes[1]
 		ci.Owner = s.accounts["austin"]
 		if tc.owner { // owning the change is no pass

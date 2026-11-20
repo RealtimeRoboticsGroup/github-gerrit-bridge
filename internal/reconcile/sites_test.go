@@ -72,6 +72,8 @@ type sites struct {
 	actionMsgs map[int]string
 	// reviewMsgs are the messages of each change's reviews.
 	reviewMsgs map[int][]string
+	// maintainServer lets the bridge use Gerrit's check-and-fix.
+	maintainServer bool
 }
 
 func newSites(t *testing.T) *sites {
@@ -400,6 +402,19 @@ func (s *sites) changeAction(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case ci == nil:
 		http.NotFound(w, r)
+	case action == "check":
+		// Gerrit's check-and-fix: only with Maintain Server.
+		if !s.maintainServer {
+			http.Error(w, "maintain server not permitted", http.StatusForbidden)
+			return
+		}
+		var in struct {
+			ExpectMergedAs string `json:"expect_merged_as"`
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		ci.Status, ci.CurrentRevision = "MERGED", in.ExpectMergedAs
+		ci.Revisions[in.ExpectMergedAs] = gerrit.RevisionInfo{Number: len(ci.Revisions) + 1}
+		s.json(w, ci, true)
 	case !strings.Contains(" "+strings.Join(s.may[n], " ")+" ", " "+user+" "):
 		http.Error(w, action+" not permitted", http.StatusForbidden)
 	case action == "abandon" || action == "restore":

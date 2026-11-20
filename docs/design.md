@@ -103,11 +103,19 @@ checklist.
   writes descriptions: each ends with `Change-Id: I…`, after the links
   block, the bridge's part (never read as an edit). The bridge warns at
   startup about merge settings that leave it out.
-- **The fallback.** If someone edits the trailer out in the merge dialog,
-  the change stays open; once the merge commit is on Gerrit's branch, the
-  bridge abandons the change, saying who merged it, in which PR, as which
-  commit (the owner's choice over guessing). A merge into another PR's
-  branch waits.
+- **The fallback.** Gerrit reads the Change-Id only from the commit's
+  last paragraph, and GitHub's merge commit may not have it there:
+  someone edited it out in the merge dialog, or GitHub added
+  `Co-authored-by:` lines after it (a PR with several authors; checked on
+  3.14, the change stays open). Once the merge commit is on Gerrit's
+  branch, the bridge marks the change merged at it with Gerrit's
+  check-and-fix (`POST /changes/N/check`, `expect_merged_as`), which
+  inserts it as the last patch set, and says who merged it, in which PR.
+  That needs Maintain Server; without it, or for a PR merged into another
+  branch (a stacked PR into the one below, whose change then carries the
+  code), the change is abandoned with that note (the owner's fallback).
+  A merged PR is never reopened or edited meanwhile, and `/submit`
+  refuses a PR not based on the target branch.
 - **Who reaches GitHub.** A pushed branch runs the repository's workflows
   with its secrets. A Gerrit-born change is mirrored only if everyone
   responsible for its current patch set (uploader, real uploader, and
@@ -151,7 +159,9 @@ checks what it can):
    commits: "Pull request title and description". Rebase merging off.
    Branch protection as the team wants it (required reviews, checks).
 2. Gerrit, on the project's `refs/heads/*`, for the bridge's group: Push
-   with force, Forge Author, Forge Committer, Push Merge Commits, Abandon.
+   with force, Forge Author, Forge Committer, Push Merge Commits, Abandon;
+   and the global Maintain Server capability, for marking changes merged
+   whose merge commit lost its Change-Id footer (else they are abandoned).
    Nobody gets Submit (Gerrit's branch is GitHub's). No replication of the
    project to GitHub. Read restricted to the team.
 3. `github.user_app` (required): the linking App needs Contents read &

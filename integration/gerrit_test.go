@@ -1012,6 +1012,37 @@ func TestGitHubOwnedOnGerrit(t *testing.T) {
 		t.Errorf("the bridge may not abandon it: %v", err)
 	}
 
+	// GitHub adds co-author lines after the description: the Change-Id
+	// is no longer the commit's footer, and Gerrit leaves the change
+	// open. Gerrit's check-and-fix marks it merged at that commit, for
+	// the bridge only with Maintain Server.
+	idFour := "I" + strings.Repeat("4", 40)
+	upload("four", idFour, "")
+	coauth := ghCommit([]string{lost}, "four", "Add four (#10)\n\nChange-Id: "+idFour+"\n\n---------\n\nCo-authored-by: Bob <bob@example.com>")
+	ghMain(coauth)
+	follow()
+	if st, _ := status(idFour); st != "NEW" {
+		t.Fatalf("change four: %s, want NEW (the Change-Id is not its footer)", st)
+	}
+	fix := func() error {
+		return bridge.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/check", number(idFour)), map[string]string{"expect_merged_as": coauth}, &gerrit.ChangeInfo{})
+	}
+	var ge *gerrit.Error
+	if err := fix(); !errors.As(err, &ge) || ge.Status != http.StatusForbidden {
+		t.Errorf("check-and-fix without Maintain Server: %v, want 403", err)
+	}
+	maintain := map[string]any{"GLOBAL_CAPABILITIES": map[string]any{"permissions": map[string]any{"maintainServer": allow}}}
+	if err := srv.Admin.Do(ctx, http.MethodPost, "projects/All-Projects/access", map[string]any{"add": maintain}, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Admin.Do(ctx, http.MethodPost, "projects/All-Projects/access", map[string]any{"remove": maintain}, nil) })
+	if err := fix(); err != nil {
+		t.Errorf("check-and-fix with Maintain Server: %v", err)
+	}
+	if st, rev := status(idFour); st != "MERGED" || rev != coauth {
+		t.Errorf("change four: %s at %s, want MERGED at GitHub's %s", st, rev, coauth)
+	}
+
 	// GitHub's main is force-pushed back: followed.
 	ghMain(merge)
 	follow()

@@ -1215,37 +1215,60 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 	return changed, nil
 }
 
-// mergedOnGitHub abandons change n, whose PR pr merged on GitHub, which
-// owns the branch (design §3.1), once that merge is on Gerrit's copy of
-// the branch (Follow) and Gerrit still has the change open: Gerrit closes
-// a change as merged only for a commit with its Change-Id, which the
-// merge commit lacks if someone took the trailer out of its message
-// (or the repository's merge settings leave the description out).
-// Abandoned, with a note saying where it merged, it is closed either way.
-// It reports whether it abandoned it.
+// mergedOnGitHub closes change n, whose PR pr merged on GitHub, which
+// owns the branch (design §3.1), where Gerrit did not: Gerrit closes a
+// change as merged only for a commit whose last paragraph has its
+// Change-Id, and GitHub's merge commit may not (the trailer edited out in
+// the merge dialog, or co-author lines GitHub adds after it). Once that
+// commit is on Gerrit's copy of the branch (Follow), the bridge marks the
+// change merged there (Gerrit's check-and-fix, which inserts the commit
+// as its last patch set; it needs Maintain Server). If Gerrit will not,
+// or the PR merged into another branch (a stacked PR into the one below,
+// whose change then carries the code), the change is abandoned, with a
+// note saying where it merged. It reports whether it closed the change.
 func (c *Code) mergedOnGitHub(ctx context.Context, s *Snapshot, n int, ch *GerritChange, pr *github.PullRequest) (bool, error) {
 	sha := pr.MergeCommitSHA
-	if !fullSHA.MatchString(sha) || pr.Base.Ref != s.Branch {
-		// Merged into another PR's branch (a stack's layer): not on the
-		// target branch yet.
-		return false, nil
-	}
-	if _, err := c.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", sha, "refs/remotes/gerrit/heads/"+s.Branch); err != nil {
-		// Not followed yet (or not there at all): the change waits.
+	if !fullSHA.MatchString(sha) {
 		return false, nil
 	}
 	by := "someone"
 	if pr.MergedBy != nil && pr.MergedBy.Login != "" {
 		by = "@" + pr.MergedBy.Login
 	}
-	why := "its commit does not say this change's Change-Id (" + ch.ChangeID + "), so Gerrit could not tell it is this change"
-	if out, err := c.Mirror.Git(ctx, nil, "log", "-1", "--format=%B", sha); err == nil && strings.Contains(string(out), "Change-Id: "+ch.ChangeID) {
-		why = "Gerrit did not close it as merged"
+	if pr.Base.Ref != s.Branch {
+		return c.abandonMerged(ctx, n, pr, fmt.Sprintf("Merged on GitHub by %s in PR #%d into %s, not %s, so it will not merge here as this change: "+
+			"abandoned. Whatever it merged into carries its code (a stacked PR's branch: the change below it).", by, pr.Number, pr.Base.Ref, s.Branch))
 	}
-	msg := fmt.Sprintf("Merged on GitHub by %s in PR #%d, as %s on %s, but %s. Abandoned, since it is merged.",
-		by, pr.Number, sha, s.Branch, why)
+	if _, err := c.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", sha, "refs/remotes/gerrit/heads/"+s.Branch); err != nil {
+		// Not followed yet (or not there at all): the change waits.
+		return false, nil
+	}
 	if c.DryRun {
-		c.Logger.Info("dry run: would abandon a change merged on GitHub", "change", n, "pr", pr.Number, "commit", sha)
+		c.Logger.Info("dry run: would close a change merged on GitHub", "change", n, "pr", pr.Number, "commit", sha)
+		return false, nil
+	}
+	var fixed gerrit.ChangeInfo
+	err := c.Gerrit.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/check", n), map[string]string{"expect_merged_as": sha}, &fixed)
+	var ge *gerrit.Error
+	switch {
+	case err == nil && fixed.Status == "MERGED":
+		c.notice(ctx, n, ch, forGerrit(fmt.Sprintf("Merged on GitHub by %s in PR #%d, as %s on %s.", by, pr.Number, sha, s.Branch)))
+		c.Logger.Info("marked a change merged on GitHub as merged", "change", n, "pr", pr.Number, "commit", sha)
+		return true, nil
+	case err == nil, errors.As(err, &ge) && ge.Status < 500:
+		c.Logger.Warn("Gerrit would not mark a change merged on GitHub as merged (grant the bridge Maintain Server); abandoning it", "change", n, "pr", pr.Number, "err", err)
+	default:
+		return false, fmt.Errorf("marking change %d merged on GitHub as merged: %w", n, err)
+	}
+	return c.abandonMerged(ctx, n, pr, fmt.Sprintf("Merged on GitHub by %s in PR #%d, as %s on %s, but Gerrit could not show it merged. Abandoned, since it is merged.",
+		by, pr.Number, sha, s.Branch))
+}
+
+// abandonMerged abandons change n, whose PR pr merged on GitHub, saying
+// msg; it reports whether it did.
+func (c *Code) abandonMerged(ctx context.Context, n int, pr *github.PullRequest, msg string) (bool, error) {
+	if c.DryRun {
+		c.Logger.Info("dry run: would abandon a change merged on GitHub", "change", n, "pr", pr.Number)
 		return false, nil
 	}
 	err := c.Gerrit.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/abandon", n), map[string]string{"message": forGerrit(msg)}, nil)
@@ -1257,7 +1280,7 @@ func (c *Code) mergedOnGitHub(ctx context.Context, s *Snapshot, n int, ch *Gerri
 	if err != nil {
 		return false, fmt.Errorf("abandoning change %d, merged on GitHub: %w", n, err)
 	}
-	c.Logger.Info("abandoned a change merged on GitHub without its Change-Id", "change", n, "pr", pr.Number, "commit", sha)
+	c.Logger.Info("abandoned a change merged on GitHub", "change", n, "pr", pr.Number)
 	return true, nil
 }
 
