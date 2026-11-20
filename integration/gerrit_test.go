@@ -966,7 +966,7 @@ func TestGitHubOwnedOnGerrit(t *testing.T) {
 	if err := m.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	code := &reconcile.Code{Project: proj, GitHubOwned: true, Mirror: m, GitHubURL: ghDir,
+	code := &reconcile.Code{Project: proj, GitHubOwned: true, Mirror: m, GitHubURL: ghDir, DefaultBranch: "main",
 		GitHub: &github.Client{Tokens: github.StaticToken("unused")}, Logger: slog.Default()}
 	follow := func() {
 		t.Helper()
