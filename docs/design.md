@@ -182,6 +182,9 @@ checks what it can):
 4. `ci.checks_url` under `gerrit.url`'s path (the proxy forwards
    `<gerrit>/<path>/checks/` to the bridge's `/checks/`), and the plugin
    written with `--checks_plugin`. No `ci.buildkite`.
+   `ci.trusted_group` (default `Verified Users`) must still name a group
+   the bridge can read and is not in: here it only marks whose activity
+   is not rate-limited (the PR, text and status budgets).
 5. Switching back to `gerrit` means the reverse: Submit granted, the
    bridge's push grants removed, replication on, GitHub's branch protected
    for replication only, and both branches equal first.

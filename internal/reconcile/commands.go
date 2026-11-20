@@ -374,7 +374,7 @@ func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, hea
 	if reply != "" {
 		return reply
 	}
-	if pr == nil || pr.Number != st.State.PR || !changeIDPattern.MatchString(st.State.ChangeID) {
+	if pr == nil || !changeIDPattern.MatchString(st.State.ChangeID) {
 		c.Logger.Warn("/submit: PR or Change-Id unknown", "change", n, "pr", st.State.PR)
 		return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not tell which PR or change this is (see its log). Use the merge button.", ic.User.Login)
 	}
@@ -398,9 +398,13 @@ func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, hea
 	if msg != "" {
 		msg += "\n\n"
 	}
+	// The description's sign-offs stay, as the merge button keeps them,
+	// in the trailer paragraph.
+	user, _ := splitBody(pr.Body)
+	trailers := append(signOffs(user), "Change-Id: "+st.State.ChangeID)
 	in := github.MergeInput{Method: method, SHA: sha,
 		Title:   fmt.Sprintf("%s (#%d)", strings.TrimSpace(pr.Title), pr.Number),
-		Message: msg + "Change-Id: " + st.State.ChangeID}
+		Message: msg + strings.Join(trailers, "\n")}
 	merged, linked, err := c.Merger.Merge(ctx, ic.User, pr.Number, sha, in)
 	switch {
 	case !linked && err == nil:

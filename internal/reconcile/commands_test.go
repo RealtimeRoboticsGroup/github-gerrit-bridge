@@ -503,3 +503,17 @@ func TestSubmitMergeOnlyIntoTheBranch(t *testing.T) {
 		t.Errorf("merges %v, reply %q", m.calls, last)
 	}
 }
+
+// The description's sign-offs stay in the merge's trailers, as the merge
+// button keeps them.
+func TestSubmitMergeKeepsSignOffs(t *testing.T) {
+	c, h, _, m := mergeCommands(t, "gerrit")
+	h.body = "It was bent.\n\nSigned-off-by: Austin <austin@example.com>\n\n" + linksStart + "\nblock\n" + linksEnd
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if want := "It was bent.\n\nSigned-off-by: Austin <austin@example.com>\nChange-Id: " + cid(5); len(m.calls) != 1 || m.calls[0].Message != want {
+		t.Errorf("merges %+v, want message %q", m.calls, want)
+	}
+}

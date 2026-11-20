@@ -64,21 +64,29 @@ func (c *Code) Follow(ctx context.Context, branch string) error {
 		c.Logger.Info("dry run: would copy GitHub's branch into Gerrit", "branch", branch, "from", short(ours), "to", short(theirs), "forced", forced)
 		return nil
 	}
-	// Forced, leased on what Gerrit had: anything else writing it (nobody
-	// should) is not overwritten unseen, but read again next time.
-	res, err := c.Mirror.Push(ctx, "--force-with-lease="+ref+":"+ours, theirs+":"+ref)
-	if err != nil {
+	if err := c.copyRef(ctx, ref, ours, theirs); err != nil {
 		return fmt.Errorf("copying GitHub's %s into Gerrit: %w", branch, err)
-	}
-	for _, r := range res {
-		if r.Rejected {
-			return fmt.Errorf("copying GitHub's %s into Gerrit: Gerrit refused it: %s", branch, r.Reason)
-		}
 	}
 	if forced {
 		c.Logger.Warn("GitHub's branch was force-pushed; Gerrit's follows it", "branch", branch, "from", short(ours), "to", short(theirs))
 	} else {
 		c.Logger.Info("copied GitHub's branch into Gerrit", "branch", branch, "from", short(ours), "to", short(theirs))
+	}
+	return nil
+}
+
+// copyRef sets Gerrit's ref to commit to, forced, leased on was: anything
+// else writing it (nobody should) is not overwritten unseen, but read
+// again next time.
+func (c *Code) copyRef(ctx context.Context, ref, was, to string) error {
+	res, err := c.Mirror.Push(ctx, "--force-with-lease="+ref+":"+was, to+":"+ref)
+	if err != nil {
+		return err
+	}
+	for _, r := range res {
+		if r.Rejected {
+			return fmt.Errorf("Gerrit refused it: %s", r.Reason)
+		}
 	}
 	return nil
 }

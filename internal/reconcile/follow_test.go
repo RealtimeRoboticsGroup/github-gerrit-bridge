@@ -630,3 +630,73 @@ func TestObserveWithholdsChildrenOfWithheld(t *testing.T) {
 		t.Errorf("withheld %v, want both", snap.Withheld)
 	}
 }
+
+// The copy is leased on what Gerrit had: moved meanwhile, it is refused,
+// and Gerrit's ref is left as it is.
+func TestCopyRefIsLeased(t *testing.T) {
+	ctx := context.Background()
+	s, c, base := followSites(t)
+	moved := s.commit(base, "m", "m\n", "Moved meanwhile")
+	s.push("gerrit.git", moved, "refs/heads/main")
+	theirs := s.commit(base, "g", "g\n", "GitHub's")
+	s.push("github.git", theirs, "refs/heads/main")
+	s.git("m.git", "fetch", "-q", filepath.Join(s.dir, "github.git"), "+refs/heads/main:refs/remotes/github/heads/main")
+	if err := c.copyRef(ctx, "refs/heads/main", base, theirs); err == nil {
+		t.Error("copied over a ref that moved")
+	}
+	if got := s.ref("gerrit.git", "refs/heads/main"); got != moved {
+		t.Errorf("Gerrit's main = %s, want %s left", got, moved)
+	}
+}
+
+// A dry run closes nothing.
+func TestMergedOnGitHubDryRun(t *testing.T) {
+	s, c, _ := mergedSites(t, "One (#10)\n")
+	s.maintainServer = true
+	if err := c.Follow(context.Background(), "main"); err != nil {
+		t.Fatal(err)
+	}
+	c.DryRun = true
+	mirrorStates(t, c, false)
+	s.pulls[10].Base.Ref = "gerrit/I2"
+	mirrorStates(t, c, false)
+	if got := s.changes[1].Status; got != "NEW" {
+		t.Errorf("dry run: change 1 is %s", got)
+	}
+}
+
+// Gerrit refusing to abandon (no Abandon grant) is logged, not a failure
+// of the branch each time.
+func TestMergedOnGitHubAbandonRefused(t *testing.T) {
+	s, c, _ := mergedSites(t, "One (#10)\n")
+	s.may[1] = nil
+	s.pulls[10].Base.Ref = "gerrit/I2"
+	mirrorStates(t, c, false) // fails the test on an error
+	if got := s.changes[1].Status; got != "NEW" {
+		t.Errorf("change 1 is %s", got)
+	}
+}
+
+// The linked-writer gate is for Gerrit-born changes: a GitHub-born one's
+// Gerrit patch sets are markForeign's (their notice says so), not
+// withheld as unlinked.
+func TestGitHubBornIsNotWithheldAsUnlinked(t *testing.T) {
+	ctx := context.Background()
+	s, c, base := followSites(t)
+	c.Publishable = func(context.Context, int) (bool, bool) { return false, true }
+	rev := s.commit(base, "one.txt", "1\n", "One\n\nChange-Id: "+cid(1)+"\n")
+	ci := s.change(1, cid(1), rev, "One\n\nChange-Id: "+cid(1)+"\n", "NEW")
+	r := ci.Revisions[rev]
+	r.Uploader = gerrit.AccountInfo{AccountID: c.BridgeAccount + 7}
+	ci.Revisions[rev], ci.Owner = r, r.Uploader
+	s.save(ctx, c.Store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "github",
+		HeadBranch: "someone/r:feature", Lifecycle: "NEW"}})
+	s.pr(10, "feature", rev, "main", "someone").Head.Repo.FullName = "someone/r"
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Withheld[1] {
+		t.Error("a GitHub-born change withheld as unlinked")
+	}
+}
