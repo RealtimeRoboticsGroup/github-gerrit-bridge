@@ -22,6 +22,10 @@ REPO="${REPO:-AustinSchuh/bridge-scratch}"
 # GitHub accounts: the bridge's bot, and a second human (bob in Gerrit).
 BOT="${BOT:-realtimeroboticsbot}"
 SECOND="${SECOND:-AustinSchuhBRT}"
+# The GitHub-owned project (branch_owner: github, design §3.1): GitHub
+# merges, Gerrit follows. FOLLOW_REPO= leaves it out.
+FOLLOW_REPO="${FOLLOW_REPO-AustinSchuh/bridge-scratch-gh}"
+FOLLOW_PROJECT="${FOLLOW_REPO##*/}"
 UNITS="${HOME}/.config/systemd/user"
 
 mkdir -p "${TE}/bin" "${TE}/logs" "${UNITS}"
@@ -57,6 +61,11 @@ fi
 # No GitHub Actions: the bridge pushes every Gerrit change, from anyone
 # registered there, to a branch of this repository (design §9.1).
 "${GH}" api -X PUT "repos/${REPO}/actions/permissions" -F enabled=false --silent
+FOLLOW_FLAGS=""
+if [[ -n "${FOLLOW_REPO}" ]]; then
+  "${WS}/tools/testenv/github-owned-setup.sh" "${GH}" "${FOLLOW_REPO}" "${BOT}" "${SECOND}"
+  FOLLOW_FLAGS=" --follow_project ${FOLLOW_PROJECT} --follow_github ${FOLLOW_REPO} --user_app_from ${SITE}/bridge/bridge-scratch.yaml"
+fi
 SECOND_EMAIL="$("${GH}" api "users/${SECOND}" --jq '"\(.id)+\(.login)@users.noreply.github.com"')"
 # The second account's own address, if any (becomes its preferred email).
 [[ -n "${SECOND_EMAIL_PREFERRED:-}" ]] && SECOND_EMAIL="${SECOND_EMAIL}|${SECOND_EMAIL_PREFERRED}"
@@ -81,7 +90,7 @@ UNIT
 }
 
 unit bridge-test-gerrit "Bridge test instance: Gerrit" \
-  "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --github_deploy_key_file ${KEY} --github_known_hosts_file ${TE}/github-known-hosts --ci_user buildkite --buildkite_url http://127.0.0.1:18090 --github ${REPO} --github_bot ${BOT} --identity AustinSchuh=AustinSchuh --base_path /gerrit --github_login_jars ${HOME}/tmp/github-plugin --github_oauth_file ${TE}/github-oauth --github_webhook_user AustinSchuh --github_login_users AustinSchuh|trusted|admin|$(git -C "${WS}" config user.email),${SECOND}|${SECOND_EMAIL}" \
+  "${TE}/bin/testgerrit --replicate_project bridge-scratch --github_token_file ${TE}/github-token --github_deploy_key_file ${KEY} --github_known_hosts_file ${TE}/github-known-hosts --ci_user buildkite --buildkite_url http://127.0.0.1:18090 --github ${REPO} --github_bot ${BOT} --identity AustinSchuh=AustinSchuh --base_path /gerrit --github_login_jars ${HOME}/tmp/github-plugin --github_oauth_file ${TE}/github-oauth --github_webhook_user AustinSchuh --github_login_users AustinSchuh|trusted|admin|$(git -C "${WS}" config user.email),${SECOND}|${SECOND_EMAIL}${FOLLOW_FLAGS}" \
   "" "TimeoutStopSec=60"
 unit bridge-test-buildkite "Bridge test instance: fake Buildkite" \
   "${TE}/bin/fakebuildkite --duration 20s --gerrit_url http://127.0.0.1:18080/gerrit --gerrit_user buildkite --gerrit_password_file ${SITE}/ci/http-password" "" ""
@@ -101,12 +110,25 @@ if "${GH}" auth status 2>&1 | grep -q 'admin:repo_hook'; then
     "${WS}/tools/testenv/webhook-forward.sh ${GH} ${REPO} pull_request,pull_request_review,pull_request_review_comment,pull_request_review_thread,issue_comment,push http://127.0.0.1:18081/webhook ${SITE}/bridge/webhook-secret" \
     "After=bridge-test-bridge.service" "Environment=PATH=$(dirname "${GH}"):/usr/bin:/bin"
 fi
+if [[ -n "${FOLLOW_REPO}" ]]; then
+  # testgerrit writes its config once the project exists.
+  unit bridge-test-gh-bridge "Bridge test instance: the bridge of the GitHub-owned project" \
+    "${TE}/bin/bridge --config ${SITE}/bridge/${FOLLOW_PROJECT}.yaml --dry_run=false${BRIDGE_VERBOSE:+ -v}" \
+    "After=bridge-test-gerrit.service" \
+    "Environment=PATH=$(dirname "${GH}"):/usr/bin:/bin"
+  if "${GH}" auth status 2>&1 | grep -q 'admin:repo_hook'; then
+    unit bridge-test-gh-webhooks "Bridge test instance: GitHub webhook forwarding, GitHub-owned project" \
+      "${WS}/tools/testenv/webhook-forward.sh ${GH} ${FOLLOW_REPO} pull_request,pull_request_review,pull_request_review_comment,pull_request_review_thread,issue_comment,push http://127.0.0.1:18083/webhook ${SITE}/bridge/webhook-secret" \
+      "After=bridge-test-gh-bridge.service" "Environment=PATH=$(dirname "${GH}"):/usr/bin:/bin"
+  fi
+fi
 
 systemctl --user daemon-reload
-for s in gerrit buildkite ci bridge webhooks; do
+for s in gerrit buildkite ci bridge webhooks gh-bridge gh-webhooks; do
   [[ -f "${UNITS}/bridge-test-${s}.service" ]] || continue
   systemctl --user enable --quiet "bridge-test-${s}.service"
   systemctl --user restart "bridge-test-${s}.service"
   [[ "${s}" == gerrit ]] && for _ in $(seq 180); do curl -sf -o /dev/null http://127.0.0.1:18080/gerrit/config/server/version && break; sleep 1; done
+  [[ "${s}" == gerrit && -n "${FOLLOW_REPO}" ]] && for _ in $(seq 120); do [[ -f "${SITE}/bridge/${FOLLOW_PROJECT}.yaml" ]] && break; sleep 1; done
 done
 systemctl --user --no-pager --type=service list-units 'bridge-test-*'

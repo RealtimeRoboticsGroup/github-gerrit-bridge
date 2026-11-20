@@ -19,7 +19,7 @@ Everything listens on 127.0.0.1 only. From your desktop, tunnel the web
 UIs:
 
 ```
-ssh -L 18080:127.0.0.1:18080 -L 18081:127.0.0.1:18081 -L 18082:127.0.0.1:18082 -L 18090:127.0.0.1:18090 server1868-4
+ssh -L 18079:127.0.0.1:18079 -L 18080:127.0.0.1:18080 -L 18081:127.0.0.1:18081 -L 18082:127.0.0.1:18082 -L 18083:127.0.0.1:18083 -L 18084:127.0.0.1:18084 -L 18090:127.0.0.1:18090 server1868-4
 ```
 
 then open <http://127.0.0.1:18080/gerrit/login> and sign in with GitHub
@@ -132,6 +132,42 @@ pushed back to the fork while maintainer edits are allowed and reported
 in `gerrit/sync` when they are not; and CI in Gerrit's Checks tab (each
 job running, then passed or failed, Rerun adding an attempt) and on GitHub
 (`gerrit/Verified` linking the build). Run it after any bridge change.
+
+## The GitHub-owned project
+
+A second project where GitHub owns `main` and Gerrit follows
+(`branch_owner: github`, design §3.1), the way team1868/software is run:
+
+| Piece | Where |
+|---|---|
+| GitHub | `AustinSchuh/bridge-scratch-gh` (public, for rulesets): squash and merge commits take the PR's title and description, rebase merging off; ruleset "GitHub owns main" requires one approval and the `build` check, admins bypass it; GitHub Actions `build` (fails on a file containing `CI-MUST-FAIL`) and `lint` |
+| Gerrit | project `bridge-scratch-gh`, seeded from GitHub's main; the bridge's group may push with force, forge, push merges and abandon there, nobody may submit, and it has Maintain Server (shared with the other bridge: both are `github-bridge`) |
+| The bridge | `bridge-test-gh-bridge`, on `127.0.0.1:18083` (status page `18084`), config `~/tmp/gerrit-test/bridge/bridge-scratch-gh.yaml`; the same linking App as the other bridge, with its own tokens (GitHub rotates refresh tokens, so two bridges cannot share them) |
+| Webhooks | `bridge-test-gh-webhooks` → `127.0.0.1:18083/webhook` |
+| Checks tab | `plugins/bridge-checks-bridge-scratch-gh.js`, fetching `http://127.0.0.1:18079/gerrit/bridge-bridge-scratch-gh/checks/`: testgerrit serves Gerrit on `18079` too, behind a proxy that forwards that path to the bridge, as production's proxy does. Browse Gerrit at `http://127.0.0.1:18079/gerrit/` to see it (sign in on `18080` first: the session cookie is the same) |
+
+`install.sh` sets up all of it (`FOLLOW_REPO=` leaves it out), except
+what only the people themselves can do, once:
+
+1. realtimeroboticsbot accepts its invitation to the repository.
+2. The linking App is installed on the repository, with Contents read &
+   write (for `/submit`), and has
+   `http://127.0.0.1:18083/github/link/callback` among its callback URLs.
+3. AustinSchuh links his account at `http://127.0.0.1:18083/github/link`.
+
+`tools/testenv/rehearsal-github.sh` then runs every GitHub-owned flow:
+a PR imported as its author's change, with the Change-Id appended to its
+description, comments both ways, GitHub Actions' checks, and the Checks
+tab refusing the signed-out; squash merges marked merged in Gerrit by its
+own auto-close, and by check-and-fix when GitHub adds `Co-authored-by` or
+the Change-Id was edited out; a linked writer's Gerrit change becoming a
+PR, updated and merged with `/submit` (squashed, as him); an unlinked
+user's change withheld; a `git subtree --squash` PR merged with a merge
+commit by `/submit`; a stacked PR merged into the one below it
+(abandoned); a failing build, GitHub blocking the merge, closing and
+reopening; a force-push of `main` followed; and another branch followed
+only forward. The signed-in Checks tab needs a browser: open a change of
+`bridge-scratch-gh` through `18079` and look.
 
 ## Project rules (like AOS)
 
