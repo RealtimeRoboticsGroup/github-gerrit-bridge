@@ -2,6 +2,8 @@ package reconcile
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -484,5 +486,31 @@ func TestGerritWinsNeverRestoresUnpublishedCode(t *testing.T) {
 		if restored != publishable {
 			t.Errorf("stranger publishable %v, owner %v: their code restored %v (uploads %v)", publishable, tc.owner, restored, up.uploads)
 		}
+	}
+}
+
+// Gerrit refusing GitHub's branch (a commit validator, say) does not stop
+// the rest of the branch: changes are still mirrored, and the reconcile
+// fails, to be tried again.
+func TestRefusedFollowStillMirrorsTheBranch(t *testing.T) {
+	ctx := context.Background()
+	s, c, base := followSites(t)
+	c.Publishable = func(context.Context, int) (bool, bool) { return true, true }
+	hook := filepath.Join(s.dir, "gerrit.git", "hooks", "pre-receive")
+	os.WriteFile(hook, []byte("#!/bin/sh\nwhile read old new ref; do [ \"$ref\" = refs/heads/main ] && { echo 'missing Signed-off-by' >&2; exit 1; }; done\nexit 0\n"), 0o755)
+	s.push("github.git", s.commit(base, "b", "b\n", "Merged on GitHub"), "refs/heads/main")
+	rev := s.commit(base, "one.txt", "1\n", "One\n\nChange-Id: "+cid(1)+"\n")
+	ci := s.change(1, cid(1), rev, "One\n\nChange-Id: "+cid(1)+"\n", "NEW")
+	r := ci.Revisions[rev]
+	r.Uploader = gerrit.AccountInfo{AccountID: 7, Username: "seven"}
+	r.Commit.Parents = []struct {
+		Commit string `json:"commit"`
+	}{{base}}
+	ci.Revisions[rev], ci.Owner = r, r.Uploader
+	if err := c.Reconcile(ctx, Key{Branch: "main"}); err == nil || !strings.Contains(err.Error(), "following GitHub's main") {
+		t.Errorf("err = %v, want the refused follow", err)
+	}
+	if st, _ := c.Store.Load(ctx, 1); st.State.PR == 0 {
+		t.Error("the change got no PR: the refused follow stopped the branch")
 	}
 }

@@ -215,9 +215,14 @@ func (c *Code) reconcile(ctx context.Context, branch string) error {
 	defer c.lock(branch)()
 	wait()
 	// Where GitHub owns the branch, Gerrit's is GitHub's first: what
-	// merged there merges here, before anything is planned from it.
-	if err := c.Follow(ctx, branch); err != nil {
-		return err
+	// merged there merges here, before anything is planned from it. If
+	// Gerrit refuses it (a commit validator, a limit), the rest of the
+	// branch is still mirrored, from Gerrit's older copy (what merged
+	// waits for it), and the branch is tried again.
+	followErr := c.Follow(ctx, branch)
+	if followErr != nil {
+		followErr = fmt.Errorf("following GitHub's %s: %w", branch, followErr)
+		c.Logger.Warn("cannot copy GitHub's branch into Gerrit; mirroring the rest anyway", "branch", branch, "err", followErr)
 	}
 	// An import that failed (or wants a retry) does not hold back the
 	// export of everything else; its error comes back at the end, so the
@@ -242,7 +247,7 @@ func (c *Code) reconcile(ctx context.Context, branch string) error {
 		}
 	}
 	defer trace.Region(ctx, "export")()
-	return cmp.Or(c.export(ctx, branch), importErr)
+	return cmp.Or(c.export(ctx, branch), importErr, followErr)
 }
 
 type exportedKey struct{}

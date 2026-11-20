@@ -162,6 +162,11 @@ checks what it can):
    with force, Forge Author, Forge Committer, Push Merge Commits, Abandon;
    and the global Maintain Server capability, for marking changes merged
    whose merge commit lost its Change-Id footer (else they are abandoned).
+   Gerrit takes GitHub's commits as they are: no Signed-off-by
+   requirement, no commit validators GitHub's squash commits would fail,
+   and `receive.maxBatchCommits` above what one merge brings (a subtree
+   without `--squash`). A refused copy is logged and retried; the rest of
+   the branch is mirrored meanwhile.
    Nobody gets Submit (Gerrit's branch is GitHub's). No replication of the
    project to GitHub. Read restricted to the team.
 3. `github.user_app` (required): the linking App needs Contents read &
