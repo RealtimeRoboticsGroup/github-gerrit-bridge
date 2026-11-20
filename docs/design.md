@@ -89,8 +89,10 @@ checklist.
 
 - **Following.** Before each reconcile of a branch Gerrit has, the bridge
   copies GitHub's copy of it into Gerrit (`Code.Follow`): a forced push,
-  leased on what Gerrit had, so a force-push on GitHub is followed (the
-  owner's decision). GitHub's `push` webhooks queue `pushed/<branch>`,
+  leased on what Gerrit had, so a force-push of GitHub's default branch
+  is followed (the owner's decision). Other branches are followed only
+  forward: anyone with write access can make a branch on GitHub, and one
+  named like a branch only Gerrit had must not replace it. GitHub's `push` webhooks queue `pushed/<branch>`,
   which reconciles the branch if Gerrit has it; PR events and the
   periodic resync reach it too. Branches are never created or deleted in
   Gerrit, and the bridge's own `gerrit/*` branches are never followed.

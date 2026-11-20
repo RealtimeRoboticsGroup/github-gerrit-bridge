@@ -8,7 +8,8 @@ import (
 
 // Follow copies GitHub's copy of branch into Gerrit, where GitHub owns
 // the target branches (design §3.1): PRs are merged on GitHub, and
-// Gerrit's branch is whatever GitHub's is, force-pushed if GitHub's was.
+// Gerrit's branch is whatever GitHub's is, force-pushed if GitHub's
+// default branch was (others are followed only forward).
 // Gerrit itself then closes each open change of the branch whose Change-Id
 // one of the new commits carries, as merged, with that commit as its last
 // patch set. Only branches both sides have are followed: the bridge never
@@ -45,11 +46,19 @@ func (c *Code) Follow(ctx context.Context, branch string) error {
 	if theirs == ours {
 		return nil
 	}
-	// Only for the log: a force-push is GitHub's to make, and followed.
-	forced := false
-	if have, err := c.Mirror.RevParse(ctx, ours); err == nil && have != "" {
-		_, err := c.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", ours, theirs)
-		forced = err != nil
+	// A force-push is GitHub's to make, and followed, on its default
+	// branch. Any other is followed only forward: anyone with write
+	// access can make a branch on GitHub, and one named like a branch
+	// only Gerrit had (an old release) must not replace it.
+	if _, err := c.Mirror.Git(ctx, nil, "fetch", "--quiet", "origin", "+"+ref+":refs/remotes/gerrit/heads/"+branch); err != nil {
+		return fmt.Errorf("fetching Gerrit's %s: %w", branch, err)
+	}
+	_, err = c.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", ours, theirs)
+	forced := err != nil
+	if forced && branch != c.DefaultBranch {
+		c.Logger.Warn("GitHub's branch does not build on Gerrit's; not following it (only the default branch follows a force-push)",
+			"branch", branch, "gerrit", short(ours), "github", short(theirs))
+		return nil
 	}
 	if c.DryRun {
 		c.Logger.Info("dry run: would copy GitHub's branch into Gerrit", "branch", branch, "from", short(ours), "to", short(theirs), "forced", forced)

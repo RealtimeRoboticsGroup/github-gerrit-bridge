@@ -514,3 +514,30 @@ func TestRefusedFollowStillMirrorsTheBranch(t *testing.T) {
 		t.Error("the change got no PR: the refused follow stopped the branch")
 	}
 }
+
+// Only the default branch follows a force-push. Anyone with write access
+// can make a branch on GitHub: one named like a branch Gerrit has (an
+// old release) does not replace it; once it builds on Gerrit's, it is
+// followed.
+func TestFollowOtherBranchesOnlyForward(t *testing.T) {
+	ctx := context.Background()
+	s, c, base := followSites(t)
+	release := s.commit(base, "r", "r\n", "Release")
+	s.push("gerrit.git", release, "refs/heads/release")
+	other := s.commit(base, "x", "x\n", "Someone's branch")
+	s.push("github.git", other, "refs/heads/release")
+	if err := c.Follow(ctx, "release"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ref("gerrit.git", "refs/heads/release"); got != release {
+		t.Errorf("Gerrit's release = %s, replaced by an unrelated GitHub branch", got)
+	}
+	forward := s.commit(release, "r2", "r2\n", "Release fix")
+	s.push("github.git", forward, "refs/heads/release")
+	if err := c.Follow(ctx, "release"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ref("gerrit.git", "refs/heads/release"); got != forward {
+		t.Errorf("Gerrit's release = %s, want GitHub's %s", got, forward)
+	}
+}
