@@ -61,6 +61,9 @@ equal.
 
 ## 3. Source of truth
 
+`branch_owner` says which side owns the target branches. `gerrit`, the
+default and AOS's, is described here; `github` turns it around (§3.1).
+
 **Gerrit owns refs.** Gerrit is the only writer of protected branches
 (`main`, release branches). The GitHub repo is a replica:
 
@@ -73,6 +76,100 @@ equal.
 This removes the hardest problem: two systems both trying to advance `main`.
 Review *conversation* is fully bidirectional. *Code* moves both ways, but it
 only lands one way.
+
+### 3.1 GitHub-owned branches (`branch_owner: github`, built 2026-11-20)
+
+For a repository whose merges must stay on GitHub (team1868/software: a
+private repository, GitHub's reviews and checks gate merges, mostly squash
+merges, subtrees pulled in with `git subtree --squash` and merged with a
+merge commit). It is still one writer per branch, only the other one:
+GitHub merges, and Gerrit's branch follows. Review conversation is as
+bidirectional as ever. The setting can be switched later; see the
+checklist.
+
+- **Following.** Before each reconcile of a branch Gerrit has, the bridge
+  copies GitHub's copy of it into Gerrit (`Code.Follow`): a forced push,
+  leased on what Gerrit had, so a force-push on GitHub is followed (the
+  owner's decision). GitHub's `push` webhooks queue `pushed/<branch>`,
+  which reconciles the branch if Gerrit has it; PR events and the
+  periodic resync reach it too. Branches are never created or deleted in
+  Gerrit, and the bridge's own `gerrit/*` branches are never followed.
+- **Merged in Gerrit.** Gerrit closes an open change as merged when a
+  direct push brings a commit with its Change-Id (checked on 3.14:
+  `TestGitHubOwnedOnGerrit`); the commit becomes its last patch set.
+  GitHub has no hook that edits a merge's message, but with the
+  repository's default squash and merge commit messages set to the PR's
+  title and description, the description is the message, and the bridge
+  writes descriptions: each ends with `Change-Id: I…`, after the links
+  block, the bridge's part (never read as an edit). The bridge warns at
+  startup about merge settings that leave it out.
+- **The fallback.** If someone edits the trailer out in the merge dialog,
+  the change stays open; once the merge commit is on Gerrit's branch, the
+  bridge abandons the change, saying who merged it, in which PR, as which
+  commit (the owner's choice over guessing). A merge into another PR's
+  branch waits.
+- **Who reaches GitHub.** A pushed branch runs the repository's workflows
+  with its secrets. A Gerrit-born change is mirrored only if everyone
+  responsible for its current patch set (uploader, real uploader, and
+  whoever made its code or chose its parent: `codeFrom`) has linked a
+  GitHub account (§7.2) that may push to the repository (the collaborator
+  permission API, checked against the linked account's id); owning the
+  change is no pass. Others are withheld with a notice saying where to
+  link. The same rule replaces CI's trusted group for Gerrit patch sets
+  pushed to GitHub-born PRs' branches. Nobody gets more through Gerrit
+  than they have on GitHub.
+- **Status in Gerrit.** GitHub's reviews come over as always (linked
+  users' votes as theirs). Gerrit's Checks tab shows the patch set's
+  GitHub check runs (each attempt, result, title, summary, link), its
+  commit statuses, and for the PR's head whether GitHub would merge it now
+  ("GitHub merge": ready, blocked, behind, conflicting, draft). The
+  repository is private, so the checks are too: `/checks` answers only a
+  request carrying a Gerrit session cookie, reading the change from
+  Gerrit with that session on every request (`gerrit.Client.Viewer`,
+  read-only, none of the bridge's credentials); only GitHub's part is
+  cached, the answer is `private, no-store` with no CORS header, and
+  `ci.checks_url` must be on Gerrit's origin so browsers send the session.
+  No `gerrit/*` statuses are posted on GitHub, and Rerun is not offered
+  (GitHub's CI does not take `retest`).
+- **`/submit`** (optional; the merge button is the usual way) merges the
+  PR on GitHub with the commenter's own linked token, so GitHub's branch
+  protection decides as for their own button press; never with the
+  bridge's. Only at the head they could have seen, if it is the change's
+  current patch set (as a Gerrit `/submit`). The message is the
+  description ending with the Change-Id. A GitHub-born PR containing a
+  merge (a subtree) gets a merge commit; everything else is squashed.
+- **Not reshaped.** `PrepareSubmit` and the plan's swap-and-retarget for
+  replication do nothing: nothing replicates. A change that merges while
+  its PR is open (a commit with its Change-Id landed some other way) has
+  its PR closed with a notice.
+
+**Setup checklist** (and for switching an existing repository; the bridge
+checks what it can):
+
+1. GitHub: default commit message for squash merges and for merge
+   commits: "Pull request title and description". Rebase merging off.
+   Branch protection as the team wants it (required reviews, checks).
+2. Gerrit, on the project's `refs/heads/*`, for the bridge's group: Push
+   with force, Forge Author, Forge Committer, Push Merge Commits, Abandon.
+   Nobody gets Submit (Gerrit's branch is GitHub's). No replication of the
+   project to GitHub. Read restricted to the team.
+3. `github.user_app` (required): the linking App needs Contents read &
+   write too, for `/submit` (a linked token can then push as its owner:
+   leave `/submit` unused, and the App without it, if that is too much).
+   The bot token needs Checks read for the Checks tab.
+4. `ci.checks_url` on Gerrit's host (the proxy forwards
+   `<gerrit>/<path>/checks/` to the bridge's `/checks/`), and the plugin
+   written with `--checks_plugin`. No `ci.buildkite`.
+5. Switching back to `gerrit` means the reverse: Submit granted, the
+   bridge's push grants removed, replication on, GitHub's branch protected
+   for replication only, and both branches equal first.
+
+**Known gaps.** Squash merges and stacks: once a lower layer is squashed,
+a Gerrit-born upper layer stands on a commit not on the branch (shown
+against a frozen base) until it is rebased in Gerrit; GitHub-born layers
+are rebased by their authors. The commit message GitHub writes includes
+the description's links block. Nothing checks Gerrit's or GitHub's
+settings beyond the merge messages; the checklist is the operator's.
 
 ## 4. Architecture
 
@@ -1103,11 +1200,8 @@ token, so the bridge's posts are theirs. What stands in the way:
    - **Forgery is not a risk:** only the person can post as themselves,
      and the worst a stray marker can do is keep their own comment out of
      Gerrit until the map says otherwise.
-2. **GitHub owns the default branch.** The bridge assumes Gerrit submits
-   and replication writes GitHub's `main` (§6.7). Here merges happen on
-   GitHub, so Gerrit's branch follows GitHub's instead (a mirror push from
-   GitHub to Gerrit), and submitting means merging the PR on GitHub: the
-   reverse of today's flow. This is the largest piece.
+2. **GitHub owns the default branch.** Built as `branch_owner: github`
+   (§3.1).
 3. **Attribution headers.** Posts name their Gerrit author at the top;
    when that author is the token owner, drop the header, since the post is
    theirs.
