@@ -811,3 +811,23 @@ func TestCanPush(t *testing.T) {
 		t.Error("a failure is not an error")
 	}
 }
+
+// A commit's check runs, every attempt, as GitHub lists them.
+func TestCheckRuns(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/o/r/commits/abc/check-runs" || r.URL.Query().Get("filter") != "all" {
+			t.Errorf("asked %s", r.URL)
+		}
+		io.WriteString(w, `{"total_count":1,"check_runs":[{"id":3,"name":"build","status":"completed","conclusion":"failure",`+
+			`"html_url":"h","details_url":"d","started_at":"2026-11-20T10:00:00Z","completed_at":"2026-11-20T10:05:00Z",`+
+			`"output":{"title":"2 tests failed","summary":"see the log"},"app":{"name":"GitHub Actions"}}]}`)
+	})
+	runs, err := c.CheckRuns(context.Background(), "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].Name != "build" || runs[0].Conclusion != "failure" || runs[0].Output.Title != "2 tests failed" ||
+		runs[0].App.Name != "GitHub Actions" || runs[0].CompletedAt == nil || runs[0].HTMLURL != "h" {
+		t.Errorf("got %+v", runs)
+	}
+}

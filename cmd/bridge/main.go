@@ -76,7 +76,7 @@ func printChecksPlugin(configPath string) error {
 	if cfg.CI.ChecksURL == "" {
 		return errors.New("ci.checks_url is not set")
 	}
-	_, err = os.Stdout.Write(gerritchecks.Plugin(cfg.CI.ChecksURL, cfg.Gerrit.Project))
+	_, err = os.Stdout.Write(gerritchecks.Plugin(cfg.CI.ChecksURL, cfg.Gerrit.Project, !cfg.GitHubOwned()))
 	return err
 }
 
@@ -249,6 +249,18 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			// handler answers only for what the bridge publishes anyway.
 			Project: cfg.Gerrit.Project, Gerrit: rest, Builds: builds, Label: label,
 			AllowOrigin: origin, Logger: logger,
+			ClientAddr: func(r *http.Request) string { return github.ClientAddr(r, cidrs(cfg.GitHub.WebhookTrustedProxies)) },
+		})
+	}
+	if cfg.CI.ChecksURL != "" && cfg.GitHubOwned() {
+		// GitHub's checks, for the bridge-checks plugin, shown only to
+		// those signed in to Gerrit who may see the change: the browser
+		// sends its Gerrit session, the bridge being on Gerrit's origin
+		// (config checks it), and Gerrit is asked as them each time.
+		mux.Handle("GET /checks/{change}/{patchset}", &gerritchecks.Handler{
+			Project: cfg.Gerrit.Project, GitHub: reconcile.GitHubChecks{Store: store, Client: gh},
+			Viewer:     func(session string) gerritchecks.Changes { return rest.Viewer(session) },
+			Logger:     logger,
 			ClientAddr: func(r *http.Request) string { return github.ClientAddr(r, cidrs(cfg.GitHub.WebhookTrustedProxies)) },
 		})
 	}
@@ -459,6 +471,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		TrustedGroup: cfg.CI.TrustedGroup,
 		CIMessage:    regexp.MustCompile(cfg.CI.MessagePattern),
 		CIAccount:    cfg.CI.Account,
+		GitHubOwned:  cfg.GitHubOwned(),
 		DryRun:       dryRun,
 		Logger:       logger,
 	}

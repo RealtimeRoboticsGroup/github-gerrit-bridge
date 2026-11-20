@@ -4,6 +4,7 @@ go_library(
     name = "gerritchecks",
     srcs = [
         "gerritchecks.go",
+        "github.go",
         "plugin.go",
     ],
     embedsrcs = ["bridge-checks.js"],
@@ -12,15 +13,20 @@ go_library(
     deps = [
         "//internal/buildkite",
         "//internal/gerrit",
+        "//internal/github",
     ],
 )
 
 go_test(
     name = "gerritchecks_test",
-    srcs = ["gerritchecks_test.go"],
+    srcs = [
+        "gerritchecks_test.go",
+        "github_test.go",
+    ],
     embed = [":gerritchecks"],
     deps = [
         "//internal/buildkite",
         "//internal/gerrit",
+        "//internal/github",
     ],
 )

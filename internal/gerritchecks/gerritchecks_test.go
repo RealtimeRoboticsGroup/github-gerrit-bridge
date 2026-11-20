@@ -144,7 +144,10 @@ func TestHandler(t *testing.T) {
 }
 
 func TestPlugin(t *testing.T) {
-	js := string(Plugin("https://example.com/bridge/", `p"q`))
+	js := string(Plugin("https://example.com/bridge/", `p"q`, true))
+	if !strings.Contains(js, "const RERUN = true;") || !strings.Contains(string(Plugin("u", "p", false)), "const RERUN = false;") {
+		t.Error("rerun not filled in")
+	}
 	// Gerrit calls a top-level action with the latest patch set, whatever
 	// is shown: every Rerun names its own (ninth audit).
 	for _, want := range []string{"callback: change => retest(change, patchset)", "rerun(run.patchset || data.patchsetNumber)", "...rerun(data.patchsetNumber), name: 'Rerun CI'"} {

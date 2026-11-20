@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -179,5 +180,34 @@ func TestWritesAreTraced(t *testing.T) {
 	}
 	if w, n := tr.Writes(); n != 1 || w[0] != "gerrit POST changes/5/revisions/abc/review as alice" {
 		t.Errorf("writes %q", w)
+	}
+}
+
+// A viewer's reads carry their session and nothing of the bridge's, at
+// Gerrit's unauthenticated paths; and nothing is written as them.
+func TestViewerReadsAsTheViewer(t *testing.T) {
+	var got *http.Request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r
+		io.WriteString(w, ")]}'\n{\"_number\":5}")
+	}))
+	defer srv.Close()
+	bridge := &Client{BaseURL: srv.URL, User: "bridge", Password: "secret", RunAs: "alice"}
+	v := bridge.Viewer("sess1")
+	if _, err := v.GetChange(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if got.URL.Path != "/changes/5" {
+		t.Errorf("path %s, want Gerrit's unauthenticated one", got.URL.Path)
+	}
+	if c, err := got.Cookie(SessionCookie); err != nil || c.Value != "sess1" {
+		t.Errorf("session cookie %v %v", c, err)
+	}
+	if _, _, ok := got.BasicAuth(); ok || got.Header.Get("X-Gerrit-RunAs") != "" {
+		t.Errorf("the bridge's credentials went along: %v", got.Header)
+	}
+	got = nil
+	if err := v.Do(context.Background(), http.MethodPost, "changes/5/abandon", nil, nil); err == nil || got != nil {
+		t.Errorf("a write as the viewer: %v (sent %v)", err, got != nil)
 	}
 }

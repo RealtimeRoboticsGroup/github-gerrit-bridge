@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -397,5 +398,44 @@ func TestStatusNamesCannotForgeAVoter(t *testing.T) {
 	s := byContext(desiredStatuses(ch, "u", nil, ciRun{}, true, ""))[statusPrefix+"Code-Review"]
 	if s.Description != "+2 jr, +1 mallory" {
 		t.Errorf("description = %q", s.Description)
+	}
+}
+
+// Where GitHub owns the branches, GitHub's own reviews and checks gate its
+// merges, and no gerrit/* status is posted for them.
+func TestNoStatusesWhereGitHubOwns(t *testing.T) {
+	ctx := context.Background()
+	s := newSites(t)
+	store := &state.Store{Repo: s.mirror(ctx)}
+	s.save(ctx, store, 5, &state.Change{State: state.ChangeState{Change: 5, PR: 50},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: "g1", GitHubSHA: "h1"}}})
+	f := &checksFakes{ch: &gerrit.ChangeInfo{Status: "NEW", CurrentRevision: "g1",
+		Revisions: map[string]gerrit.RevisionInfo{"g1": {Number: 1, Created: "2026-10-19 10:00:00.000000000", Uploader: alice}},
+		Labels:    map[string]gerrit.LabelInfo{"Code-Review": {Values: crValues, All: []gerrit.ApprovalInfo{{AccountInfo: bob, Value: 2, Date: "2026-10-19 11:45:00.000000000"}}}}}}
+	c := &Checks{Project: "p", Gerrit: f, GitHub: f, Store: store, CILabels: []string{"Verified"}, Logger: slog.Default(), GitHubOwned: true}
+	if err := c.Sync(ctx, 5); err != nil || len(f.set) != 0 {
+		t.Errorf("set %v (err %v), want nothing", f.set, err)
+	}
+	c.GitHubOwned = false
+	if err := c.Sync(ctx, 5); err != nil || len(f.set) == 0 {
+		t.Errorf("Gerrit owns: set %v (err %v), want statuses", f.set, err)
+	}
+}
+
+// A patch set's GitHub commit is the one recorded for it: its import's
+// head, or its export; none if GitHub never had it.
+func TestGitHubChecksCommit(t *testing.T) {
+	ctx := context.Background()
+	s := newSites(t)
+	store := &state.Store{Repo: s.mirror(ctx)}
+	g1, h1, g2 := strings.Repeat("1", 40), strings.Repeat("a", 40), strings.Repeat("2", 40)
+	s.save(ctx, store, 5, &state.Change{State: state.ChangeState{Change: 5, PR: 50},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: g1, GitHubSHA: h1}, {PatchSet: 2, GerritSHA: g2, GitHubSHA: "not a sha"}}})
+	src := GitHubChecks{Store: store}
+	for sha, want := range map[string]string{g1: h1, g2: "", strings.Repeat("3", 40): ""} {
+		got, pr, err := src.Commit(ctx, 5, sha)
+		if err != nil || got != want || pr != 50 {
+			t.Errorf("%s: %q #%d %v, want %q #50", sha[:1], got, pr, err, want)
+		}
 	}
 }

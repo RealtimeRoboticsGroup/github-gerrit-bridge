@@ -131,7 +131,7 @@ func run() error {
 		}
 		if *buildkiteURL != "" {
 			// Gerrit loads new plugins within a minute.
-			js := gerritchecks.Plugin("http://"+*listen, *replicate)
+			js := gerritchecks.Plugin("http://"+*listen, *replicate, true)
 			if err := os.WriteFile(filepath.Join(*site, "plugins", "bridge-checks.js"), js, 0o644); err != nil {
 				return err
 			}

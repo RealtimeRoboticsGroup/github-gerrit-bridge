@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"sync"
@@ -47,6 +48,7 @@ type Result struct {
 	ExternalID string `json:"externalId"`
 	Category   string `json:"category"` // SUCCESS, INFO, WARNING, ERROR
 	Summary    string `json:"summary"`
+	Message    string `json:"message,omitempty"`
 	Links      []Link `json:"links,omitempty"`
 }
 
@@ -166,13 +168,24 @@ func result(id, state string, exit *int, url string) Result {
 }
 
 // Handler serves GET /checks/{change}/{patchset} for the Checks plugin.
-// It is public: it shows only Project's changes that are not private,
-// which the bridge publishes as GitHub PRs anyway, and caches answers
-// briefly so page loads cannot hammer Gerrit or Buildkite.
+// Without Viewer it is public: it shows only Project's changes that are
+// not private, which the bridge publishes as GitHub PRs anyway. With
+// Viewer, it answers only those signed in to Gerrit, for changes Gerrit
+// lets them see. It caches answers briefly so page loads cannot hammer
+// Gerrit, Buildkite or GitHub.
 type Handler struct {
 	Project string
 	Gerrit  Changes // as the bridge: AOS lets no anonymous user read changes
 	Builds  Builds
+	// GitHub, if set, is read for the runs instead of Builds: GitHub's
+	// checks, where GitHub owns the branches.
+	GitHub GitHubSource
+	// Viewer, if set, reads Gerrit as whoever has a Gerrit web session
+	// (the GerritAccount cookie their browser sends, on Gerrit's own
+	// origin): each request is answered only if Gerrit shows them the
+	// change, asked each time. For a repository that is not public, whose
+	// checks are not the bridge's to publish.
+	Viewer func(session string) Changes
 	// Label is the label CI votes, shown next to the runs.
 	Label string
 	// AllowOrigin is the Gerrit web origin, for CORS when the bridge is
@@ -207,9 +220,10 @@ const (
 	cacheTTL    = 15 * time.Second
 	maxCached   = 2000
 	maxInFlight = 4
-	// maxBuildkitePerMinute bounds the Buildkite calls anonymous requests
-	// cause, well inside Buildkite's rate limit, which the bridge also
-	// needs for gerrit/Verified.
+	// maxBuildkitePerMinute bounds the Buildkite (or GitHub) calls
+	// requests cause, well inside Buildkite's rate limit, which the
+	// bridge also needs for gerrit/Verified (GitHub's, which it needs for
+	// everything).
 	maxBuildkitePerMinute = 60
 	// maxGerritPerMinute bounds the Gerrit reads anonymous requests cause.
 	maxGerritPerMinute = 300
@@ -218,7 +232,15 @@ const (
 	// clients counted.
 	maxMissesPerClient = 30
 	maxClients         = 10000
+	// maxViewerRequestsPerClient bounds one client's requests a minute
+	// with Viewer, cached or not: each reads Gerrit as its viewer. Higher:
+	// a team behind one address polls from each open change.
+	maxViewerRequestsPerClient = 120
 )
+
+// sessionValue is what a Gerrit session cookie looks like: anything else
+// is no session, and is not sent on.
+var sessionValue = regexp.MustCompile(`^[A-Za-z0-9._~+/=-]{1,512}$`)
 
 func (h *Handler) clock() time.Time {
 	if h.now != nil {
@@ -234,7 +256,10 @@ func (h *Handler) spend() bool { return h.take(&h.calls, maxBuildkitePerMinute) 
 func (h *Handler) read() bool { return h.take(&h.reads, maxGerritPerMinute) }
 
 // miss takes one uncached request from client's budget this minute.
-func (h *Handler) miss(client string) bool {
+func (h *Handler) miss(client string) bool { return h.missUpTo(client, maxMissesPerClient) }
+
+// missUpTo takes one request from client's budget of limit this minute.
+func (h *Handler) missUpTo(client string, limit int) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.roll()
@@ -246,7 +271,7 @@ func (h *Handler) miss(client string) bool {
 		// would let enough of them reset everyone's budget; fourth audit.)
 		return false
 	}
-	if h.misses[client] >= maxMissesPerClient {
+	if h.misses[client] >= limit {
 		return false
 	}
 	h.misses[client]++
@@ -276,7 +301,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.cache = map[[2]int]entry{}
 		h.busy = make(chan struct{}, maxInFlight)
 	})
-	if h.AllowOrigin != "" {
+	if h.AllowOrigin != "" && h.Viewer == nil {
 		w.Header().Set("Access-Control-Allow-Origin", h.AllowOrigin)
 		w.Header().Set("Vary", "Origin")
 	}
@@ -286,104 +311,192 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad change or patch set", http.StatusBadRequest)
 		return
 	}
+	if h.Viewer != nil {
+		h.serveViewer(w, r, change, ps)
+		return
+	}
 	key := [2]int{change, ps}
 	h.mu.Lock()
 	e, ok := h.cache[key]
 	h.mu.Unlock()
 	if !ok || time.Since(e.at) > cacheTTL {
-		client := r.RemoteAddr
-		if h.ClientAddr != nil {
-			client = h.ClientAddr(r)
-		}
-		if host, _, err := net.SplitHostPort(client); err == nil {
-			client = host
-		}
-		if ip := net.ParseIP(client); ip != nil && ip.To4() == nil {
-			// One IPv6 host has a /64 to rotate through (fourth audit),
-			// often a /56 or a /48 (fifth audit: 65,536 /64s fill the
-			// clients counted): a /56, the usual home delegation, is one
-			// client.
-			client = ip.Mask(net.CIDRMask(56, 128)).String()
-		}
-		if !h.miss(client) {
+		if !h.miss(h.client(r)) {
 			http.Error(w, "busy", http.StatusTooManyRequests)
 			return
 		}
-		select {
-		case h.busy <- struct{}{}:
-		default:
+		var done bool
+		if e, done = h.fill(key, func(ctx context.Context) entry { return h.compute(ctx, change, ps) }); !done {
 			http.Error(w, "busy", http.StatusServiceUnavailable)
 			return
 		}
-		// Not the request's context: a client that hangs up must not
-		// leave a failure behind for everyone.
-		e = h.compute(context.Background(), change, ps)
-		<-h.busy
-		if e.status >= 500 {
-			// Transient: not cached.
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(e.status)
-			w.Write(e.body)
-			return
-		}
-		h.mu.Lock()
-		if len(h.cache) >= maxCached {
-			for k, v := range h.cache {
-				if time.Since(v.at) > cacheTTL {
-					delete(h.cache, k)
-				}
-			}
-			if len(h.cache) >= maxCached {
-				clear(h.cache)
-			}
-		}
-		h.cache[key] = e
-		h.mu.Unlock()
 	}
-	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", int(cacheTTL.Seconds())))
+	write(w, e)
+}
+
+// write writes e as the answer.
+func write(w http.ResponseWriter, e entry) {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(e.status)
 	w.Write(e.body)
 }
 
-func (h *Handler) compute(ctx context.Context, change, ps int) entry {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+// client is who sent r, for its budget: by address, a /56 for IPv6.
+func (h *Handler) client(r *http.Request) string {
+	client := r.RemoteAddr
+	if h.ClientAddr != nil {
+		client = h.ClientAddr(r)
+	}
+	if host, _, err := net.SplitHostPort(client); err == nil {
+		client = host
+	}
+	if ip := net.ParseIP(client); ip != nil && ip.To4() == nil {
+		// One IPv6 host has a /64 to rotate through (fourth audit),
+		// often a /56 or a /48 (fifth audit: 65,536 /64s fill the
+		// clients counted): a /56, the usual home delegation, is one
+		// client.
+		client = ip.Mask(net.CIDRMask(56, 128)).String()
+	}
+	return client
+}
+
+// fill computes key's answer with compute, at most maxInFlight at once
+// (done is false if that many are), and caches it unless it failed for
+// now (5xx).
+func (h *Handler) fill(key [2]int, compute func(context.Context) entry) (e entry, done bool) {
+	select {
+	case h.busy <- struct{}{}:
+	default:
+		return entry{}, false
+	}
+	// Not the request's context: a client that hangs up must not leave a
+	// failure behind for everyone.
+	e = compute(context.Background())
+	<-h.busy
+	if e.status >= 500 {
+		return e, true // transient: not cached
+	}
+	h.mu.Lock()
+	if len(h.cache) >= maxCached {
+		for k, v := range h.cache {
+			if time.Since(v.at) > cacheTTL {
+				delete(h.cache, k)
+			}
+		}
+		if len(h.cache) >= maxCached {
+			clear(h.cache)
+		}
+	}
+	h.cache[key] = e
+	h.mu.Unlock()
+	return e, true
+}
+
+// serveViewer answers with Viewer: only someone signed in to Gerrit, for a
+// change Gerrit shows them, read as them on every request (no answer of
+// Gerrit's is reused: who may see a change can change at any time). Only
+// GitHub's (or Buildkite's) part is cached, as it is the same for all.
+// The answer is theirs: no shared cache keeps it, and no other origin
+// reads it.
+func (h *Handler) serveViewer(w http.ResponseWriter, r *http.Request, change, ps int) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Vary", "Cookie")
+	c, err := r.Cookie(gerrit.SessionCookie)
+	if err != nil || !sessionValue.MatchString(c.Value) {
+		write(w, failure(http.StatusUnauthorized, "sign in to Gerrit to see checks"))
+		return
+	}
+	if !h.missUpTo(h.client(r), maxViewerRequestsPerClient) {
+		http.Error(w, "busy", http.StatusTooManyRequests)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	fail := func(status int, msg string) entry {
-		b, _ := json.Marshal(map[string]string{"error": msg})
-		return entry{at: time.Now(), status: status, body: b}
+	sha, e := h.patchSet(ctx, h.Viewer(c.Value), change, ps, false)
+	if e != nil {
+		write(w, *e)
+		return
+	}
+	key := [2]int{change, ps}
+	h.mu.Lock()
+	cached, ok := h.cache[key]
+	h.mu.Unlock()
+	if !ok || time.Since(cached.at) > cacheTTL {
+		var done bool
+		if cached, done = h.fill(key, func(ctx context.Context) entry {
+			ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			return h.runs(ctx, change, ps, sha)
+		}); !done {
+			http.Error(w, "busy", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	write(w, cached)
+}
+
+// failure is an answer saying msg.
+func failure(status int, msg string) entry {
+	b, _ := json.Marshal(map[string]string{"error": msg})
+	return entry{at: time.Now(), status: status, body: b}
+}
+
+// patchSet reads change with g and finds patch set ps's commit, or the
+// answer to give instead. asBridge says g reads as the bridge, which
+// answers only for what it publishes.
+func (h *Handler) patchSet(ctx context.Context, g Changes, change, ps int, asBridge bool) (string, *entry) {
+	fail := func(status int, msg string) (string, *entry) {
+		e := failure(status, msg)
+		return "", &e
 	}
 	if !h.read() {
 		return fail(http.StatusServiceUnavailable, "busy")
 	}
-	ch, err := h.Gerrit.GetChange(ctx, change, "ALL_REVISIONS")
+	ch, err := g.GetChange(ctx, change, "ALL_REVISIONS")
 	var ge *gerrit.Error
 	// One answer for a change that is not there, is private or another
 	// project's, or lacks the patch set: which, says what it is (fourth
-	// audit: that a private change exists, say).
+	// audit: that a private change exists, say). For a viewer, Gerrit
+	// answers 404 for what they may not see.
 	const notFound = "no such change or patch set"
-	if errors.As(err, &ge) && ge.Status == http.StatusNotFound {
+	if errors.As(err, &ge) && (ge.Status == http.StatusNotFound || (!asBridge && ge.Status/100 == 4)) {
 		return fail(http.StatusNotFound, notFound)
 	}
 	if err != nil {
 		h.Logger.Warn("checks: reading change", "change", change, "err", err)
 		return fail(http.StatusBadGateway, "cannot read the change from Gerrit")
 	}
-	if ch.Project != h.Project || ch.IsPrivate {
+	if ch.Project != h.Project || (asBridge && ch.IsPrivate) {
 		// Gerrit is read as the bridge (AOS lets no anonymous user read
 		// changes), which could be made a private change's reviewer:
 		// only what the bridge publishes on GitHub anyway is answered.
 		return fail(http.StatusNotFound, notFound)
 	}
-	sha := ""
 	for s, rev := range ch.Revisions {
 		if rev.Number == ps {
-			sha = s
+			return s, nil
 		}
 	}
-	if sha == "" {
-		return fail(http.StatusNotFound, notFound)
+	return fail(http.StatusNotFound, notFound)
+}
+
+func (h *Handler) compute(ctx context.Context, change, ps int) entry {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	sha, e := h.patchSet(ctx, h.Gerrit, change, ps, true)
+	if e != nil {
+		return *e
 	}
+	return h.runs(ctx, change, ps, sha)
+}
+
+// runs is the answer for change's patch set ps, commit sha: GitHub's
+// checks, or Buildkite's builds.
+func (h *Handler) runs(ctx context.Context, change, ps int, sha string) entry {
+	if h.GitHub != nil {
+		return h.githubEntry(ctx, change, ps, sha)
+	}
+	fail := failure
 	if !h.spend() {
 		return fail(http.StatusServiceUnavailable, "busy")
 	}

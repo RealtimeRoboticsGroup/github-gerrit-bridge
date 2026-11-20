@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 )
@@ -88,6 +89,36 @@ type Status struct {
 func (c *Client) CreateStatus(ctx context.Context, sha string, s Status) error {
 	_, err := c.Do(ctx, http.MethodPost, c.RepoPath("statuses/"+sha), s, nil)
 	return err
+}
+
+// CheckRun is a check run on a commit (GitHub Actions' jobs, and other
+// apps' checks).
+type CheckRun struct {
+	ID          int64      `json:"id"`
+	Name        string     `json:"name"`
+	Status      string     `json:"status"`     // queued, in_progress, completed, waiting, requested, pending
+	Conclusion  string     `json:"conclusion"` // once completed: success, failure, neutral, cancelled, skipped, timed_out, action_required, stale
+	HTMLURL     string     `json:"html_url"`
+	DetailsURL  string     `json:"details_url"`
+	StartedAt   *time.Time `json:"started_at"`
+	CompletedAt *time.Time `json:"completed_at"`
+	Output      struct {
+		Title   string `json:"title"`
+		Summary string `json:"summary"`
+	} `json:"output"`
+	App struct {
+		Name string `json:"name"`
+	} `json:"app"`
+}
+
+// CheckRuns returns the check runs on commit sha (the first 100: every
+// attempt of each, newest first).
+func (c *Client) CheckRuns(ctx context.Context, sha string) ([]CheckRun, error) {
+	var out struct {
+		CheckRuns []CheckRun `json:"check_runs"`
+	}
+	_, err := c.Do(ctx, http.MethodGet, c.RepoPath("commits/"+url.PathEscape(sha)+"/check-runs?filter=all&per_page=100"), nil, &out)
+	return out.CheckRuns, err
 }
 
 // Statuses returns the latest status per context on commit sha.

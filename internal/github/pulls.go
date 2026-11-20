@@ -63,6 +63,10 @@ type PullRequest struct {
 	// base branch; MergedBy (GetPull only) who merged it.
 	MergeCommitSHA string `json:"merge_commit_sha"`
 	MergedBy       *User  `json:"merged_by"`
+	// MergeableState (GetPull only) is what GitHub's merge box says:
+	// clean, unstable, has_hooks (mergeable), blocked, behind, dirty,
+	// draft, or unknown (not worked out yet).
+	MergeableState string `json:"mergeable_state"`
 	Title          string `json:"title"`
 	Body           string `json:"body"`
 	HTMLURL        string `json:"html_url"`

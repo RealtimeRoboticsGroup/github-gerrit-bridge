@@ -66,8 +66,13 @@ type Checks struct {
 	// person's PRs hold up everyone's (fifth audit).
 	StatusBudget  *Budget
 	BridgeAccount int
-	DryRun        bool
-	Logger        *slog.Logger
+	// GitHubOwned says GitHub owns the branches (design §3.1): its own
+	// reviews and checks gate merges there, Gerrit has no CI of its own,
+	// and Gerrit's submit requirements decide nothing, so none of this is
+	// posted.
+	GitHubOwned bool
+	DryRun      bool
+	Logger      *slog.Logger
 
 	mu        sync.Mutex
 	trusted   map[int]bool
@@ -90,6 +95,9 @@ type ciRun struct {
 
 // Sync mirrors change n's votes, CI and submittability.
 func (c *Checks) Sync(ctx context.Context, n int) error {
+	if c.GitHubOwned {
+		return nil
+	}
 	st, err := c.Store.Load(ctx, n)
 	if err != nil {
 		return err
@@ -476,4 +484,28 @@ func desiredStatuses(ch *gerrit.ChangeInfo, changeURL string, ciLabels []string,
 	}
 	sub.Description = truncateDesc(sub.Description)
 	return append(out, sub)
+}
+
+// GitHubChecks is where Gerrit's Checks tab reads GitHub's checks of a
+// patch set from, where GitHub owns the branches
+// (gerritchecks.GitHubSource): the patch set's GitHub commit is the one
+// the bridge recorded for it.
+type GitHubChecks struct {
+	Store *state.Store
+	*github.Client
+}
+
+// Commit implements gerritchecks.GitHubSource.
+func (g GitHubChecks) Commit(ctx context.Context, change int, sha string) (string, int, error) {
+	st, err := g.Store.Load(ctx, change)
+	if err != nil {
+		return "", 0, err
+	}
+	commit := ""
+	for _, r := range st.Revisions {
+		if r.GerritSHA == sha && fullSHA.MatchString(r.GitHubSHA) {
+			commit = r.GitHubSHA
+		}
+	}
+	return commit, st.State.PR, nil
 }

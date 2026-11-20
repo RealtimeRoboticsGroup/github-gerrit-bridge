@@ -32,11 +32,24 @@ type Client struct {
 	// Anonymous makes unauthenticated requests, to see only what anyone
 	// can see.
 	Anonymous bool
+	// Session, with Anonymous, is a signed-in user's Gerrit session (the
+	// GerritAccount cookie a browser sent): reads then see only what they
+	// can. Only reads: nothing is written as them.
+	Session string
 }
 
 // Anon returns a client that sees only what anonymous users can.
 func (c *Client) Anon() *Client {
 	return &Client{BaseURL: c.BaseURL, HTTP: c.HTTP, Anonymous: true}
+}
+
+// SessionCookie is the cookie that holds a Gerrit web session.
+const SessionCookie = "GerritAccount"
+
+// Viewer returns a client that reads as whoever has Gerrit web session
+// session: it sees only what they can.
+func (c *Client) Viewer(session string) *Client {
+	return &Client{BaseURL: c.BaseURL, HTTP: c.HTTP, Anonymous: true, Session: session}
 }
 
 // maxResponse bounds a REST response the client reads, and maxFileContent
@@ -273,6 +286,12 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 	}
 	if !c.Anonymous {
 		req.SetBasicAuth(c.User, c.Password)
+	}
+	if c.Session != "" {
+		if method != http.MethodGet || !c.Anonymous {
+			return errors.New("a viewer's session only reads")
+		}
+		req.AddCookie(&http.Cookie{Name: SessionCookie, Value: c.Session})
 	}
 	req.Header.Set("Accept", "application/json")
 	if c.RunAs != "" {
