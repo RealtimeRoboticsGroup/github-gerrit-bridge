@@ -97,11 +97,14 @@ clone() {  # clone <dir> <github login> <gerrit user> <email>
   git clone -q -c "credential.https://github.com.helper=" \
     -c "credential.https://github.com.helper=!f() { test \"\$1\" = get && echo username=x-access-token && echo password=\$(${GH} auth token --user $2); }; f" \
     -o github "https://github.com/${R}.git" "$1"
-  # An empty helper first: none of the global ones (a keyring) are asked.
-  (cd "$1" && git config credential.helper "" && git config user.name "Austin Schuh" && git config user.email "$4" &&
+  # Each URL's helpers start with an empty one: none of the global ones (a
+  # keyring) are asked. An empty helper clears those before it, so it goes
+  # first, and only for its own URL.
+  (cd "$1" && git config user.name "Austin Schuh" && git config user.email "$4" &&
     git remote add gerrit "${G}/a/${P}" &&
     git config "credential.http://127.0.0.1:18080.username" "$3" &&
-    git config "credential.http://127.0.0.1:18080.helper" "!f() { test \"\$1\" = get && echo password=\$(cat ${CREDS}/$3.http-password); }; f" &&
+    git config --add "credential.http://127.0.0.1:18080.helper" "" &&
+    git config --add "credential.http://127.0.0.1:18080.helper" "!f() { test \"\$1\" = get && echo password=\$(cat ${CREDS}/$3.http-password); }; f" &&
     curl -sf -o .git/hooks/commit-msg "${G}/tools/hooks/commit-msg" && chmod +x .git/hooks/commit-msg)
 }
 clone "${ME_CLONE}" AustinSchuh AustinSchuh "$(git config user.email)"
