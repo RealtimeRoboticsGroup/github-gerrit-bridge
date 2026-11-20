@@ -14,7 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/exec"
@@ -818,5 +820,212 @@ func TestInactiveAccountsAreSaid(t *testing.T) {
 	users := &reconcile.Users{Gerrit: bridge}
 	if user, ok := users.GerritUserFor(ctx, github.User{Login: u.Username}); ok {
 		t.Errorf("an inactive account matched, as %q", user)
+	}
+}
+
+// devSession signs u in to Gerrit's web UI (the site's dev auth) and
+// returns their session, the GerritAccount cookie.
+func devSession(t *testing.T, u *testgerrit.User) string {
+	t.Helper()
+	jar, _ := cookiejar.New(nil)
+	hc := &http.Client{Jar: jar, Timeout: time.Minute}
+	for _, p := range []string{"/login/?user_name=" + url.QueryEscape(u.Username), "/"} {
+		resp, err := hc.Get(srv.URL + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	base, _ := url.Parse(srv.URL)
+	for _, c := range jar.Cookies(base) {
+		if c.Name == gerrit.SessionCookie {
+			return c.Value
+		}
+	}
+	t.Fatal("no session cookie after signing in")
+	return ""
+}
+
+// gitIn runs git in dir with u's Gerrit credentials, as u.
+func gitIn(t *testing.T, dir string, u *testgerrit.User, args ...string) string {
+	t.Helper()
+	cfg, envv := gitmirror.HTTPCredentials(srv.URL, u.Username, u.HTTPPassword)
+	var full []string
+	for _, c := range cfg {
+		full = append(full, "-c", c)
+	}
+	cmd := exec.Command("git", append(full, args...)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), envv...)
+	cmd.Env = append(cmd.Env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME="+u.Username, "GIT_AUTHOR_EMAIL="+u.Username+"@example.com",
+		"GIT_COMMITTER_NAME="+u.Username, "GIT_COMMITTER_EMAIL="+u.Username+"@example.com")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// Design §3.1, on a real Gerrit: where GitHub owns the branches, the
+// bridge's copy of GitHub's main into Gerrit (Code.Follow) needs only the
+// grants the docs list, and does what the design counts on. Gerrit closes
+// a change as merged when a commit with its Change-Id comes in, whoever
+// wrote and committed it (GitHub's squash), merges (a subtree) included;
+// a force-push is followed; the bridge may abandon a change whose merge
+// lost its Change-Id; and reading as a viewer's web session sees exactly
+// what they may.
+func TestGitHubOwnedOnGerrit(t *testing.T) {
+	ctx := context.Background()
+	const proj = "github-owned"
+	if err := srv.CreateProject(ctx, proj); err != nil {
+		t.Fatal(err)
+	}
+	var group struct {
+		ID string `json:"id"`
+	}
+	if err := srv.Admin.Do(ctx, http.MethodGet, "groups/"+url.PathEscape(testgerrit.BridgeGroup), nil, &group); err != nil {
+		t.Fatal(err)
+	}
+	allow := map[string]any{"rules": map[string]any{group.ID: map[string]any{"action": "ALLOW"}}}
+	if err := srv.Admin.Do(ctx, http.MethodPost, "projects/"+proj+"/access", map[string]any{
+		"add": map[string]any{"refs/heads/*": map[string]any{"permissions": map[string]any{
+			"push":           map[string]any{"rules": map[string]any{group.ID: map[string]any{"action": "ALLOW", "force": true}}},
+			"forgeAuthor":    allow,
+			"forgeCommitter": allow,
+			"pushMerge":      allow,
+			"abandon":        allow,
+		}}},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Alice's changes, the way anyone uploads one.
+	work := t.TempDir()
+	gitIn(t, work, env.Alice, "init", "-q")
+	gitIn(t, work, env.Alice, "fetch", "-q", srv.URL+"/a/"+proj, "refs/heads/main")
+	base := gitIn(t, work, env.Alice, "rev-parse", "FETCH_HEAD")
+	upload := func(file, id, opts string) string {
+		gitIn(t, work, env.Alice, "checkout", "-q", base)
+		os.WriteFile(filepath.Join(work, file), []byte(file+"\n"), 0o644)
+		gitIn(t, work, env.Alice, "add", file)
+		gitIn(t, work, env.Alice, "commit", "-q", "-m", "Add "+file+"\n\nChange-Id: "+id)
+		gitIn(t, work, env.Alice, "push", "-q", srv.URL+"/a/"+proj, "HEAD:refs/for/main"+opts)
+		return gitIn(t, work, env.Alice, "rev-parse", "HEAD")
+	}
+	idOne, idTwo, idPriv := "I"+strings.Repeat("1", 40), "I"+strings.Repeat("2", 40), "I"+strings.Repeat("3", 40)
+	upload("one", idOne, "")
+	upload("two", idTwo, "")
+	upload("private", idPriv, "%private")
+	number := func(id string) int {
+		t.Helper()
+		var cs []gerrit.ChangeInfo
+		if err := srv.Admin.Do(ctx, http.MethodGet, "changes/?q="+url.QueryEscape("change:"+id+" project:"+proj), nil, &cs); err != nil || len(cs) != 1 {
+			t.Fatalf("change %s: %v %v", id, cs, err)
+		}
+		return cs[0].Number
+	}
+	status := func(id string) (string, string) {
+		t.Helper()
+		ci, err := srv.Admin.GetChange(ctx, number(id), "CURRENT_REVISION")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ci.Status, ci.CurrentRevision
+	}
+
+	// GitHub: a repository with Gerrit's main, where PRs merge.
+	ghDir := filepath.Join(t.TempDir(), "github.git")
+	gitIn(t, work, env.Alice, "init", "-q", "--bare", ghDir)
+	gitIn(t, work, env.Alice, "push", "-q", ghDir, base+":refs/heads/main")
+	ghCommit := func(parents []string, file, msg string) string {
+		t.Helper()
+		gitIn(t, work, env.Alice, "checkout", "-q", parents[0])
+		os.WriteFile(filepath.Join(work, file), []byte(file+"\n"), 0o644)
+		gitIn(t, work, env.Alice, "add", file)
+		tree := gitIn(t, work, env.Alice, "write-tree")
+		args := []string{"-c", "user.name=GitHub", "-c", "user.email=noreply@github.com", "commit-tree", tree, "-m", msg}
+		for _, p := range parents {
+			args = append(args, "-p", p)
+		}
+		cmd := exec.Command("git", args...)
+		cmd.Dir = work
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+			"GIT_AUTHOR_NAME=Someone Else", "GIT_AUTHOR_EMAIL=someone@example.org",
+			"GIT_COMMITTER_NAME=GitHub", "GIT_COMMITTER_EMAIL=noreply@github.com")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("commit-tree: %v %s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	ghMain := func(sha string) { gitIn(t, work, env.Alice, "push", "-q", "-f", ghDir, sha+":refs/heads/main") }
+
+	m := &gitmirror.Repo{Dir: filepath.Join(t.TempDir(), "mirror.git"), Remote: srv.URL + "/a/" + proj, Name: "GitHub Bridge", Email: env.Bridge.Username + "@example.com"}
+	m.Config, m.Env = gitmirror.HTTPCredentials(srv.URL, env.Bridge.Username, env.Bridge.HTTPPassword)
+	if err := m.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	code := &reconcile.Code{Project: proj, GitHubOwned: true, Mirror: m, GitHubURL: ghDir,
+		GitHub: &github.Client{Tokens: github.StaticToken("unused")}, Logger: slog.Default()}
+	follow := func() {
+		t.Helper()
+		if err := code.Follow(ctx, "main"); err != nil {
+			t.Fatal(err)
+		}
+		var b struct {
+			Revision string `json:"revision"`
+		}
+		if err := srv.Admin.Do(ctx, http.MethodGet, "projects/"+proj+"/branches/main", nil, &b); err != nil {
+			t.Fatal(err)
+		}
+		if want := gitIn(t, work, env.Alice, "--git-dir", ghDir, "rev-parse", "refs/heads/main"); b.Revision != want {
+			t.Fatalf("Gerrit's main = %s, want GitHub's %s", b.Revision, want)
+		}
+	}
+
+	// GitHub squashes change one, under its own name, with the PR's
+	// description as the message, ending with the Change-Id.
+	squash := ghCommit([]string{base}, "one", "Add one (#7)\n\nIt adds one.\n\nChange-Id: "+idOne)
+	ghMain(squash)
+	follow()
+	if st, rev := status(idOne); st != "MERGED" || rev != squash {
+		t.Errorf("change one: %s at %s, want MERGED at GitHub's commit %s", st, rev, squash)
+	}
+
+	// A subtree, merged with a merge commit.
+	side := ghCommit([]string{base}, "subtree", "Squashed 'third_party/x/' content")
+	merge := ghCommit([]string{squash, side}, "subtree", "Merge third_party/x (#8)")
+	ghMain(merge)
+	follow()
+
+	// Change two merges with its Change-Id edited out: Gerrit cannot
+	// tell, and the bridge may abandon it as itself.
+	lost := ghCommit([]string{merge}, "two", "Add two (#9)\n\nThe trailer was edited out.")
+	ghMain(lost)
+	follow()
+	if st, _ := status(idTwo); st != "NEW" {
+		t.Fatalf("change two: %s, want still NEW", st)
+	}
+	bridge := &gerrit.Client{BaseURL: srv.URL, User: env.Bridge.Username, Password: env.Bridge.HTTPPassword}
+	if err := bridge.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/abandon", number(idTwo)), map[string]string{"message": "Merged on GitHub"}, nil); err != nil {
+		t.Errorf("the bridge may not abandon it: %v", err)
+	}
+
+	// GitHub's main is force-pushed back: followed.
+	ghMain(merge)
+	follow()
+
+	// Reading as a viewer's session sees what they may: alice her private
+	// change, bob nothing of it; a session Gerrit does not know, nothing.
+	priv := number(idPriv)
+	if _, err := bridge.Viewer(devSession(t, env.Alice)).GetChange(ctx, priv, "ALL_REVISIONS"); err != nil {
+		t.Errorf("alice reading her private change with her session: %v", err)
+	}
+	for who, session := range map[string]string{"bob": devSession(t, env.Bob), "nobody": "not-a-session"} {
+		var ge *gerrit.Error
+		if _, err := bridge.Viewer(session).GetChange(ctx, priv, "ALL_REVISIONS"); !errors.As(err, &ge) || ge.Status != http.StatusNotFound {
+			t.Errorf("%s reading alice's private change: %v, want 404", who, err)
+		}
 	}
 }

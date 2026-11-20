@@ -30,14 +30,14 @@ func TestFollowCopiesGitHubsBranch(t *testing.T) {
 	s, c, base := followSites(t)
 	merged := s.commit(base, "b", "b\n", "Squashed on GitHub (#7)\n\nChange-Id: I0000000000000000000000000000000000000001")
 	s.push("github.git", merged, "refs/heads/main")
-	if err := c.follow(ctx, "main"); err != nil {
+	if err := c.Follow(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.ref("gerrit.git", "refs/heads/main"); got != merged {
 		t.Errorf("Gerrit's main = %s, want GitHub's %s", got, merged)
 	}
 	// In sync: nothing more to do.
-	if err := c.follow(ctx, "main"); err != nil {
+	if err := c.Follow(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -51,7 +51,7 @@ func TestFollowForcePush(t *testing.T) {
 	s.push("gerrit.git", ahead, "refs/heads/main")
 	rewritten := s.commit(base, "c", "c\n", "Force-pushed over it")
 	s.push("github.git", rewritten, "refs/heads/main")
-	if err := c.follow(ctx, "main"); err != nil {
+	if err := c.Follow(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.ref("gerrit.git", "refs/heads/main"); got != rewritten {
@@ -65,7 +65,7 @@ func TestFollowOnlyWhereGitHubOwns(t *testing.T) {
 	s, c, base := followSites(t)
 	c.GitHubOwned = false
 	s.push("github.git", s.commit(base, "b", "b\n", "On GitHub"), "refs/heads/main")
-	if err := c.follow(ctx, "main"); err != nil {
+	if err := c.Follow(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.ref("gerrit.git", "refs/heads/main"); got != base {
@@ -84,7 +84,7 @@ func TestFollowOnlyBranchesBothHave(t *testing.T) {
 	s.push("gerrit.git", base, "refs/heads/gerrit/x")
 	s.push("github.git", other, "refs/heads/gerrit/x")
 	for _, b := range []string{"feature", "release", "gerrit/x"} {
-		if err := c.follow(ctx, b); err != nil {
+		if err := c.Follow(ctx, b); err != nil {
 			t.Fatalf("%s: %v", b, err)
 		}
 	}
@@ -104,7 +104,7 @@ func TestFollowDryRunWritesNothing(t *testing.T) {
 	s, c, base := followSites(t)
 	c.DryRun = true
 	s.push("github.git", s.commit(base, "b", "b\n", "On GitHub"), "refs/heads/main")
-	if err := c.follow(ctx, "main"); err != nil {
+	if err := c.Follow(ctx, "main"); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.ref("gerrit.git", "refs/heads/main"); got != base {
@@ -197,7 +197,7 @@ func mirrorStates(t *testing.T, c *Code, follow bool) {
 	t.Helper()
 	ctx := context.Background()
 	if follow {
-		if err := c.follow(ctx, "main"); err != nil {
+		if err := c.Follow(ctx, "main"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -245,11 +245,11 @@ func TestMergedOnGitHubWaitsForItsMerge(t *testing.T) {
 		t.Errorf("not followed yet: change 1 is %s", got)
 	}
 	c.GitHubOwned = false
-	if err := c.follow(context.Background(), "main"); err != nil {
+	if err := c.Follow(context.Background(), "main"); err != nil {
 		t.Fatal(err)
 	}
 	c.GitHubOwned = true
-	if err := c.follow(context.Background(), "main"); err != nil {
+	if err := c.Follow(context.Background(), "main"); err != nil {
 		t.Fatal(err)
 	}
 	c.GitHubOwned = false

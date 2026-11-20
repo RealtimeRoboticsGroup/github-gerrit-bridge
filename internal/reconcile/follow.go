@@ -6,14 +6,14 @@ import (
 	"strings"
 )
 
-// follow copies GitHub's copy of branch into Gerrit, where GitHub owns
+// Follow copies GitHub's copy of branch into Gerrit, where GitHub owns
 // the target branches (design §3.1): PRs are merged on GitHub, and
 // Gerrit's branch is whatever GitHub's is, force-pushed if GitHub's was.
 // Gerrit itself then closes each open change of the branch whose Change-Id
 // one of the new commits carries, as merged, with that commit as its last
 // patch set. Only branches both sides have are followed: the bridge never
 // creates or deletes one in Gerrit. The caller holds the branch.
-func (c *Code) follow(ctx context.Context, branch string) error {
+func (c *Code) Follow(ctx context.Context, branch string) error {
 	if !c.GitHubOwned || bridgeBranch(branch) {
 		return nil
 	}

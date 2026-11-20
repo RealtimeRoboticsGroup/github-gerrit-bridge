@@ -216,7 +216,7 @@ func (c *Code) reconcile(ctx context.Context, branch string) error {
 	wait()
 	// Where GitHub owns the branch, Gerrit's is GitHub's first: what
 	// merged there merges here, before anything is planned from it.
-	if err := c.follow(ctx, branch); err != nil {
+	if err := c.Follow(ctx, branch); err != nil {
 		return err
 	}
 	// An import that failed (or wants a retry) does not hold back the
@@ -1217,7 +1217,7 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 
 // mergedOnGitHub abandons change n, whose PR pr merged on GitHub, which
 // owns the branch (design §3.1), once that merge is on Gerrit's copy of
-// the branch (follow) and Gerrit still has the change open: Gerrit closes
+// the branch (Follow) and Gerrit still has the change open: Gerrit closes
 // a change as merged only for a commit with its Change-Id, which the
 // merge commit lacks if someone took the trailer out of its message
 // (or the repository's merge settings leave the description out).
