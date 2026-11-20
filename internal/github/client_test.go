@@ -776,3 +776,38 @@ func TestRepoMergeSettings(t *testing.T) {
 		t.Errorf("got %+v", r)
 	}
 }
+
+// Who may push: write or admin (maintain reads as write), for the
+// account asked about, not whoever has its login now.
+func TestCanPush(t *testing.T) {
+	perms := map[string]string{"writer": "write", "admin": "admin", "reader": "read", "nobody": "none", "renamed": "write"}
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		login := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/o/r/collaborators/"), "/permission")
+		p, ok := perms[login]
+		if !ok {
+			w.WriteHeader(404)
+			io.WriteString(w, `{"message":"Not Found"}`)
+			return
+		}
+		id := 1
+		if login == "renamed" {
+			id = 2 // someone else took the login
+		}
+		fmt.Fprintf(w, `{"permission":%q,"user":{"login":%q,"id":%d}}`, p, login, id)
+	})
+	for login, want := range map[string]bool{"writer": true, "admin": true, "reader": false, "nobody": false, "renamed": false, "ghost": false} {
+		got, err := c.CanPush(context.Background(), User{Login: login, ID: 1})
+		if err != nil || got != want {
+			t.Errorf("%s: %v %v, want %v", login, got, err, want)
+		}
+	}
+	// No account id on either side matches nothing.
+	anon := newClient(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"permission":"write"}`) })
+	if got, err := anon.CanPush(context.Background(), User{Login: "writer"}); got || err != nil {
+		t.Errorf("no ids: %v %v", got, err)
+	}
+	bad := newClient(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) })
+	if _, err := bad.CanPush(context.Background(), User{Login: "writer", ID: 1}); err == nil {
+		t.Error("a failure is not an error")
+	}
+}

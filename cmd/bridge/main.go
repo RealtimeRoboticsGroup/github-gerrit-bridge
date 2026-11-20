@@ -433,6 +433,13 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 				return ok && strings.EqualFold(u, user)
 			}}
 		comments.Authors = linkedAuthors{tokens: tokens, gh: gh}
+		if cfg.GitHubOwned() {
+			// Only they have Gerrit patch sets pushed to GitHub (design
+			// §3.1).
+			pub := publishable(tokens.Linked, gh.CanPush, logger)
+			code.Publishable, code.Importer.Publishable = pub, pub
+			code.LinkURL = strings.TrimSuffix(a.PublicURL, "/") + "/github/link"
+		}
 		// Public: people link their GitHub account here (design §7.2).
 		(&usertokens.Linker{App: app, Tokens: tokens, PublicURL: a.PublicURL, GerritURL: cfg.Gerrit.URL, Logger: logger,
 			GerritUser: users.GerritUserFor,
@@ -536,6 +543,27 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	q.ShutDown()
 	wg.Wait()
 	return err
+}
+
+// publishable is who may have Gerrit patch sets pushed to GitHub where
+// GitHub owns the branches (Code.Publishable): a Gerrit account linked to
+// a GitHub account (linked, which checks the link still stands) that may
+// push to the repository (canPush). known is false if GitHub could not
+// say.
+func publishable(linked func(context.Context, int) (github.User, bool), canPush func(context.Context, github.User) (bool, error),
+	logger *slog.Logger) func(context.Context, int) (bool, bool) {
+	return func(ctx context.Context, account int) (bool, bool) {
+		u, ok := linked(ctx, account)
+		if !ok {
+			return false, true
+		}
+		may, err := canPush(ctx, u)
+		if err != nil {
+			logger.Warn("asking GitHub whether a linked account may push", "account", account, "github_login", u.Login, "err", err)
+			return false, false
+		}
+		return may, true
+	}
 }
 
 // mergeSettingProblems says what in r's merge settings keeps GitHub's

@@ -49,6 +49,9 @@ type Importer struct {
 	// Trusted reports whether a Gerrit account is in CI's trusted group
 	// (see Code.Trusted).
 	Trusted func(ctx context.Context, account int) (trusted, known bool)
+	// Publishable, if set, is who may have patch sets pushed to GitHub
+	// instead of Trusted (see Code.Publishable).
+	Publishable func(ctx context.Context, account int) (ok, known bool)
 	// ChangeIDKey keys the Change-Ids derived for PRs (derivedChangeID):
 	// a secret, so they cannot be worked out in advance.
 	ChangeIDKey []byte
@@ -728,7 +731,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			// not restored over the push either (fifth audit: restored as
 			// the bridge's, it reached the author's branch).
 			rev, _ := cur.Current()
-			ok, _ := authorsCode(ctx, im.Trusted, im.Bridge.AccountID, cur.Owner.AccountID, revisionsByNumber(cur), rev.Number)
+			ok, _ := authorsCode(ctx, pushTrust(im.Publishable, im.Trusted), im.Bridge.AccountID, cur.Owner.AccountID, revisionsByNumber(cur), rev.Number)
 			foreign = !ok
 		}
 		message = cur.Revisions[base].Commit.Message

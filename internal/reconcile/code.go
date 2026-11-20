@@ -73,6 +73,16 @@ type Code struct {
 	// GitHubOwned says GitHub owns the target branches (design §3.1):
 	// PRs merge there, and Gerrit's branches follow GitHub's.
 	GitHubOwned bool
+	// Publishable, where GitHub owns the branches, reports whether a
+	// Gerrit account's linked GitHub account may push to the repository
+	// (known is false if that cannot be told). Only their patch sets
+	// reach GitHub: a pushed branch runs the repository's workflows,
+	// with its secrets, so nobody gets more through Gerrit than they
+	// have on GitHub. It stands in for Trusted for pushes to GitHub-born
+	// PRs' branches too. Unset there, no Gerrit patch set is pushed.
+	Publishable func(ctx context.Context, account int) (ok, known bool)
+	// LinkURL is where people link their GitHub accounts, for notices.
+	LinkURL string
 
 	// configCache remembers changesConfig answers by branch tip and
 	// commit.
@@ -441,12 +451,15 @@ func (c *Code) changesConfigOf(ctx context.Context, branch, commit string, histo
 // withhold marks the open changes that change withheldPaths (design §7.1):
 // anyone registered on Gerrit can upload one, and GitHub would run it,
 // with the repository's secrets, from the branch the bridge pushes. So
-// are those in refused, whose push the guard refuses (refusedPushes).
+// are those in refused, whose push the guard refuses (refusedPushes),
+// and, where GitHub owns the branches, Gerrit-born ones from someone
+// without a linked GitHub account that may push there (unpublished).
 // Each gets a notice in Gerrit, once per patch set. Nothing here fails
 // the branch: a change that cannot be checked is withheld, and a notice
 // Gerrit will not take is not retried.
 func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused map[int]string) error {
 	s.Withheld = map[int]bool{}
+	linked := map[int][2]bool{} // this look's answers, by account
 	for _, n := range sortedKeys(s.Changes) {
 		ch := s.Changes[n]
 		if ch.Status != "NEW" || ch.Private {
@@ -462,6 +475,18 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 			s.Withheld[n] = true
 			continue
 		}
+		if !w && c.GitHubOwned && !s.githubBorn(n) {
+			var known bool
+			w, known, err = c.unpublished(ctx, ch, linked)
+			if err != nil || !known {
+				c.Logger.Warn("cannot tell whether a change's uploaders may push to GitHub; withheld", "change", n, "err", err)
+				s.Withheld[n] = true
+				continue
+			}
+			if w {
+				why = notLinked
+			}
+		}
 		if !w {
 			continue
 		}
@@ -472,9 +497,16 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 		msg := fmt.Sprintf("Patch set %d is not mirrored to GitHub: it changes %s (here, below it in Gerrit or in the GitHub commits it "+
 			"builds on, or by being based on an older version of the branch), and GitHub would use that, with the repository's secrets, from the branch the bridge pushes. "+
 			"Review it here, or rebase it.", ch.PatchSet, withheldWhat)
-		if why == byGitHub {
+		switch why {
+		case byGitHub:
 			msg = fmt.Sprintf("Patch set %d is not mirrored to GitHub: GitHub refused its push (its push protection, on something in it "+
 				"that looks like a secret, say). Review it here.", ch.PatchSet)
+		case notLinked:
+			msg = fmt.Sprintf("Patch set %d is not mirrored to GitHub: GitHub owns this repository's branches, and a change reaches it "+
+				"only when whoever uploaded it, and wrote its code, has linked a GitHub account that may push there.", ch.PatchSet)
+			if c.LinkURL != "" {
+				msg += " Link yours at " + c.LinkURL + ", then upload again."
+			}
 		}
 		if !c.notice(ctx, n, ch, msg) {
 			continue
@@ -482,7 +514,7 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 		if err := c.updateState(ctx, n, "withheld notice", func(st *state.Change) { st.State.WithheldNotice = ch.PatchSet }); err != nil {
 			return err
 		}
-		c.Logger.Info("withheld from GitHub: changes "+withheldWhat, "change", n, "patch_set", ch.PatchSet)
+		c.Logger.Info("withheld from GitHub", "change", n, "patch_set", ch.PatchSet, "why", cmp.Or(why, "changes "+withheldWhat))
 	}
 	return nil
 }
@@ -533,6 +565,55 @@ func (c *Code) deferOverBudget(ctx context.Context, s *Snapshot) {
 	}
 }
 
+// pushTrust is who, besides a change's owner and the bridge, may have
+// Gerrit patch sets pushed to a GitHub-born PR's branch: CI's trusted
+// group, or, where GitHub owns the branches, publishable, which must be
+// set there (nobody, unset).
+func pushTrust(publishable, trusted func(context.Context, int) (bool, bool)) func(context.Context, int) (bool, bool) {
+	if publishable != nil {
+		return publishable
+	}
+	return trusted
+}
+
+// pushTrust is Code's pushTrust.
+func (c *Code) pushTrust() func(context.Context, int) (bool, bool) {
+	if c.GitHubOwned && c.Publishable == nil {
+		return func(context.Context, int) (bool, bool) { return false, true }
+	}
+	return pushTrust(c.Publishable, c.Trusted)
+}
+
+// unpublished reports whether Gerrit-born change ch may not reach GitHub,
+// which owns the branches (design §3.1): someone responsible for its
+// current patch set (its uploader, and whoever made its code or chose its
+// parent: codeFrom) has no linked GitHub account that may push to the
+// repository. known is false if that could not be told.
+func (c *Code) unpublished(ctx context.Context, ch *GerritChange, memo map[int][2]bool) (bool, bool, error) {
+	may := func(ctx context.Context, account int) (bool, bool) {
+		if r, ok := memo[account]; ok {
+			return r[0], r[1]
+		}
+		ok, known := false, true
+		if c.Publishable != nil {
+			ok, known = c.Publishable(ctx, account)
+		}
+		memo[account] = [2]bool{ok, known}
+		return ok, known
+	}
+	// Owner 0: owning the change is no pass; every one of them must be
+	// publishable themselves.
+	ok, known := mayPushToAuthor(ctx, may, c.BridgeAccount, 0, ch.UploaderID, ch.RealUploaderID)
+	if ok && (ch.PatchSet > 1 || ch.Kind != "REWORK") {
+		ci, err := c.Gerrit.GetChange(ctx, ch.Number, "ALL_REVISIONS", "ALL_COMMITS")
+		if err != nil {
+			return true, false, err
+		}
+		ok, known = authorsCode(ctx, may, c.BridgeAccount, 0, revisionsByNumber(ci), ch.PatchSet)
+	}
+	return !ok, known, nil
+}
+
 // mayPushToAuthor reports whether a patch set uploaded in Gerrit by
 // uploader (on their behalf by real, if not 0) may go to a GitHub-born
 // PR's branch, which is its author's: only if each is the change's owner,
@@ -568,7 +649,7 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 		if ch.Status != "NEW" || !s.githubBorn(n) {
 			continue
 		}
-		ok, known := mayPushToAuthor(ctx, c.Trusted, c.BridgeAccount, ch.OwnerID, ch.UploaderID, ch.RealUploaderID)
+		ok, known := mayPushToAuthor(ctx, c.pushTrust(), c.BridgeAccount, ch.OwnerID, ch.UploaderID, ch.RealUploaderID)
 		if ok && (ch.PatchSet > 1 || ch.Kind != "REWORK") {
 			// Whose code, and parent, is it? (A REWORK can keep a parent
 			// someone else chose: sixth audit.)
@@ -578,7 +659,7 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 				s.Foreign[n] = true
 				continue
 			}
-			ok, known = authorsCode(ctx, c.Trusted, c.BridgeAccount, ch.OwnerID, revisionsByNumber(ci), ch.PatchSet)
+			ok, known = authorsCode(ctx, c.pushTrust(), c.BridgeAccount, ch.OwnerID, revisionsByNumber(ci), ch.PatchSet)
 		}
 		if ok {
 			continue
@@ -1593,6 +1674,10 @@ func (e *githubRefused) Error() string {
 // byGitHub marks a change GitHub refused in the export's refused set.
 const byGitHub = "github"
 
+// notLinked is the reason withhold gives a change from someone without a
+// linked GitHub account that may push, where GitHub owns the branches.
+const notLinked = "not linked"
+
 // refusedByGitHub reports whether GitHub refused a request for what it
 // asked (a 4xx), not for who asked or how often (401, 403, 429).
 func refusedByGitHub(err error) bool {
@@ -2227,7 +2312,7 @@ func (c *Code) maySwap(ctx context.Context, ch *gerrit.ChangeInfo, rev gerrit.Re
 		if rev.RealUploader != nil {
 			real = rev.RealUploader.AccountID
 		}
-		if ok, _ := mayPushToAuthor(ctx, c.Trusted, c.BridgeAccount, ch.Owner.AccountID, rev.Uploader.AccountID, real); !ok {
+		if ok, _ := mayPushToAuthor(ctx, c.pushTrust(), c.BridgeAccount, ch.Owner.AccountID, rev.Uploader.AccountID, real); !ok {
 			return fmt.Errorf("patch set %d is not the author's, nor a maintainer's", rev.Number)
 		}
 	}

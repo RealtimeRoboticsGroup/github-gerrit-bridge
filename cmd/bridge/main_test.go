@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -140,5 +142,38 @@ func TestMergeSettingProblems(t *testing.T) {
 	off := &github.Repository{AllowSquashMerge: &no, AllowMergeCommit: &yes, AllowRebaseMerge: &no, SquashMergeCommitMessage: "BLANK", MergeCommitMessage: "PR_BODY"}
 	if p := mergeSettingProblems(off); len(p) != 0 {
 		t.Errorf("squash off: %v", p)
+	}
+}
+
+// Who may have Gerrit patch sets pushed to GitHub, where GitHub owns the
+// branches: linked, and allowed to push.
+func TestPublishable(t *testing.T) {
+	ctx := context.Background()
+	linked := func(_ context.Context, account int) (github.User, bool) {
+		if account == 0 {
+			return github.User{}, false
+		}
+		return github.User{Login: fmt.Sprint("u", account), ID: int64(account)}, true
+	}
+	asked := 0
+	canPush := func(_ context.Context, u github.User) (bool, error) {
+		asked++
+		switch u.ID {
+		case 1:
+			return true, nil
+		case 2:
+			return false, nil
+		}
+		return false, errors.New("GitHub is down")
+	}
+	pub := publishable(linked, canPush, slog.Default())
+	for account, want := range map[int][2]bool{0: {false, true}, 1: {true, true}, 2: {false, true}, 3: {false, false}} {
+		ok, known := pub(ctx, account)
+		if ok != want[0] || known != want[1] {
+			t.Errorf("account %d: %v %v, want %v", account, ok, known, want)
+		}
+	}
+	if asked != 3 {
+		t.Errorf("asked GitHub %d times, want 3 (not for the unlinked)", asked)
 	}
 }

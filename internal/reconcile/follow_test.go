@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
@@ -289,5 +290,148 @@ func TestMergedOnGitHubReconcile(t *testing.T) {
 	}
 	if got, pr := s.changes[1].Status, s.pulls[10]; got != "ABANDONED" || pr.State != "closed" || !pr.Merged {
 		t.Errorf("change 1 is %s, PR #10 %s merged %v; want abandoned, and the PR merged", got, pr.State, pr.Merged)
+	}
+}
+
+// Where GitHub owns the branches, who may have Gerrit patch sets pushed to
+// a GitHub-born PR's branch is who may push to the repository themselves
+// (Code.Publishable), not CI's trusted group: the importer agrees with
+// markForeign, and never restores (Gerrit wins) the code of a trusted
+// member whose GitHub account may not push.
+func TestImporterForeignIsByPublishable(t *testing.T) {
+	for _, publishable := range []bool{false, true} {
+		s, im, up, m1, g, ids := gerritBornWorld(t, false)
+		ctx := context.Background()
+		im.Trusted = func(_ context.Context, account int) (bool, bool) { return account == 9, true }
+		im.Publishable = func(_ context.Context, account int) (bool, bool) { return publishable && account == 9, true }
+		st, _ := im.Store.Load(ctx, 1)
+		st.State.Origin, st.State.HeadBranch = "github", "feature"
+		if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+			t.Fatal(err)
+		}
+		ci := s.changes[1]
+		ci.Owner = s.accounts["austin"]
+		first := ci.Revisions[g[0]]
+		first.Kind, first.Uploader = "REWORK", s.accounts["austin"]
+		ci.Revisions[g[0]] = first
+		code := s.commit(g[0], "one.txt", "theirs\n", "Their message\n\nChange-Id: "+ids[0]+"\n")
+		s.push("gerrit.git", code, "refs/changes/01/1/2")
+		ci.Revisions[code] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Ref: "refs/changes/01/1/2",
+			Uploader: gerrit.AccountInfo{AccountID: 9, Username: "trusted"}, Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, code))}
+		ci.CurrentRevision = code
+		s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
+		h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
+		s.push("github.git", h, "refs/heads/feature")
+		s.pulls[10].Head.SHA = h
+		s.webhookPush(im.Pushers, 10, "austin")
+		if err := im.Import(ctx, "main"); err != nil {
+			t.Fatal(err)
+		}
+		restored := false
+		for _, u := range up.uploads {
+			if c := strings.Fields(u)[0]; strings.HasPrefix(u, " ") && s.git("m.git", "rev-parse", c+"^{tree}") == s.git("work", "rev-parse", code+"^{tree}") {
+				restored = true
+			}
+		}
+		if restored != publishable {
+			t.Errorf("publishable %v: their code restored %v (uploads %v)", publishable, restored, up.uploads)
+		}
+	}
+}
+
+// markForeign asks the same where GitHub owns the branches, and nobody
+// is publishable without a way to tell.
+func TestForeignIsByPublishableWhereGitHubOwns(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		owned       bool
+		publishable func(context.Context, int) (bool, bool)
+		foreign     bool
+	}{
+		{false, nil, false}, // CI's trusted group decides
+		{true, func(context.Context, int) (bool, bool) { return false, true }, true},
+		{true, func(context.Context, int) (bool, bool) { return true, true }, false},
+		{true, nil, true},
+	} {
+		s := newSites(t)
+		c, _ := s.code(ctx)
+		c.DryRun = true // no notices
+		c.GitHubOwned, c.Publishable = tc.owned, tc.publishable
+		c.Trusted = func(_ context.Context, account int) (bool, bool) { return account == 7, true }
+		snap := &Snapshot{Changes: map[int]*GerritChange{1: {Number: 1, Status: "NEW", Revision: "r1", PatchSet: 1,
+			OwnerID: 5, UploaderID: 7, Kind: "REWORK"}},
+			State: map[int]*state.Change{1: {State: state.ChangeState{Change: 1, Origin: "github"}}}}
+		if err := c.markForeign(ctx, snap); err != nil {
+			t.Fatal(err)
+		}
+		if snap.Foreign[1] != tc.foreign {
+			t.Errorf("owned %v, publishable set %v: foreign %v, want %v", tc.owned, tc.publishable != nil, snap.Foreign[1], tc.foreign)
+		}
+	}
+}
+
+// Design §3.1: where GitHub owns the branches, a Gerrit-born change
+// reaches GitHub only if whoever uploaded it, and made its code, has a
+// linked GitHub account that may push there: a pushed branch runs the
+// repository's workflows with its secrets. The rest are withheld, with a
+// notice once per patch set saying how to fix it.
+func TestGerritBornNeedsPublishableUploaders(t *testing.T) {
+	ctx := context.Background()
+	setup := func(t *testing.T, owned bool, publishable func(context.Context, int) (bool, bool)) (*sites, *Code, *gerrit.ChangeInfo) {
+		s, c, base := followSites(t)
+		c.GitHubOwned, c.Publishable, c.LinkURL = owned, publishable, "https://bridge.example.com/github/link"
+		rev := s.commit(base, "one.txt", "1\n", "One\n\nChange-Id: "+cid(1)+"\n")
+		ci := s.change(1, cid(1), rev, "One\n\nChange-Id: "+cid(1)+"\n", "NEW")
+		r := ci.Revisions[rev]
+		// Its owner too: owning the change is no pass.
+		r.Uploader = gerrit.AccountInfo{AccountID: 7, Username: "seven"}
+		ci.Revisions[rev], ci.Owner = r, r.Uploader
+		return s, c, ci
+	}
+	only := func(who int, known bool) func(context.Context, int) (bool, bool) {
+		return func(_ context.Context, a int) (bool, bool) { return a == who, known }
+	}
+	withheld := func(t *testing.T, c *Code) bool {
+		t.Helper()
+		snap, err := c.observe(ctx, "main", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return snap.Withheld[1]
+	}
+
+	s, c, _ := setup(t, true, only(8, true))
+	if !withheld(t, c) || !withheld(t, c) {
+		t.Fatal("an unlinked uploader's change is not withheld")
+	}
+	if msgs := s.reviewMsgs[1]; len(msgs) != 1 || !strings.Contains(msgs[0], "Link yours at https://bridge.example.com/github/link") {
+		t.Errorf("notices %q, want one saying where to link", msgs)
+	}
+	if _, c, _ := setup(t, true, only(7, true)); withheld(t, c) {
+		t.Error("a publishable uploader's change is withheld")
+	}
+	if _, c, _ := setup(t, false, only(8, true)); withheld(t, c) {
+		t.Error("withheld where Gerrit owns the branches")
+	}
+	if s, c, _ := setup(t, true, only(7, false)); !withheld(t, c) || len(s.reviewMsgs[1]) != 0 {
+		t.Errorf("cannot tell: withheld %v, notices %q; want withheld quietly", withheld(t, c), s.reviewMsgs[1])
+	}
+	if _, c, _ := setup(t, true, nil); !withheld(t, c) {
+		t.Error("no way to tell who may push, and not withheld")
+	}
+
+	// Someone publishable editing the message of an unlinked upload: the
+	// code is still the unlinked one's.
+	s, c, ci := setup(t, true, only(8, true))
+	first := ci.Revisions[ci.CurrentRevision]
+	first.Kind = "REWORK"
+	ci.Revisions[ci.CurrentRevision] = first
+	edit := s.commit(strings.TrimSpace(s.gitOut("work", "rev-parse", ci.CurrentRevision+"^")), "one.txt", "1\n", "One, better\n\nChange-Id: "+cid(1)+"\n")
+	s.push("gerrit.git", edit, "refs/changes/01/1/2")
+	ci.Revisions[edit] = gerrit.RevisionInfo{Number: 2, Kind: "NO_CODE_CHANGE", Ref: "refs/changes/01/1/2",
+		Uploader: gerrit.AccountInfo{AccountID: 8, Username: "eight"}, Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, edit))}
+	ci.CurrentRevision = edit
+	if !withheld(t, c) {
+		t.Error("a publishable member's message edit of an unlinked upload is not withheld")
 	}
 }

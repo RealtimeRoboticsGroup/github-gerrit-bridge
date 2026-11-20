@@ -219,6 +219,25 @@ func (c *Client) Login(ctx context.Context) (string, error) {
 	return u.Login, err
 }
 
+// CanPush reports whether GitHub account u may push to the repository
+// (write, maintain or admin), asked by its login and checked against its
+// id: a renamed login may belong to someone else now. An account that is
+// no collaborator, or no account at all, may not.
+func (c *Client) CanPush(ctx context.Context, u User) (bool, error) {
+	var out struct {
+		Permission string `json:"permission"` // admin, write, read or none
+		User       User   `json:"user"`
+	}
+	_, err := c.Do(ctx, http.MethodGet, c.RepoPath("collaborators/"+url.PathEscape(u.Login)+"/permission"), nil, &out)
+	if IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return out.User.ID != 0 && out.User.ID == u.ID && (out.Permission == "admin" || out.Permission == "write"), nil
+}
+
 // UserID returns the numeric id of the account that has login now, and
 // when it was created. Logins can change hands (after a rename); ids never
 // do.

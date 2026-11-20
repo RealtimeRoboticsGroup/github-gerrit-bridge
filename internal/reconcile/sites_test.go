@@ -70,6 +70,8 @@ type sites struct {
 	refusePulls map[int]bool
 	// actionMsgs is the message of each change's last abandon or restore.
 	actionMsgs map[int]string
+	// reviewMsgs are the messages of each change's reviews.
+	reviewMsgs map[int][]string
 }
 
 func newSites(t *testing.T) *sites {
@@ -88,8 +90,14 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("GET /a/changes/", s.queryChanges)
 	mux.HandleFunc("POST /a/changes/{n}/{action}", s.changeAction)
 	mux.HandleFunc("POST /a/changes/{n}/revisions/{rev}/review", func(w http.ResponseWriter, r *http.Request) {
+		var in struct{ Message string }
+		json.NewDecoder(r.Body).Decode(&in)
 		s.mu.Lock()
 		s.calls = append(s.calls, "review "+r.PathValue("n"))
+		if s.reviewMsgs == nil {
+			s.reviewMsgs = map[int][]string{}
+		}
+		s.reviewMsgs[num(r)] = append(s.reviewMsgs[num(r)], in.Message)
 		status := s.refuseReview[num(r)]
 		s.mu.Unlock()
 		if status != 0 {
