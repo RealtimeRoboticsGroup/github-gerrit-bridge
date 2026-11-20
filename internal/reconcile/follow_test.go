@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
@@ -168,5 +169,125 @@ func TestObserveSaysGitHubOwns(t *testing.T) {
 		if snap.GitHubOwned != owned {
 			t.Errorf("GitHubOwned %v: snapshot says %v", owned, snap.GitHubOwned)
 		}
+	}
+}
+
+// mergedSites is followSites with change 1 open in Gerrit, and its PR #10
+// merged on GitHub as merged, a commit whose message is msg.
+func mergedSites(t *testing.T, msg string) (*sites, *Code, string) {
+	t.Helper()
+	ctx := context.Background()
+	s, c, base := followSites(t)
+	rev := s.commit(base, "one.txt", "1\n", "One\n\nChange-Id: "+cid(1)+"\n")
+	s.change(1, cid(1), rev, "One\n\nChange-Id: "+cid(1)+"\n", "NEW")
+	s.may[1] = []string{"bridge"}
+	s.save(ctx, c.Store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "gerrit",
+		HeadBranch: "gerrit/" + cid(1), Lifecycle: "NEW"}})
+	merged := s.commit(base, "one.txt", "1\n", msg)
+	s.push("github.git", merged, "refs/heads/main")
+	pr := s.pr(10, "gerrit/"+cid(1), rev, "main", "bot")
+	pr.State, pr.Merged, pr.MergeCommitSHA, pr.MergedBy = "closed", true, merged, &github.User{Login: "alice"}
+	return s, c, merged
+}
+
+// mirrorStates follows GitHub's main, observes it and mirrors the PRs'
+// states, as a reconcile's first pass does.
+func mirrorStates(t *testing.T, c *Code, follow bool) {
+	t.Helper()
+	ctx := context.Background()
+	if follow {
+		if err := c.follow(ctx, "main"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.mirrorPRStates(ctx, snap, map[int]bool{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Design §3.1: a PR merged on GitHub whose commit lost its Change-Id
+// (edited out in the merge dialog) leaves its change open in Gerrit: it
+// is abandoned, saying where it merged.
+func TestMergedOnGitHubWithoutChangeIDIsAbandoned(t *testing.T) {
+	s, c, merged := mergedSites(t, "One (#10)\n\nThe trailer was edited out.\n")
+	mirrorStates(t, c, true)
+	if got := s.changes[1].Status; got != "ABANDONED" {
+		t.Fatalf("change 1 is %s, want ABANDONED", got)
+	}
+	want := "Merged on GitHub by @‍alice in PR #10, as " + merged + " on main, but its commit does not say this change's Change-Id (" + cid(1) + ")"
+	if !strings.HasPrefix(s.actionMsgs[1], want) {
+		t.Errorf("message %q, want it to start %q", s.actionMsgs[1], want)
+	}
+}
+
+// Said so when the commit has its Change-Id and Gerrit still did not
+// close it (another branch's change of the same Change-Id, say).
+func TestMergedOnGitHubWithChangeIDStillOpenIsAbandoned(t *testing.T) {
+	s, c, _ := mergedSites(t, "One (#10)\n\nChange-Id: "+cid(1)+"\n")
+	mirrorStates(t, c, true)
+	if got := s.changes[1].Status; got != "ABANDONED" || !strings.Contains(s.actionMsgs[1], "but Gerrit did not close it as merged") {
+		t.Errorf("change 1 is %s, message %q", got, s.actionMsgs[1])
+	}
+}
+
+// Not before the merge is on Gerrit's branch (Gerrit may yet close it as
+// merged), nor where Gerrit owns the branch, nor for a merge into another
+// PR's branch.
+func TestMergedOnGitHubWaitsForItsMerge(t *testing.T) {
+	s, c, _ := mergedSites(t, "One (#10)\n")
+	mirrorStates(t, c, false)
+	if got := s.changes[1].Status; got != "NEW" {
+		t.Errorf("not followed yet: change 1 is %s", got)
+	}
+	c.GitHubOwned = false
+	if err := c.follow(context.Background(), "main"); err != nil {
+		t.Fatal(err)
+	}
+	c.GitHubOwned = true
+	if err := c.follow(context.Background(), "main"); err != nil {
+		t.Fatal(err)
+	}
+	c.GitHubOwned = false
+	mirrorStates(t, c, false)
+	if got := s.changes[1].Status; got != "NEW" {
+		t.Errorf("Gerrit owns main: change 1 is %s", got)
+	}
+	c.GitHubOwned = true
+	s.pulls[10].Base.Ref = "gerrit/I2"
+	mirrorStates(t, c, false)
+	if got := s.changes[1].Status; got != "NEW" {
+		t.Errorf("merged into another PR's branch: change 1 is %s", got)
+	}
+	s.pulls[10].Base.Ref = "main"
+	mirrorStates(t, c, false)
+	if got := s.changes[1].Status; got != "ABANDONED" {
+		t.Errorf("merged and followed: change 1 is %s", got)
+	}
+}
+
+// GitHub's word for the merge commit reaches git only as a full SHA: a
+// ref name there would name whatever it names.
+func TestMergedOnGitHubNeedsAMergeCommitSHA(t *testing.T) {
+	s, c, _ := mergedSites(t, "One (#10)\n")
+	s.pulls[10].MergeCommitSHA = "refs/remotes/gerrit/heads/main"
+	mirrorStates(t, c, true)
+	if got := s.changes[1].Status; got != "NEW" {
+		t.Errorf("change 1 is %s, abandoned for a merge commit named by ref", got)
+	}
+}
+
+// A reconcile abandons it and then plans from what Gerrit says now: the
+// merged PR is left alone, not reopened for a change it thought open.
+func TestMergedOnGitHubReconcile(t *testing.T) {
+	s, c, _ := mergedSites(t, "One (#10)\n")
+	if err := c.Reconcile(context.Background(), Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, pr := s.changes[1].Status, s.pulls[10]; got != "ABANDONED" || pr.State != "closed" || !pr.Merged {
+		t.Errorf("change 1 is %s, PR #10 %s merged %v; want abandoned, and the PR merged", got, pr.State, pr.Merged)
 	}
 }

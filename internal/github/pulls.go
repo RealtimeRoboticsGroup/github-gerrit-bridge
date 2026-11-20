@@ -59,12 +59,16 @@ type PullRequest struct {
 	Draft    bool       `json:"draft"`
 	Merged   bool       `json:"merged"`
 	MergedAt *time.Time `json:"merged_at"`
-	Title    string     `json:"title"`
-	Body     string     `json:"body"`
-	HTMLURL  string     `json:"html_url"`
-	User     User       `json:"user"`
-	Head     Ref        `json:"head"`
-	Base     Ref        `json:"base"`
+	// MergeCommitSHA is, once merged, the commit the merge made on the
+	// base branch; MergedBy (GetPull only) who merged it.
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	MergedBy       *User  `json:"merged_by"`
+	Title          string `json:"title"`
+	Body           string `json:"body"`
+	HTMLURL        string `json:"html_url"`
+	User           User   `json:"user"`
+	Head           Ref    `json:"head"`
+	Base           Ref    `json:"base"`
 	// MaintainerCanModify is set when a fork PR's author lets people with
 	// write access to the base repository push to the head branch. Only
 	// GetPull returns it; listed PRs always say false.

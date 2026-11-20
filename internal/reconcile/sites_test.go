@@ -68,6 +68,8 @@ type sites struct {
 	failBranches bool
 	// refusePulls makes edits of these PRs fail as GitHub's validation.
 	refusePulls map[int]bool
+	// actionMsgs is the message of each change's last abandon or restore.
+	actionMsgs map[int]string
 }
 
 func newSites(t *testing.T) *sites {
@@ -393,6 +395,12 @@ func (s *sites) changeAction(w http.ResponseWriter, r *http.Request) {
 	case !strings.Contains(" "+strings.Join(s.may[n], " ")+" ", " "+user+" "):
 		http.Error(w, action+" not permitted", http.StatusForbidden)
 	case action == "abandon" || action == "restore":
+		var in struct{ Message string }
+		json.NewDecoder(r.Body).Decode(&in)
+		if s.actionMsgs == nil {
+			s.actionMsgs = map[int]string{}
+		}
+		s.actionMsgs[n] = in.Message
 		s.gerritStatus(n, map[string]string{"abandon": "ABANDONED", "restore": "NEW"}[action], user)
 		s.json(w, ci, true)
 	case action == "wip" || action == "ready":

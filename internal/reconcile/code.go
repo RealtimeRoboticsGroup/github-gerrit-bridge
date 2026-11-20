@@ -1043,6 +1043,16 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 			continue
 		}
 		pr := s.PRs[st.State.PR]
+		if s.GitHubOwned && ch.Status == "NEW" && pr.Merged {
+			did, err := c.mergedOnGitHub(ctx, s, n, ch, pr)
+			if err != nil {
+				return changed, err
+			}
+			if did {
+				changed, handled[pr.Number] = true, true
+			}
+			continue
+		}
 		var action, past string
 		switch {
 		case ch.Status == "NEW" && pr.State == "closed" && !pr.Merged:
@@ -1122,6 +1132,52 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 		}
 	}
 	return changed, nil
+}
+
+// mergedOnGitHub abandons change n, whose PR pr merged on GitHub, which
+// owns the branch (design §3.1), once that merge is on Gerrit's copy of
+// the branch (follow) and Gerrit still has the change open: Gerrit closes
+// a change as merged only for a commit with its Change-Id, which the
+// merge commit lacks if someone took the trailer out of its message
+// (or the repository's merge settings leave the description out).
+// Abandoned, with a note saying where it merged, it is closed either way.
+// It reports whether it abandoned it.
+func (c *Code) mergedOnGitHub(ctx context.Context, s *Snapshot, n int, ch *GerritChange, pr *github.PullRequest) (bool, error) {
+	sha := pr.MergeCommitSHA
+	if !fullSHA.MatchString(sha) || pr.Base.Ref != s.Branch {
+		// Merged into another PR's branch (a stack's layer): not on the
+		// target branch yet.
+		return false, nil
+	}
+	if _, err := c.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", sha, "refs/remotes/gerrit/heads/"+s.Branch); err != nil {
+		// Not followed yet (or not there at all): the change waits.
+		return false, nil
+	}
+	by := "someone"
+	if pr.MergedBy != nil && pr.MergedBy.Login != "" {
+		by = "@" + pr.MergedBy.Login
+	}
+	why := "its commit does not say this change's Change-Id (" + ch.ChangeID + "), so Gerrit could not tell it is this change"
+	if out, err := c.Mirror.Git(ctx, nil, "log", "-1", "--format=%B", sha); err == nil && strings.Contains(string(out), "Change-Id: "+ch.ChangeID) {
+		why = "Gerrit did not close it as merged"
+	}
+	msg := fmt.Sprintf("Merged on GitHub by %s in PR #%d, as %s on %s, but %s. Abandoned, since it is merged.",
+		by, pr.Number, sha, s.Branch, why)
+	if c.DryRun {
+		c.Logger.Info("dry run: would abandon a change merged on GitHub", "change", n, "pr", pr.Number, "commit", sha)
+		return false, nil
+	}
+	err := c.Gerrit.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/abandon", n), map[string]string{"message": forGerrit(msg)}, nil)
+	var ge *gerrit.Error
+	if errors.As(err, &ge) && ge.Status < 500 {
+		c.Logger.Warn("Gerrit refused to abandon a change merged on GitHub (grant the bridge Abandon)", "change", n, "pr", pr.Number, "err", err)
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("abandoning change %d, merged on GitHub: %w", n, err)
+	}
+	c.Logger.Info("abandoned a change merged on GitHub without its Change-Id", "change", n, "pr", pr.Number, "commit", sha)
+	return true, nil
 }
 
 // gerritText is the PR text a commit message stands for, and githubText
