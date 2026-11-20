@@ -164,7 +164,7 @@ coauthored() { me api "repos/${R}/commits/${M2}" --jq .commit.message | grep -q 
 check "GitHub's squash commit ends with Co-authored-by (so Gerrit misses the Change-Id)" coauthored
 wait_for "Gerrit's main follows" followed main
 wait_for "the bridge marks change ${C2} merged at GitHub's commit (check-and-fix)" merged_at "${C2}" "${M2}"
-check "and says who merged it, in which PR" has_message "${C2}" "Merged on GitHub by AustinSchuh in PR #${N2}"
+check "and says who merged it, in which PR" has_message "${C2}" "AustinSchuh in PR #${N2}, as ${M2} on main"
 
 # --- 3. The Change-Id edited out in the merge dialog ---
 step "3. A squash whose message lost the Change-Id"
