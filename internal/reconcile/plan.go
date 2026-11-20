@@ -34,6 +34,9 @@ type GerritChange struct {
 	Kind string
 }
 
+// changeIDPattern is a Change-Id as Gerrit makes them.
+var changeIDPattern = regexp.MustCompile(`^I[0-9a-f]{40}$`)
+
 // Snapshot is everything the planner needs about one target branch.
 type Snapshot struct {
 	// Branch is the Gerrit target branch; the GitHub branch has the same
@@ -508,6 +511,14 @@ func MakePlan(s *Snapshot) *Plan {
 			}
 		}
 		block := linksBlock(c.URL, n, c.PatchSet, chain, note)
+		if s.GitHubOwned && changeIDPattern.MatchString(c.ChangeID) {
+			// Last, as the commit message's trailer: GitHub's squash and
+			// merge commits take the PR's description (the repository's
+			// default commit message setting), and with this Gerrit
+			// closes the change when that commit reaches its branch
+			// (design §3.1). The bridge's part, as the block is.
+			block += "\n\nChange-Id: " + c.ChangeID
+		}
 		// The PR shows the commit message, wherever the change started:
 		// edits made on GitHub reach Gerrit first (Code.mirrorPREdits), so
 		// what is here is the newer of the two.

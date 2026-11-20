@@ -116,3 +116,29 @@ func TestLinkedAuthors(t *testing.T) {
 		t.Errorf("Linked = %+v %v", u, ok)
 	}
 }
+
+// Where GitHub owns the branches, the merge settings that keep merged
+// changes from merging in Gerrit are said at startup.
+func TestMergeSettingProblems(t *testing.T) {
+	yes, no := true, false
+	good := &github.Repository{AllowSquashMerge: &yes, AllowMergeCommit: &yes, AllowRebaseMerge: &no,
+		SquashMergeCommitMessage: "PR_BODY", MergeCommitMessage: "PR_BODY"}
+	if p := mergeSettingProblems(good); len(p) != 0 {
+		t.Errorf("good settings: %v", p)
+	}
+	for name, r := range map[string]github.Repository{
+		"unreadable":            {},
+		"squash from commits":   {AllowSquashMerge: &yes, AllowMergeCommit: &no, AllowRebaseMerge: &no, SquashMergeCommitMessage: "COMMIT_MESSAGES", MergeCommitMessage: "PR_BODY"},
+		"merge from PR title":   {AllowSquashMerge: &no, AllowMergeCommit: &yes, AllowRebaseMerge: &no, SquashMergeCommitMessage: "PR_BODY", MergeCommitMessage: "PR_TITLE"},
+		"rebase merges allowed": {AllowSquashMerge: &yes, AllowMergeCommit: &no, AllowRebaseMerge: &yes, SquashMergeCommitMessage: "PR_BODY", MergeCommitMessage: "PR_BODY"},
+	} {
+		if p := mergeSettingProblems(&r); len(p) != 1 {
+			t.Errorf("%s: %v, want one problem", name, p)
+		}
+	}
+	// What the button does not offer does not matter.
+	off := &github.Repository{AllowSquashMerge: &no, AllowMergeCommit: &yes, AllowRebaseMerge: &no, SquashMergeCommitMessage: "BLANK", MergeCommitMessage: "PR_BODY"}
+	if p := mergeSettingProblems(off); len(p) != 0 {
+		t.Errorf("squash off: %v", p)
+	}
+}

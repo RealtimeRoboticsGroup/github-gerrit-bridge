@@ -16,6 +16,15 @@ type Repository struct {
 	FullName      string `json:"full_name"`
 	DefaultBranch string `json:"default_branch"`
 	Private       bool   `json:"private"`
+	// The merge settings: which merges the button offers, and what
+	// message squash and merge commits get ("PR_BODY": the PR's
+	// description). GitHub says them only to those who may administer
+	// the repository; unsaid, they are nil and "".
+	AllowSquashMerge         *bool  `json:"allow_squash_merge"`
+	AllowMergeCommit         *bool  `json:"allow_merge_commit"`
+	AllowRebaseMerge         *bool  `json:"allow_rebase_merge"`
+	SquashMergeCommitMessage string `json:"squash_merge_commit_message"`
+	MergeCommitMessage       string `json:"merge_commit_message"`
 }
 
 // GetRepo returns the client's repository.

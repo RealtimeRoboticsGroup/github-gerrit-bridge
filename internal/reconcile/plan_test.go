@@ -1475,3 +1475,37 @@ func TestGitHubOwnedMergeElsewhereClosesThePR(t *testing.T) {
 		t.Errorf("no notice:\n%s", strings.Join(w.log, "\n"))
 	}
 }
+
+// Design §3.1: where GitHub owns main, each PR's description ends with
+// its Change-Id, a trailer of the commit GitHub's merge makes from it, so
+// Gerrit closes the change when that commit reaches its branch. The line
+// is the bridge's: it is no edit of the description.
+func TestGitHubOwnedPRBodyEndsWithChangeID(t *testing.T) {
+	for _, owned := range []bool{true, false} {
+		w := newWorld(t)
+		w.githubOwned = owned
+		w.upload(1, "a1", "m0")
+		w.converge()
+		pr := w.pr(1)
+		ends := strings.HasSuffix(pr.Body, linksEnd+"\n\nChange-Id: "+cid(1))
+		if ends != owned {
+			t.Errorf("GitHub owns main %v: body ends with the Change-Id %v:\n%s", owned, ends, pr.Body)
+		}
+		if gerritText(w.gerrit[1].Message) != githubText(pr) {
+			t.Errorf("GitHub owns main %v: the PR's text differs from the change's:\n%q\n%q", owned, githubText(pr), gerritText(w.gerrit[1].Message))
+		}
+	}
+}
+
+// Only a Change-Id as Gerrit makes them goes in as a trailer: nothing
+// else rides into the commit GitHub makes.
+func TestGitHubOwnedTrailerIsOnlyAChangeID(t *testing.T) {
+	w := newWorld(t)
+	w.githubOwned = true
+	w.upload(1, "a1", "m0")
+	w.gerrit[1].ChangeID = "I1\n\nSigned-off-by: Someone Else <x@example.com>"
+	w.converge()
+	if pr := w.pr(1); strings.Contains(pr.Body, "Change-Id:") || strings.Contains(pr.Body, "Someone Else") {
+		t.Errorf("body has an odd Change-Id as a trailer:\n%s", pr.Body)
+	}
+}

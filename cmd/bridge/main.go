@@ -177,6 +177,11 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	}
 	logger.Info("github ok", "repo", ghRepo.FullName, "as", login, "default_branch", ghRepo.DefaultBranch,
 		"rate_remaining", gh.RateLimit().Remaining)
+	if cfg.GitHubOwned() {
+		for _, p := range mergeSettingProblems(ghRepo) {
+			logger.Warn("GitHub's merge settings: "+p, "repo", ghRepo.FullName)
+		}
+	}
 
 	var builds *buildkite.Client
 	if b := cfg.CI.Buildkite; b != nil {
@@ -531,6 +536,30 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	q.ShutDown()
 	wg.Wait()
 	return err
+}
+
+// mergeSettingProblems says what in r's merge settings keeps GitHub's
+// merges from closing their Gerrit changes as merged, where GitHub owns
+// the branches (design §3.1): Gerrit closes a change when a commit with
+// its Change-Id reaches its branch, and the bridge writes that trailer
+// only into PR descriptions. A change whose merge commit lacks it is
+// abandoned, with a note saying where it merged.
+func mergeSettingProblems(r *github.Repository) []string {
+	if r.AllowSquashMerge == nil && r.AllowMergeCommit == nil && r.AllowRebaseMerge == nil {
+		return []string{"cannot read them (the bridge's token may not administer the repository): make the default message of squash " +
+			"and merge commits the PR's title and description, or merged changes are abandoned in Gerrit rather than merged"}
+	}
+	var out []string
+	if r.AllowSquashMerge != nil && *r.AllowSquashMerge && r.SquashMergeCommitMessage != "PR_BODY" {
+		out = append(out, "squash commits' default message is not the PR's title and description: their changes are abandoned in Gerrit rather than merged")
+	}
+	if r.AllowMergeCommit != nil && *r.AllowMergeCommit && r.MergeCommitMessage != "PR_BODY" {
+		out = append(out, "merge commits' default message is not the PR's title and description: their changes are abandoned in Gerrit rather than merged")
+	}
+	if r.AllowRebaseMerge != nil && *r.AllowRebaseMerge {
+		out = append(out, "rebase merges are allowed, and keep the PR's commits' messages, without its Change-Id: their changes are abandoned in Gerrit rather than merged")
+	}
+	return out
 }
 
 // noRedirects keeps the bridge's credentials going only where it sent

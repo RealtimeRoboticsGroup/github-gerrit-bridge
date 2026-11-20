@@ -760,3 +760,19 @@ func TestWritesAreTraced(t *testing.T) {
 		t.Errorf("writes %q", w)
 	}
 }
+
+// The merge settings, as GitHub's repository API names them.
+func TestRepoMergeSettings(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"full_name":"o/r","allow_squash_merge":true,"allow_merge_commit":false,"allow_rebase_merge":true,`+
+			`"squash_merge_commit_message":"PR_BODY","merge_commit_message":"PR_TITLE"}`)
+	})
+	r, err := c.GetRepo(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.AllowSquashMerge == nil || !*r.AllowSquashMerge || r.AllowMergeCommit == nil || *r.AllowMergeCommit ||
+		r.AllowRebaseMerge == nil || !*r.AllowRebaseMerge || r.SquashMergeCommitMessage != "PR_BODY" || r.MergeCommitMessage != "PR_TITLE" {
+		t.Errorf("got %+v", r)
+	}
+}
