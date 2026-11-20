@@ -189,6 +189,17 @@ checks what it can):
    bridge's push grants removed, replication on, GitHub's branch protected
    for replication only, and both branches equal first.
 
+**Tradeoff: GitHub is trusted.** Whatever lands on GitHub's branch
+lands on Gerrit's, and Gerrit acts on it as on any direct push. A PR
+merged with a merge commit brings each of its commits; one whose last
+paragraph carries the Change-Id of another open change of that branch
+closes that change as merged, at that commit, and Gerrit cannot reopen
+a merged change. The bridge does not hold the branch back to prevent
+it: GitHub's branch is the truth, and who may merge what is for GitHub's
+branch protection to decide (the owner's decision, 2026-11-20).
+`/submit` squashes, but for subtree merges, so it brings only the PR's
+own message.
+
 **Known gaps.** Squash merges and stacks: once a lower layer is squashed,
 a Gerrit-born upper layer stands on a commit not on the branch (shown
 against a frozen base) until it is rebased in Gerrit; GitHub-born layers
