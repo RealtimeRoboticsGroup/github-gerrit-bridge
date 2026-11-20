@@ -128,7 +128,8 @@ checklist.
   Gerrit with that session on every request (`gerrit.Client.Viewer`,
   read-only, none of the bridge's credentials); only GitHub's part is
   cached, the answer is `private, no-store` with no CORS header, and
-  `ci.checks_url` must be on Gerrit's origin so browsers send the session.
+  `ci.checks_url` must be a path under `gerrit.url` so browsers send the
+  session (Gerrit's cookie is for its own path).
   No `gerrit/*` statuses are posted on GitHub, and Rerun is not offered
   (GitHub's CI does not take `retest`).
 - **`/submit`** (optional; the merge button is the usual way) merges the
@@ -157,7 +158,7 @@ checks what it can):
    write too, for `/submit` (a linked token can then push as its owner:
    leave `/submit` unused, and the App without it, if that is too much).
    The bot token needs Checks read for the Checks tab.
-4. `ci.checks_url` on Gerrit's host (the proxy forwards
+4. `ci.checks_url` under `gerrit.url`'s path (the proxy forwards
    `<gerrit>/<path>/checks/` to the bridge's `/checks/`), and the plugin
    written with `--checks_plugin`. No `ci.buildkite`.
 5. Switching back to `gerrit` means the reverse: Submit granted, the

@@ -267,6 +267,13 @@ func TestBranchOwner(t *testing.T) {
 	if !c.GitHubOwned() {
 		t.Error("branch_owner github is not GitHubOwned")
 	}
+	// Under Gerrit's path, when it has one.
+	underPath := strings.Replace(full, "url: https://gerrit.example.com/\n", "url: https://gerrit.example.com/gerrit/\n", 1)
+	for _, u := range []string{"https://gerrit.example.com/gerrit/bridge", "https://gerrit.example.com/gerrit"} {
+		if _, err := Parse([]byte(underPath + userApp + "branch_owner: github\nci:\n  checks_url: " + u + "\n")); err != nil {
+			t.Errorf("checks_url %s under Gerrit's path: %v", u, err)
+		}
+	}
 	// Same origin as Gerrit: browsers send their Gerrit session along.
 	if _, err := Parse([]byte(full + userApp + "branch_owner: github\nci:\n  checks_url: https://gerrit.example.com/bridge\n")); err != nil {
 		t.Errorf("checks_url under Gerrit's origin: %v", err)
@@ -279,6 +286,12 @@ func TestBranchOwner(t *testing.T) {
 		"checks_url on another port":   full + userApp + "branch_owner: github\nci:\n  checks_url: https://gerrit.example.com:8443/bridge\n",
 		"checks_url on another scheme": full + userApp + "branch_owner: github\nci:\n  checks_url: http://gerrit.example.com/bridge\n",
 		"checks_url without buildkite": full + "ci:\n  checks_url: https://gerrit.example.com/bridge\n",
+		// Gerrit's session cookie is for its path: "/gerrit-bridge" is
+		// beside "/gerrit", not under it.
+		"checks_url beside Gerrit's path":          underPath + userApp + "branch_owner: github\nci:\n  checks_url: https://gerrit.example.com/gerrit-bridge\n",
+		"checks_url with credentials":              full + userApp + "branch_owner: github\nci:\n  checks_url: https://u:p@gerrit.example.com/bridge\n",
+		"checks_url with a query":                  full + userApp + "branch_owner: github\nci:\n  checks_url: https://gerrit.example.com/bridge?x\n",
+		"gerrit-owned checks_url, with a fragment": full + "ci:\n  buildkite:\n    organization: o\n    pipeline: p\n    token_file: /t\n  checks_url: https://bridge.example.com/#x\n",
 	} {
 		if _, err := Parse([]byte(cfg)); err == nil {
 			t.Errorf("%s: parsed", name)

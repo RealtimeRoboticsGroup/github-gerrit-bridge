@@ -102,6 +102,7 @@ ci:
   # Where browsers reach this bridge (proxy /checks/ to it). Write the
   # Gerrit plugin with: bridge --config ... --checks_plugin > $site/plugins/bridge-checks.js
   # With branch_owner github, the Checks tab shows GitHub's checks instead,
-  # only to those signed in to Gerrit: checks_url must then be a path on
-  # gerrit.url's own host, so browsers send their Gerrit session.
+  # only to those signed in to Gerrit: checks_url must then be a path under
+  # gerrit.url (https://host/gerrit/bridge for https://host/gerrit), so
+  # browsers send their Gerrit session, whose cookie is for Gerrit's path.
   # checks_url: https://realtimeroboticsgroup.org/gerrit-bridge

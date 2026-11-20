@@ -320,11 +320,17 @@ func (c *Config) validate() error {
 		if c.CI.Buildkite != nil {
 			errs = append(errs, errors.New("ci.buildkite is for Gerrit-owned branches: with branch_owner github, CI is GitHub's"))
 		}
-		if c.CI.ChecksURL != "" && c.Gerrit.URL != "" && !sameOrigin(c.CI.ChecksURL, c.Gerrit.URL) {
-			errs = append(errs, fmt.Errorf("ci.checks_url %q must be on gerrit.url's origin (a path under it), so browsers send their Gerrit session: with branch_owner github, checks are shown only to who may see the change", c.CI.ChecksURL))
+		if c.CI.ChecksURL != "" && c.Gerrit.URL != "" && !underGerrit(c.CI.ChecksURL, c.Gerrit.URL) {
+			errs = append(errs, fmt.Errorf("ci.checks_url %q must be a path under gerrit.url, so browsers send their Gerrit session (its cookie is for Gerrit's path): with branch_owner github, checks are shown only to who may see the change", c.CI.ChecksURL))
 		}
 	default:
 		errs = append(errs, fmt.Errorf("branch_owner %q: must be %q or %q", c.BranchOwner, OwnerGerrit, OwnerGitHub))
+	}
+	// Browsers fetch from it, with the plugin every Gerrit user loads.
+	if c.CI.ChecksURL != "" {
+		if err := secureURL(c.CI.ChecksURL); err != nil {
+			errs = append(errs, fmt.Errorf("ci.checks_url %w", err))
+		}
 	}
 	for _, n := range c.GitHub.WebhookAllowedNetworks {
 		if _, _, err := net.ParseCIDR(n); err != nil {
@@ -370,12 +376,19 @@ func secureURL(raw string) error {
 	return nil
 }
 
-// sameOrigin reports whether URLs a and b have the same scheme and host
-// (with port).
-func sameOrigin(a, b string) bool {
-	ua, err1 := url.Parse(a)
-	ub, err2 := url.Parse(b)
-	return err1 == nil && err2 == nil && ua.Host != "" && strings.EqualFold(ua.Scheme, ub.Scheme) && strings.EqualFold(ua.Host, ub.Host)
+// underGerrit reports whether URL u is a path under Gerrit's base URL
+// gerrit: the same scheme and host (with port), and a path that is
+// Gerrit's or below it, so a browser sends Gerrit's session cookie, which
+// is for Gerrit's path, there too ("/gerrit-bridge" is not under
+// "/gerrit").
+func underGerrit(u, gerrit string) bool {
+	uu, err1 := url.Parse(u)
+	ug, err2 := url.Parse(gerrit)
+	if err1 != nil || err2 != nil || uu.Host == "" || !strings.EqualFold(uu.Scheme, ug.Scheme) || !strings.EqualFold(uu.Host, ug.Host) {
+		return false
+	}
+	base := strings.TrimSuffix(ug.Path, "/")
+	return base == "" || uu.Path == base || strings.HasPrefix(uu.Path, base+"/")
 }
 
 // loopback reports whether host is a loopback address. Literals only: a
