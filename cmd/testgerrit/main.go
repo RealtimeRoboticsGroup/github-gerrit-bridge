@@ -18,10 +18,15 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -67,6 +72,14 @@ func run() error {
 	githubUsers := flag.String("github_users", "", "Accounts named after GitHub logins, like Gerrit's github plugin makes: comma-separated login|email[|trusted].")
 	bot := flag.String("github_bot", "", "gh account the bridge acts as on GitHub (its token comes from `gh auth token --user`).")
 	bobEmail := flag.String("bob_email", "", "Also give bob this email, so a second GitHub account's commits can be pushed as bob.")
+	follow := flag.String("follow_project", "", "Also set up this project for a bridge where GitHub owns the branches (branch_owner: github, design §3.1), "+
+		"seeded from --follow_github's main, and write its bridge config <site>/bridge/<project>.yaml. Needs --github_token_file and --user_app_from.")
+	followGitHub := flag.String("follow_github", "", "GitHub owner/repo for --follow_project.")
+	followListen := flag.String("follow_listen", "127.0.0.1:18083", "Listen address of --follow_project's bridge.")
+	followStatus := flag.String("follow_status_listen", "127.0.0.1:18084", "Status page address of --follow_project's bridge (empty: none).")
+	front := flag.String("front_listen", "127.0.0.1:18079", "With --follow_project: serve Gerrit here too, behind a proxy that also forwards "+
+		"<base_path>/bridge-<project>/checks/ to that bridge, as production's proxy does (its Checks tab must be under Gerrit's path).")
+	userAppFrom := flag.String("user_app_from", "", "Bridge config whose github.user_app (the linking App) --follow_project's bridge uses too, with its own tokens.")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -137,6 +150,31 @@ func run() error {
 			}
 		}
 		log.Printf("Bridge config for %s: %s", *replicate, pcfg)
+	}
+	if *follow != "" {
+		if *followGitHub == "" || *tokenFile == "" || *userAppFrom == "" {
+			return errors.New("--follow_project needs --follow_github, --github_token_file and --user_app_from")
+		}
+		prefix := *basePath + "/bridge-" + *follow
+		frontURL := "http://" + *front + *basePath
+		fcfg, err := followProject(ctx, s, bridgeDir, followSetup{
+			project: *follow, repo: *followGitHub, listen: *followListen, statusListen: *followStatus,
+			tokenFile: *tokenFile, identity: *identity, bot: *bot, userAppFrom: *userAppFrom,
+			gerritURL: frontURL, checksURL: "http://" + *front + prefix,
+		})
+		if err != nil {
+			return err
+		}
+		js := gerritchecks.Plugin("http://"+*front+prefix, *follow, false)
+		if err := os.WriteFile(filepath.Join(*site, "plugins", "bridge-checks-"+*follow+".js"), js, 0o644); err != nil {
+			return err
+		}
+		go func() {
+			if err := serveFront(ctx, *front, s.URL, prefix, "http://"+*followListen); err != nil {
+				log.Printf("front proxy: %v", err)
+			}
+		}()
+		log.Printf("Bridge config for %s (GitHub-owned): %s; Gerrit with its Checks tab at %s", *follow, fcfg, frontURL)
 	}
 	for user, email := range map[string]string{"alice": *aliceEmail, "bob": *bobEmail} {
 		if email == "" {
@@ -239,6 +277,105 @@ func mirrorProject(ctx context.Context, s *testgerrit.Server, bridgeDir, project
 		Identity: ids, ImportCreatedAfter: time.Now(), ResyncInterval: 15 * time.Minute, TokenUser: bot, CIAccount: ciUser,
 		Buildkite: buildkiteURL,
 	})
+}
+
+type followSetup struct {
+	project, repo, listen, statusListen, tokenFile, identity, bot, userAppFrom, gerritURL, checksURL string
+}
+
+// followProject makes sure the GitHub-owned project exists, seeded from
+// the GitHub repo's main and granted what such a bridge needs, and that a
+// bridge config for it exists. The linking App is the other bridge's,
+// but the tokens are this one's own: GitHub rotates a refresh token at
+// each use, so two bridges cannot share them.
+func followProject(ctx context.Context, s *testgerrit.Server, bridgeDir string, f followSetup) (string, error) {
+	tok, err := config.ReadSecret(f.tokenFile)
+	if err != nil {
+		return "", err
+	}
+	if err := s.ConfigureAllProjects(ctx); err != nil {
+		return "", err
+	}
+	exists, err := s.ProjectExists(ctx, f.project)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		log.Printf("Creating %s from github.com/%s main", f.project, f.repo)
+		if err := s.MirrorProject(ctx, f.project, "https://github.com/"+f.repo+".git", tok, "main"); err != nil {
+			return "", err
+		}
+	} else if err := s.ConfigureProject(ctx, f.project); err != nil {
+		return "", err
+	}
+	if err := s.GrantRunAs(ctx, f.project); err != nil {
+		return "", err
+	}
+	if err := s.GrantGitHubOwned(ctx, f.project); err != nil {
+		return "", err
+	}
+	path := filepath.Join(bridgeDir, f.project+".yaml")
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+	other, err := config.Load(f.userAppFrom)
+	if err != nil {
+		return "", err
+	}
+	app := other.GitHub.UserApp
+	if app == nil {
+		return "", fmt.Errorf("%s has no github.user_app", f.userAppFrom)
+	}
+	key := filepath.Join(bridgeDir, f.project+"-user-tokens-key")
+	if _, err := os.Stat(key); os.IsNotExist(err) {
+		k := make([]byte, 32)
+		rand.Read(k)
+		if err := os.WriteFile(key, []byte(hex.EncodeToString(k)+"\n"), 0o600); err != nil {
+			return "", err
+		}
+	}
+	ids := map[string]string{}
+	for _, pair := range strings.Split(f.identity, ",") {
+		if gh, user, ok := strings.Cut(strings.TrimSpace(pair), "="); ok {
+			ids[gh] = user
+		}
+	}
+	owner, name, _ := strings.Cut(f.repo, "/")
+	return s.WriteProjectConfig(bridgeDir, testgerrit.ProjectConfig{
+		File: f.project + ".yaml", Project: f.project, Owner: owner, Repo: name, Listen: f.listen, StatusListen: f.statusListen,
+		Identity: ids, ImportCreatedAfter: time.Now(), ResyncInterval: 15 * time.Minute, TokenUser: f.bot,
+		GitHubOwned: true, GerritURL: f.gerritURL, ChecksURL: f.checksURL,
+		UserApp: &testgerrit.UserApp{
+			ClientID: app.ClientID, ClientSecretFile: app.ClientSecretFile, PublicURL: "http://" + f.listen,
+			TokensFile: filepath.Join(bridgeDir, f.project+"-user-tokens"), KeyFile: key,
+		},
+	})
+}
+
+// serveFront serves Gerrit (at gerritURL) on listen, as a site's proxy
+// does, and forwards prefix/checks/ to the bridge at bridgeURL's
+// /checks/. Browsers then send the bridge their Gerrit session cookie,
+// which is for Gerrit's path.
+func serveFront(ctx context.Context, listen, gerritURL, prefix, bridgeURL string) error {
+	g, err := url.Parse(gerritURL)
+	if err != nil {
+		return err
+	}
+	b, err := url.Parse(bridgeURL)
+	if err != nil {
+		return err
+	}
+	gp, bp := httputil.NewSingleHostReverseProxy(g), httputil.NewSingleHostReverseProxy(b)
+	gp.Director = func(r *http.Request) { r.URL.Scheme, r.URL.Host = g.Scheme, g.Host }
+	mux := http.NewServeMux()
+	mux.Handle("/", gp)
+	mux.Handle(prefix+"/checks/", http.StripPrefix(prefix, bp))
+	srv := &http.Server{Addr: listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() { <-ctx.Done(); srv.Close() }()
+	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 // setupCI creates the CI account once and writes what gerrit-buildkite

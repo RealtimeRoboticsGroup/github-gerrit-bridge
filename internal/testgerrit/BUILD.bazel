@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "testgerrit",
@@ -19,4 +19,11 @@ go_library(
         "@org_golang_x_crypto//ssh",
         "@rules_go//go/runfiles",
     ],
+)
+
+go_test(
+    name = "testgerrit_test",
+    srcs = ["bridge_test.go"],
+    embed = [":testgerrit"],
+    deps = ["//internal/config"],
 )
