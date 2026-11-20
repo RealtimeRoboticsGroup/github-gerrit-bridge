@@ -7,7 +7,7 @@
 #   bridge-test-ci         the real gerrit-buildkite, pointed at both
 #   bridge-test-bridge     the bridge itself
 #   bridge-test-webhooks   GitHub webhooks forwarded to the bridge (only if
-#                          the gh token has admin:repo_hook)
+#                          the gh token has repo or admin:repo_hook)
 #
 # Logs go to ~/tmp/bridge-test/logs/. Re-run after changing the code to
 # rebuild and restart everything.
@@ -66,6 +66,8 @@ if [[ -n "${FOLLOW_REPO}" ]]; then
   "${WS}/tools/testenv/github-owned-setup.sh" "${GH}" "${FOLLOW_REPO}" "${BOT}" "${SECOND}"
   FOLLOW_FLAGS=" --follow_project ${FOLLOW_PROJECT} --follow_github ${FOLLOW_REPO} --user_app_from ${SITE}/bridge/bridge-scratch.yaml"
 fi
+# Read whole: grep -q quitting early would fail the pipe (pipefail).
+HOOK_SCOPE="$("${GH}" auth status 2>&1 || true)"
 SECOND_EMAIL="$("${GH}" api "users/${SECOND}" --jq '"\(.id)+\(.login)@users.noreply.github.com"')"
 # The second account's own address, if any (becomes its preferred email).
 [[ -n "${SECOND_EMAIL_PREFERRED:-}" ]] && SECOND_EMAIL="${SECOND_EMAIL}|${SECOND_EMAIL_PREFERRED}"
@@ -105,7 +107,7 @@ unit bridge-test-bridge "Bridge test instance: the bridge" \
   "${TE}/bin/bridge --config ${SITE}/bridge/bridge-scratch.yaml --dry_run=false${BRIDGE_VERBOSE:+ -v}" \
   "After=bridge-test-gerrit.service" \
   "Environment=PATH=$(dirname "${GH}"):/usr/bin:/bin"
-if "${GH}" auth status 2>&1 | grep -q 'admin:repo_hook'; then
+if [[ "${HOOK_SCOPE}" == *admin:repo_hook* || "${HOOK_SCOPE}" == *\'repo\'* ]]; then
   unit bridge-test-webhooks "Bridge test instance: GitHub webhook forwarding" \
     "${WS}/tools/testenv/webhook-forward.sh ${GH} ${REPO} pull_request,pull_request_review,pull_request_review_comment,pull_request_review_thread,issue_comment,push http://127.0.0.1:18081/webhook ${SITE}/bridge/webhook-secret" \
     "After=bridge-test-bridge.service" "Environment=PATH=$(dirname "${GH}"):/usr/bin:/bin"
@@ -116,7 +118,7 @@ if [[ -n "${FOLLOW_REPO}" ]]; then
     "${TE}/bin/bridge --config ${SITE}/bridge/${FOLLOW_PROJECT}.yaml --dry_run=false${BRIDGE_VERBOSE:+ -v}" \
     "After=bridge-test-gerrit.service" \
     "Environment=PATH=$(dirname "${GH}"):/usr/bin:/bin"
-  if "${GH}" auth status 2>&1 | grep -q 'admin:repo_hook'; then
+  if [[ "${HOOK_SCOPE}" == *admin:repo_hook* || "${HOOK_SCOPE}" == *\'repo\'* ]]; then
     unit bridge-test-gh-webhooks "Bridge test instance: GitHub webhook forwarding, GitHub-owned project" \
       "${WS}/tools/testenv/webhook-forward.sh ${GH} ${FOLLOW_REPO} pull_request,pull_request_review,pull_request_review_comment,pull_request_review_thread,issue_comment,push http://127.0.0.1:18083/webhook ${SITE}/bridge/webhook-secret" \
       "After=bridge-test-gh-bridge.service" "Environment=PATH=$(dirname "${GH}"):/usr/bin:/bin"
