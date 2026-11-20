@@ -435,3 +435,46 @@ func TestGerritBornNeedsPublishableUploaders(t *testing.T) {
 		t.Error("a publishable member's message edit of an unlinked upload is not withheld")
 	}
 }
+
+// Where GitHub owns the branches, a stranger's withheld patch set of a
+// Gerrit-born change is not restored over a push to its PR ("Gerrit
+// wins"): restored, it would be the bridge's upload, which the gate lets
+// through to GitHub. A publishable uploader's is restored, as before.
+func TestGerritWinsNeverRestoresUnpublishedCode(t *testing.T) {
+	for _, tc := range []struct{ publishable, owner bool }{{false, false}, {true, false}, {false, true}} {
+		publishable := tc.publishable
+		s, im, up, m1, g, ids := gerritBornWorld(t, false)
+		ctx := context.Background()
+		im.Publishable = func(_ context.Context, account int) (bool, bool) { return account == 5 || (publishable && account == 9), true }
+		ci := s.changes[1]
+		ci.Owner = s.accounts["austin"]
+		if tc.owner { // owning the change is no pass
+			ci.Owner = gerrit.AccountInfo{AccountID: 9, Username: "stranger"}
+		}
+		first := ci.Revisions[g[0]]
+		first.Kind = "REWORK"
+		ci.Revisions[g[0]] = first
+		code := s.commit(g[0], "one.txt", "theirs\n", "Their message\n\nChange-Id: "+ids[0]+"\n")
+		s.push("gerrit.git", code, "refs/changes/01/1/2")
+		ci.Revisions[code] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Ref: "refs/changes/01/1/2",
+			Uploader: gerrit.AccountInfo{AccountID: 9, Username: "stranger"}, Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, code))}
+		ci.CurrentRevision = code
+		// Someone with write access pushes to the PR's branch meanwhile.
+		h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
+		s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
+		s.pulls[10].Head.SHA = h
+		s.webhookPush(im.Pushers, 10, "austin")
+		if err := im.Import(ctx, "main"); err != nil {
+			t.Fatal(err)
+		}
+		restored := false
+		for _, u := range up.uploads {
+			if c := strings.Fields(u)[0]; strings.HasPrefix(u, " ") && s.git("m.git", "rev-parse", c+"^{tree}") == s.git("work", "rev-parse", code+"^{tree}") {
+				restored = true
+			}
+		}
+		if restored != publishable {
+			t.Errorf("stranger publishable %v, owner %v: their code restored %v (uploads %v)", publishable, tc.owner, restored, up.uploads)
+		}
+	}
+}

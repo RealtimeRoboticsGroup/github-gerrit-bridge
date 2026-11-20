@@ -733,6 +733,16 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			rev, _ := cur.Current()
 			ok, _ := authorsCode(ctx, pushTrust(im.Publishable, im.Trusted), im.Bridge.AccountID, cur.Owner.AccountID, revisionsByNumber(cur), rev.Number)
 			foreign = !ok
+		} else if im.Publishable != nil {
+			// Where GitHub owns the branches, a Gerrit-born change's patch
+			// set reaches GitHub only from those who may push there
+			// (Code.unpublished, owning the change no pass): one that may
+			// not was withheld, and is not restored over the push either,
+			// as the bridge's upload, which the gate would let through
+			// (review of the GitHub-owned mode).
+			rev, _ := cur.Current()
+			ok, _ := authorsCode(ctx, im.Publishable, im.Bridge.AccountID, 0, revisionsByNumber(cur), rev.Number)
+			foreign = !ok
 		}
 		message = cur.Revisions[base].Commit.Message
 		if message == "" {
