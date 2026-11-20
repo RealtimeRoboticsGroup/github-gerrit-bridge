@@ -524,6 +524,49 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 	return nil
 }
 
+// withholdChildren, where GitHub owns the branches, withholds each open
+// change based on a withheld or foreign change's current patch set (or
+// on a change so withheld): its PR, or its frozen base, would bring that
+// code to GitHub, as if whoever chose the parent had pushed it, which one
+// click of Gerrit's Rebase does (review of the GitHub-owned mode). Each
+// gets a notice in Gerrit, once per patch set.
+func (c *Code) withholdChildren(ctx context.Context, s *Snapshot) error {
+	if !c.GitHubOwned {
+		return nil
+	}
+	for {
+		held := map[string]int{} // revision -> its withheld change
+		for n, ch := range s.Changes {
+			if ch.Status == "NEW" && (s.Withheld[n] || s.Foreign[n]) {
+				held[ch.Revision] = n
+			}
+		}
+		more := false
+		for _, n := range sortedKeys(s.Changes) {
+			ch := s.Changes[n]
+			parent, ok := held[ch.Parent]
+			if ch.Status != "NEW" || ch.Private || s.Withheld[n] || !ok {
+				continue
+			}
+			s.Withheld[n], more = true, true
+			if st := s.State[n]; c.DryRun || (st != nil && st.State.WithheldNotice == ch.PatchSet) {
+				continue
+			}
+			msg := fmt.Sprintf("Patch set %d is not mirrored to GitHub: it is based on change %d, which is not (see its messages), "+
+				"and its PR would bring that change's code to GitHub. Rebase it, or have that change mirrored first.", ch.PatchSet, parent)
+			if !c.notice(ctx, n, ch, msg) {
+				continue
+			}
+			if err := c.updateState(ctx, n, "withheld notice", func(st *state.Change) { st.State.WithheldNotice = ch.PatchSet }); err != nil {
+				return err
+			}
+		}
+		if !more {
+			return nil
+		}
+	}
+}
+
 // notice posts msg on change n's current patch set as the bridge, and
 // reports whether it is done with: posted, or refused for good (a 4xx,
 // such as the change's comment limit), which is logged.
@@ -890,6 +933,9 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]strin
 		return nil, err
 	}
 	if err := c.markForeign(ctx, s); err != nil {
+		return nil, err
+	}
+	if err := c.withholdChildren(ctx, s); err != nil {
 		return nil, err
 	}
 	c.deferOverBudget(ctx, s)

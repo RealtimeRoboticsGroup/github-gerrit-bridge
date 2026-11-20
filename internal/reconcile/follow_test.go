@@ -2,8 +2,10 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -556,5 +558,75 @@ func TestFollowOtherBranchesOnlyForward(t *testing.T) {
 	}
 	if got := s.ref("gerrit.git", "refs/heads/release"); got != forward {
 		t.Errorf("Gerrit's release = %s, want GitHub's %s", got, forward)
+	}
+}
+
+// Where GitHub owns the branches, a change based on a withheld one is
+// withheld too, its children as well: its PR (or frozen base) would bring
+// the withheld code to GitHub. A notice says why, once.
+func TestChildrenOfWithheldChangesAreWithheld(t *testing.T) {
+	ctx := context.Background()
+	for _, owned := range []bool{true, false} {
+		s := newSites(t)
+		c, store := s.code(ctx)
+		c.GitHubOwned = owned
+		snap := &Snapshot{Changes: map[int]*GerritChange{
+			1: {Number: 1, Status: "NEW", Revision: "r1", Parent: "m0", PatchSet: 1},
+			2: {Number: 2, Status: "NEW", Revision: "r2", Parent: "r1", PatchSet: 1},
+			3: {Number: 3, Status: "NEW", Revision: "r3", Parent: "r2", PatchSet: 1},
+			4: {Number: 4, Status: "NEW", Revision: "r4", Parent: "f1", PatchSet: 1},
+			5: {Number: 5, Status: "NEW", Revision: "f1", Parent: "m0", PatchSet: 1},
+			6: {Number: 6, Status: "NEW", Revision: "r6", Parent: "m0", PatchSet: 1},
+		}, State: map[int]*state.Change{}, Withheld: map[int]bool{1: true}, Foreign: map[int]bool{5: true}}
+		for n := range snap.Changes {
+			s.change(n, cid(n), s.commit("", fmt.Sprint(n), "x\n", "x"), "x", "NEW")
+		}
+		if err := c.withholdChildren(ctx, snap); err != nil {
+			t.Fatal(err)
+		}
+		want := map[int]bool{1: true}
+		if owned {
+			want = map[int]bool{1: true, 2: true, 3: true, 4: true}
+		}
+		if !reflect.DeepEqual(snap.Withheld, want) {
+			t.Errorf("GitHub owns %v: withheld %v, want %v", owned, snap.Withheld, want)
+		}
+		if owned {
+			if msgs := s.reviewMsgs[3]; len(msgs) != 1 || !strings.Contains(msgs[0], "based on change 2") {
+				t.Errorf("change 3's notices %q", msgs)
+			}
+			for n := range snap.Changes {
+				snap.State[n], _ = store.Load(ctx, n)
+			}
+			snap.Withheld = map[int]bool{1: true}
+			c.withholdChildren(ctx, snap)
+			if msgs := s.reviewMsgs[3]; len(msgs) != 1 {
+				t.Errorf("notice again: %q", msgs)
+			}
+		}
+	}
+}
+
+// A reconcile's look at the branch does it: a publishable member's change
+// on top of an unlinked one's is withheld with it.
+func TestObserveWithholdsChildrenOfWithheld(t *testing.T) {
+	ctx := context.Background()
+	s, c, base := followSites(t)
+	c.Publishable = func(_ context.Context, a int) (bool, bool) { return a == 8, true }
+	add := func(n int, parent string, who int) string {
+		rev := s.commit(parent, fmt.Sprint(n), "x\n", fmt.Sprintf("C%d\n\nChange-Id: %s\n", n, cid(n)))
+		ci := s.change(n, cid(n), rev, fmt.Sprintf("C%d\n\nChange-Id: %s\n", n, cid(n)), "NEW")
+		r := ci.Revisions[rev]
+		r.Uploader = gerrit.AccountInfo{AccountID: who}
+		ci.Revisions[rev], ci.Owner = r, r.Uploader
+		return rev
+	}
+	add(2, add(1, base, 7), 8)
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Withheld[1] || !snap.Withheld[2] {
+		t.Errorf("withheld %v, want both", snap.Withheld)
 	}
 }
