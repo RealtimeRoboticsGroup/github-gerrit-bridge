@@ -697,6 +697,20 @@ func mayPushToAuthor(ctx context.Context, trusted func(context.Context, int) (bo
 	return allowed(uploader) && (real == 0 || allowed(real)), known
 }
 
+// onGitHub reports whether st records revision (a Gerrit commit) as one
+// GitHub has: imported from the PR, or pushed there.
+func onGitHub(st *state.Change, revision string) bool {
+	if st == nil || revision == "" {
+		return false
+	}
+	for _, r := range st.Revisions {
+		if r.GerritSHA == revision && r.GitHubSHA != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // markForeign marks the GitHub-born changes whose current patch set was
 // uploaded, or uploaded on someone's behalf, in Gerrit by someone other
 // than the change's owner, the bridge or a member of CI's trusted group,
@@ -714,6 +728,13 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 		head := ""
 		if st := s.State[n]; st != nil {
 			head = st.State.HeadBranch
+		}
+		if c.GitHubOwned && onGitHub(s.State[n], ch.Revision) {
+			// GitHub has it already (imported from the PR, or pushed
+			// there): there is nothing to keep off the branch, and the
+			// PR still gets its description, with the Change-Id its
+			// merge needs.
+			continue
 		}
 		owner := ownerPass(c.GitHubOwned, ch.OwnerID, head)
 		ok, known := mayPushToAuthor(ctx, c.pushTrust(), c.BridgeAccount, owner, ch.UploaderID, ch.RealUploaderID)

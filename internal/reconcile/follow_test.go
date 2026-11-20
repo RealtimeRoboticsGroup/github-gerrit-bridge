@@ -369,16 +369,25 @@ func TestForeignIsByPublishableWhereGitHubOwns(t *testing.T) {
 		uploader    int    // 5 is the owner
 		head        string // the PR's
 		foreign     bool
+		// recorded: the Gerrit commit recorded as one GitHub has (r1 is
+		// the current patch set, imported from the PR).
+		recorded string
 	}{
-		{false, nil, 7, "feature", false}, // CI's trusted group decides
-		{true, nobody, 7, "feature", true},
-		{true, func(context.Context, int) (bool, bool) { return true, true }, 7, "feature", false},
-		{true, nil, 7, "feature", true},
+		{false, nil, 7, "feature", false, ""}, // CI's trusted group decides
+		{true, nobody, 7, "feature", true, ""},
+		{true, func(context.Context, int) (bool, bool) { return true, true }, 7, "feature", false, ""},
+		{true, nil, 7, "feature", true, ""},
 		// The owner's own upload: no pass on the repository's branch
 		// (they may have lost write access); on their fork's, theirs.
-		{false, nil, 5, "feature", false},
-		{true, nobody, 5, "feature", true},
-		{true, nobody, 5, "someone/r:feature", false},
+		{false, nil, 5, "feature", false, ""},
+		{true, nobody, 5, "feature", true, ""},
+		{true, nobody, 5, "someone/r:feature", false, ""},
+		// Imported from the PR itself, by an unlinked author: GitHub has
+		// it, so the PR still gets its description and Change-Id.
+		{true, nobody, 5, "feature", false, "r1"},
+		{true, nobody, 7, "feature", false, "r1"},
+		{false, nil, 9, "feature", true, "r1"}, // Gerrit-owned: unchanged
+		{true, nobody, 7, "feature", true, "r0"}, // an older patch set's, not this one
 	} {
 		s := newSites(t)
 		c, _ := s.code(ctx)
@@ -388,6 +397,9 @@ func TestForeignIsByPublishableWhereGitHubOwns(t *testing.T) {
 		snap := &Snapshot{Changes: map[int]*GerritChange{1: {Number: 1, Status: "NEW", Revision: "r1", PatchSet: 1,
 			OwnerID: 5, UploaderID: tc.uploader, Kind: "REWORK"}},
 			State: map[int]*state.Change{1: {State: state.ChangeState{Change: 1, Origin: "github", HeadBranch: tc.head}}}}
+		if tc.recorded != "" {
+			snap.State[1].Revisions = []state.Revision{{PatchSet: 1, GerritSHA: tc.recorded, GitHubSHA: "g1"}}
+		}
 		if err := c.markForeign(ctx, snap); err != nil {
 			t.Fatal(err)
 		}
