@@ -494,3 +494,27 @@ func TestStuckRunIsCutOff(t *testing.T) {
 		t.Errorf("errors %q", errs)
 	}
 }
+
+// Where GitHub owns the branches, a push to one is followed in Gerrit
+// (design §3.1); pushes to the bridge's own branches, tags, and any push
+// where Gerrit owns the branches, are not.
+func TestRouterFollowsGitHubPushes(t *testing.T) {
+	push := func(ref string) *github.Delivery {
+		return &github.Delivery{Event: "push", Payload: []byte(`{"ref":"` + ref + `"}`)}
+	}
+	for _, follow := range []bool{true, false} {
+		q := queue.New[Key]()
+		r := NewRouter("p", q, slog.Default())
+		r.FollowGitHub = follow
+		for _, ref := range []string{"refs/heads/main", "refs/heads/gerrit/I1", "refs/heads/gerrit-base/x", "refs/tags/v1", "refs/heads/feature"} {
+			r.Delivery(push(ref))
+		}
+		var want []string
+		if follow {
+			want = []string{"pushed/main", "pushed/feature"}
+		}
+		if got := drain(q); !equal(got, want) {
+			t.Errorf("FollowGitHub %v: queued %v, want %v", follow, got, want)
+		}
+	}
+}

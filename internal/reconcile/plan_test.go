@@ -37,6 +37,8 @@ type world struct {
 	// deferred changes' owners are over their new-PR budget.
 	deferred map[int]bool
 	unlinked map[int]bool // as Code.markUnlinked would say
+	// githubOwned: GitHub owns main (design §3.1).
+	githubOwned bool
 }
 
 func newWorld(t *testing.T) *world {
@@ -70,6 +72,7 @@ func (w *world) snapshot() *Snapshot {
 		Changes: map[int]*GerritChange{}, OnBranch: w.onMain,
 		GitHubBranches: map[string]string{}, PRs: map[int]*github.PullRequest{}, State: map[int]*state.Change{},
 		Repo: "o/r", NoPush: map[int]bool{}, Withheld: w.withheld, Foreign: w.foreign, Hold: w.hold, Deferred: w.deferred, Unlinked: w.unlinked,
+		GitHubOwned: w.githubOwned,
 	}
 	// Like Code.observe: closed changes drop out once the bridge has
 	// recorded them closed, unless their PR is still open.
@@ -1444,5 +1447,31 @@ func TestPlanKeepsThePRsOwnAttachments(t *testing.T) {
 	w.converge()
 	if strings.Contains(w.pr(1).Body, "Signed-off-by") {
 		t.Errorf("the PR's own text stands: %q", w.pr(1).Body)
+	}
+}
+
+// Design §3.1: where GitHub owns main, a change merged in Gerrit while its
+// PR is open came from some other commit with its Change-Id: nothing is
+// swapped into the PR or retargeted for replication, which there is none
+// of; the PR is closed with a notice.
+func TestGitHubOwnedMergeElsewhereClosesThePR(t *testing.T) {
+	w := newWorld(t)
+	w.githubOwned = true
+	w.upload(1, "a1", "m0")
+	w.converge()
+	w.gerrit[1].Status = "MERGED"
+	w.gerrit[1].Revision = "a1-cherry-picked"
+	w.onMain["a1-cherry-picked"] = true
+	w.converge()
+	if got := w.branch["gerrit/"+cid(1)]; got == "a1-cherry-picked" {
+		t.Errorf("head = %s: GitHub's merged commit was swapped in", got)
+	}
+	if pr := w.pr(1); pr.State != "closed" || pr.Merged {
+		t.Errorf("PR = %s merged=%v; want closed", pr.State, pr.Merged)
+	}
+	if !slices.ContainsFunc(w.log, func(l string) bool {
+		return strings.HasSuffix(l, ": [Change 1](https://g/c/p/+/1) merged: GitHub's main has a commit with its Change-Id. Closing this PR.")
+	}) {
+		t.Errorf("no notice:\n%s", strings.Join(w.log, "\n"))
 	}
 }

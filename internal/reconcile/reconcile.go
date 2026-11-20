@@ -10,6 +10,7 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -36,6 +37,10 @@ type Key struct {
 	// Merged: a change merged in Gerrit; ready its PRs for replication
 	// before anything else (design §6.7).
 	Merged int
+	// Pushed: a branch was pushed on GitHub, which owns the branches
+	// (design §3.1): if Gerrit has it, reconcile it, which follows
+	// GitHub's.
+	Pushed string
 }
 
 func (k Key) String() string {
@@ -48,6 +53,8 @@ func (k Key) String() string {
 		return "pr-comments/" + strconv.Itoa(k.PRComments)
 	case k.Merged != 0:
 		return "merged/" + strconv.Itoa(k.Merged)
+	case k.Pushed != "":
+		return "pushed/" + k.Pushed
 	default:
 		return "branch/" + k.Branch
 	}
@@ -71,6 +78,9 @@ type Router struct {
 	Logger  *slog.Logger
 	// Pushers, if set, records who pushed what from webhooks.
 	Pushers *Pushers
+	// FollowGitHub says GitHub owns the branches (design §3.1): a push to
+	// one of GitHub's is followed in Gerrit.
+	FollowGitHub bool
 
 	resync chan string
 }
@@ -138,6 +148,12 @@ func (r *Router) Delivery(d *github.Delivery) {
 	if r.Pushers != nil {
 		r.Pushers.FromDelivery(d)
 	}
+	if d.Event == "push" && r.FollowGitHub {
+		if b := pushedBranch(d); b != "" {
+			r.Queue.Add(Key{Pushed: b})
+		}
+		return
+	}
 	if d.PR == 0 {
 		r.Logger.Debug("webhook without a PR", "event", d.Event, "action", d.Action)
 		return
@@ -148,6 +164,22 @@ func (r *Router) Delivery(d *github.Delivery) {
 	default:
 		r.Queue.Add(Key{PR: d.PR})
 	}
+}
+
+// pushedBranch is the branch a push delivery moved, unless it is one of
+// the bridge's own.
+func pushedBranch(d *github.Delivery) string {
+	var p struct {
+		Ref string `json:"ref"`
+	}
+	if json.Unmarshal(d.Payload, &p) != nil || !strings.HasPrefix(p.Ref, "refs/heads/") {
+		return ""
+	}
+	b := strings.TrimPrefix(p.Ref, "refs/heads/")
+	if bridgeBranch(b) {
+		return ""
+	}
+	return b
 }
 
 // RunResync performs requested resyncs until ctx is done: it lists every

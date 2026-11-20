@@ -67,6 +67,13 @@ func (d *Dispatcher) Reconcile(ctx context.Context, k Key) error {
 		return d.Code.Reconcile(ctx, k)
 	case k.Comments != 0:
 		return d.syncComments(ctx, k.Comments)
+	case k.Pushed != "":
+		// GitHub's branch moved: Gerrit's follows, if Gerrit has it (a
+		// PR's own branch it has not).
+		if ok, err := d.Code.Gerrit.BranchExists(ctx, d.Code.Project, k.Pushed); err != nil || !ok {
+			return err
+		}
+		return d.branch(ctx, k.Pushed)
 	case k.Merged != 0:
 		// Just the PR heads and bases (Code.PrepareSubmit), ahead of
 		// everything waiting: replication pushes the merge to GitHub

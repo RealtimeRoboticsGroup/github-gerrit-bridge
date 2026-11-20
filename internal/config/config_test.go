@@ -242,3 +242,46 @@ func TestUserApp(t *testing.T) {
 		t.Errorf("loopback: %v", err)
 	}
 }
+
+const userApp = `
+  user_app:
+    client_id: Iv1.abc
+    client_secret_file: /etc/bridge/app-secret
+    public_url: https://bridge.example.com
+    tokens_file: /var/lib/bridge/tokens
+    key_file: /etc/bridge/tokens-key
+`
+
+func TestBranchOwner(t *testing.T) {
+	c, err := Parse([]byte(full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.BranchOwner != OwnerGerrit || c.GitHubOwned() {
+		t.Errorf("default owner = %q, GitHubOwned %v; want gerrit", c.BranchOwner, c.GitHubOwned())
+	}
+	c, err = Parse([]byte(full + userApp + "branch_owner: github\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.GitHubOwned() {
+		t.Error("branch_owner github is not GitHubOwned")
+	}
+	// Same origin as Gerrit: browsers send their Gerrit session along.
+	if _, err := Parse([]byte(full + userApp + "branch_owner: github\nci:\n  checks_url: https://gerrit.example.com/bridge\n")); err != nil {
+		t.Errorf("checks_url under Gerrit's origin: %v", err)
+	}
+	for name, cfg := range map[string]string{
+		"unknown owner":                full + "branch_owner: gitlab\n",
+		"no user app":                  full + "branch_owner: github\n",
+		"buildkite with github":        full + userApp + "branch_owner: github\nci:\n  buildkite:\n    organization: o\n    pipeline: p\n    token_file: /t\n",
+		"checks_url on another origin": full + userApp + "branch_owner: github\nci:\n  checks_url: https://bridge.example.com\n",
+		"checks_url on another port":   full + userApp + "branch_owner: github\nci:\n  checks_url: https://gerrit.example.com:8443/bridge\n",
+		"checks_url on another scheme": full + userApp + "branch_owner: github\nci:\n  checks_url: http://gerrit.example.com/bridge\n",
+		"checks_url without buildkite": full + "ci:\n  checks_url: https://gerrit.example.com/bridge\n",
+	} {
+		if _, err := Parse([]byte(cfg)); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+}

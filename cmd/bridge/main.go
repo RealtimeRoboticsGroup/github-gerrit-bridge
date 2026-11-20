@@ -203,6 +203,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	q.Urgent = reconcile.Urgent
 	router := reconcile.NewRouter(cfg.Gerrit.Project, q, logger)
 	router.Pushers = &reconcile.Pushers{}
+	router.FollowGitHub = cfg.GitHubOwned()
 	stream := &events.Stream{
 		Source:   events.SSHSource(sshCfg, events.Types),
 		Handler:  router,
@@ -314,7 +315,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	}
 
 	logger.Info("gerrit-github-bridge starting",
-		"dry_run", dryRun, "gerrit", cfg.Gerrit.URL, "project", cfg.Gerrit.Project,
+		"dry_run", dryRun, "branch_owner", cfg.BranchOwner, "gerrit", cfg.Gerrit.URL, "project", cfg.Gerrit.Project,
 		"github", repo, "listen", cfg.Listen, "status_listen", cfg.StatusListen)
 
 	var wg sync.WaitGroup
@@ -347,6 +348,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		CommitterEmail: cfg.GitHub.CommitterEmail,
 		Store:          store,
 		DefaultBranch:  ghRepo.DefaultBranch,
+		GitHubOwned:    cfg.GitHubOwned(),
 		DryRun:         dryRun,
 		Logger:         logger,
 	}

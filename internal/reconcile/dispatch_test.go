@@ -47,3 +47,22 @@ func TestPRKeysQueueTheirBranch(t *testing.T) {
 		t.Errorf("queued %v, calls %v; want the branch queued for each, nothing reconciled", queued, s.calls)
 	}
 }
+
+// A push on GitHub reconciles its branch only if Gerrit has it: a PR's
+// own branch is nothing to follow.
+func TestPushedKeysQueueOnlyGerritsBranches(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	s.push("gerrit.git", s.commit("", "a.txt", "a\n", "base"), "refs/heads/main")
+	var queued []Key
+	d := &Dispatcher{Code: c, Store: store, Enqueue: func(k Key) { queued = append(queued, k) }}
+	for _, k := range []Key{{Pushed: "main"}, {Pushed: "feature"}} {
+		if err := d.Reconcile(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !slices.Equal(queued, []Key{{Branch: "main"}}) {
+		t.Errorf("queued %v, want only main's branch", queued)
+	}
+}

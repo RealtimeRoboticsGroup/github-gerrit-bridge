@@ -70,6 +70,9 @@ type Code struct {
 	// PRBudget, if set, bounds the new PRs each change owner's changes
 	// get (Snapshot.Deferred).
 	PRBudget *Budget
+	// GitHubOwned says GitHub owns the target branches (design §3.1):
+	// PRs merge there, and Gerrit's branches follow GitHub's.
+	GitHubOwned bool
 
 	// configCache remembers changesConfig answers by branch tip and
 	// commit.
@@ -201,6 +204,11 @@ func (c *Code) reconcile(ctx context.Context, branch string) error {
 	wait := trace.Region(ctx, "wait for branch "+branch+", alone")
 	defer c.lock(branch)()
 	wait()
+	// Where GitHub owns the branch, Gerrit's is GitHub's first: what
+	// merged there merges here, before anything is planned from it.
+	if err := c.follow(ctx, branch); err != nil {
+		return err
+	}
 	// An import that failed (or wants a retry) does not hold back the
 	// export of everything else; its error comes back at the end, so the
 	// branch is tried again.
@@ -688,8 +696,9 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]strin
 		Branch: branch, DefaultBranch: c.DefaultBranch,
 		Changes: map[int]*GerritChange{}, OnBranch: map[string]bool{},
 		GitHubBranches: map[string]string{}, PRs: map[int]*github.PullRequest{},
-		State: map[int]*state.Change{},
-		Repo:  c.GitHub.Owner + "/" + c.GitHub.Repo,
+		State:       map[int]*state.Change{},
+		Repo:        c.GitHub.Owner + "/" + c.GitHub.Repo,
+		GitHubOwned: c.GitHubOwned,
 	}
 	infos, err := c.Gerrit.QueryChanges(ctx,
 		"project:"+gerrit.QueryString(c.Project)+" branch:"+gerrit.QueryString(branch)+" status:open",
@@ -2179,6 +2188,10 @@ func (c *Code) maySwap(ctx context.Context, ch *gerrit.ChangeInfo, rev gerrit.Re
 // fails, the next reconcile restores the stack, and the next patch set
 // goes on top of Gerrit's commit. The caller holds the branch lock.
 func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
+	if c.GitHubOwned {
+		// Nothing replicates Gerrit's merges to GitHub: GitHub merged it.
+		return nil
+	}
 	together, err := c.Gerrit.SubmittedTogether(ctx, n)
 	if err != nil {
 		return err

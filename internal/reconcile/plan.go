@@ -55,6 +55,10 @@ type Snapshot struct {
 	// OnGitHubBranch is true for merged revisions already on GitHub's copy
 	// of the target branch (replication has pushed them).
 	OnGitHubBranch map[string]bool
+	// GitHubOwned says GitHub owns the target branch (design §3.1): a
+	// change merges in Gerrit only when GitHub's branch brings in a commit
+	// with its Change-Id, and nothing makes its PR show merged.
+	GitHubOwned bool
 	// SameTree maps a change to its GitHub head when that head has the
 	// current patch set's tree and stands on the same parent: rule 1 says
 	// they are the same revision (e.g. a commit-message edit in Gerrit), so
@@ -572,7 +576,7 @@ func MakePlan(s *Snapshot) *Plan {
 		// overwrite that, as PrepareSubmit doesn't (ninth audit).
 		_, knownHead := s.githubFor(n)[pr.Head.SHA]
 		swap := c.Status == "MERGED" && pr.Head.SHA != c.Revision && !s.NoPush[n] && knownHead
-		if c.Status == "MERGED" && (pr.Head.SHA == c.Revision || swap) && !s.OnGitHubBranch[c.Revision] {
+		if !s.GitHubOwned && c.Status == "MERGED" && (pr.Head.SHA == c.Revision || swap) && !s.OnGitHubBranch[c.Revision] {
 			// The PR's head is (now) exactly the merged commit, and
 			// replication has not brought it to GitHub yet. GitHub marks a
 			// PR merged when its commits land on its *base* branch, so
@@ -596,6 +600,10 @@ func MakePlan(s *Snapshot) *Plan {
 		}
 		var msg string
 		switch {
+		case c.Status == "MERGED" && s.GitHubOwned:
+			// Not this PR's merge (that closed it already): a commit with
+			// its Change-Id came to GitHub's branch some other way.
+			msg = fmt.Sprintf("[Change %d](%s) merged: GitHub's %s has a commit with its Change-Id. Closing this PR.", n, c.URL, s.Branch)
 		case c.Status == "MERGED" && !knownHead && pr.Head.SHA != c.Revision:
 			msg = fmt.Sprintf("Merged in Gerrit as [change %d](%s), without this PR's last push (%s), which came after: "+
 				"it is left on the branch, and a new PR can bring it in.", n, c.URL, short(pr.Head.SHA))

@@ -36,10 +36,16 @@ type Config struct {
 	// (or webhooks that cannot reach the bridge, or were refused while it
 	// was busy) heal. Default 30m; zero disables.
 	ResyncInterval time.Duration `yaml:"resync_interval"`
-	Gerrit         Gerrit        `yaml:"gerrit"`
-	GitHub         GitHub        `yaml:"github"`
-	Identity       Identity      `yaml:"identity"`
-	CI             CI            `yaml:"ci"`
+	// BranchOwner is the side whose target branches (main, releases) are
+	// the truth, and where changes are merged: "gerrit" (the default:
+	// Gerrit submits, and its branches are replicated to GitHub) or
+	// "github" (PRs are merged on GitHub, and the bridge copies GitHub's
+	// branches into Gerrit, which marks the changes merged; design §3.1).
+	BranchOwner string   `yaml:"branch_owner"`
+	Gerrit      Gerrit   `yaml:"gerrit"`
+	GitHub      GitHub   `yaml:"github"`
+	Identity    Identity `yaml:"identity"`
+	CI          CI       `yaml:"ci"`
 }
 
 // Gerrit is the Gerrit side of the repo pair.
@@ -143,6 +149,15 @@ type Identity struct {
 	NeverGroups []string `yaml:"never_groups"`
 }
 
+// GitHubOwned reports whether GitHub owns the target branches.
+func (c *Config) GitHubOwned() bool { return c.BranchOwner == OwnerGitHub }
+
+// The sides BranchOwner names.
+const (
+	OwnerGerrit = "gerrit"
+	OwnerGitHub = "github"
+)
+
 // MatchesUsernames reports whether MatchUsernames is on (the default).
 func (i Identity) MatchesUsernames() bool { return i.MatchUsernames == nil || *i.MatchUsernames }
 
@@ -166,8 +181,12 @@ type CI struct {
 	// gerrit/Verified status on GitHub and for Gerrit's Checks tab.
 	Buildkite *Buildkite `yaml:"buildkite"`
 	// ChecksURL is the bridge's URL as Gerrit users' browsers reach it.
-	// With Buildkite, the bridge serves /checks for the bridge-checks
-	// Gerrit plugin (bridge --checks_plugin writes the plugin).
+	// The bridge serves /checks there for the bridge-checks Gerrit
+	// plugin (bridge --checks_plugin writes the plugin): Buildkite's
+	// builds, or, where GitHub owns the branches, GitHub's checks, which
+	// it shows only to those signed in to Gerrit who may see the change.
+	// For that, it must be on Gerrit's own origin (a path under
+	// gerrit.url's host), so browsers send their Gerrit session along.
 	ChecksURL string `yaml:"checks_url"`
 }
 
@@ -199,6 +218,7 @@ func Load(path string) (*Config, error) {
 func Parse(b []byte) (*Config, error) {
 	c := &Config{
 		Listen:         "127.0.0.1:8080",
+		BranchOwner:    OwnerGerrit,
 		Workers:        4,
 		ResyncInterval: 30 * time.Minute,
 		Gerrit: Gerrit{SSH: SSH{
@@ -286,8 +306,25 @@ func (c *Config) validate() error {
 			}
 		}
 	}
-	if c.CI.ChecksURL != "" && c.CI.Buildkite == nil {
-		errs = append(errs, errors.New("ci.checks_url needs ci.buildkite"))
+	switch c.BranchOwner {
+	case OwnerGerrit:
+		if c.CI.ChecksURL != "" && c.CI.Buildkite == nil {
+			errs = append(errs, errors.New("ci.checks_url needs ci.buildkite"))
+		}
+	case OwnerGitHub:
+		// Gerrit-born changes reach GitHub only from people whose linked
+		// GitHub accounts may push there themselves (design §3.1).
+		if c.GitHub.UserApp == nil {
+			errs = append(errs, errors.New("branch_owner github needs github.user_app: Gerrit-born changes are mirrored only for linked GitHub accounts"))
+		}
+		if c.CI.Buildkite != nil {
+			errs = append(errs, errors.New("ci.buildkite is for Gerrit-owned branches: with branch_owner github, CI is GitHub's"))
+		}
+		if c.CI.ChecksURL != "" && c.Gerrit.URL != "" && !sameOrigin(c.CI.ChecksURL, c.Gerrit.URL) {
+			errs = append(errs, fmt.Errorf("ci.checks_url %q must be on gerrit.url's origin (a path under it), so browsers send their Gerrit session: with branch_owner github, checks are shown only to who may see the change", c.CI.ChecksURL))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("branch_owner %q: must be %q or %q", c.BranchOwner, OwnerGerrit, OwnerGitHub))
 	}
 	for _, n := range c.GitHub.WebhookAllowedNetworks {
 		if _, _, err := net.ParseCIDR(n); err != nil {
@@ -331,6 +368,14 @@ func secureURL(raw string) error {
 		return errors.New("must not have credentials, a query or a fragment")
 	}
 	return nil
+}
+
+// sameOrigin reports whether URLs a and b have the same scheme and host
+// (with port).
+func sameOrigin(a, b string) bool {
+	ua, err1 := url.Parse(a)
+	ub, err2 := url.Parse(b)
+	return err1 == nil && err2 == nil && ua.Host != "" && strings.EqualFold(ua.Scheme, ub.Scheme) && strings.EqualFold(ua.Host, ub.Host)
 }
 
 // loopback reports whether host is a loopback address. Literals only: a
