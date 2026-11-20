@@ -268,3 +268,23 @@ func TestViewerRequestsAreBounded(t *testing.T) {
 		t.Errorf("refused %d, reads %d", refused, reads)
 	}
 }
+
+// Links come from whoever creates a check run or status: only web links
+// reach Gerrit's UI, which makes them links on its own origin.
+func TestGitHubLinksAreWebLinks(t *testing.T) {
+	bad := []string{"javascript:alert(document.cookie)", " JavaScript:alert(1)", "data:text/html,x", "//evil.example/x", "vbscript:x"}
+	for _, u := range bad {
+		pr := &github.PullRequest{State: "open", MergeableState: "clean", HTMLURL: u}
+		pr.Head.SHA = "c"
+		runs := GitHubRuns([]github.CheckRun{{ID: 1, Name: "a", Status: "completed", Conclusion: "failure", HTMLURL: u, DetailsURL: u}},
+			[]github.Status{{Context: "s", State: "failure", TargetURL: u}}, pr, "c", 1, 1)
+		b, _ := json.Marshal(runs)
+		if strings.Contains(strings.ToLower(string(b)), strings.ToLower(strings.TrimSpace(u))) {
+			t.Errorf("%q reached the runs: %s", u, b)
+		}
+	}
+	runs := GitHubRuns([]github.CheckRun{{ID: 1, Name: "a", Status: "in_progress", HTMLURL: "javascript:x", DetailsURL: "https://ci.example.com/1"}}, nil, nil, "c", 1, 1)
+	if runs[0].CheckLink != "https://ci.example.com/1" {
+		t.Errorf("fallback to the details link: %q", runs[0].CheckLink)
+	}
+}

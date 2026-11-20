@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -45,9 +46,9 @@ func GitHubRuns(checks []github.CheckRun, statuses []github.Status, pr *github.P
 	attempt := map[string]int{}
 	for _, c := range checks {
 		attempt[c.Name]++
-		link := c.HTMLURL
+		link := webURL(c.HTMLURL)
 		if link == "" {
-			link = c.DetailsURL
+			link = webURL(c.DetailsURL)
 		}
 		r := Run{Change: change, Patchset: ps, Attempt: attempt[c.Name], ExternalID: "github-check-" + itoa(c.ID),
 			CheckName: c.Name, CheckDescription: c.App.Name, CheckLink: link, StatusLink: link,
@@ -93,8 +94,9 @@ func GitHubRuns(checks []github.CheckRun, statuses []github.Status, pr *github.P
 		if strings.HasPrefix(s.Context, "gerrit/") {
 			continue
 		}
+		target := webURL(s.TargetURL)
 		r := Run{Change: change, Patchset: ps, Attempt: 1, ExternalID: "github-status-" + s.Context, CheckName: s.Context,
-			CheckLink: s.TargetURL, StatusLink: s.TargetURL, StatusDescription: oneLine(s.Description)}
+			CheckLink: target, StatusLink: target, StatusDescription: oneLine(s.Description)}
 		res := Result{ExternalID: r.ExternalID, Summary: oneLine(s.Description)}
 		switch s.State {
 		case "success":
@@ -108,8 +110,8 @@ func GitHubRuns(checks []github.CheckRun, statuses []github.Status, pr *github.P
 			res.Summary = s.State
 		}
 		if r.Status == "COMPLETED" {
-			if s.TargetURL != "" {
-				res.Links = []Link{{URL: s.TargetURL, Primary: true, Icon: "external", Tooltip: "Open"}}
+			if target != "" {
+				res.Links = []Link{{URL: target, Primary: true, Icon: "external", Tooltip: "Open"}}
 			}
 			r.Results = []Result{res}
 		}
@@ -123,9 +125,10 @@ func GitHubRuns(checks []github.CheckRun, statuses []github.Status, pr *github.P
 
 // mergeRun says whether GitHub would merge pr now, as its merge box does.
 func mergeRun(pr *github.PullRequest, change, ps int) Run {
+	link := webURL(pr.HTMLURL)
 	r := Run{Change: change, Patchset: ps, Attempt: 1, ExternalID: "github-merge", CheckName: "GitHub merge",
 		CheckDescription: "Whether GitHub would merge this PR now (its branch protection: reviews, required checks)",
-		CheckLink:        pr.HTMLURL, StatusLink: pr.HTMLURL, Status: "COMPLETED"}
+		CheckLink:        link, StatusLink: link, Status: "COMPLETED"}
 	res := Result{ExternalID: r.ExternalID, Category: "INFO"}
 	switch {
 	case pr.Merged:
@@ -151,10 +154,24 @@ func mergeRun(pr *github.PullRequest, change, ps int) Run {
 		}
 	}
 	if r.Status == "COMPLETED" {
-		res.Links = []Link{{URL: pr.HTMLURL, Primary: true, Icon: "external", Tooltip: "Open the PR on GitHub"}}
+		if link != "" {
+			res.Links = []Link{{URL: link, Primary: true, Icon: "external", Tooltip: "Open the PR on GitHub"}}
+		}
 		r.Results = []Result{res}
 	}
 	return r
+}
+
+// webURL is u if it is an http or https URL, else "": links are set by
+// whoever creates a check run or status (any workflow), and Gerrit's UI
+// makes them links on its own origin, where a javascript: URL would run
+// as whoever clicks it.
+func webURL(u string) string {
+	p, err := url.Parse(u)
+	if err != nil || (p.Scheme != "https" && p.Scheme != "http") {
+		return ""
+	}
+	return u
 }
 
 // notOnGitHub is the run for a patch set GitHub does not have.
@@ -237,8 +254,8 @@ func (h *Handler) githubEntry(ctx context.Context, change, ps int, sha string) e
 			h.Logger.Warn("checks: reading the PR", "change", change, "pr", prNum, "err", err)
 			return fail(http.StatusBadGateway, "cannot read the PR from GitHub")
 		}
-		if pr.HTMLURL != "" {
-			resp.Links = []Link{{URL: pr.HTMLURL, Tooltip: "The PR on GitHub", Icon: "external"}}
+		if link := webURL(pr.HTMLURL); link != "" {
+			resp.Links = []Link{{URL: link, Tooltip: "The PR on GitHub", Icon: "external"}}
 		}
 	}
 	resp.Runs = GitHubRuns(checks, statuses, pr, commit, change, ps)
