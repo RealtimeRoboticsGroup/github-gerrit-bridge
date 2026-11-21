@@ -177,3 +177,33 @@ func TestImportWaitsForWhoPushed(t *testing.T) {
 		t.Errorf("known: uploads %v, want one as austin", up.uploads)
 	}
 }
+
+// A /submit waiting for who asked spends none of its author's replies:
+// twenty tries (ten minutes at identityRetry) left none, and it was
+// recorded handled, silently, and never run (sixteenth review).
+func TestSubmitWaitingSpendsNoReplies(t *testing.T) {
+	c, h, sub := newCommands(t)
+	c.Replies = &Budget{N: 20, Per: time.Hour}
+	down := true
+	c.Identity = downIdentity{c.Identity, &down}
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 7}})
+	ctx := context.Background()
+	for range 21 {
+		if err := c.Run(ctx, 5); !isIdentityUnknown(err) {
+			t.Fatalf("unknown: err %v", err)
+		}
+	}
+	if st, _ := c.Store.Load(ctx, 5); len(st.State.HandledCommands) != 0 {
+		t.Errorf("unknown 21 times: handled %v", st.State.HandledCommands)
+	}
+	if left := c.Replies.Left(ctx, 7); left != 20 {
+		t.Errorf("replies left %d, want 20", left)
+	}
+	down = false
+	if err := c.Run(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	if len(sub.calls) != 1 {
+		t.Errorf("known: submits %v, want one", sub.calls)
+	}
+}

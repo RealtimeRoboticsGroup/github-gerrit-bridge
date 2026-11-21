@@ -69,6 +69,19 @@ func (b *Budget) Take(ctx context.Context, account int) bool {
 	return true
 }
 
+// Refund gives back one write Take spent for account, for a write that
+// was not made after all.
+func (b *Budget) Refund(ctx context.Context, account int) {
+	if b.exempt(ctx, account) {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r := b.recent(account); len(r) > 0 {
+		b.spent[account] = r[:len(r)-1]
+	}
+}
+
 // recent is account's writes within Per. b.mu is held.
 func (b *Budget) recent(account int) []time.Time {
 	if b.spent == nil {

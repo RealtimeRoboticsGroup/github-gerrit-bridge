@@ -237,7 +237,10 @@ func (c *Commands) run(ctx context.Context, n int, alone bool, read *prRead) err
 			if err != nil {
 				// Who asked is unknown for now: not handled, and asked
 				// again (fifteenth review: a lookup that failed answered
-				// "not linked", and the command was spent).
+				// "not linked", and the command was spent), with no
+				// reply spent either (sixteenth review: twenty tries
+				// used up the author's replies, and it was dropped).
+				c.Replies.Refund(ctx, int(ic.User.ID))
 				return err
 			}
 		}
