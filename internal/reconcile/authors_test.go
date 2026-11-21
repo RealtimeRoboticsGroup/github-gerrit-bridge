@@ -398,6 +398,83 @@ func TestLinkedResolution(t *testing.T) {
 	}
 }
 
+// Where GitHub owns the branches, resolving a conversation can be a
+// merge gate, and nobody gets more through Gerrit than they have on
+// GitHub (eighteenth review): a Gerrit resolution is made on GitHub only
+// with the resolver's own token, never by the bridge for someone GitHub
+// refuses or who has no link. Gerrit's thread is reopened, saying why.
+// Unresolving is still the bridge's to do for them: it only holds back.
+func TestGitHubOwnedResolutionOnlyByTheResolver(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		refuse  error
+		linked  bool
+		resolve bool
+		why     string
+		behalf  bool
+	}{
+		{"allowed", nil, true, true, "", false},
+		{"refused", &github.GraphQLError{Messages: []string{"Resource not accessible by integration"}}, true, false, "GitHub does not let alice-gh resolve it", false},
+		{"token refused", &github.APIError{Status: 403}, true, false, "GitHub refused alice-gh's linked token", false},
+		{"unlinked", nil, false, false, "Alice Trusted has no linked GitHub account", false},
+		{"on her behalf", nil, true, false, "it was resolved on Alice Trusted's behalf", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, a := linkedEnv(t)
+			e.c.GitHubOwned = true
+			e.h.refuseUserResolve = tc.refuse
+			if !tc.linked {
+				delete(a.linked, 1)
+			}
+			e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: "c1", Path: "a.txt", PatchSet: 2, Line: 2, Message: "Please fix.", Updated: e.g.tick(),
+				Unresolved: true, Author: gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}})
+			e.sync(t)
+			root := e.h.rcs[0].ID
+			e.g.user("c2", "a.txt", 2, 2, "Done", "c1", false)
+			if tc.behalf {
+				c2 := &e.g.comments[len(e.g.comments)-1]
+				c2.ChangeMessageID = "mb"
+				e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "mb", Author: c2.Author, Date: c2.Updated, RevisionNumber: 2,
+					RealAuthor: &gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}, Message: "Patch Set 2:\n\n(1 comment)"})
+			}
+			e.sync(t)
+			if e.h.resolved[root] != tc.resolve {
+				t.Errorf("resolved %v by %+v, want %v", e.h.resolved[root], e.h.resolvedBy[root], tc.resolve)
+			}
+			if tc.resolve {
+				if e.h.resolvedBy[root] != aliceGH {
+					t.Errorf("resolved by %+v", e.h.resolvedBy[root])
+				}
+			} else {
+				last := e.g.comments[len(e.g.comments)-1]
+				if last.InReplyTo != "c2" || !last.Unresolved || last.Author.AccountID != bridgeID || !strings.Contains(last.Message, "Not resolved on GitHub: "+tc.why+".") {
+					t.Errorf("Gerrit's thread ends with %+v", last)
+				}
+			}
+			e.settled(t)
+			if e.h.resolved[root] != tc.resolve {
+				t.Errorf("settled: resolved %v", e.h.resolved[root])
+			}
+		})
+	}
+	t.Run("unresolving", func(t *testing.T) {
+		e, a := linkedEnv(t)
+		e.c.GitHubOwned = true
+		delete(a.linked, 1)
+		e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: "c1", Path: "a.txt", PatchSet: 2, Line: 2, Message: "Looks fine.", Updated: e.g.tick(),
+			Unresolved: false, Author: gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}})
+		e.sync(t)
+		root := e.h.rcs[0].ID
+		e.h.resolved[root] = true
+		e.sync(t)
+		e.g.user("c2", "a.txt", 2, 2, "Wait, no.", "c1", true)
+		e.sync(t)
+		if e.h.resolved[root] {
+			t.Errorf("alice's unresolving in Gerrit left GitHub's thread resolved")
+		}
+	})
+}
+
 // A Gerrit thread whose last comment is the bridge's copy of alice's
 // GitHub reply, posted as her, is not resolved on GitHub with her token:
 // she resolved nothing in Gerrit (tenth audit).

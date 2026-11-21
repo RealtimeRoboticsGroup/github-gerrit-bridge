@@ -2475,7 +2475,18 @@ func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnap
 			t.Resolved = gr
 		case gr != t.Resolved:
 			// Gerrit changed (or both did: Gerrit wins).
-			as, err := c.resolveAs(ctx, n, s, lastInThread(s, root), t.GitHubThread, gr)
+			last := lastInThread(s, root)
+			as, err := c.resolveAs(ctx, n, s, last, t.GitHubThread, gr)
+			var nr *notResolvable
+			if errors.As(err, &nr) {
+				// GitHub keeps it open: so does Gerrit, saying why.
+				if err := c.keptOpen(ctx, n, last, nr.why); err != nil {
+					return changed, err
+				}
+				c.Logger.Info("not resolving a GitHub thread for someone GitHub would not let", "change", n, "pr", pr, "thread", root, "why", nr.why)
+				t.Resolved, changed = false, true
+				continue
+			}
 			if err != nil {
 				return changed, err
 			}
@@ -2526,6 +2537,19 @@ func (c *Comments) resolveAs(ctx context.Context, n int, s *commentSnapshot, las
 	if err != nil {
 		return "", err
 	}
+	// Where GitHub owns the branches, resolving a conversation can be a
+	// merge gate, and nobody gets more through Gerrit than they have on
+	// GitHub (design §3.1): a thread is resolved there only by its
+	// resolver, never by the bridge for them (eighteenth review).
+	// Unresolving one only holds the PR back, so the bridge may.
+	gate := c.GitHubOwned && resolved
+	who := p.as.Login
+	if p.api == nil {
+		who = last.Author.Name
+		if who == "" {
+			who = last.Author.Username
+		}
+	}
 	if p.api != nil {
 		err := p.api.SetThreadResolved(ctx, thread, resolved)
 		var ae *github.APIError
@@ -2535,14 +2559,51 @@ func (c *Comments) resolveAs(ctx context.Context, n int, s *commentSnapshot, las
 			return p.as.Login, nil
 		case errors.As(err, &ae) && (ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden || ae.Status == http.StatusNotFound):
 			c.Logger.Warn("GitHub refused a linked user's token; posting as the bridge", "change", n, "github_login", p.as.Login, "err", err)
+			if gate {
+				return "", &notResolvable{"GitHub refused " + who + "'s linked token"}
+			}
 			p.api = nil
 		case errors.As(err, &ge):
+			if gate {
+				return "", &notResolvable{"GitHub does not let " + who + " resolve it"}
+			}
 			c.Logger.Info("GitHub would not let a linked user resolve a thread; the bridge does", "change", n, "github_login", p.as.Login, "err", err)
 		default:
 			return "", err
 		}
+	} else if gate {
+		why := who + " has no linked GitHub account"
+		if s.poster(last) == 0 {
+			why = "it was resolved on " + who + "'s behalf"
+		}
+		return "", &notResolvable{why}
 	}
 	return "", c.GitHub.SetThreadResolved(ctx, thread, resolved)
+}
+
+// notResolvable is a Gerrit resolution GitHub keeps open: why says why.
+type notResolvable struct{ why string }
+
+func (e *notResolvable) Error() string { return "not resolvable on GitHub: " + e.why }
+
+// keptOpen replies in Gerrit thread last as the bridge, unresolving it:
+// GitHub keeps it open, and why.
+func (c *Comments) keptOpen(ctx context.Context, n int, last *gerrit.CommentInfo, why string) error {
+	t := true
+	err := c.Gerrit.SetReview(ctx, n, strconv.Itoa(last.PatchSet), gerrit.ReviewInput{
+		Tag: commentTag,
+		Comments: map[string][]gerrit.CommentInput{last.Path: {{
+			InReplyTo: last.ID, Line: last.Line, Range: last.Range, Side: last.Side,
+			Message:    forGerrit("Not resolved on GitHub: " + why + ". Someone GitHub lets resolve threads can resolve it there."),
+			Unresolved: &t,
+		}}},
+	})
+	var ge *gerrit.Error
+	if errors.As(err, &ge) && ge.Status < 500 {
+		c.Logger.Warn("Gerrit refused a notice", "change", n, "err", err)
+		return nil
+	}
+	return err
 }
 
 func lastInThread(s *commentSnapshot, root string) *gerrit.CommentInfo {

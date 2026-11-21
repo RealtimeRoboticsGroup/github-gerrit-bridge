@@ -100,6 +100,11 @@ nobody. Before the bridge reads it:
    A ruleset that targets every branch (`~ALL`) therefore stops every
    import from the repository's own branches: target the branches that
    need it.
+   With "require conversation resolution", a thread resolved in Gerrit
+   is resolved on GitHub only with its resolver's linked token, if GitHub
+   lets them; otherwise the bridge reopens it in Gerrit, saying why, and
+   never resolves it for them. A GitHub approval by whoever owns the
+   change or uploaded the head's code is dismissed and casts no vote.
 2. **The bot's token**: Contents read & write (its branches), Pull
    requests and Issues read & write, Checks read (the Checks tab),
    Administration read (else the merge-settings check at startup only
