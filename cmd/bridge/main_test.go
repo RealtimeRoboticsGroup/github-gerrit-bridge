@@ -507,11 +507,32 @@ func TestLinkStands(t *testing.T) {
 		err  error
 		want bool
 	}{{"mapped", "alice", true, nil, true}, {"mapped, other case", "Alice", true, nil, true},
-		{"re-mapped", "bob", true, nil, false}, {"unmapped", "", false, nil, false}, {"unknown", "alice", true, down, false}} {
+		{"re-mapped", "bob", true, nil, false}, {"unmapped", "", false, nil, false},
+		{"unmapped, a name anyway", "alice", false, nil, false}, {"unknown", "alice", true, down, false}} {
 		check := linkStands(func(context.Context, github.User) (string, bool, error) { return tc.user, tc.ok, tc.err })
 		got, err := check(context.Background(), github.User{Login: "alice-gh", ID: 7}, "alice")
 		if got != tc.want || !errors.Is(err, tc.err) {
 			t.Errorf("%s: %v %v, want %v %v", tc.name, got, err, tc.want, tc.err)
 		}
+	}
+}
+
+// The bridge's tokens re-check every link against the mapping: a GitHub
+// id the directory now gives someone else no longer acts as its old
+// Gerrit user.
+func TestNewTokensChecksLinks(t *testing.T) {
+	linked := &usertokens.Store{Path: filepath.Join(t.TempDir(), "tokens"), Key: make([]byte, 32)}
+	if err := linked.Put(usertokens.Record{GitHub: github.User{Login: "alice-gh", ID: 7}, GerritUser: "alice", GerritAccount: 1,
+		Token: github.UserToken{Access: "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	user := "alice"
+	tokens := newTokens(linked, nil, slog.New(slog.DiscardHandler), func(context.Context, github.User) (string, bool, error) { return user, true, nil })
+	if _, ok, err := tokens.Linked(context.Background(), 1); !ok || err != nil {
+		t.Fatalf("alice's link: %v %v", ok, err)
+	}
+	user = "bob"
+	if _, ok, err := tokens.Linked(context.Background(), 1); ok || err != nil {
+		t.Errorf("alice-gh, now bob's, still alice's link: %v %v", ok, err)
 	}
 }

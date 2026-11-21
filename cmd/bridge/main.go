@@ -440,8 +440,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		}
 		app := &github.UserApp{ClientID: a.ClientID, ClientSecret: secret,
 			HTTP: &http.Client{Timeout: time.Minute, Transport: &httplog.Transport{Name: "github-app", Logger: logger}, CheckRedirect: noRedirects}}
-		tokens := &usertokens.Tokens{Store: linked, App: app, Logger: logger,
-			Check: linkStands(users.Lookup)}
+		tokens := newTokens(linked, app, logger, users.Lookup)
 		comments.Authors = linkedAuthors{tokens: tokens, gh: gh}
 		if cfg.GitHubOwned() {
 			// Only they have Gerrit patch sets pushed to GitHub (design
@@ -580,6 +579,13 @@ func publishable(linked func(context.Context, int) (github.User, bool, error), c
 // still gives its GitHub account the Gerrit user it was made for, not
 // once the directory gives that id to someone else, nor nobody; a lookup
 // that cannot answer is an error (seventeenth review: inline in run(),
+// newTokens is the linked users' tokens, each link checked on every use
+// against the identity mapping's lookup (eighteenth review: the check was
+// wired inline, untested).
+func newTokens(linked *usertokens.Store, app *github.UserApp, logger *slog.Logger, lookup func(context.Context, github.User) (string, bool, error)) *usertokens.Tokens {
+	return &usertokens.Tokens{Store: linked, App: app, Logger: logger, Check: linkStands(lookup)}
+}
+
 // untested).
 func linkStands(lookup func(context.Context, github.User) (string, bool, error)) func(context.Context, github.User, string) (bool, error) {
 	return func(ctx context.Context, gh github.User, user string) (bool, error) {
