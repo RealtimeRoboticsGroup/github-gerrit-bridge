@@ -248,3 +248,18 @@ func TestDirectoryChecksEveryTime(t *testing.T) {
 		t.Errorf("deactivated, still acted as: %q", got)
 	}
 }
+
+// The directory's name, matched exactly first; but for case only if one
+// account matches so: with Alice and alice both active, an entry for
+// alice is alice, and one for ALICE is nobody (fifteenth review: the
+// first Gerrit listed).
+func TestDirectoryNameCase(t *testing.T) {
+	for _, tc := range []struct{ uid, want string }{{"alice", "alice"}, {"Alice", "Alice"}, {"ALICE", ""}} {
+		u, _ := ldapUsers(t, &ldapSearcher{entries: []ldap.Entry{ldapEntry(tc.uid, "aliceGH", "30")}})
+		accts := fakeAccounts{users: []string{"Alice", "alice"}, inactive: map[string]bool{}}
+		u.Gerrit, u.Active = accts, accts
+		if got := gerritUser(u, "aliceGH", 30); got != tc.want {
+			t.Errorf("uid %s = %q, want %q", tc.uid, got, tc.want)
+		}
+	}
+}

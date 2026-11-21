@@ -390,12 +390,28 @@ func (u *Users) checkDirectory(ctx context.Context, login string, a ldap.Account
 	if err != nil {
 		return "", false, err
 	}
-	// By case as the directory's lookups go (Gerrit may lower-case LDAP
-	// usernames): the active account's own name is the one acted as.
-	i := slices.IndexFunc(accts, func(x gerrit.AccountInfo) bool { return strings.EqualFold(x.Username, name) })
+	// The account of exactly that name; else, by case as the directory's
+	// lookups go (Gerrit may lower-case LDAP usernames), the one account
+	// that differs only in case: with two (Alice and alice, where Gerrit
+	// lets both be), none, not whichever Gerrit lists first (fifteenth
+	// review). The account's own name is the one acted as.
+	i := slices.IndexFunc(accts, func(x gerrit.AccountInfo) bool { return x.Username == name })
 	if i < 0 {
-		u.warn("the directory names no active Gerrit account; not acting as it", login, name)
-		return "", false, nil
+		var folded []int
+		for j, x := range accts {
+			if strings.EqualFold(x.Username, name) {
+				folded = append(folded, j)
+			}
+		}
+		if len(folded) > 1 {
+			u.warn("the directory names a Gerrit username that, but for case, is several active accounts'; not acting as any", login, name)
+			return "", false, nil
+		}
+		if len(folded) == 0 {
+			u.warn("the directory names no active Gerrit account; not acting as it", login, name)
+			return "", false, nil
+		}
+		i = folded[0]
 	}
 	if a.GitHubLogin != "" && !strings.EqualFold(a.GitHubLogin, login) && login != "" && u.Logger != nil {
 		// By id, whatever the login: a rename the directory has not
