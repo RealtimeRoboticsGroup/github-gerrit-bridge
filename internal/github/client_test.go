@@ -879,6 +879,11 @@ func TestMergePullStacked(t *testing.T) {
 		{`{"status":"pending","details":{}}`, "", "still merging", ""},             // its uuid kept
 		{"", "", "still merging", `{"status":"pending","details":{}}`},             // nothing to poll for
 	} {
+		// How many times it asks: until done, at most asyncMergeTries.
+		wantPolls := map[string]int{`{"status":"pending","details":{"uuid":"u-1"}}`: asyncMergeTries, `{"status":"pending","details":{}}`: asyncMergeTries, "": 0}[tc.final]
+		if _, ok := map[string]bool{`{"status":"pending","details":{"uuid":"u-1"}}`: true, `{"status":"pending","details":{}}`: true, "": true}[tc.final]; !ok {
+			wantPolls = 3
+		}
 		polls := 0
 		c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 			switch {
@@ -908,6 +913,35 @@ func TestMergePullStacked(t *testing.T) {
 		// /submit's reply quotes.
 		if sha != tc.sha || (tc.err == "") != (err == nil) || (err != nil && (!errors.As(err, &ae) || !strings.Contains(ae.Message, tc.err) || ae.Status >= 500)) {
 			t.Errorf("%s: %q %v", tc.final, sha, err)
+		}
+		if polls != wantPolls {
+			t.Errorf("%s: %d polls, want %d", tc.final, polls, wantPolls)
+		}
+	}
+	// GitHub refusing it (409: another merge of it pending) is its answer,
+	// for the user; the re-read failing merges nothing.
+	for _, tc := range []struct {
+		pull, merge int
+		user        bool
+	}{{http.StatusOK, http.StatusConflict, true}, {http.StatusInternalServerError, 0, false}} {
+		merged := false
+		c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/pulls/7":
+				w.WriteHeader(tc.pull)
+				io.WriteString(w, `{"number":7,"head":{"sha":"abc"},"base":{"ref":"main"},"stack":{"position":1,"size":2}}`)
+			case r.Method == http.MethodPut:
+				merged = true
+				w.WriteHeader(tc.merge)
+				io.WriteString(w, `{"message":"A merge of this pull request is already pending."}`)
+			default:
+				t.Errorf("asked %s %s", r.Method, r.URL)
+			}
+		})
+		_, err := c.MergePull(context.Background(), 7, MergeInput{SHA: "abc", Method: "squash", Stacked: true, Base: "main"})
+		var ae *APIError
+		if err == nil || merged != (tc.merge != 0) || (tc.user && (!errors.As(err, &ae) || ae.Status >= 500 || !strings.Contains(ae.Message, "already pending"))) {
+			t.Errorf("%+v: merged %v, %v", tc, merged, err)
 		}
 	}
 }
