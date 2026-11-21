@@ -548,7 +548,8 @@ func TestGerritWinsNeverRestoresUnpublishedCode(t *testing.T) {
 	// noPub: GitHub-owned, but no Publishable: nobody, never CI's trusted
 	// group (thirteenth review: the importer took it for Gerrit-owned).
 	// unsure: GitHub could not say whether the uploader may push: not
-	// restored (fourteenth review: ok without known passed).
+	// restored (fourteenth review: ok without known passed), nor gone
+	// over: the push waits until it can be told (sixteenth review).
 	for _, tc := range []struct{ publishable, owner, noPub, unsure bool }{{false, false, false, false}, {true, false, false, false},
 		{false, true, false, false}, {true, false, true, false}, {true, false, false, true}} {
 		publishable := tc.publishable
@@ -585,6 +586,18 @@ func TestGerritWinsNeverRestoresUnpublishedCode(t *testing.T) {
 		s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
 		s.pulls[10].Head.SHA = h
 		s.webhookPush(im.Pushers, 10, "austin")
+		if tc.unsure {
+			var se *syncError
+			if err := im.Import(ctx, "main"); !errors.As(err, &se) || !se.retry || len(up.uploads) != 0 {
+				t.Fatalf("unsure: err %v, uploads %v; want it to wait", err, up.uploads)
+			}
+			if sts := s.statuses[h]; len(sts) == 0 || sts[len(sts)-1].State != "pending" {
+				t.Errorf("unsure: gerrit/sync %+v, want pending", sts)
+			}
+			// Told: the stranger may push, so Gerrit wins.
+			im.Publishable = func(_ context.Context, account int) (bool, bool) { return account == 5 || account == 9, true }
+			publishable = true
+		}
 		if err := im.Import(ctx, "main"); err != nil {
 			t.Fatal(err)
 		}

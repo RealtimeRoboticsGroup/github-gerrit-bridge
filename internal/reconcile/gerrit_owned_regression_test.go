@@ -368,3 +368,33 @@ func swapOverAnotherOwnersChange(t *testing.T, together bool) {
 		t.Errorf("PR #10 based on %s, want retargeted to main", b)
 	}
 }
+
+// Where Gerrit owns the branches, a push to a GitHub-born PR while CI's
+// trusted group cannot say about the uploader of Gerrit's newer patch set
+// does not wait, as on main: the patch set is taken for foreign, and the
+// push is uploaded. Sixteenth review: the wait is GitHub-owned only.
+func TestGerritOwnedUnsureTrustDoesNotWait(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	st, _ := im.Store.Load(ctx, 1)
+	st.State.Origin, st.State.HeadBranch = "github", "feature"
+	if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+		t.Fatal(err)
+	}
+	ci := s.changes[1]
+	ci.Owner = s.accounts["austin"]
+	bob := s.commit(g[0], "one.txt", "bob's\n", "One\n\nChange-Id: "+ids[0]+"\n")
+	s.push("gerrit.git", bob, "refs/changes/01/1/2")
+	ci.Revisions[bob] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Ref: "refs/changes/01/1/2", Uploader: gerrit.AccountInfo{AccountID: 9, Username: "bob"},
+		Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, bob))}
+	ci.CurrentRevision = bob
+	im.Trusted = func(_ context.Context, account int) (bool, bool) { return false, account != 9 }
+	s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
+	h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
+	s.push("github.git", h, "refs/heads/feature")
+	s.pulls[10].Head.SHA = h
+	s.webhookPush(im.Pushers, 10, "austin")
+	if err := im.Import(ctx, "main"); err != nil || len(up.uploads) != 1 {
+		t.Errorf("err %v, uploads %v; want the push uploaded, as main", err, up.uploads)
+	}
+}

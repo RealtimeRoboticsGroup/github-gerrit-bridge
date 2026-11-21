@@ -529,3 +529,50 @@ func TestResolutionWaitsForWhoResolvedIt(t *testing.T) {
 		t.Errorf("known: %+v, want resolved as bobg", gc)
 	}
 }
+
+// Where GitHub owns the branches, a push to a GitHub-born PR while
+// whether a maintainer's newer Gerrit patch set may reach GitHub cannot
+// be told (the directory, their token) neither goes on top of it for good
+// nor restores it: it waits, and once told, Gerrit wins (the maintainer's
+// patch set is current, and the author is asked to merge). Sixteenth
+// review.
+func TestPushWaitsForWhetherGerritsPatchSetMayReachGitHub(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	im.GitHubOwned = true
+	st, _ := im.Store.Load(ctx, 1)
+	st.State.Origin, st.State.HeadBranch = "github", "feature"
+	if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+		t.Fatal(err)
+	}
+	ci := s.changes[1]
+	ci.Owner = s.accounts["austin"]
+	first := ci.Revisions[g[0]]
+	first.Kind = "REWORK"
+	ci.Revisions[g[0]] = first
+	bob := s.commit(g[0], "one.txt", "bob's\n", "One\n\nChange-Id: "+ids[0]+"\n")
+	s.push("gerrit.git", bob, "refs/changes/01/1/2")
+	ci.Revisions[bob] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Ref: "refs/changes/01/1/2", Uploader: gerrit.AccountInfo{AccountID: 9, Username: "bob"},
+		Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, bob))}
+	ci.CurrentRevision = bob
+	told := false
+	im.Publishable = func(_ context.Context, account int) (bool, bool) {
+		return account == 5 || account == 9, account != 9 || told
+	}
+	s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
+	h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
+	s.push("github.git", h, "refs/heads/feature")
+	s.pulls[10].Head.SHA = h
+	s.webhookPush(im.Pushers, 10, "austin")
+	var se *syncError
+	if err := im.Import(ctx, "main"); !errors.As(err, &se) || !se.retry || len(up.uploads) != 0 {
+		t.Fatalf("unsure: err %v, uploads %v; want it to wait", err, up.uploads)
+	}
+	if s.changes[1].CurrentRevision != bob {
+		t.Fatalf("unsure: bob's patch set no longer current")
+	}
+	told = true
+	if err := im.Import(ctx, "main"); errors.As(err, &se) && se.retry {
+		t.Errorf("told: still waiting (%v)", err)
+	}
+}

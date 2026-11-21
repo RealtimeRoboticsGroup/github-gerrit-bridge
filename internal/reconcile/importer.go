@@ -1758,9 +1758,26 @@ func (im *Importer) belowReader() belowReader {
 // (thirteenth review).
 func (im *Importer) mayReach(ctx context.Context, cur *gerrit.ChangeInfo, st *state.Change, branch string, ps, owner int,
 	trusted func(context.Context, int) (bool, bool)) (bool, error) {
-	ok, known, _, err := mayReach(ctx, newMemoReader(im.belowReader()), trusted, im.Bridge.AccountID, owner, revisionsByNumber(cur), ps, branch, st)
+	// Whether someone may push cannot be told for now (the directory,
+	// their token, GitHub): where GitHub owns the branches, the push
+	// waits, rather than taking Gerrit's patch set for foreign and going
+	// on top of it for good (sixteenth review). Code below that nobody
+	// can see is foreign still, as everywhere.
+	unsure := false
+	ask := trusted
+	if trusted != nil {
+		ask = func(ctx context.Context, account int) (bool, bool) {
+			t, k := trusted(ctx, account)
+			unsure = unsure || !k
+			return t, k
+		}
+	}
+	ok, known, _, err := mayReach(ctx, newMemoReader(im.belowReader()), ask, im.Bridge.AccountID, owner, revisionsByNumber(cur), ps, branch, st)
 	if err != nil {
 		return false, fmt.Errorf("whose code change %d's patch set %d is, or is below it: %w", cur.Number, ps, err)
+	}
+	if !(ok && known) && unsure && im.GitHubOwned {
+		return false, &syncError{state: "pending", msg: "Waiting for the bridge to know who may push Gerrit's patch set (see its log)", retry: true}
 	}
 	return ok && known, nil
 }
