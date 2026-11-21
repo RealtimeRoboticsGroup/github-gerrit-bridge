@@ -48,7 +48,7 @@ func gerritUser(u *Users, login string, id int64) string {
 // Design §7: the directory maps by the numeric id GitHub says the actor
 // with, whatever the login (renamed); the GitHub user who owns the login
 // "james" is not our james; an actor said without an id is looked up
-// afresh; and whoever the directory does not list is nobody, whatever an
+// never (nobody); and whoever the directory does not list is nobody, whatever an
 // override or a matching username would say: everyone must be in it (the
 // owner's call, 2026-11-21).
 func TestDirectoryMapsByGitHubID(t *testing.T) {
@@ -63,9 +63,9 @@ func TestDirectoryMapsByGitHubID(t *testing.T) {
 		{"jamesonGH", 1234, "james"},
 		{"james", 777, ""},       // GitHub's "james", not ours: username matching may not hand it over
 		{"AustinSchuh", 555, ""}, // the login, now someone else's
-		{"AustinSchuh", 0, "austin"},
-		{"bob", 31, ""},     // not in the directory: a matching username is no fallback
-		{"octocat", 32, ""}, // nor is an override
+		{"AustinSchuh", 0, ""},   // no id said: by login is not by account (fourteenth review)
+		{"bob", 31, ""},          // not in the directory: a matching username is no fallback
+		{"octocat", 32, ""},      // nor is an override
 	} {
 		if got := gerritUser(u, tc.login, tc.id); got != tc.want {
 			t.Errorf("%s (%d) = %q, want %q", tc.login, tc.id, got, tc.want)
@@ -196,5 +196,55 @@ func TestDirectoryKeepsLinksToItsMapping(t *testing.T) {
 	d.Read(context.Background())
 	if linked() {
 		t.Error("the link is still used after the directory gave the account to james")
+	}
+}
+
+// Until the directory is read, or while a read fails, the mapping says it
+// is not ready (fourteenth review: everyone looked unmapped then, and
+// some of what the bridge did was for good); once read, it is.
+func TestUsersReadyFollowsTheDirectory(t *testing.T) {
+	s := &ldapSearcher{err: errors.New("connection refused")}
+	d := &ldap.Directory{Searcher: s, BaseDN: "ou=People", ObjectClass: "githubAccount", Refresh: time.Hour}
+	u := &Users{Directory: d}
+	if u.Ready() == nil {
+		t.Error("ready before any read")
+	}
+	d.Read(context.Background())
+	if u.Ready() == nil {
+		t.Error("ready after a failed read")
+	}
+	s.err = nil
+	d.Read(context.Background())
+	if err := u.Ready(); err != nil {
+		t.Errorf("not ready after a read: %v", err)
+	}
+	if err := (&Users{}).Ready(); err != nil {
+		t.Errorf("no directory: %v", err)
+	}
+}
+
+// The dispatcher runs nothing while the mapping is not ready: each key
+// waits, to be tried again.
+func TestDispatcherWaitsForTheDirectory(t *testing.T) {
+	ready := errors.New("the directory has not been read")
+	d := &Dispatcher{Ready: func() error { return ready }} // no Code: running anything would panic
+	err := d.Reconcile(context.Background(), Key{Branch: "main"})
+	var later *errLater
+	if !errors.As(err, &later) || later.after != identityRetry {
+		t.Errorf("err %v", err)
+	}
+}
+
+// What the directory names is checked every time, not reused: an account
+// deactivated just now is not acted as (fourteenth review: it was, for
+// two minutes); and its name is Gerrit's, whatever the directory's case.
+func TestDirectoryChecksEveryTime(t *testing.T) {
+	u, _ := ldapUsers(t, &ldapSearcher{entries: []ldap.Entry{ldapEntry("Austin", "AustinSchuh", "294043")}})
+	if got := gerritUser(u, "AustinSchuh", 294043); got != "austin" {
+		t.Fatalf("austin = %q (Gerrit's name, any case)", got)
+	}
+	u.Active.(fakeAccounts).inactive["austin"] = true
+	if got := gerritUser(u, "AustinSchuh", 294043); got != "" {
+		t.Errorf("deactivated, still acted as: %q", got)
 	}
 }

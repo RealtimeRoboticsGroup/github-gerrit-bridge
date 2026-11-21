@@ -17,6 +17,9 @@ import (
 // the target branch's lock, so they never interleave on one change's state:
 // the code mirror alone, comment syncs shared with one another (one at a
 // time per change), but a /submit alone.
+// identityRetry is how long a key waits for the identity directory.
+const identityRetry = 30 * time.Second
+
 type Dispatcher struct {
 	Code     *Code
 	Comments *Comments
@@ -29,6 +32,12 @@ type Dispatcher struct {
 	// keys, so many PRs' events cost one branch reconcile, not one each
 	// (fourth audit).
 	Enqueue func(Key)
+	// Ready, if set, says whether work may run now (Users.Ready): while
+	// the identity directory cannot be read, everyone would look
+	// unmapped, and some of what the bridge does then is for good (a
+	// comment posted as the bot, a PR imported as the bridge's; fourteenth
+	// review). Nothing runs then; each key waits and is tried again.
+	Ready func() error
 
 	mu      sync.Mutex
 	changes map[int]*sync.Mutex // comment syncs of one change, one at a time
@@ -62,6 +71,14 @@ func (d *Dispatcher) branch(ctx context.Context, branch string) error {
 
 // Reconcile implements Reconciler.
 func (d *Dispatcher) Reconcile(ctx context.Context, k Key) error {
+	if d.Ready != nil {
+		if err := d.Ready(); err != nil {
+			if d.Logger != nil {
+				d.Logger.Debug("not reconciling while the identity directory cannot be read", "key", k.String(), "err", err)
+			}
+			return waitFor(identityRetry)
+		}
+	}
 	switch {
 	case k.Branch != "":
 		return d.Code.Reconcile(ctx, k)

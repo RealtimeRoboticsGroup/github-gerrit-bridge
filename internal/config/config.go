@@ -254,7 +254,8 @@ func Parse(b []byte) (*Config, error) {
 			KeepaliveInterval: 15 * time.Second,
 			KeepaliveCountMax: 3,
 		}},
-		Identity: Identity{NeverGroups: []string{"Service Users", "Administrators"}},
+		// Identity.NeverGroups' default is set after decoding: set
+		// beside identity.ldap, it is an error.
 		CI: CI{
 			TrustedGroup:   "Verified Users",
 			Labels:         []string{"Verified"},
@@ -267,6 +268,10 @@ func Parse(b []byte) (*Config, error) {
 		return nil, err
 	}
 	c.Gerrit.URL = strings.TrimRight(c.Gerrit.URL, "/")
+	neverGroupsSet := c.Identity.NeverGroups != nil
+	if !neverGroupsSet && c.Identity.LDAP == nil {
+		c.Identity.NeverGroups = []string{"Service Users", "Administrators"}
+	}
 	if l := c.Identity.LDAP; l != nil {
 		l.ObjectClass = cmp.Or(l.ObjectClass, "githubAccount")
 		if l.Refresh == 0 {
@@ -302,6 +307,11 @@ func (c *Config) validate() error {
 		if c.Identity.MatchUsernames != nil && *c.Identity.MatchUsernames {
 			errs = append(errs, errors.New("identity.match_usernames with identity.ldap: the directory is the only mapping"))
 		}
+		if len(c.Identity.NeverGroups) > 0 {
+			// It would do nothing: an entry names its account outright,
+			// administrators included (design §7).
+			errs = append(errs, errors.New("identity.never_groups with identity.ldap: directory entries name their accounts outright, never_groups would not apply; leave someone out of LDAP instead"))
+		}
 		req("identity.ldap.url", l.URL)
 		req("identity.ldap.base_dn", l.BaseDN)
 		if l.URL != "" {
@@ -309,8 +319,9 @@ func (c *Config) validate() error {
 				errs = append(errs, fmt.Errorf("identity.ldap: %w", err))
 			}
 		}
-		if l.Refresh < 10*time.Second {
-			errs = append(errs, fmt.Errorf("identity.ldap.refresh_interval %s: at least 10s", l.Refresh))
+		if l.Refresh < 10*time.Second || l.Refresh > time.Hour {
+			// Someone removed from LDAP is acted as until the next read.
+			errs = append(errs, fmt.Errorf("identity.ldap.refresh_interval %s: from 10s to 1h", l.Refresh))
 		}
 	}
 	req("gerrit.http_user", c.Gerrit.HTTPUser)

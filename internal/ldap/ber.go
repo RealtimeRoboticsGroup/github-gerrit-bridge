@@ -18,6 +18,9 @@ const (
 	tagSequence    = 0x30
 	tagSet         = 0x31
 
+	tagBindRequest     = 0x60 // [APPLICATION 0], constructed
+	tagBindResponse    = 0x61 // [APPLICATION 1]
+	tagSimpleAuth      = 0x80 // [0], primitive: simple authentication
 	tagSearchRequest   = 0x63 // [APPLICATION 3], constructed
 	tagSearchEntry     = 0x64 // [APPLICATION 4]
 	tagSearchDone      = 0x65 // [APPLICATION 5]
@@ -104,7 +107,7 @@ func header(b []byte) (tag byte, n, hlen int, err error) {
 		return tag, l, 2, nil
 	}
 	k := l & 0x7f
-	if k == 0 || k > 3 {
+	if k == 0 || k > 4 { // four bytes, as some servers write even short lengths
 		return 0, 0, 0, fmt.Errorf("ldap: unsupported length form 0x%x", l)
 	}
 	if len(b) < 2+k {

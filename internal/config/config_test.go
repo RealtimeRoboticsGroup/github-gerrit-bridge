@@ -332,9 +332,34 @@ func TestIdentityLDAP(t *testing.T) {
 		"  ldap:\n    url: ldaps://ldap.spacecookies.dev\n",
 		"  ldap:\n    base_dn: dc=x\n",
 		"  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n    refresh_interval: 1s\n",
+		"  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n    refresh_interval: 2h\n",
+		"  never_groups: [Administrators]\n  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n",
 	} {
 		if _, err := Parse([]byte(full + "identity:\n" + bad)); err == nil {
 			t.Errorf("accepted:\n%s", bad)
 		}
+	}
+}
+
+// never_groups' default stands without identity.ldap (AOS's config is
+// unchanged), and an explicit list, empty or not, is kept.
+func TestNeverGroupsDefault(t *testing.T) {
+	for in, want := range map[string]string{
+		"": "Service Users,Administrators",
+		"identity:\n  github_to_gerrit:\n    a: b\n": "Service Users,Administrators",
+		"identity:\n  never_groups: []\n":            "",
+		"identity:\n  never_groups: [Bots]\n":        "Bots",
+	} {
+		c, err := Parse([]byte(full + in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(c.Identity.NeverGroups, ","); got != want {
+			t.Errorf("%q: never_groups %q, want %q", in, got, want)
+		}
+	}
+	c, err := Parse([]byte(full + "identity:\n  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n"))
+	if err != nil || len(c.Identity.NeverGroups) != 0 {
+		t.Errorf("with LDAP: %v %v", c.Identity.NeverGroups, err)
 	}
 }

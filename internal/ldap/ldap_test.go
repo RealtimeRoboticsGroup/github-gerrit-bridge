@@ -27,14 +27,15 @@ import (
 // subtree search with the entries whose objectClass is the filter's,
 // under the base, and with result code code (success if 0).
 type testServer struct {
-	t       *testing.T
-	ln      net.Listener
-	caFile  string
-	mu      sync.Mutex
-	entries []testEntry
-	code    int64
-	refer   bool // send a referral too
-	reqs    [][]byte
+	t        *testing.T
+	ln       net.Listener
+	caFile   string
+	mu       sync.Mutex
+	entries  []testEntry
+	code     int64
+	refer    bool  // send a referral too
+	bindCode int64 // the bind's result code
+	reqs     [][]byte
 }
 
 type testEntry struct {
@@ -101,9 +102,12 @@ func (s *testServer) handle(c net.Conn) {
 			return
 		}
 		switch op.tag {
-		case 0x60: // BindRequest: anonymous is fine
+		case 0x60: // BindRequest
+			s.mu.Lock()
+			bc := s.bindCode
+			s.mu.Unlock()
 			c.Write(encode(tagSequence, concat(encodeInt(tagInteger, id),
-				encode(0x61, concat(encodeInt(tagEnumerated, 0), encodeString(tagOctetString, ""), encodeString(tagOctetString, ""))))))
+				encode(0x61, concat(encodeInt(tagEnumerated, bc), encodeString(tagOctetString, ""), encodeString(tagOctetString, ""))))))
 		case tagSearchRequest:
 			s.search(c, id, op, entries, code)
 		default: // an unbind, or anything else
@@ -193,9 +197,13 @@ func TestSearch(t *testing.T) {
 	}
 	// The request: SEQUENCE { 1, SearchRequest { base, wholeSubtree,
 	// neverDeref, 0, 0, FALSE, (objectClass=githubAccount), attrs } }.
-	want := searchRequest(1, "ou=People,dc=spacecookies,dc=dev", "githubAccount", []string{"uid", "githubLogin", "githubId"})
-	if !bytes.Equal(ts.reqs[0], want) {
-		t.Errorf("request % x", ts.reqs[0])
+	// An anonymous bind first, then the search.
+	if !bytes.Equal(ts.reqs[0], bindRequest(1)) {
+		t.Errorf("bind % x", ts.reqs[0])
+	}
+	want := searchRequest(2, "ou=People,dc=spacecookies,dc=dev", "githubAccount", []string{"uid", "githubLogin", "githubId"})
+	if len(ts.reqs) < 2 || !bytes.Equal(ts.reqs[1], want) {
+		t.Errorf("requests % x", ts.reqs)
 	}
 }
 
@@ -406,5 +414,41 @@ func TestAgainstLDAPSearch(t *testing.T) {
 	myParts, _ := children(myOp.body)
 	if !bytes.Equal(myParts[6].body, parts[6].body) || !bytes.Equal(myParts[0].body, parts[0].body) || !bytes.Equal(myParts[1].body, parts[1].body) {
 		t.Errorf("the bridge's filter or scope differs from ldapsearch's: % x vs % x", myOp.body, op.body)
+	}
+}
+
+// A refused anonymous bind is an error, not an empty directory; a
+// four-byte length (as some servers write) is read.
+func TestBindRefusedAndLongLengths(t *testing.T) {
+	ts := newTestServer(t)
+	ts.set(0, person("austin", "AustinSchuh", "294043"))
+	ts.mu.Lock()
+	ts.bindCode = 48 // inappropriateAuthentication
+	ts.mu.Unlock()
+	if _, err := ts.server(t).Search(context.Background(), "dc=dev", "githubAccount", nil); err == nil || !strings.Contains(err.Error(), "bind refused") {
+		t.Errorf("refused bind: %v", err)
+	}
+	b := []byte{0x30, 0x84, 0, 0, 0, 3, 0x02, 0x01, 0x05}
+	msg, err := readMessage(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, _, err := next(msg); err != nil || e.tag != tagSequence || len(e.body) != 3 {
+		t.Errorf("% x: %+v %v", msg, e, err)
+	}
+}
+
+// A clash counts every entry, valid or not: an invalid second entry for
+// someone's id or uid leaves out the valid one too.
+func TestInvalidEntryStillClashes(t *testing.T) {
+	bad := entry("alice", "bad_login", "100") // invalid login, same id and uid
+	d := &Directory{Searcher: &fakeSearcher{entries: []Entry{entry("alice", "aliceGH", "100"), bad, entry("bob", "bobGH", "200")}},
+		BaseDN: "ou=People", ObjectClass: "githubAccount", Refresh: time.Minute}
+	d.Read(context.Background())
+	if a, found, _ := d.ByGitHubID(100); found {
+		t.Errorf("alice still matched: %+v", a)
+	}
+	if _, found, _ := d.ByGitHubID(200); !found {
+		t.Error("bob, in no clash, not matched")
 	}
 }

@@ -1216,16 +1216,22 @@ trusted as an `identity.github_to_gerrit` override:
   `refresh_interval` (5 minutes), and looks people up in that read: by
   the numeric id GitHub says the actor with, never the login, which a
   rename frees (a renamed user stays theirs; the new holder of the old
-  login is nobody). An actor said without an id is looked up afresh.
+  login is nobody). An actor GitHub gives no id (a mannequin, say) is
+  nobody. The read binds anonymously first, logs how many entries it
+  found, and warns when it finds none (an ACL that keeps anonymous binds
+  from reading succeeds with nothing).
 - It is the only mapping: everyone the bridge acts as must be in it,
   under their Gerrit username (the owner's call, 2026-11-21). Whoever it
   does not list is nobody; nothing falls back to overrides or username
   matching, and the config refuses `github_to_gerrit` or
   `match_usernames: true` beside it.
-- What an entry names is checked as an override's is: an active account,
-  a username Gerrit reads as itself, not the bridge's own; and as for an
-  override, `never_groups` do not apply: the entry names the account
-  outright, so an administrator listed in LDAP is acted as. The bridge's
+- What an entry names is checked as an override's is: an active account
+  (asked every time, never reused: one deactivated just now is not acted
+  as), a username Gerrit reads as itself, not the bridge's own, acted as
+  by Gerrit's own spelling of it; and as for an override,
+  `never_groups` do not apply: the entry names the account outright, so
+  an administrator listed in LDAP is acted as (and the config refuses
+  `never_groups` beside it, where it would do nothing). The bridge's
   own GitHub login maps to nobody, whatever any entry says.
 - Fail closed: an entry that is not valid (a value missing or given twice,
   a login GitHub would not allow, which slapd does not check, an id that
@@ -1233,10 +1239,16 @@ trusted as an `identity.github_to_gerrit` override:
   login or uid in several entries, whatever slapd's unique overlay says)
   is left out with all the others in it; and while the directory cannot
   be read (a failed read, a referral or size limit, which leave the
-  answer partial, or no read for two intervals), the bridge matches
-  nobody at all. Each is logged. Removing someone from LDAP stops them
-  being acted as within one interval (the refresh is the owner's choice;
-  every read replaces the last whole).
+  answer partial, or no read for two intervals), nothing runs: every
+  reconcile waits and is tried again (`Dispatcher.Ready`), since
+  everyone would look unmapped, and some of what the bridge does for an
+  unmapped person is for good (a comment posted as the bot, a PR imported
+  as the bridge's). That includes the time from startup to the first
+  read. Each is logged. Every value of every entry counts toward a
+  clash, valid entry or not, so a half-written second entry for someone
+  leaves the first out too. Removing someone from LDAP stops them being
+  acted as within one interval (at most an hour; every read replaces
+  the last whole).
 - Pins (§7.1) follow the directory, which wins: a Gerrit user is pinned
   to the GitHub account it gives them, replacing an older pin (an
   administrator moved them to a new account), and another Gerrit user's

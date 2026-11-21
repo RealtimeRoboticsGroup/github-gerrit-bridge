@@ -164,6 +164,18 @@ type cachedUser struct {
 // GitHubDirectory gives GitHub accounts to Gerrit users (ldap.Directory).
 type GitHubDirectory interface {
 	ByGitHubID(id int64) (a ldap.Account, found bool, err error)
+	// Ready is nil while it can answer.
+	Ready() error
+}
+
+// Ready is nil while the mapping can answer: always, but with a
+// directory that cannot be read now (not yet since startup, or failing),
+// when nobody can be told from nobody known (Dispatcher.Ready).
+func (u *Users) Ready() error {
+	if u.Directory == nil {
+		return nil
+	}
+	return u.Directory.Ready()
 }
 
 // userCacheTTL bounds how long a lookup (including "no account") is reused:
@@ -296,15 +308,10 @@ func (u *Users) GerritUserFor(ctx context.Context, gh github.User) (string, bool
 	}
 	id := gh.ID
 	if id == 0 {
-		// Not said with an id: who holds the login now, asked afresh.
-		if u.GitHub == nil || gh.Login == "" {
-			return "", false
-		}
-		var err error
-		if id, _, err = u.GitHub.UserID(ctx, gh.Login); err != nil {
-			u.warnErr("looking up a GitHub login's id; matching nobody", gh.Login, err)
-			return "", false
-		}
+		// Not said with an id (GitHub gave none: a mannequin, say): the
+		// directory goes by id, and whoever holds the login now need not
+		// be who acted (fourteenth review).
+		return "", false
 	}
 	a, found, err := u.Directory.ByGitHubID(id)
 	if err != nil {
@@ -321,69 +328,58 @@ func (u *Users) GerritUserFor(ctx context.Context, gh github.User) (string, bool
 // directory gives a.GerritUser: as an override's, that user
 // must be one Gerrit reads as itself, active, and not the bridge's own;
 // its pin is the directory's (pinDirectory). never_groups do not apply: the entry names
-// the account outright, as an override does. Reused for userCacheTTL
-// while the directory still gives that account that user.
+// the account outright, as an override does.
 func (u *Users) byDirectory(ctx context.Context, login string, a ldap.Account) (string, bool) {
-	key := fmt.Sprintf("directory:%d", a.GitHubID)
-	u.mu.Lock()
-	if c, ok := u.cache[key]; ok && c.user == a.GerritUser && time.Since(c.at) < userCacheTTL {
-		u.mu.Unlock()
-		return c.user, c.ok
-	}
-	u.mu.Unlock()
-	ok, err := u.checkDirectory(ctx, login, a)
+	// Asked every time, not reused (fourteenth review: a deactivated
+	// account was acted as for two minutes; no "recent enough" here).
+	user, ok, err := u.checkDirectory(ctx, login, a)
 	if err != nil {
 		u.warnErr("checking the Gerrit account the directory names; matching nobody", login, err)
 		return "", false
 	}
-	c := cachedUser{user: a.GerritUser, ok: ok, at: time.Now(), id: a.GitHubID}
-	u.mu.Lock()
-	if u.cache == nil {
-		u.cache = map[string]cachedUser{}
-	}
-	u.cache[key] = c
-	u.mu.Unlock()
-	if !ok {
-		return "", false
-	}
-	return a.GerritUser, true
+	return user, ok
 }
 
-func (u *Users) checkDirectory(ctx context.Context, login string, a ldap.Account) (bool, error) {
-	user := a.GerritUser
+// checkDirectory is byDirectory's check; user is Gerrit's own name for
+// the account.
+func (u *Users) checkDirectory(ctx context.Context, login string, a ldap.Account) (user string, ok bool, err error) {
+	name := a.GerritUser
 	for _, n := range u.Never {
-		if strings.EqualFold(n, user) {
-			u.warn("the directory names a Gerrit account the bridge never acts as; not acting as it", login, user)
-			return false, nil
+		if strings.EqualFold(n, name) {
+			u.warn("the directory names a Gerrit account the bridge never acts as; not acting as it", login, name)
+			return "", false, nil
 		}
 	}
-	if gerrit.AmbiguousUsername(user) {
-		u.warn("the directory names a Gerrit username Gerrit would read as another account; not acting as it", login, user)
-		return false, nil
+	if gerrit.AmbiguousUsername(name) {
+		u.warn("the directory names a Gerrit username Gerrit would read as another account; not acting as it", login, name)
+		return "", false, nil
 	}
 	if u.Active == nil {
-		return false, errors.New("cannot check Gerrit accounts are active")
+		return "", false, errors.New("cannot check Gerrit accounts are active")
 	}
-	accts, err := u.Active.QueryAccounts(ctx, "username:"+gerrit.QueryString(user)+" is:active")
+	accts, err := u.Active.QueryAccounts(ctx, "username:"+gerrit.QueryString(name)+" is:active")
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
-	if !slices.ContainsFunc(accts, func(x gerrit.AccountInfo) bool { return x.Username == user }) {
-		u.warn("the directory names no active Gerrit account; not acting as it", login, user)
-		return false, nil
+	// By case as the directory's lookups go (Gerrit may lower-case LDAP
+	// usernames): the active account's own name is the one acted as.
+	i := slices.IndexFunc(accts, func(x gerrit.AccountInfo) bool { return strings.EqualFold(x.Username, name) })
+	if i < 0 {
+		u.warn("the directory names no active Gerrit account; not acting as it", login, name)
+		return "", false, nil
 	}
 	if a.GitHubLogin != "" && !strings.EqualFold(a.GitHubLogin, login) && login != "" && u.Logger != nil {
 		// By id, whatever the login: a rename the directory has not
 		// caught up with.
 		u.Logger.Info("GitHub account's login is not the directory's (renamed?); matching it by id", "github_login", login,
-			"directory_login", a.GitHubLogin, "github_id", a.GitHubID, "gerrit_user", user)
+			"directory_login", a.GitHubLogin, "github_id", a.GitHubID, "gerrit_user", name)
 	}
 	if u.Pins != nil {
 		if err := u.pinDirectory(ctx, a); err != nil {
-			return false, err
+			return "", false, err
 		}
 	}
-	return true, nil
+	return accts[i].Username, true, nil
 }
 
 // pinDirectory makes the pins agree with the directory, which an

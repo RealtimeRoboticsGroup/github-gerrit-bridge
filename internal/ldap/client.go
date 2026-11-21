@@ -104,7 +104,15 @@ func (s *Server) Search(ctx context.Context, base, class string, attrs []string)
 	if dl, ok := ctx.Deadline(); ok {
 		conn.SetDeadline(dl)
 	}
-	if _, err := conn.Write(searchRequest(1, base, class, attrs)); err != nil {
+	// An anonymous bind first: LDAPv3 allows searching without one, but
+	// not every server does.
+	if _, err := conn.Write(bindRequest(1)); err != nil {
+		return nil, fmt.Errorf("ldap: binding: %w", err)
+	}
+	if err := readBind(conn); err != nil {
+		return nil, err
+	}
+	if _, err := conn.Write(searchRequest(2, base, class, attrs)); err != nil {
 		return nil, fmt.Errorf("ldap: sending the search: %w", err)
 	}
 	var out []Entry
@@ -120,7 +128,7 @@ func (s *Server) Search(ctx context.Context, base, class string, attrs []string)
 		if op.tag == tagExtendedResp && id == 0 {
 			return nil, errors.New("ldap: the server is closing the connection (notice of disconnection)")
 		}
-		if id != 1 {
+		if id != 2 {
 			return nil, fmt.Errorf("ldap: a reply to message %d, not the search", id)
 		}
 		switch op.tag {
@@ -142,12 +150,42 @@ func (s *Server) Search(ctx context.Context, base, class string, attrs []string)
 			if code != 0 {
 				return nil, &ResultError{Code: code, Message: msg}
 			}
-			conn.Write(encode(tagSequence, concat(encodeInt(tagInteger, 2), []byte{tagUnbindRequest, 0})))
+			conn.Write(encode(tagSequence, concat(encodeInt(tagInteger, 3), []byte{tagUnbindRequest, 0})))
 			return out, nil
 		default:
 			return nil, fmt.Errorf("ldap: unexpected reply 0x%x", op.tag)
 		}
 	}
+}
+
+// bindRequest is LDAPMessage id: an anonymous simple bind (RFC 4511
+// §4.2: version 3, no name, an empty simple password).
+func bindRequest(id int64) []byte {
+	return encode(tagSequence, concat(encodeInt(tagInteger, id),
+		encode(tagBindRequest, concat(encodeInt(tagInteger, 3), encodeString(tagOctetString, ""), encode(tagSimpleAuth, nil)))))
+}
+
+// readBind reads the bind's answer, which must be success.
+func readBind(r io.Reader) error {
+	msg, err := readMessage(r)
+	if err != nil {
+		return err
+	}
+	id, op, err := splitMessage(msg)
+	if err != nil {
+		return err
+	}
+	if id != 1 || op.tag != tagBindResponse {
+		return fmt.Errorf("ldap: unexpected answer to the bind (message %d, 0x%x)", id, op.tag)
+	}
+	code, msgText, err := parseResult(op.body)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return &ResultError{Code: code, Message: "anonymous bind refused: " + msgText}
+	}
+	return nil
 }
 
 // searchRequest is LDAPMessage id: a SearchRequest (RFC 4511 §4.5.1) for
@@ -173,7 +211,7 @@ func searchRequest(id int64, base, class string, attrs []string) []byte {
 
 // readMessage reads one LDAPMessage from r.
 func readMessage(r io.Reader) ([]byte, error) {
-	head := make([]byte, 2, 5)
+	head := make([]byte, 2, 6)
 	if _, err := io.ReadFull(r, head); err != nil {
 		return nil, fmt.Errorf("ldap: reading a reply: %w", err)
 	}
@@ -182,7 +220,7 @@ func readMessage(r io.Reader) ([]byte, error) {
 	}
 	if l := head[1]; l >= 0x80 {
 		k := int(l & 0x7f)
-		if k == 0 || k > 3 {
+		if k == 0 || k > 4 {
 			return nil, fmt.Errorf("ldap: unsupported length form 0x%x", l)
 		}
 		head = head[:2+k]

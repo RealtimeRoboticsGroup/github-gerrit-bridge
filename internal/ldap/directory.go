@@ -97,6 +97,14 @@ func (d *Directory) Read(ctx context.Context) error {
 	}
 	snap := build(entries, d.log())
 	snap.at = d.clock()
+	// Every read says what it found: a search the server's ACLs keep from
+	// anonymous binds succeeds with nothing, and nobody is matched then.
+	if len(entries) == 0 {
+		d.log().Warn("LDAP lists no GitHub accounts: nobody is matched (can an anonymous bind read them? are base_dn and object_class right?)",
+			"base_dn", d.BaseDN, "object_class", d.ObjectClass)
+	} else {
+		d.log().Info("read GitHub accounts from LDAP", "entries", len(entries), "matched", len(snap.byID))
+	}
 	if d.snap != nil {
 		d.logChanges(d.snap, snap)
 	}
@@ -131,6 +139,24 @@ func (d *Directory) logChanges(old, cur *snapshot) {
 
 // build checks entries and indexes the good ones.
 func build(entries []Entry, log *slog.Logger) *snapshot {
+	// Clashes: every entry sharing an id, a login or a user is left out,
+	// counted over every value of every entry, valid or not (fourteenth
+	// review: an admin's half-written second entry for someone, invalid,
+	// left the old one matched).
+	ids, logins, users := map[int64]int{}, map[string]int{}, map[string]int{}
+	for _, e := range entries {
+		for _, v := range e.Attrs[attrID] {
+			if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+				ids[n]++
+			}
+		}
+		for _, v := range e.Attrs[attrLogin] {
+			logins[strings.ToLower(strings.TrimSpace(v))]++
+		}
+		for _, v := range e.Attrs[attrUID] {
+			users[strings.ToLower(strings.TrimSpace(v))]++
+		}
+	}
 	var good []Account
 	for _, e := range entries {
 		a, err := account(e)
@@ -139,13 +165,6 @@ func build(entries []Entry, log *slog.Logger) *snapshot {
 			continue
 		}
 		good = append(good, a)
-	}
-	// Clashes: every entry sharing an id, a login or a user is left out.
-	ids, logins, users := map[int64]int{}, map[string]int{}, map[string]int{}
-	for _, a := range good {
-		ids[a.GitHubID]++
-		logins[strings.ToLower(a.GitHubLogin)]++
-		users[strings.ToLower(a.GerritUser)]++
 	}
 	s := &snapshot{byID: map[int64]Account{}, byUser: map[string]Account{}}
 	for _, a := range good {
@@ -220,6 +239,13 @@ func (d *Directory) current() (*snapshot, error) {
 		return nil, fmt.Errorf("%w: last read at %s", ErrNoDirectory, d.snap.at.Format(time.RFC3339))
 	}
 	return d.snap, nil
+}
+
+// Ready is nil while the directory has a read to answer with; else why
+// not (ErrNoDirectory).
+func (d *Directory) Ready() error {
+	_, err := d.current()
+	return err
 }
 
 // ByGitHubID is the account the directory gives GitHub id id, if any.
