@@ -116,12 +116,12 @@ func TestGerritOwnedSwapOfAnAuthorsOwnForkStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	rev, _ := full.Current()
-	if err := c.maySwap(ctx, full, rev, st); err != nil {
+	if err := c.maySwap(ctx, full, rev, st, nil); err != nil {
 		t.Errorf("swap refused: %v", err)
 	}
 	// Into another fork, the lower PR's code is not its own: refused.
 	st.State.HeadBranch = "mallory/r:feature"
-	if err := c.maySwap(ctx, full, rev, st); err == nil {
+	if err := c.maySwap(ctx, full, rev, st, nil); err == nil {
 		t.Error("swapped another fork's import into a different fork")
 	}
 }
@@ -296,5 +296,75 @@ func TestGerritOwnedAuthorsOwnRunAsImportBelow(t *testing.T) {
 	}
 	if snap.Foreign[2] {
 		t.Error("alice's patch set over her own Run-As import is foreign")
+	}
+}
+
+// Sixteenth review, a regression (main swapped and retargeted it): /submit
+// of a stack, a GitHub-born PR (brt's) on top of a Gerrit-born change of
+// a registered user not in CI's trusted group, submitted together: Gerrit's
+// squash is swapped into the PR's branch and the PR retargeted, so GitHub
+// shows it merged when replication lands both. The change below is about
+// to land too, chosen by whoever submits. One not in the submit is still
+// a stranger's below.
+func TestGerritOwnedSwapOverAnotherOwnersChangeSubmittedTogether(t *testing.T) {
+	for _, together := range []bool{true, false} {
+		t.Run(fmt.Sprint("together=", together), func(t *testing.T) { swapOverAnotherOwnersChange(t, together) })
+	}
+}
+
+func swapOverAnotherOwnersChange(t *testing.T, together bool) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	c.BridgeAccount = 1
+	c.Trusted = func(_ context.Context, a int) (bool, bool) { return false, true }
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.git("m.git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/gerrit/heads/main")
+	// Change 2: carol's Gerrit-born change, mirrored to gerrit/<cid2>.
+	low := s.commit(m0, "low.txt", "c\n", "Low\n\nChange-Id: "+cid(2)+"\n")
+	ci := s.change(2, cid(2), low, "Low\n\nChange-Id: "+cid(2)+"\n", "NEW")
+	ci.Owner = gerrit.AccountInfo{AccountID: 8}
+	r := ci.Revisions[low]
+	r.Uploader = gerrit.AccountInfo{AccountID: 8}
+	ci.Revisions[low] = r
+	s.push("gerrit.git", low, "refs/changes/02/2/1")
+	s.push("github.git", low, "refs/heads/gerrit/"+cid(2))
+	s.pr(9, "gerrit/"+cid(2), low, "main", "carol")
+	s.save(ctx, store, 2, &state.Change{State: state.ChangeState{Change: 2, ChangeID: cid(2), PR: 9, Branch: "main", Origin: "gerrit",
+		HeadBranch: "gerrit/" + cid(2), Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: low, GitHubSHA: low}}})
+	// Change 1: brt's PR on top of it, imported.
+	h := s.commit(low, "f.txt", "2\n", "done")
+	sq := s.commit(low, "f.txt", "2\n", "Feature\n\nChange-Id: "+cid(1)+"\n")
+	ci = s.change(1, cid(1), sq, "Feature\n\nChange-Id: "+cid(1)+"\n", "NEW")
+	ci.Owner = gerrit.AccountInfo{AccountID: 6}
+	r = ci.Revisions[sq]
+	r.Uploader = gerrit.AccountInfo{AccountID: 6}
+	ci.Revisions[sq] = r
+	s.push("gerrit.git", sq, "refs/changes/01/1/1")
+	s.push("github.git", h, "refs/heads/feature")
+	s.pr(10, "feature", h, "gerrit/"+cid(2), "brt")
+	s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "github",
+		HeadBranch: "feature", Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: sq, GitHubSHA: h}}})
+	s.together[1] = []int{2, 1}
+	if !together {
+		// Carol's change is not part of this submit: her code below
+		// is still a stranger's, and is not pushed to brt's branch.
+		s.together[1] = []int{1}
+	}
+	if err := c.PrepareSubmit(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if !together {
+		if got := s.ref("github.git", "refs/heads/feature"); got != h {
+			t.Errorf("feature = %s, want brt's own %s: carol's change is not being submitted", short(got), short(h))
+		}
+		return
+	}
+	if got := s.ref("github.git", "refs/heads/feature"); got != sq {
+		t.Errorf("feature = %s, want Gerrit's squash %s swapped in", short(got), short(sq))
+	}
+	if b := s.pulls[10].Base.Ref; b != "main" {
+		t.Errorf("PR #10 based on %s, want retargeted to main", b)
 	}
 }

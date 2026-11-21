@@ -2860,7 +2860,7 @@ func sortedStringKeys[V any](m map[string]V) []string {
 // a branch Gerrit owns, or, for a GitHub-born change not merged yet, a
 // patch set of someone who may not push to its author's branch
 // (markForeign). A merged one lands on the target branch anyway.
-func (c *Code) maySwap(ctx context.Context, ch *gerrit.ChangeInfo, rev gerrit.RevisionInfo, st *state.Change) error {
+func (c *Code) maySwap(ctx context.Context, ch *gerrit.ChangeInfo, rev gerrit.RevisionInfo, st *state.Change, landing map[string]bool) error {
 	name := st.State.HeadBranch
 	if name == "" || name == ch.Branch || name == c.DefaultBranch {
 		return fmt.Errorf("refusing to push to %q, which Gerrit owns", name)
@@ -2881,7 +2881,8 @@ func (c *Code) maySwap(ctx context.Context, ch *gerrit.ChangeInfo, rev gerrit.Re
 			return err
 		}
 		owner := ownerPass(c.GitHubOwned, ch.Owner.AccountID, st.State.HeadBranch)
-		ok, known, why, err := mayReach(ctx, newMemoReader(c.belowReader()), c.pushTrust(), c.BridgeAccount, owner, revisionsByNumber(full), rev.Number, ch.Branch, st)
+		r := newMemoReader(landingReader{c.belowReader(), landing})
+		ok, known, why, err := mayReach(ctx, r, c.pushTrust(), c.BridgeAccount, owner, revisionsByNumber(full), rev.Number, ch.Branch, st)
 		if err != nil {
 			return err
 		}
@@ -2890,6 +2891,23 @@ func (c *Code) maySwap(ctx context.Context, ch *gerrit.ChangeInfo, rev gerrit.Re
 		}
 	}
 	return nil
+}
+
+// landingReader is r, with the commits a submit is about to merge (the
+// changes submitted together) read as on the branch: whoever may submit
+// has chosen them for it (sixteenth review, a Gerrit-owned regression: a
+// PR on another owner's change submitted with it was neither swapped nor
+// retargeted).
+type landingReader struct {
+	belowReader
+	landing map[string]bool
+}
+
+func (l landingReader) inBranch(ctx context.Context, branch, sha string) (bool, error) {
+	if l.landing[sha] {
+		return true, nil
+	}
+	return l.belowReader.inBranch(ctx, branch, sha)
 }
 
 // PrepareSubmit readies the PRs of the changes a submit of change n will
@@ -2916,6 +2934,12 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 			return err
 		}
 		together = []gerrit.ChangeInfo{*ch}
+	}
+	landing := map[string]bool{}
+	for _, ch := range together {
+		if ch.CurrentRevision != "" {
+			landing[ch.CurrentRevision] = true
+		}
 	}
 	var prs []*github.PullRequest
 	unstack := map[int]bool{}
@@ -2954,7 +2978,7 @@ func (c *Code) PrepareSubmit(ctx context.Context, n int) error {
 			// commits Gerrit squashed (GitHub-born): swap in Gerrit's
 			// commit, which has the same files.
 			url, branch := c.GitHubURL, st.State.HeadBranch
-			if err := c.maySwap(ctx, &ch, rev, st); err != nil {
+			if err := c.maySwap(ctx, &ch, rev, st, landing); err != nil {
 				c.Logger.Warn("not swapping it", "change", ch.Number, "pr", pr.Number, "err", err)
 				continue
 			}
