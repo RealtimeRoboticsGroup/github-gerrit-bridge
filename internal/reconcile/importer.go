@@ -1686,7 +1686,7 @@ func (im *Importer) recordGerritHead(ctx context.Context, n, ps int, sha string)
 	}
 	tree, parentTree := revisionTrees(ctx, im.Mirror, sha)
 	return updateStateFn(ctx, im.Store, n, fmt.Sprintf("Gerrit's patch set %d is on GitHub", ps), func(st *state.Change) {
-		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: sha, GitHubSHA: sha, Tree: tree, ParentTree: parentTree, At: time.Now()})
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: sha, GitHubSHA: sha, Tree: tree, ParentTree: parentTree, At: time.Now(), Found: true})
 	})
 }
 

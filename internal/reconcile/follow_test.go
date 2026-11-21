@@ -409,6 +409,30 @@ func TestForeignIsByPublishableWhereGitHubOwns(t *testing.T) {
 	}
 }
 
+// A stranger's patch set someone pushed to the PR's branch is on GitHub,
+// but no import or push of the bridge's: still foreign, so the PR keeps
+// its author's description (twelfth review).
+func TestFoundOnGitHubIsStillForeign(t *testing.T) {
+	ctx := context.Background()
+	for _, found := range []bool{false, true} {
+		s := newSites(t)
+		c, _ := s.code(ctx)
+		c.DryRun = true
+		c.GitHubOwned = true
+		c.Publishable = func(context.Context, int) (bool, bool) { return false, true }
+		snap := &Snapshot{Changes: map[int]*GerritChange{1: {Number: 1, Status: "NEW", Revision: "r1", PatchSet: 2,
+			OwnerID: 5, UploaderID: 7, Kind: "REWORK"}},
+			State: map[int]*state.Change{1: {State: state.ChangeState{Change: 1, Origin: "github", HeadBranch: "feature"},
+				Revisions: []state.Revision{{PatchSet: 2, GerritSHA: "r1", GitHubSHA: "r1", Found: found}}}}}
+		if err := c.markForeign(ctx, snap); err != nil {
+			t.Fatal(err)
+		}
+		if snap.Foreign[1] != found {
+			t.Errorf("found %v: foreign %v", found, snap.Foreign[1])
+		}
+	}
+}
+
 // Design §3.1: where GitHub owns the branches, a Gerrit-born change
 // reaches GitHub only if whoever uploaded it, and made its code, has a
 // linked GitHub account that may push there: a pushed branch runs the

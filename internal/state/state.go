@@ -97,6 +97,10 @@ type Revision struct {
 	// At is when the bridge recorded it on both sides: GitHub had it by
 	// then (zero in state written before this was kept).
 	At time.Time `json:"at,omitzero"`
+	// Found is set for one of Gerrit's own commits found on the PR's
+	// branch, put there by someone, not imported or pushed by the
+	// bridge: GitHub has it, but nobody vouched for it as this PR's.
+	Found bool `json:"found,omitempty"`
 }
 
 // Head is a commit the PR's branch was seen at (heads.json): from At,

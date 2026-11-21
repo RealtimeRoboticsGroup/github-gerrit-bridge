@@ -514,6 +514,12 @@ func TestBridgesOwnHeadIsNotImported(t *testing.T) {
 	if err := im.Import(ctx, "main"); err != nil || len(up.uploads) != 0 {
 		t.Errorf("err=%v uploads=%v; Gerrit's own commit was imported", err, up.uploads)
 	}
+	// Recorded as found there, not as the bridge's own: whoever put it
+	// there is not known (twelfth review).
+	st, _ = im.Store.Load(ctx, 1)
+	if len(st.Revisions) != 1 || st.Revisions[0].GerritSHA != g[0] || !st.Revisions[0].Found {
+		t.Errorf("recorded %+v", st.Revisions)
+	}
 }
 
 // Design §5.2.1: a new patch set goes on top of the PR's history; a

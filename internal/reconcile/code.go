@@ -796,7 +796,10 @@ func onGitHub(st *state.Change, revision string) bool {
 		return false
 	}
 	for _, r := range st.Revisions {
-		if r.GerritSHA == revision && r.GitHubSHA != "" {
+		// One found there (someone pushed Gerrit's commit to the PR's
+		// branch) is GitHub's, but not this PR's author's: its text
+		// would become their description (twelfth review).
+		if r.GerritSHA == revision && r.GitHubSHA != "" && !r.Found {
 			return true
 		}
 	}
