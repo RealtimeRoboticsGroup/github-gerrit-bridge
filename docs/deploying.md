@@ -96,7 +96,10 @@ nobody. Before the bridge reads it:
    `gerrit-base/*` branches. A PR from any other branch GitHub protects
    (classic protection, or a ruleset's rule) is not imported, and the
    bridge never pushes there: Gerrit patch sets would reach it as the
-   bot, past the rules.
+   bot, past the rules (one protected after its import is withheld).
+   A ruleset that targets every branch (`~ALL`) therefore stops every
+   import from the repository's own branches: target the branches that
+   need it.
 2. **The bot's token**: Contents read & write (its branches), Pull
    requests and Issues read & write, Checks read (the Checks tab),
    Administration read (else the merge-settings check at startup only

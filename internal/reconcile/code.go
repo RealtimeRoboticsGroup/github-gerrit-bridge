@@ -2302,6 +2302,7 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		// One atomic push to the repository, plus one per fork whose PR
 		// branch gets a Gerrit edit (allowed by maintainer_can_modify).
 		// Gerrit owns these; only replication writes them.
+		var protected []int // changes whose PR branch GitHub protects
 		for _, name := range append(sortedStringKeys(a.Refs), sortedStringKeys(a.Appends)...) {
 			if name == s.Branch || name == c.DefaultBranch {
 				return fmt.Errorf("refusing to push to %s, which Gerrit owns", name)
@@ -2315,14 +2316,30 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 				}
 				if c.GitHubOwned && !bridgeBranch(name) {
 					// Nor one GitHub protects (the importer's rule; a
-					// branch protected since).
-					if protected, err := c.GitHub.BranchProtected(ctx, name); err != nil {
+					// branch protected since): that change is withheld,
+					// as if GitHub refused it, and the rest pushed
+					// (seventeenth review: the whole push failed, every
+					// change's, on every reconcile).
+					if p, err := c.GitHub.BranchProtected(ctx, name); err != nil {
 						return err
-					} else if protected {
-						return fmt.Errorf("refusing to push to %s, which GitHub protects", name)
+					} else if p {
+						n := 0
+						for m, ch := range s.Changes {
+							if s.head(m, ch.ChangeID) == name {
+								n = m
+							}
+						}
+						if n == 0 {
+							return fmt.Errorf("refusing to push to %s, which GitHub protects", name)
+						}
+						c.Logger.Warn("not pushing to a branch GitHub protects; the change is withheld", "branch", name, "change", n)
+						protected = append(protected, n)
 					}
 				}
 			}
+		}
+		if len(protected) > 0 {
+			return &githubRefused{changes: protected}
 		}
 		urls := []string{c.GitHubURL}
 		specs := map[string][]string{}

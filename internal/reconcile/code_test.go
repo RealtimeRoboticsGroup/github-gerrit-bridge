@@ -4886,3 +4886,29 @@ func TestGerritBornPushIsRecordedVettedOnlyWhereGitHubOwns(t *testing.T) {
 		}
 	}
 }
+
+// A PR branch GitHub protects (since its import, say) withholds only its
+// own change, as a push GitHub refused does: the export plans again
+// without it and pushes the rest (seventeenth review: the whole push
+// failed, every change's, on every reconcile).
+func TestProtectedBranchWithholdsOnlyItsChange(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	c.GitHubOwned = true
+	s.ruled = map[string]bool{"feature": true}
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	snap := &Snapshot{Branch: "main", DefaultBranch: "main",
+		Changes: map[int]*GerritChange{1: {Number: 1, ChangeID: cid(1)}, 2: {Number: 2, ChangeID: cid(2)}},
+		State:   map[int]*state.Change{1: {State: state.ChangeState{Origin: "github", HeadBranch: "feature"}}}}
+	err := c.applyOne(ctx, snap, Action{Kind: PushBranches,
+		Refs:   map[string]string{"gerrit/" + cid(2): m0, "feature": m0},
+		Leases: map[string]string{"gerrit/" + cid(2): "", "feature": ""}})
+	var gr *githubRefused
+	if !errors.As(err, &gr) || !slices.Equal(gr.changes, []int{1}) {
+		t.Fatalf("err %v, want change 1 withheld as GitHub's refusal", err)
+	}
+	if out, _ := exec.Command("git", "-C", filepath.Join(s.dir, "github.git"), "rev-parse", "--verify", "--quiet", "refs/heads/feature").Output(); len(out) != 0 {
+		t.Error("pushed to feature, which GitHub protects")
+	}
+}
