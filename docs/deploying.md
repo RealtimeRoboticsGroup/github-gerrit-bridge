@@ -68,7 +68,18 @@ nobody. Before the bridge reads it:
 5. **The certificate**: its SAN must name `ldap.spacecookies.dev` (Go
    rejects a CN-only certificate); copy the CA (or the self-signed
    certificate itself) to the bridge's host for `ca_file`.
-6. **From the bridge's host**, the same search the bridge makes:
+6. **Removing someone** is removing their `githubAccount` values (or the
+   class) from their entry, or deactivating their Gerrit account. Locking
+   their password or expiring their LDAP account does neither: the
+   bridge reads only the GitHub attributes, and whether the Gerrit
+   account is active, and Gerrit does not deactivate an LDAP account by
+   itself. It stops acting as them within one refresh.
+7. **Before saving a `githubId`**, the administrator checks it is the
+   person's: a login that changed hands, or a mistyped one, gives a
+   stranger their Gerrit account at once (comments, votes, uploads as
+   them; and they can link). The LAM module looks the id up from the
+   login as typed, at that moment.
+8. **From the bridge's host**, the same search the bridge makes:
    ```
    LDAPTLS_CACERT=/etc/github-bridge/ldap-ca.pem ldapsearch -x \
      -H ldaps://ldap.spacecookies.dev:636 -b ou=People,dc=spacecookies,dc=dev \
@@ -106,11 +117,18 @@ nobody. Before the bridge reads it:
    header. `ci.checks_url` is `<gerrit>/<path>`.
 2. **List the proxy in `github.webhook_trusted_proxies`**, or every viewer
    shares the proxy's address and its per-client limits (the Checks tab
-   polls every 30 s: 429s for the whole team).
+   polls every 30 s: 429s for the whole team). Only the proxy: whatever
+   the list holds is believed when it says who sent a request, so a
+   whole pod range is as safe as what keeps the rest of it out (a
+   NetworkPolicy does not stop a node's own traffic to its pods).
 3. **`public_url`** may be under a path (`https://gerrit.spacecookies.dev/bridge`):
    the link page posts and keeps its cookie under it. Its
    `/github/link` must reach the bridge's.
-4. The bridge itself `listen`s on loopback, behind the proxy.
+4. The bridge itself is reached only through the proxy: it `listen`s on
+   loopback beside it, or (in Kubernetes) behind a NetworkPolicy that
+   lets in only the proxy's pod. The status page (`status_listen`) stays
+   on loopback either way. The bridge needs no Create on Gerrit's
+   `refs/heads/*`: it follows only the branches Gerrit already has.
 
 ### The config
 
