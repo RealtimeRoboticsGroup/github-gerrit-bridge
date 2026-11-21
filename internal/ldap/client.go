@@ -84,6 +84,11 @@ func (e *ResultError) Error() string {
 // maxEntries bounds one search.
 const maxEntries = 100000
 
+// maxSearchBytes bounds one search's replies, all told: at maxMessage
+// each, maxEntries alone would allow 100 GB (sixteenth review). A var for
+// tests.
+var maxSearchBytes int64 = 64 << 20
+
 // Search runs an anonymous subtree search under base for entries whose
 // objectClass is class, returning attrs of each. Any result but success,
 // a referral, or anything it does not understand is an error: the caller
@@ -116,9 +121,13 @@ func (s *Server) Search(ctx context.Context, base, class string, attrs []string)
 		return nil, fmt.Errorf("ldap: sending the search: %w", err)
 	}
 	var out []Entry
+	replies := &io.LimitedReader{R: conn, N: maxSearchBytes}
 	for {
-		msg, err := readMessage(conn)
+		msg, err := readMessage(replies)
 		if err != nil {
+			if replies.N <= 0 {
+				return nil, fmt.Errorf("ldap: the search's replies are more than %d bytes", maxSearchBytes)
+			}
 			return nil, err
 		}
 		id, op, err := splitMessage(msg)

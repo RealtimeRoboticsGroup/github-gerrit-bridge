@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/big"
 	"net"
@@ -255,6 +256,27 @@ func TestSearchFails(t *testing.T) {
 	ts.ln.Close()
 	if _, err := srv.Search(ctx, "dc=dev", "githubAccount", nil); err == nil {
 		t.Error("searched a server that is down")
+	}
+}
+
+// A search's replies are bounded all told, not only one by one
+// (sixteenth review).
+func TestSearchBytesBounded(t *testing.T) {
+	ts := newTestServer(t)
+	var many []testEntry
+	for i := range 50 {
+		many = append(many, person(fmt.Sprint("u", i), fmt.Sprint("L", i), fmt.Sprint(i+1)))
+	}
+	ts.set(0, many...)
+	ctx := context.Background()
+	if got, err := ts.server(t).Search(ctx, "dc=dev", "githubAccount", nil); err != nil || len(got) != 50 {
+		t.Fatalf("within bounds: %d entries, %v", len(got), err)
+	}
+	old := maxSearchBytes
+	maxSearchBytes = 2000
+	t.Cleanup(func() { maxSearchBytes = old })
+	if _, err := ts.server(t).Search(ctx, "dc=dev", "githubAccount", nil); err == nil || !strings.Contains(err.Error(), "more than 2000 bytes") {
+		t.Errorf("past the bound: %v", err)
 	}
 }
 
