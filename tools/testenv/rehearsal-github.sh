@@ -116,6 +116,16 @@ step "0. Ready"
 can_push() { [[ "$(me api "repos/${R}/collaborators/realtimeroboticsbot/permission" --jq .permission)" == write ]]; }
 check "the bot may push to ${R}" can_push
 wait_for "the GitHub-owned bridge is up" curl -sf -o /dev/null http://127.0.0.1:18083/healthz
+# gh webhook forward exits while GitHub still has its last run's hook, and
+# systemd restarts it: events in between are only swept up later.
+forwarding() {
+  local since now
+  since=$(systemctl --user show bridge-test-gh-webhooks -p ActiveEnterTimestampMonotonic --value)
+  now=$(awk '{printf "%d", $1 * 1000000}' /proc/uptime)
+  systemctl --user -q is-active bridge-test-gh-webhooks && ((now - since > 20000000)) &&
+    [[ "$(me api "repos/${R}/hooks" --jq '[.[] | select(.name == "cli" and .active)] | length')" == 1 ]]
+}
+wait_for "GitHub's webhooks are forwarded to it" forwarding
 wait_for "Gerrit's main is GitHub's" followed main
 
 # --- 1. A GitHub PR: imported, reviewed both ways, squashed by the button ---
@@ -256,7 +266,7 @@ check "with a merge commit (the PR has a subtree)" two_parents
 wait_for "Gerrit's main follows" followed main
 wait_for "change ${C6} is merged at the merge commit" merged_at "${C6}" "${M6}"
 
-# --- 7. A stack: GitHub stacks a PR based on another's branch ---
+# --- 7. A stack: the bridge stacks a PR based on another's branch ---
 step "7. A stack: /submit refuses the top, merges the bottom, then the top"
 S7a="Stack bottom ${RUN}"; S7b="Stack top ${RUN}"
 gh_pr "${BRT_CLONE}" brt "gh-${RUN}-7a" main "stack-a-${RUN}.txt" "${S7a}"
@@ -268,7 +278,7 @@ both() { C7a=$(change "${S7a}"); C7b=$(change "${S7b}"); [[ -n "${C7a}" && -n "$
 wait_for "PRs #${N7a} and #${N7b} become changes" both
 C7a=$(change "${S7a}"); C7b=$(change "${S7b}")
 stacked() { [[ "$(pr "${N7b}" .stack.size)" == 2 ]]; }
-check "GitHub stacks them" stacked
+wait_for "the bridge stacks them" stacked
 both_built() { check_run "$(pr "${N7a}" .head.sha)" build success && check_run "$(pr "${N7b}" .head.sha)" build success; }
 wait_for "both build" both_built
 read_it
