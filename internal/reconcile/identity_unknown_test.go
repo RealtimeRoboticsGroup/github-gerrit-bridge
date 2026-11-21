@@ -307,3 +307,31 @@ func TestOwnChangeIDWaitsForWhoTheAuthorIs(t *testing.T) {
 		t.Errorf("known: gerrit/sync %+v, want the PR refused (the author's own change)", sts)
 	}
 }
+
+// Where GitHub owns the branches, a /submit whose merger cannot say who
+// asked (the directory, or their token's check) is not spent: no reply,
+// not handled, and merged once known. Sixteenth review: only the Gerrit
+// submit's wait was tested.
+func TestMergeWaitsForWhoAsked(t *testing.T) {
+	c, h, _, m := mergeCommands(t, "gerrit")
+	m.err = &IdentityUnknown{errors.New("the directory cannot be read")}
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	ctx := context.Background()
+	n := len(h.ics)
+	if err := c.Run(ctx, 5); !isIdentityUnknown(err) {
+		t.Fatalf("unknown: err %v", err)
+	}
+	if len(h.ics) != n {
+		t.Fatalf("unknown: replied %v", h.ics[n:])
+	}
+	if st, _ := c.Store.Load(ctx, 5); len(st.State.HandledCommands) != 0 {
+		t.Fatalf("unknown: handled %v", st.State.HandledCommands)
+	}
+	m.err = nil
+	if err := c.Run(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	if last := h.ics[len(h.ics)-1].Body; !strings.Contains(last, "merged on GitHub as you") {
+		t.Errorf("known: reply %q", last)
+	}
+}
