@@ -237,7 +237,8 @@ B5=$(cd "${ME_CLONE}" && git rev-parse HEAD)
 withheld() { C5=$(change "${S5}"); [[ -n "${C5}" ]] && has_message "${C5}" "GitHub owns this repository's branches"; }
 wait_for "bob's change is withheld, and says why (link a GitHub account)" withheld
 # What a withheld change must not do is push: a branch runs workflows.
-nowhere() { ! me api "repos/${R}/commits/$1" --silent 2>/dev/null; }
+# GitHub's own "no such commit" (422, or 404), not any failure.
+nowhere() { me api "repos/${R}/commits/$1" --silent 2>&1 | grep -qE 'HTTP (404|422)'; }
 check "and has no PR" test -z "$(pr_for "${S5}")"
 check "and its commit is on no GitHub branch" nowhere "${B5}"
 # A linked writer's change on top of it is withheld too, and stays so
@@ -255,7 +256,9 @@ wait_for "AustinSchuh's change on it is withheld too" child_withheld
     push -q gerrit HEAD:refs/for/main 2>/dev/null) || fail "setup: bob's patch set 2"
 bob_ps2() { [[ "$(change_field "${C5}" .current_revision)" != "${B5}" ]]; }
 wait_for "bob uploads patch set 2" bob_ps2
-read_it
+# The bridge has looked since: its notice on bob's patch set 2.
+bob_ps2_seen() { has_message "${C5}" "Patch set 2 is not mirrored"; }
+wait_for "and the bridge has looked at it" bob_ps2_seen
 check "AustinSchuh's change still has no PR" test -z "$(pr_for "${S5b}")"
 check "and neither bob's old commit nor it is on GitHub" eval 'nowhere "${B5}" && nowhere "${B5b}"'
 
