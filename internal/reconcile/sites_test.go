@@ -698,7 +698,9 @@ func (s *sites) save(ctx context.Context, store *state.Store, n int, st *state.C
 }
 
 // noneBelow is a belowReader for tests whose commits are made up: each
-// patch set sits right on its branch.
+// patch set sits right on its branch. It opts a test out of the check of
+// the code below (parentsTrusted never runs): those tests are of the
+// patch set's own code; the sites-based ones check what is below.
 type noneBelow struct{}
 
 func (noneBelow) parentsOf(context.Context, string) ([]string, error)            { return nil, nil }

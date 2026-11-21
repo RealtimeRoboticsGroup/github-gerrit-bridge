@@ -534,13 +534,20 @@ func TestGerritBornNeedsPublishableUploaders(t *testing.T) {
 // wins"): restored, it would be the bridge's upload, which the gate lets
 // through to GitHub. A publishable uploader's is restored, as before.
 func TestGerritWinsNeverRestoresUnpublishedCode(t *testing.T) {
-	for _, tc := range []struct{ publishable, owner bool }{{false, false}, {true, false}, {false, true}} {
+	// noPub: GitHub-owned, but no Publishable: nobody, never CI's trusted
+	// group (thirteenth review: the importer took it for Gerrit-owned).
+	for _, tc := range []struct{ publishable, owner, noPub bool }{{false, false, false}, {true, false, false}, {false, true, false}, {true, false, true}} {
 		publishable := tc.publishable
 		s, im, up, m1, g, ids := gerritBornWorld(t, false)
 		ctx := context.Background()
 		im.GitHubOwned = true
 		im.Publishable = func(_ context.Context, account int) (bool, bool) {
 			return account == 5 || (publishable && account == 9), true
+		}
+		if tc.noPub {
+			im.Publishable = nil
+			im.Trusted = func(context.Context, int) (bool, bool) { return true, true }
+			publishable = false
 		}
 		ci := s.changes[1]
 		ci.Owner = s.accounts["austin"]
@@ -1166,5 +1173,38 @@ func TestParentsTrustedRefusesAnOddAnswer(t *testing.T) {
 	trusted := func(context.Context, int) (bool, bool) { return true, true }
 	if ok, _, _, _ := parentsTrusted(context.Background(), oddReader{}, "main", []string{"c0"}, nil, trusted); ok {
 		t.Error("trusted a commit its change does not have")
+	}
+}
+
+// A Gerrit commit found on the PR's branch (someone pushed it there) is
+// not this change's own below a patch set: its code is checked like any
+// other's (thirteenth review: only a test with no parents covered it).
+func TestFoundBelowIsCheckedLikeAnyCode(t *testing.T) {
+	for _, found := range []bool{false, true} {
+		ctx := context.Background()
+		s, c, base := followSites(t)
+		c.GitHubOwned = false
+		c.Trusted = func(_ context.Context, a int) (bool, bool) { return a == 8, true }
+		low := s.commit(base, "low", "l\n", "C1\n\nChange-Id: "+cid(1)+"\n")
+		ci := s.change(1, cid(1), low, "C1\n\nChange-Id: "+cid(1)+"\n", "NEW")
+		r := ci.Revisions[low]
+		r.Uploader = gerrit.AccountInfo{AccountID: 9} // a stranger's
+		ci.Revisions[low], ci.Owner = r, gerrit.AccountInfo{AccountID: 5}
+		top := s.commit(low, "top", "t\n", "C1\n\nChange-Id: "+cid(1)+"\n")
+		s.push("gerrit.git", top, "refs/changes/01/1/2")
+		ci.Revisions[top] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Ref: "refs/changes/01/1/2", Uploader: gerrit.AccountInfo{AccountID: 8},
+			Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, top))}
+		ci.CurrentRevision = top
+		// The stranger's patch set is on GitHub: imported (theirs to the
+		// branch's history), or found there (pushed by someone).
+		s.save(ctx, c.Store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "github",
+			HeadBranch: "feature", Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: low, GitHubSHA: low, Found: found}}})
+		snap, err := c.observe(ctx, "main", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snap.Foreign[1] != found {
+			t.Errorf("below it found on GitHub %v: foreign %v", found, snap.Foreign[1])
+		}
 	}
 }
