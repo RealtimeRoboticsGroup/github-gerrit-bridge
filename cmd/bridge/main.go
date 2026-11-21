@@ -212,6 +212,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	q.Urgent = reconcile.Urgent
 	router := reconcile.NewRouter(cfg.Gerrit.Project, q, logger)
 	router.Pushers = &reconcile.Pushers{}
+	// Here, not in setMode: events arrive once the stream starts, below.
 	router.FollowGitHub = cfg.GitHubOwned()
 	stream := &events.Stream{
 		Source:   events.SSHSource(sshCfg, events.Types),
@@ -369,7 +370,6 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		CommitterEmail: cfg.GitHub.CommitterEmail,
 		Store:          store,
 		DefaultBranch:  ghRepo.DefaultBranch,
-		GitHubOwned:    cfg.GitHubOwned(),
 		DryRun:         dryRun,
 		Logger:         logger,
 	}
@@ -397,7 +397,6 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		}
 	}
 	code.Importer = &reconcile.Importer{
-		GitHubOwned:   cfg.GitHubOwned(),
 		Project:       cfg.Gerrit.Project,
 		Gerrit:        rest,
 		GitHub:        gh,
@@ -478,7 +477,6 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		TrustedGroup: cfg.CI.TrustedGroup,
 		CIMessage:    regexp.MustCompile(cfg.CI.MessagePattern),
 		CIAccount:    cfg.CI.Account,
-		GitHubOwned:  cfg.GitHubOwned(),
 		DryRun:       dryRun,
 		Logger:       logger,
 	}
@@ -501,14 +499,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	code.Importer.ChangeIDKey = []byte("change-id\x00" + webhookSecret)
 	// Anyone can register on Gerrit; each new PR costs ~15 GitHub writes,
 	// and GitHub stalls a token past ~80 a minute or ~500 an hour.
-	// Exempt from the budgets: whoever may have their code pushed to
-	// GitHub in this mode (CI's trusted group, or linked writers), the
-	// same rule as everywhere else (twelfth review).
-	exempt := code.PushTrust()
-	code.PRBudget = &reconcile.Budget{N: 20, Per: time.Hour, Trusted: exempt}
-	comments.PostBudget = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: exempt}
-	checks.StatusBudget, checks.BridgeAccount = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: exempt}, self.AccountID
-	code.TextBudget = &reconcile.Budget{N: 60, Per: time.Hour, Trusted: exempt}
+	checks.BridgeAccount = self.AccountID
 	code.LinksBudget = &reconcile.Budget{N: 12, Per: time.Hour} // per PR
 	commands := &reconcile.Commands{
 		GitHub:       gh,
@@ -517,7 +508,6 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Identity:     users,
 		BeforeSubmit: code.PrepareSubmit,
 		Merger:       merger,
-		GitHubOwned:  cfg.GitHubOwned(),
 		LinkURL:      code.LinkURL,
 		BridgeLogin:  login,
 		DryRun:       dryRun,
@@ -526,6 +516,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	// Keyed by GitHub user id: /submit is answered at most 20 times an
 	// hour per commenter.
 	commands.Replies = &reconcile.Budget{N: 20, Per: time.Hour}
+	setMode(cfg.GitHubOwned(), code, comments, commands, checks)
 	dispatch := &reconcile.Dispatcher{Code: code, Comments: comments, Commands: commands, Checks: checks, Store: store, Logger: logger,
 		Enqueue: q.Add}
 	wg.Go(func() { reconcile.Work(ctx, q, dispatch, cfg.Workers, tally, logger) })
@@ -674,6 +665,23 @@ func checkCapabilities(ctx context.Context, cfg *config.Config, rest *gerrit.Cli
 			"to show changes merged on GitHub as merged (design §3.1): grant it to the bridge's group in All-Projects", cfg.Gerrit.HTTPUser)
 	}
 	return nil
+}
+
+// setMode sets everything that depends on which side owns the branches
+// (design §3.1), in one place a test can check (thirteenth review: none
+// of it was), but the router's, set before events arrive: who merges,
+// and the budgets' exemption, which
+// is whoever may have code pushed to GitHub in this mode (CI's trusted
+// group, or linked writers), the same rule as everywhere else. Code's
+// Publishable and Trusted must be set before.
+func setMode(githubOwned bool, code *reconcile.Code, comments *reconcile.Comments, commands *reconcile.Commands, checks *reconcile.Checks) {
+	code.GitHubOwned, code.Importer.GitHubOwned = githubOwned, githubOwned
+	commands.GitHubOwned, checks.GitHubOwned = githubOwned, githubOwned
+	exempt := code.PushTrust()
+	code.PRBudget = &reconcile.Budget{N: 20, Per: time.Hour, Trusted: exempt}
+	code.TextBudget = &reconcile.Budget{N: 60, Per: time.Hour, Trusted: exempt}
+	comments.PostBudget = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: exempt}
+	checks.StatusBudget = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: exempt}
 }
 
 // newUsers is the identity mapping cfg says (design §7): overrides, the

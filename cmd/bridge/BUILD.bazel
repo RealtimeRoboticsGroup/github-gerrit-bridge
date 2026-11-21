@@ -39,6 +39,7 @@ go_test(
         "//internal/gerrit",
         "//internal/github",
         "//internal/ldap",
+        "//internal/reconcile",
         "//internal/usertokens",
     ],
 )

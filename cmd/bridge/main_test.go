@@ -24,6 +24,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/ldap"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/usertokens"
 	"os"
 	"path/filepath"
@@ -336,6 +337,36 @@ func TestNewUsers(t *testing.T) {
 		}
 		if len(users.Never) != 1 || users.Never[0] != "github-bridge" || len(users.NeverLogins) != 1 || users.NeverLogins[0] != "bridge-bot" {
 			t.Errorf("%s: never %v %v", tc.name, users.Never, users.NeverLogins)
+		}
+	}
+}
+
+// Everything that depends on who owns the branches follows the mode,
+// and the budgets exempt whoever may have code pushed in it: CI's trusted
+// group where Gerrit owns them, linked writers where GitHub does.
+func TestSetMode(t *testing.T) {
+	ctx := context.Background()
+	for _, owned := range []bool{false, true} {
+		code := &reconcile.Code{Importer: &reconcile.Importer{},
+			Trusted:     func(_ context.Context, a int) (bool, bool) { return a == 1, true },
+			Publishable: func(_ context.Context, a int) (bool, bool) { return a == 2, true }}
+		comments, commands, checks := &reconcile.Comments{}, &reconcile.Commands{}, &reconcile.Checks{}
+		setMode(owned, code, comments, commands, checks)
+		if code.GitHubOwned != owned || code.Importer.GitHubOwned != owned || commands.GitHubOwned != owned || checks.GitHubOwned != owned {
+			t.Errorf("GitHub owns %v: code %v importer %v commands %v checks %v", owned, code.GitHubOwned, code.Importer.GitHubOwned, commands.GitHubOwned, checks.GitHubOwned)
+		}
+		exempt := map[bool]int{false: 1, true: 2}[owned]
+		for name, b := range map[string]*reconcile.Budget{"pr": code.PRBudget, "text": code.TextBudget, "post": comments.PostBudget, "status": checks.StatusBudget} {
+			if b == nil || b.Trusted == nil {
+				t.Errorf("GitHub owns %v: %s budget %+v", owned, name, b)
+				continue
+			}
+			if ok, _ := b.Trusted(ctx, exempt); !ok {
+				t.Errorf("GitHub owns %v: %s budget does not exempt account %d", owned, name, exempt)
+			}
+			if ok, _ := b.Trusted(ctx, 3-exempt); ok {
+				t.Errorf("GitHub owns %v: %s budget exempts account %d", owned, name, 3-exempt)
+			}
 		}
 	}
 }
