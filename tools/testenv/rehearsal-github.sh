@@ -115,7 +115,7 @@ echo "Rehearsal (GitHub owns ${R}) ${RUN}"
 step "0. Ready"
 can_push() { [[ "$(me api "repos/${R}/collaborators/realtimeroboticsbot/permission" --jq .permission)" == write ]]; }
 check "the bot may push to ${R}" can_push
-check "the GitHub-owned bridge is up" curl -sf -o /dev/null http://127.0.0.1:18083/healthz
+wait_for "the GitHub-owned bridge is up" curl -sf -o /dev/null http://127.0.0.1:18083/healthz
 wait_for "Gerrit's main is GitHub's" followed main
 
 # --- 1. A GitHub PR: imported, reviewed both ways, squashed by the button ---
@@ -244,7 +244,7 @@ C6=$(change "${S6}")
 wait_for "its description has the Change-Id" trailer "${N6}" "${C6}"
 read_it
 REV6=$(brt api "repos/${R}/pulls/${N6}/reviews" -f event=APPROVE -f body="Rehearsal ${RUN}: LGTM" --jq .id)
-brt_cr() { gerrit "changes/${C6}?o=DETAILED_LABELS" | jq -e '[.labels["Code-Review"].all[]? | select(.username == "AustinSchuhBRT") | (.value // 0)] | .[0] == 1'; }
+brt_cr() { gerrit "changes/${C6}?o=DETAILED_LABELS&o=DETAILED_ACCOUNTS" | jq -e '[.labels["Code-Review"].all[]? | select(.username == "AustinSchuhBRT") | (.value // 0)] | .[0] == 1'; }
 wait_for "AustinSchuhBRT's GitHub approval shows in Gerrit as their Code-Review +1" brt_cr
 read_it
 me api "repos/${R}/issues/${N6}/comments" -f body="/submit" --silent
