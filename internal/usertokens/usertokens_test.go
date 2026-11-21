@@ -618,4 +618,23 @@ func TestLinkUnderAPath(t *testing.T) {
 	if !strings.Contains(w.Header().Get("Location"), url.QueryEscape("https://gerrit.example/bridge/github/link/callback")) {
 		t.Errorf("callback in %s", w.Header().Get("Location"))
 	}
+	// The callback clears the cookie where it was kept, and its pages
+	// lead back under the path (fifteenth review, tests).
+	req = httptest.NewRequest("GET", "/github/link/callback?code=c&state=x", nil)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: "other"})
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if cs := w.Result().Cookies(); len(cs) != 1 || cs[0].Path != "/bridge/github/link" || cs[0].MaxAge >= 0 {
+		t.Errorf("callback cookies %+v", cs)
+	}
+	if !strings.Contains(w.Body.String(), `href="/bridge/github/link"`) {
+		t.Errorf("other browser's page: %s", w.Body)
+	}
+	req = httptest.NewRequest("POST", "/github/link", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `href="/bridge/github/link"`) {
+		t.Errorf("forbidden page: %d %s", w.Code, w.Body)
+	}
 }
