@@ -242,6 +242,7 @@ type fakeGitHub struct {
 	title, body, base string
 	stack             *github.PRStack // the PR's native stack, if any
 	merged            bool            // the PR is merged (and closed)
+	closed            bool            // the PR is closed, unmerged
 	// refuse makes CreateIssueComment refuse (422) bodies containing it.
 	refuse string
 	// pushes is the activity log of the PR's branch, newest first.
@@ -485,7 +486,7 @@ func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error)
 func (f *fakeGitHub) GetPull(_ context.Context, n int) (*github.PullRequest, error) {
 	pr := &github.PullRequest{Number: n, HTMLURL: "https://github.com/o/r/pull/1", Head: github.Ref{Ref: "topic", SHA: cmp.Or(f.head, "sha2")},
 		Title: f.title, Body: f.body, Base: github.Ref{Ref: cmp.Or(f.base, "main")}, Stack: f.stack, Merged: f.merged}
-	if f.merged {
+	if f.merged || f.closed {
 		pr.State = "closed"
 	}
 	pr.Head.Repo = &struct {
@@ -1986,6 +1987,26 @@ func TestMergedPRsApprovalIsNotDismissed(t *testing.T) {
 	e.sync(t)
 	if len(e.h.dismissed) != 0 {
 		t.Errorf("dismissed a merged PR's approval: %v", e.h.dismissed)
+	}
+}
+
+// A PR closed unmerged (its change abandoned, or restored and the PR not
+// reopened yet) still has its dismissals honored: the vote an approval
+// cast is withdrawn at once, not when the PR reopens (twelfth review).
+func TestClosedPRsDismissalWithdrawsItsVote(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+	e.sync(t)
+	if e.g.labels["Code-Review"]["bobg"] != 2 {
+		t.Fatalf("votes = %v", e.g.labels)
+	}
+	e.h.closed = true
+	e.h.dismiss(70, "maint", e.g.now())
+	e.sync(t)
+	if v := e.g.labels["Code-Review"]["bobg"]; v != 0 {
+		t.Errorf("closed PR: bobg's Code-Review = %d, want withdrawn", v)
 	}
 }
 
