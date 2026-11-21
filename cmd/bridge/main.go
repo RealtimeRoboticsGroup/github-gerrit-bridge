@@ -641,12 +641,6 @@ func checkSecrets(cfg *config.Config, logger *slog.Logger) error {
 	return nil
 }
 
-// checkCapabilities refuses to start a bridge whose Gerrit account lacks a
-// global capability its mode needs. Where GitHub owns the branches
-// (design §3.1) that is Maintain Server: GitHub's merge button leaves the
-// Change-Id out of the commit's last paragraph whenever the commits are
-// signed off, and only check-and-fix then shows the change merged, not
-// abandoned. Where Gerrit owns them it is never needed, nor asked about.
 // checkGerrit is the bridge's own Gerrit account, once Gerrit has said
 // everything the bridge needs before it starts: that it can be reached,
 // the account has a preferred email (Gerrit only accepts commits, here
@@ -677,6 +671,12 @@ func newDispatcher(code *reconcile.Code, comments *reconcile.Comments, commands 
 		Enqueue: enqueue, Ready: users.Ready}
 }
 
+// checkCapabilities refuses to start a bridge whose Gerrit account lacks a
+// global capability its mode needs. Where GitHub owns the branches
+// (design §3.1) that is Maintain Server: GitHub's merge button leaves the
+// Change-Id out of the commit's last paragraph whenever the commits are
+// signed off, and only check-and-fix then shows the change merged, not
+// abandoned. Where Gerrit owns them it is never needed, nor asked about.
 func checkCapabilities(ctx context.Context, cfg *config.Config, rest *gerrit.Client) error {
 	if !cfg.GitHubOwned() {
 		return nil
