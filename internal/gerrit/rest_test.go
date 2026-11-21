@@ -235,3 +235,25 @@ func TestSignedIn(t *testing.T) {
 		t.Error("a failure is not an error")
 	}
 }
+
+// InBranch asks Gerrit which branches have a commit, for the project
+// (escaped: names have slashes), and matches the branch with or without
+// refs/heads/.
+func TestInBranch(t *testing.T) {
+	var asked string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = r.URL.EscapedPath()
+		io.WriteString(w, ")]}'\n"+`{"branches":["main","release"],"tags":[]}`)
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL}
+	ctx := context.Background()
+	for branch, want := range map[string]bool{"main": true, "refs/heads/release": true, "dev": false} {
+		if in, err := c.InBranch(ctx, "frc971/971-Robot-Code", branch, "abc"); err != nil || in != want {
+			t.Errorf("%s: %v %v", branch, in, err)
+		}
+	}
+	if asked != "/a/projects/frc971%2F971-Robot-Code/commits/abc/in" {
+		t.Errorf("asked %s", asked)
+	}
+}

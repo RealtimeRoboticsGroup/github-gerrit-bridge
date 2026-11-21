@@ -661,7 +661,7 @@ func TestObserveWithholdsChildrenOfWithheld(t *testing.T) {
 		t.Errorf("withheld %v, want %v", snap.Withheld, want)
 	}
 	// Said once per patch set.
-	if msgs := s.reviewMsgs[3]; len(msgs) != 1 || !strings.Contains(msgs[0], "has linked a GitHub account") {
+	if msgs := s.reviewMsgs[3]; len(msgs) != 1 || !strings.Contains(msgs[0], "has linked a GitHub account") || strings.Contains(msgs[0], "fork") {
 		t.Errorf("change 3's notices %q", msgs)
 	}
 	if _, err := c.observe(ctx, "main", nil); err != nil {
@@ -1206,5 +1206,28 @@ func TestFoundBelowIsCheckedLikeAnyCode(t *testing.T) {
 		if snap.Foreign[1] != found {
 			t.Errorf("below it found on GitHub %v: foreign %v", found, snap.Foreign[1])
 		}
+	}
+}
+
+// The mirror's reader: a branch is the one asked about, not main; and a
+// commit is a SHA, not a name for one (rev-list would take a ref).
+func TestMirrorReader(t *testing.T) {
+	ctx := context.Background()
+	s, c, base := followSites(t)
+	rel := s.commit(base, "r", "r\n", "Release only")
+	s.push("gerrit.git", rel, "refs/heads/release")
+	s.git("m.git", "fetch", "-q", "origin", "+refs/heads/*:refs/remotes/gerrit/heads/*")
+	r := mirrorReader{c.Gerrit, c.Mirror, c.Store, "p"}
+	if in, err := r.inBranch(ctx, "release", rel); !in || err != nil {
+		t.Errorf("release: %v %v", in, err)
+	}
+	if in, err := r.inBranch(ctx, "main", rel); in || err != nil {
+		t.Errorf("main: %v %v", in, err)
+	}
+	if p, err := r.parentsOf(ctx, rel); err != nil || len(p) != 1 || p[0] != base {
+		t.Errorf("parents %v %v", p, err)
+	}
+	if _, err := r.parentsOf(ctx, "refs/remotes/gerrit/heads/release"); err == nil {
+		t.Error("took a ref name for a commit")
 	}
 }
