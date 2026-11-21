@@ -278,7 +278,14 @@ func TestMergedOnGitHubIntoAnotherBranchIsAbandoned(t *testing.T) {
 				notices++
 			}
 		}
-		if want := map[bool]int{true: 1}[!tc.owned && tc.by != "bot"]; notices != want {
+		for _, body := range s.comments[10] {
+			if strings.Contains(body, "by the bridge's own push") {
+				notices++
+			}
+		}
+		// Said once: a stranger's merge where Gerrit owns the branches,
+		// or the bridge's own push either way.
+		if want := map[bool]int{true: 1}[(!tc.owned && tc.by != "bot") || tc.by == "bot"]; notices != want {
 			t.Errorf("%+v: %d notices, want %d", tc, notices, want)
 		}
 	}

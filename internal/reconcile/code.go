@@ -1643,9 +1643,22 @@ func (c *Code) mergedOnGitHub(ctx context.Context, s *Snapshot, n int, ch *Gerri
 	if pr.MergedBy != nil && c.BridgeLogin != "" && strings.EqualFold(pr.MergedBy.Login, c.BridgeLogin) {
 		// GitHub's own doing after a push of the bridge's (a chain
 		// reordered: a lower branch now holds an upper PR's head), not a
-		// merge anyone made: nothing to close (thirteenth review).
+		// merge anyone made: nothing to close (thirteenth review). Said
+		// once, on the PR and in Gerrit, and logged once (fourteenth
+		// review: silent, with a warning every reconcile).
+		if st := s.State[n]; st == nil || st.State.MergedNoticePosted || c.DryRun {
+			return false, nil
+		}
+		note := fmt.Sprintf("GitHub shows this PR merged into `%s`, by the bridge's own push (its branch came to hold this PR's commits, "+
+			"after its Gerrit change was moved in a chain), not by anyone's merge: [change %d](%s) stays open in Gerrit, and this PR no "+
+			"longer follows it.\n\n%s", forGitHub(pr.Base.Ref), n, ch.URL, noticeMarker)
+		if _, err := c.GitHub.CreateIssueComment(ctx, pr.Number, note); err != nil {
+			return false, err
+		}
+		c.notice(ctx, n, ch, forGerrit(fmt.Sprintf("GitHub shows PR #%d merged by the bridge's own push (after this change was moved in a chain), "+
+			"not by anyone's merge: this change stays open here, and that PR no longer follows it.", pr.Number)))
 		c.Logger.Warn("GitHub shows a PR merged by the bridge's own push; leaving its change", "change", n, "pr", pr.Number, "into", pr.Base.Ref)
-		return false, nil
+		return false, c.updateState(ctx, n, "merged by the bridge's push notice", func(st *state.Change) { st.State.MergedNoticePosted = true })
 	}
 	if !s.GitHubOwned {
 		// Gerrit's change is Gerrit's: a merge on GitHub (into a bridge
