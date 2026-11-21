@@ -432,3 +432,29 @@ func TestLinkedVoteWaitsForWhoseLinksAre(t *testing.T) {
 		t.Errorf("known: reviews %+v, want alice's approval", e.h.reviews)
 	}
 }
+
+// A linked user's copy on GitHub whose record was lost is not posted
+// again while whose links are is unknown for now (its marker cannot be
+// told theirs): the sync waits, and recovers it once known. Sixteenth
+// review: recover's error was untested.
+func TestRecoverWaitsForWhoseLinksAre(t *testing.T) {
+	e, a := linkedEnv(t)
+	e.g.user("c1", gerrit.PatchSetLevel, 2, 0, "One.", "", false)
+	e.sync(t)
+	if len(e.h.ics) != 1 || e.h.ics[0].User != aliceGH {
+		t.Fatalf("posted %+v", e.h.ics)
+	}
+	updateStateFn(context.Background(), e.st, 5, "wipe", func(s *state.Change) { s.Comments, s.Threads = nil, nil })
+	a.unknown = &IdentityUnknown{errors.New("the directory cannot be read")}
+	if err := e.c.Sync(context.Background(), 5); !isIdentityUnknown(err) {
+		t.Fatalf("unknown: err %v", err)
+	}
+	if len(e.h.ics) != 1 {
+		t.Fatalf("unknown: posted again %+v", e.h.ics)
+	}
+	a.unknown = nil
+	e.sync(t)
+	if m := mapped(t, e); len(e.h.ics) != 1 || m["c1"].GitHubID != e.h.ics[0].ID {
+		t.Errorf("known: mapped %+v, PR comments %+v", m["c1"], e.h.ics)
+	}
+}
