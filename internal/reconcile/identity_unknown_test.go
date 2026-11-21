@@ -575,4 +575,16 @@ func TestPushWaitsForWhetherGerritsPatchSetMayReachGitHub(t *testing.T) {
 	if err := im.Import(ctx, "main"); errors.As(err, &se) && se.retry {
 		t.Errorf("told: still waiting (%v)", err)
 	}
+	// Gerrit wins: bob's code is restored on top, as the bridge
+	// (eighteenth review: only "not waiting" was asserted, so austin's
+	// push going on top of bob's for good passed too).
+	restored := false
+	for _, u := range up.uploads {
+		if c := strings.Fields(u)[0]; strings.HasPrefix(u, " ") && s.git("m.git", "rev-parse", c+"^{tree}") == s.git("work", "rev-parse", bob+"^{tree}") {
+			restored = true
+		}
+	}
+	if !restored {
+		t.Errorf("told: bob's patch set not restored on top (uploads %v); want Gerrit to win", up.uploads)
+	}
 }

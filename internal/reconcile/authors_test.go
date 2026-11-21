@@ -724,7 +724,10 @@ func commentsOnBehalf(t *testing.T, byID bool) {
 	e.g.comments = append(e.g.comments,
 		gerrit.CommentInfo{ID: "c2", Path: "a.txt", PatchSet: 2, Line: 2, Message: "Done", InReplyTo: "c1", Updated: at, Author: alice},
 		gerrit.CommentInfo{ID: "c3", Path: gerrit.PatchSetLevel, PatchSet: 2, Message: "Ship it.", Updated: at, Author: alice},
-		gerrit.CommentInfo{ID: "c4", Path: "a.txt", PatchSet: 2, Line: 3, Message: "And this.", Updated: at, Author: alice})
+		gerrit.CommentInfo{ID: "c4", Path: "a.txt", PatchSet: 2, Line: 3, Message: "And this.", Updated: at, Author: alice},
+		// A file comment has no line to anchor a review comment on: posted
+		// on its own (postSingle; eighteenth review: that path was untested).
+		gerrit.CommentInfo{ID: "c5", Path: "a.txt", PatchSet: 2, Message: "The whole file.", Updated: at, Author: alice})
 	if byID {
 		// Gerrit names the reply's change message; the times need not match.
 		for i := range e.g.comments[1:] {
@@ -855,6 +858,20 @@ func TestApprovalOnlyWhileTheVoteStands(t *testing.T) {
 		e.sync(t)
 		if !approved(e) {
 			t.Errorf("not approved once Gerrit has it: %+v", e.h.reviews)
+		}
+	})
+	t.Run("removed with her as a reviewer", func(t *testing.T) {
+		// No vote of hers at all any more (the owner removed her as a
+		// reviewer, say): not "still approves" (eighteenth review:
+		// only a vote of 0 was tested).
+		e, _ := linkedEnv(t)
+		e.runAs()
+		e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+		e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2}}
+		e.g.vote("carol", "Code-Review", 1)
+		e.sync(t)
+		if approved(e) {
+			t.Errorf("approved with no vote of hers in Gerrit: %+v", e.h.reviews)
 		}
 	})
 	t.Run("removed on an older patch set", func(t *testing.T) {

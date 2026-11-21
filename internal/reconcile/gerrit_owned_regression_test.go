@@ -443,8 +443,12 @@ func TestBridgeOwnedImportStatus(t *testing.T) {
 // Another fork's bridge import below still is: that case is the branch's
 // rule (main read nothing below).
 func TestGerritOwnedUnlinkedAuthorsOwnBridgeImportBelow(t *testing.T) {
-	for _, lowHead := range []string{"alice/r:low", "Alice/R:low", "mallory/r:low"} {
-		t.Run(lowHead, func(t *testing.T) { unlinkedAuthorsOwnBelow(t, lowHead, lowHead != "mallory/r:low") })
+	// "alice/r" is a branch of the repository itself named like her fork
+	// (eighteenth review: sameFork's ok on the change below was untested).
+	for _, lowHead := range []string{"alice/r:low", "Alice/R:low", "mallory/r:low", "alice/r"} {
+		t.Run(lowHead, func(t *testing.T) {
+			unlinkedAuthorsOwnBelow(t, lowHead, strings.HasPrefix(strings.ToLower(lowHead), "alice/r:"))
+		})
 	}
 }
 
