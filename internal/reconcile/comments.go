@@ -1925,6 +1925,12 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 	if c.Users == nil || c.GerritAs == nil {
 		return nil // no votes are cast from GitHub
 	}
+	if s.pull != nil && s.pull.State == "closed" {
+		// Decided (merged, or closed): a merge's commit, as Gerrit's last
+		// patch set, has no votes, and dismissing what merged it says
+		// only that.
+		return nil
+	}
 	// GitHub's review state per reviewer is their latest approval, change
 	// request or dismissal; comments do not change it.
 	latest := map[string]github.Review{}

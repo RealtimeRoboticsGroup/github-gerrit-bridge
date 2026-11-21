@@ -241,6 +241,7 @@ type fakeGitHub struct {
 	// title, body and base are the PR's (GetPull; base "main" if unset).
 	title, body, base string
 	stack             *github.PRStack // the PR's native stack, if any
+	merged            bool            // the PR is merged (and closed)
 	// refuse makes CreateIssueComment refuse (422) bodies containing it.
 	refuse string
 	// pushes is the activity log of the PR's branch, newest first.
@@ -483,7 +484,10 @@ func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error)
 }
 func (f *fakeGitHub) GetPull(_ context.Context, n int) (*github.PullRequest, error) {
 	pr := &github.PullRequest{Number: n, HTMLURL: "https://github.com/o/r/pull/1", Head: github.Ref{Ref: "topic", SHA: cmp.Or(f.head, "sha2")},
-		Title: f.title, Body: f.body, Base: github.Ref{Ref: cmp.Or(f.base, "main")}, Stack: f.stack}
+		Title: f.title, Body: f.body, Base: github.Ref{Ref: cmp.Or(f.base, "main")}, Stack: f.stack, Merged: f.merged}
+	if f.merged {
+		pr.State = "closed"
+	}
 	pr.Head.Repo = &struct {
 		FullName string `json:"full_name"`
 	}{"o/r"}
@@ -1964,6 +1968,24 @@ func TestStaleApprovalIsDismissed(t *testing.T) {
 	e.settled(t)
 	if len(e.h.dismissed) != 2 {
 		t.Errorf("dismissed an unmapped reviewer's approval: %v", e.h.dismissed)
+	}
+}
+
+// A merged PR's approvals stay: where GitHub owns the branch, its merge
+// commit is the change's last patch set, with no votes, and that is no
+// disagreement (the GitHub-owned rehearsal).
+func TestMergedPRsApprovalIsNotDismissed(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+	e.sync(t)
+	e.settled(t)
+	e.h.merged = true
+	e.g.vote("bobg", "Code-Review", 0) // the merge's patch set has none
+	e.sync(t)
+	if len(e.h.dismissed) != 0 {
+		t.Errorf("dismissed a merged PR's approval: %v", e.h.dismissed)
 	}
 }
 
