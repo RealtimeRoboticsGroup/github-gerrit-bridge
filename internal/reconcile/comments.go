@@ -1096,6 +1096,13 @@ func (c *Comments) postVote(ctx context.Context, n, pr int, s *commentSnapshot, 
 		// audit). Its words go as a comment that names the patch set.
 		return false, nil
 	}
+	if event == "APPROVE" && (s.pull == nil || s.pull.Head.SHA != sha) {
+		// An approval only while it is the PR's head: GitHub's "dismiss
+		// stale approvals" acts on a push, so one made after a push
+		// would stand on code its author never saw (sixteenth review).
+		// A change request on older code holds the PR back: harmless.
+		return false, nil
+	}
 	rev, err := p.api.CreateReview(ctx, pr, github.NewReview{CommitID: sha, Event: event, Body: c.messageBody(n, msg, text, s, p.as.ID)})
 	var ae *github.APIError
 	switch {

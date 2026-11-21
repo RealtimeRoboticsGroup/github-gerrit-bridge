@@ -587,3 +587,28 @@ func TestVoteOnBehalfIsNoApprovalAsThem(t *testing.T) {
 		t.Errorf("no copy as the bridge naming both: %+v", e.h.ics)
 	}
 }
+
+// Sixteenth review (bad code submitted): a linked user's Gerrit +2 on patch set
+// 2, mirrored after the PR's branch moved on to a commit Gerrit does not
+// have (sha3: a push the importer refuses or has not got to), is not
+// posted as their GitHub approval of patch set 2's commit. GitHub's
+// "dismiss stale approvals" acts on a push, which is past: an approval
+// made afterwards stands on the PR whose head is sha3, code its author
+// never saw, and Gerrit's current patch set still carries the +2, so
+// dismissStale never takes it back.
+func TestLateVoteIsNoApprovalOfAMovedHead(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2}}
+	e.g.vote("alice", "Code-Review", 2)
+	e.h.head = "sha3" // pushed on GitHub after her vote; not a patch set
+	e.sync(t)
+	e.sync(t)
+	for _, rv := range e.h.reviews {
+		if rv.State == "APPROVED" {
+			t.Errorf("approval posted on %s while the PR's head is sha3, and left standing (dismissed: %v)", rv.CommitID, e.h.dismissed)
+		}
+	}
+}

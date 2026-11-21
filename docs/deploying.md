@@ -223,6 +223,9 @@ Behaviour that changes, on purpose:
   Run-As, or a vote with Label-As) is posted on GitHub as the bridge,
   naming both ("**Carol**, as **Alice**, ..."), never with the named
   person's own token nor as their GitHub review.
+- **A linked user's +2 becomes their GitHub approval only while its
+  commit is the PR's head**; mirrored after the PR moved on, it is a
+  comment naming the patch set.
 - Maintain Server is neither needed nor asked about.
 
 The Checks tab plugin keeps working; regenerating it is optional.
