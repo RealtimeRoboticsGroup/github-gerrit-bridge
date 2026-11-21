@@ -1369,9 +1369,21 @@ func TestBridgeMergeNoticeOnlyWhileGerritSaysOpen(t *testing.T) {
 			t.Fatal(err)
 		}
 		said := slices.ContainsFunc(s.comments[10], func(b string) bool { return strings.Contains(b, "the bridge's own push") })
-		if said == submitted {
-			t.Errorf("submitted since the look %v: notice %v: %q", submitted, said, s.comments[10])
+		inGerrit := slices.ContainsFunc(s.reviewMsgs[1], func(m string) bool { return strings.Contains(m, "the bridge's own push") })
+		if said == submitted || inGerrit == submitted {
+			t.Errorf("submitted since the look %v: notice %v, in Gerrit %v: %q", submitted, said, inGerrit, s.comments[10])
 		}
+	}
+	// A dry run says nothing, and records nothing.
+	s, c, _ := mergedSites(t, "One (#10)\n")
+	c.BridgeLogin, c.DryRun = "bot", true
+	s.pulls[10].MergedBy = &github.User{Login: "bot"}
+	mirrorStates(t, c, false)
+	if len(s.comments[10]) != 0 || len(s.reviewMsgs[1]) != 0 {
+		t.Errorf("dry run: %q, %q", s.comments[10], s.reviewMsgs[1])
+	}
+	if st, _ := c.Store.Load(context.Background(), 1); st.State.MergedNoticePosted {
+		t.Error("dry run: recorded the notice")
 	}
 }
 

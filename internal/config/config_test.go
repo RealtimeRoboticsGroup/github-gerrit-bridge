@@ -326,6 +326,12 @@ func TestIdentityLDAP(t *testing.T) {
 	if err != nil || c.Identity.MatchesUsernames() {
 		t.Errorf("match usernames %v with LDAP (%v)", c.Identity.MatchesUsernames(), err)
 	}
+	// The limits themselves are allowed.
+	for _, d := range []string{"10s", "1h"} {
+		if _, err := Parse([]byte(full + "identity:\n  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n    refresh_interval: " + d + "\n")); err != nil {
+			t.Errorf("refresh %s: %v", d, err)
+		}
+	}
 	for _, bad := range []string{
 		"  ldap:\n    url: ldap://ldap.spacecookies.dev\n    base_dn: dc=x\n",
 		"  match_usernames: true\n  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n",
@@ -334,6 +340,8 @@ func TestIdentityLDAP(t *testing.T) {
 		"  ldap:\n    base_dn: dc=x\n",
 		"  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n    refresh_interval: 1s\n",
 		"  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n    refresh_interval: 2h\n",
+		"  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n    refresh_interval: 1h0m1s\n",
+		"  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n    refresh_interval: 9s\n",
 		"  never_groups: [Administrators]\n  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n",
 	} {
 		if _, err := Parse([]byte(full + "identity:\n" + bad)); err == nil {
