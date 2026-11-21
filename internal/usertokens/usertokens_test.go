@@ -553,3 +553,33 @@ func TestConcurrentRenewalsRefreshOnce(t *testing.T) {
 		t.Errorf("link kept %v, %d refreshes, ok %v", ok, n, oks)
 	}
 }
+
+// Behind a proxy at a path (public_url https://gerrit.example/bridge), the
+// form posts, and the cookie is kept, under that path, as browsers reach
+// the page; the bridge still serves it at /github/link (fourteenth
+// review: nobody behind such a proxy could link).
+func TestLinkUnderAPath(t *testing.T) {
+	f := newFakeGitHub(t)
+	s := &Store{Path: filepath.Join(t.TempDir(), "tokens"), Key: testKey()}
+	l := &Linker{App: f.app(), Tokens: &Tokens{Store: s, App: f.app()}, PublicURL: "https://gerrit.example/bridge/",
+		GerritUser:    func(context.Context, github.User) (string, bool) { return "", false },
+		GerritAccount: func(context.Context, string) (int, error) { return 1000, nil }}
+	mux := http.NewServeMux()
+	l.Register(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/github/link", nil))
+	if !strings.Contains(w.Body.String(), `action="/bridge/github/link"`) {
+		t.Errorf("form: %s", w.Body)
+	}
+	req := httptest.NewRequest("POST", "/github/link", nil)
+	req.Header.Set("Origin", "https://gerrit.example")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	cs := w.Result().Cookies()
+	if w.Code != http.StatusFound || len(cs) != 1 || cs[0].Path != "/bridge/github/link" {
+		t.Errorf("start: %d, cookies %+v", w.Code, cs)
+	}
+	if !strings.Contains(w.Header().Get("Location"), url.QueryEscape("https://gerrit.example/bridge/github/link/callback")) {
+		t.Errorf("callback in %s", w.Header().Get("Location"))
+	}
+}

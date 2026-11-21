@@ -123,6 +123,18 @@ func (l *Linker) callback() string {
 	return strings.TrimSuffix(l.PublicURL, "/") + "/github/link/callback"
 }
 
+// linkPath is the link page's path as browsers reach it: under
+// PublicURL's path (a proxy's /bridge, say), though the bridge serves it
+// at /github/link (fourteenth review: the form posted to, and the cookie
+// was kept for, the bare path, so nobody behind such a proxy could link).
+func (l *Linker) linkPath() string {
+	p := ""
+	if u, err := url.Parse(l.PublicURL); err == nil {
+		p = strings.TrimSuffix(u.Path, "/")
+	}
+	return p + "/github/link"
+}
+
 // Register adds the routes to mux.
 func (l *Linker) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /github/link", l.intro)
@@ -151,7 +163,7 @@ func (l *Linker) start(w http.ResponseWriter, r *http.Request) {
 	if !l.sameOrigin(r) {
 		// A form on another site: GitHub may skip its consent screen, so
 		// it would link without the user asking to (tenth audit).
-		l.page(w, http.StatusForbidden, "Start linking from this page.", "/github/link")
+		l.page(w, http.StatusForbidden, "Start linking from this page.", l.linkPath())
 		return
 	}
 	state, err := l.newState(l.clock())
@@ -162,7 +174,7 @@ func (l *Linker) start(w http.ResponseWriter, r *http.Request) {
 	_, challenge := l.verifier(state)
 	// The state is also this browser's cookie: a callback made in
 	// another browser (someone else's link) is refused.
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: state, Path: "/github/link", MaxAge: int(linkTTL / time.Second),
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: state, Path: l.linkPath(), MaxAge: int(linkTTL / time.Second),
 		HttpOnly: true, Secure: strings.HasPrefix(l.PublicURL, "https://"), SameSite: http.SameSiteLaxMode})
 	http.Redirect(w, r, l.App.AuthorizeURL(l.callback(), state, challenge), http.StatusFound)
 }
@@ -193,41 +205,41 @@ func (l *Linker) finish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cookie, err := r.Cookie(cookieName)
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/github/link", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: l.linkPath(), MaxAge: -1})
 	if err != nil || state == "" || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(state)) != 1 {
-		l.page(w, http.StatusBadRequest, "This link was started in another browser, or has expired. Start again from the beginning.", "/github/link")
+		l.page(w, http.StatusBadRequest, "This link was started in another browser, or has expired. Start again from the beginning.", l.linkPath())
 		return
 	}
 	if !l.stateOK(state) {
-		l.page(w, http.StatusBadRequest, "This link has expired. Start again from the beginning.", "/github/link")
+		l.page(w, http.StatusBadRequest, "This link has expired. Start again from the beginning.", l.linkPath())
 		return
 	}
 	if e := q.Get("error"); e != "" {
-		l.page(w, http.StatusOK, "Not linked: you did not authorize the app on GitHub.", "/github/link")
+		l.page(w, http.StatusOK, "Not linked: you did not authorize the app on GitHub.", l.linkPath())
 		return
 	}
 	code := q.Get("code")
 	if code == "" {
-		l.page(w, http.StatusBadRequest, "GitHub sent no code. Start again from the beginning.", "/github/link")
+		l.page(w, http.StatusBadRequest, "GitHub sent no code. Start again from the beginning.", l.linkPath())
 		return
 	}
 	verifier, _ := l.verifier(state)
 	tok, err := l.App.Exchange(ctx, code, verifier, l.callback())
 	if err != nil {
 		l.logger().Warn("linking a GitHub account: exchanging the code", "err", err)
-		l.page(w, http.StatusBadGateway, "GitHub would not finish the link. Start again from the beginning.", "/github/link")
+		l.page(w, http.StatusBadGateway, "GitHub would not finish the link. Start again from the beginning.", l.linkPath())
 		return
 	}
 	// Once: only after GitHub took the code, so only links GitHub
 	// authorized are kept.
 	if !l.use(state) {
-		l.page(w, http.StatusBadRequest, "This link has expired. Start again from the beginning.", "/github/link")
+		l.page(w, http.StatusBadRequest, "This link has expired. Start again from the beginning.", l.linkPath())
 		return
 	}
 	gh, err := l.App.TokenUser(ctx, tok.Access)
 	if err != nil {
 		l.logger().Warn("linking a GitHub account: reading who it is", "err", err)
-		l.page(w, http.StatusBadGateway, "GitHub would not say who you are. Start again from the beginning.", "/github/link")
+		l.page(w, http.StatusBadGateway, "GitHub would not say who you are. Start again from the beginning.", l.linkPath())
 		return
 	}
 	user, ok := l.GerritUser(ctx, gh)
@@ -239,7 +251,7 @@ func (l *Linker) finish(w http.ResponseWriter, r *http.Request) {
 	account, err := l.GerritAccount(ctx, user)
 	if err != nil || account == 0 {
 		l.logger().Warn("linking a GitHub account: looking up its Gerrit account", "github_login", gh.Login, "gerrit_user", user, "err", err)
-		l.page(w, http.StatusBadGateway, "Gerrit would not say who you are there. Try again later.", "/github/link")
+		l.page(w, http.StatusBadGateway, "Gerrit would not say who you are there. Try again later.", l.linkPath())
 		return
 	}
 	rec := Record{GitHub: gh, GerritAccount: account, GerritUser: user, Token: tok, Linked: l.clock()}
@@ -275,7 +287,8 @@ func (l *Linker) use(state string) bool {
 
 type pageData struct {
 	Text, Next string
-	Button     bool // a form to start linking
+	Button     bool   // a form to start linking
+	Action     string // where it posts (linkPath)
 }
 
 var pageTmpl = template.Must(template.New("link").Parse(`<!doctype html>
@@ -283,7 +296,7 @@ var pageTmpl = template.Must(template.New("link").Parse(`<!doctype html>
 <title>Link GitHub</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:40em;margin:3em auto;padding:0 16px;color:#1f2328;background:#fff}
 @media (prefers-color-scheme: dark){body{color:#e6edf3;background:#0d1117}a{color:#4493f8}}</style></head>
-<body><h1>Link GitHub</h1><p>{{.Text}}</p>{{if .Button}}<form method="post" action="/github/link"><button type="submit">Link GitHub</button></form>{{end}}{{if .Next}}<p><a href="{{.Next}}">Continue</a></p>{{end}}</body></html>
+<body><h1>Link GitHub</h1><p>{{.Text}}</p>{{if .Button}}<form method="post" action="{{.Action}}"><button type="submit">Link GitHub</button></form>{{end}}{{if .Next}}<p><a href="{{.Next}}">Continue</a></p>{{end}}</body></html>
 `))
 
 func (l *Linker) page(w http.ResponseWriter, status int, text, next string) {
@@ -291,6 +304,7 @@ func (l *Linker) page(w http.ResponseWriter, status int, text, next string) {
 }
 
 func (l *Linker) render(w http.ResponseWriter, status int, d pageData) {
+	d.Action = l.linkPath()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://github.com; frame-ancestors 'none'")
