@@ -494,3 +494,15 @@ func unlinkedAuthorsOwnBelow(t *testing.T, lowHead string, hers bool) {
 		t.Errorf("lower change from %s: foreign %v (main pushed alice's own)", lowHead, snap.Foreign[2])
 	}
 }
+
+// Eighteenth review (regression guard): where Gerrit owns the branches
+// GitHub's approvals are not the gate, and the owner's GitHub approval of
+// their own change is their +2, dismissed by nothing, as on main. (This
+// file's fakes are newer than main's: the test itself does not build there.)
+func TestGerritOwnedOwnersGitHubApprovalVotes(t *testing.T) {
+	bob := gerrit.AccountInfo{AccountID: 7, Name: "Bob G", Username: "bobg"}
+	e := ownApproval(t, false, bob, map[int]gerrit.AccountInfo{1: bob, 2: bob})
+	if len(e.h.dismissed) != 0 || len(e.g.votes) != 1 {
+		t.Errorf("dismissed %v, Gerrit votes %v; want one vote, none dismissed", e.h.dismissed, e.g.votes)
+	}
+}

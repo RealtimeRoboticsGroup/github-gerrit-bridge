@@ -205,7 +205,7 @@ type commentSnapshot struct {
 	labels map[string]gerrit.LabelInfo
 	// owner is the change's owner, and revs its patch sets (who
 	// uploaded each, and its kind).
-	owner int
+	owner gerrit.AccountInfo
 	revs  map[int]gerrit.RevisionInfo
 	// wait is how long what was left out for now waits (tooFresh).
 	wait time.Duration
@@ -561,7 +561,7 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 		s.parents[r.Number] = len(r.Commit.Parents)
 	}
 	s.revision = ch.CurrentRevision
-	s.owner, s.revs = ch.Owner.AccountID, revisionsByNumber(ch)
+	s.owner, s.revs = ch.Owner, revisionsByNumber(ch)
 	s.messages = ch.Messages
 	s.labels = ch.Labels
 	s.current = s.shaToPS[ch.CurrentRevision]
@@ -767,12 +767,12 @@ func (c *Comments) gerritHeader(n int, gc *gerrit.CommentInfo, s *commentSnapsho
 // the change is theirs, they uploaded ps (or someone did on their
 // behalf), or whoever is responsible for its code (codeFrom) is them, or
 // cannot be told.
-func (s *commentSnapshot) ownCode(account, ps int) bool {
-	if account == 0 || account == s.owner {
+func (s *commentSnapshot) ownCode(account gerrit.AccountInfo, ps int) bool {
+	if (account.AccountID == 0 && account.Username == "") || sameAccount(account, s.owner) {
 		return true
 	}
 	theirs := func(r gerrit.RevisionInfo) bool {
-		return r.Uploader.AccountID == account || (r.RealUploader != nil && r.RealUploader.AccountID == account)
+		return sameAccount(r.Uploader, account) || (r.RealUploader != nil && sameAccount(*r.RealUploader, account))
 	}
 	if r, ok := s.revs[ps]; !ok || theirs(r) {
 		return true
@@ -1156,7 +1156,7 @@ func (c *Comments) postVote(ctx context.Context, n, pr int, s *commentSnapshot, 
 		// audit). Its words go as a comment that names the patch set.
 		return false, nil
 	}
-	if event == "APPROVE" && c.GitHubOwned && s.ownCode(msg.Author.AccountID, ps) {
+	if event == "APPROVE" && c.GitHubOwned && s.ownCode(msg.Author, ps) {
 		// Where GitHub owns the branches its required reviews are the
 		// gate, and GitHub counts no one's approval of their own PR; but
 		// a Gerrit-born change's PR is the bridge's, and so is every push
@@ -1919,6 +1919,16 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		if since {
 			body = notCounted + " its author has voted in Gerrit since.\n\n" + body
 		}
+		// Where GitHub owns the branches, a Gerrit-born change's PR and
+		// every push of a patch set are the bridge's, so GitHub lets
+		// whoever owns the change, or uploaded its code, approve it and
+		// counts that: theirs of their own code (eighteenth review). No
+		// vote, and dismissStale dismisses it.
+		own := rv.State == "APPROVED" && c.GitHubOwned && known && !early && !since && login != "" && asAuthor(login) &&
+			s.ownCode(gerrit.AccountInfo{Username: authors[login]}, s.current)
+		if own {
+			body = notCounted + " it approves code its author owns or uploaded.\n\n" + body
+		}
 		if login != "" && c.bodyTooFresh(s, "review/"+strconv.FormatInt(rv.ID, 10), rv.SubmittedAt, rv.Body) {
 			continue
 		}
@@ -1926,7 +1936,7 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		key := "review/" + strconv.FormatInt(rv.ID, 10)
 		add(key, login, ghComment{kindReviewBody, rv.ID, rv.Body}, ps, gerrit.PatchSetLevel,
 			gerrit.CommentInput{Message: gerritBody(rv.User.Login, rv.HTMLURL, body, asAuthor(login)), Unresolved: &f})
-		if vote && known && !early && !since && reviewed == s.current && login != "" {
+		if vote && known && !early && !since && !own && reviewed == s.current && login != "" {
 			// Design §6.4: approve = Code-Review +2 (or the most the user
 			// may give), request changes = -1. Only as the user (Run-As);
 			// the bridge never votes on someone's behalf as itself.
@@ -2124,6 +2134,20 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 			}
 			continue
 		}
+		if rv.State == "APPROVED" && c.GitHubOwned {
+			// GitHub counts it, mirrored or not: one by whoever owns the
+			// change or uploaded the PR head's code is theirs of their
+			// own code, made through the bridge's authorship and pushes
+			// (eighteenth review). Read on every sync: a later upload of
+			// theirs makes an older approval their own too.
+			dismissed, err := c.dismissOwn(ctx, n, pr, rv, s)
+			if err != nil {
+				return err
+			}
+			if dismissed {
+				continue
+			}
+		}
 		if mc == nil || strings.HasPrefix(mc.GerritID, "refused:") {
 			continue // not mirrored, or Gerrit would not take it: nothing to disagree with
 		}
@@ -2173,6 +2197,30 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 		c.Logger.Info("dismissed GitHub review Gerrit disagrees with", "change", n, "pr", pr, "review", rv.ID, "user", rv.User.Login, "state", rv.State, "gerrit", now)
 	}
 	return nil
+}
+
+// dismissOwn dismisses GitHub approval rv if it is its author's of their
+// own code: they own the change, or uploaded (or had uploaded) the code of
+// the current patch set, the PR's head. It reports whether it did.
+func (c *Comments) dismissOwn(ctx context.Context, n, pr int, rv github.Review, s *commentSnapshot) (bool, error) {
+	user, ok, err := c.Users.Lookup(ctx, rv.User)
+	if err != nil {
+		return false, err
+	}
+	if !ok || !s.ownCode(gerrit.AccountInfo{Username: user}, s.current) {
+		return false, nil
+	}
+	msg := fmt.Sprintf("@%s owns or uploaded this code in [Gerrit](%s): an approval of one's own code is not a review.",
+		rv.User.Login, c.Gerrit.ChangeURL(c.Project, n))
+	if c.DryRun {
+		c.Logger.Info("dry run: would dismiss an approval of its author's own code", "change", n, "pr", pr, "review", rv.ID, "user", rv.User.Login)
+		return true, nil
+	}
+	if err := c.GitHub.DismissReview(ctx, pr, rv.ID, msg); err != nil {
+		return false, fmt.Errorf("dismissing review %d on #%d: %w", rv.ID, pr, err)
+	}
+	c.Logger.Info("dismissed a GitHub approval of its author's own code", "change", n, "pr", pr, "review", rv.ID, "user", rv.User.Login)
+	return true, nil
 }
 
 // dropDismissed withdraws the Code-Review vote a GitHub approval cast once

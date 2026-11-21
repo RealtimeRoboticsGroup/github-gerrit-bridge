@@ -1911,6 +1911,10 @@ notes; nothing on GitHub advertises the link.
   GitHub's required reviews are the gate there, and the bridge's PR and
   pushes would hide that it is their approval of their own code. A
   reply posted on someone's behalf (real_author) is never their review.
+  The other way too (eighteenth review): an approval made on GitHub by
+  whoever owns the change or uploaded the head's code casts no Gerrit
+  vote and is dismissed, on whichever sync finds it so (a later upload of
+  theirs makes an older approval their own).
   A +1, or a vote of
   another label, stays a PR comment if it has words, and the statuses show
   it either way. Excluded: votes the bridge cast itself (a GitHub approval
