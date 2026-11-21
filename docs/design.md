@@ -138,7 +138,11 @@ checklist.
   permission API, checked against the linked account's id); owning the
   change is no pass. Others are withheld with a notice saying where to
   link. A change based on a withheld one is withheld too (its PR would
-  carry the parent's code). The same rule replaces CI's trusted group for
+  carry the parent's code), and so is any change that would bring GitHub
+  a commit (between it and the branch, merges' other parents included)
+  that GitHub does not have and that no mirrored change's current patch
+  set is: an unlinked user's outdated, abandoned or private patch set,
+  say. The same rule replaces CI's trusted group for
   Gerrit patch sets pushed to GitHub-born PRs' branches, where owning the
   change is no pass either unless the branch is the author's fork. The
   importer never restores ("Gerrit wins") a patch set the rule withholds. Nobody gets more through Gerrit

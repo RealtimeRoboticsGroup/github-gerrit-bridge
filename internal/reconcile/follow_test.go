@@ -712,3 +712,60 @@ func TestGitHubBornIsNotWithheldAsUnlinked(t *testing.T) {
 		t.Error("a GitHub-born change withheld as unlinked")
 	}
 }
+
+// A linked writer's change brings GitHub nothing nobody mirrored vouches
+// for: on an unlinked user's outdated, abandoned or private patch set, or
+// merging one in, it is withheld too (twelfth review).
+func TestObserveWithholdsWhatNobodyVouchesFor(t *testing.T) {
+	for _, how := range []string{"new patch set", "abandoned", "private", "merged in", "none", "on a mirrored one", "on one GitHub has", "on one recorded, not on GitHub"} {
+		ctx := context.Background()
+		s, c, base := followSites(t)
+		c.Publishable = func(_ context.Context, a int) (bool, bool) { return a == 8, true }
+		add := func(n int, rev string, who int) *gerrit.ChangeInfo {
+			msg := fmt.Sprintf("C%d\n\nChange-Id: %s\n", n, cid(n))
+			ci := s.change(n, cid(n), rev, msg, "NEW")
+			r := ci.Revisions[rev]
+			r.Uploader = gerrit.AccountInfo{AccountID: who}
+			ci.Revisions[rev], ci.Owner = r, r.Uploader
+			return ci
+		}
+		mal := s.commit(base, "m", "m\n", fmt.Sprintf("C1\n\nChange-Id: %s\n", cid(1)))
+		if how == "none" {
+			mal = base // the writer's change is on the branch
+		} else if how == "on a mirrored one" {
+			add(1, mal, 8) // a linked writer's too
+		} else {
+			add(1, mal, 7)
+		}
+		var bob string
+		if how == "merged in" {
+			own := s.commit(base, "b", "b\n", "Bob's")
+			tree := s.git("work", "rev-parse", mal+"^{tree}")
+			bob = s.git("work", "commit-tree", tree, "-p", own, "-p", mal, "-m", fmt.Sprintf("C2\n\nChange-Id: %s\n", cid(2)))
+		} else {
+			bob = s.commit(mal, "b", "b\n", fmt.Sprintf("C2\n\nChange-Id: %s\n", cid(2)))
+		}
+		add(2, bob, 8)
+		switch how {
+		case "on one GitHub has", "on one recorded, not on GitHub":
+			// Imported from a PR (GitHub has it), then outdated.
+			gh := map[bool]string{true: "f00d"}[how == "on one GitHub has"]
+			s.save(ctx, c.Store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "github", Lifecycle: "NEW"},
+				Revisions: []state.Revision{{PatchSet: 1, GerritSHA: mal, GitHubSHA: gh}}})
+			add(1, s.commit(base, "m", "m2\n", fmt.Sprintf("C1\n\nChange-Id: %s\n", cid(1))), 7)
+		case "new patch set":
+			add(1, s.commit(base, "m", "m2\n", fmt.Sprintf("C1\n\nChange-Id: %s\n", cid(1))), 7)
+		case "abandoned":
+			s.changes[1].Status = "ABANDONED"
+		case "private":
+			s.changes[1].IsPrivate = true
+		}
+		snap, err := c.observe(ctx, "main", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snap.Withheld[2] != (how != "none" && how != "on a mirrored one" && how != "on one GitHub has") {
+			t.Errorf("%s: withheld %v", how, snap.Withheld)
+		}
+	}
+}

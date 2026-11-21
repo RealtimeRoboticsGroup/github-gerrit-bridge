@@ -567,6 +567,98 @@ func (c *Code) withholdChildren(ctx context.Context, s *Snapshot) error {
 	}
 }
 
+// maxBrought is how many commits a change may bring to GitHub, beyond
+// its branch, for withholdUnvetted to look at; one bringing more is
+// withheld.
+const maxBrought = 1000
+
+// withholdUnvetted, where GitHub owns the branches, withholds each open
+// change that would bring GitHub a commit it does not have and nobody
+// mirrored vouches for: every commit between its patch set and the
+// branch (merges' other parents too) must be one GitHub has (a patch set
+// the bridge pushed or imported) or a mirrored change's current patch
+// set. withholdChildren only looks at a first parent that is a withheld
+// change's current patch set; an outdated, abandoned or private one's,
+// or a merged-in one's, would otherwise reach GitHub as part of a linked
+// writer's change (twelfth review). Nobody gets more through Gerrit than
+// they have on GitHub.
+func (c *Code) withholdUnvetted(ctx context.Context, s *Snapshot, branch string) error {
+	if !c.GitHubOwned {
+		return nil
+	}
+	onGitHub := map[string]bool{}
+	for _, st := range s.State {
+		for _, r := range st.Revisions {
+			if r.GitHubSHA != "" && r.GerritSHA != "" {
+				onGitHub[r.GerritSHA] = true // pushed, or imported: its code is GitHub's
+			}
+		}
+	}
+	mirrored := func(n int) bool {
+		ch := s.Changes[n]
+		return ch.Status == "NEW" && !ch.Private && ch.Revision != "" && !s.Withheld[n] && !s.Foreign[n]
+	}
+	not := []string{"--not", "refs/remotes/gerrit/heads/" + branch}
+	if c.DefaultBranch != "" && c.DefaultBranch != branch {
+		not = append(not, "refs/remotes/gerrit/heads/"+c.DefaultBranch)
+	}
+	brought := map[int][]string{}
+	for _, n := range sortedKeys(s.Changes) {
+		if !mirrored(n) {
+			continue
+		}
+		rev := s.Changes[n].Revision
+		out, err := c.Mirror.Git(ctx, nil, append([]string{"rev-list", fmt.Sprintf("--max-count=%d", maxBrought+1), rev}, not...)...)
+		if err != nil {
+			return fmt.Errorf("listing what change %d brings: %w", n, err)
+		}
+		brought[n] = strings.Fields(string(out))
+	}
+	for {
+		vouched := map[string]bool{}
+		for n, ch := range s.Changes {
+			if mirrored(n) {
+				vouched[ch.Revision] = true
+			}
+		}
+		more := false
+		for _, n := range sortedKeys(brought) {
+			ch := s.Changes[n]
+			if !mirrored(n) {
+				continue
+			}
+			bad := ""
+			if len(brought[n]) > maxBrought {
+				bad = fmt.Sprintf("more than %d commits", maxBrought)
+			}
+			for _, sha := range brought[n] {
+				if bad == "" && !onGitHub[sha] && !vouched[sha] { // its own patch set is vouched for
+					bad = "commit " + short(sha)
+				}
+			}
+			if bad == "" {
+				continue
+			}
+			s.Withheld[n], more = true, true
+			if st := s.State[n]; c.DryRun || (st != nil && st.State.WithheldNotice == ch.PatchSet) {
+				continue
+			}
+			msg := fmt.Sprintf("Patch set %d is not mirrored to GitHub: it would bring %s, which GitHub does not have and no mirrored change's "+
+				"current patch set is (an outdated, abandoned, private or withheld change's, say). Rebase it onto the branch or a mirrored change.", ch.PatchSet, bad)
+			if !c.notice(ctx, n, ch, msg) {
+				continue
+			}
+			if err := c.updateState(ctx, n, "withheld notice", func(st *state.Change) { st.State.WithheldNotice = ch.PatchSet }); err != nil {
+				return err
+			}
+			c.Logger.Info("withheld from GitHub", "change", n, "patch_set", ch.PatchSet, "why", "brings "+bad)
+		}
+		if !more {
+			return nil
+		}
+	}
+}
+
 // notice posts msg on change n's current patch set as the bridge, and
 // reports whether it is done with: posted, or refused for good (a 4xx,
 // such as the change's comment limit), which is logged.
@@ -957,6 +1049,9 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]strin
 		return nil, err
 	}
 	if err := c.withholdChildren(ctx, s); err != nil {
+		return nil, err
+	}
+	if err := c.withholdUnvetted(ctx, s, branch); err != nil {
 		return nil, err
 	}
 	c.deferOverBudget(ctx, s)
