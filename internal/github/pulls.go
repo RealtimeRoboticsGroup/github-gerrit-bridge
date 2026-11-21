@@ -3,7 +3,6 @@ package github
 import (
 	"cmp"
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -176,11 +175,12 @@ func (c *Client) mergeAsync(ctx context.Context, n int, m MergeInput) (string, e
 	if _, err := c.Do(ctx, http.MethodPut, path, in, &r); err != nil {
 		return "", err
 	}
+	uuid := r.Details.UUID // what is polled for
 	for try := 0; ; try++ {
 		switch r.Status {
 		case "merged":
 			if r.Details.SHA == "" {
-				return "", fmt.Errorf("GitHub merged PR %d but did not say as which commit", n)
+				return "", &APIError{Method: http.MethodPut, Path: path, Status: http.StatusAccepted, Message: "GitHub merged it but did not say as which commit. Gerrit shows the change merged once it has it."}
 			}
 			return r.Details.SHA, nil
 		case "failed":
@@ -189,7 +189,7 @@ func (c *Client) mergeAsync(ctx context.Context, n int, m MergeInput) (string, e
 		default: // enqueued, or anything new: not merged
 			return "", &APIError{Method: http.MethodPut, Path: path, Status: http.StatusAccepted, Message: "GitHub did not merge it directly (status " + r.Status + ")."}
 		}
-		if r.Details.UUID == "" || try >= asyncMergeTries {
+		if uuid == "" || try >= asyncMergeTries {
 			return "", &APIError{Method: http.MethodPut, Path: path, Status: http.StatusAccepted, Message: "GitHub is still merging it. Gerrit shows the change merged once it is."}
 		}
 		select {
@@ -197,13 +197,9 @@ func (c *Client) mergeAsync(ctx context.Context, n int, m MergeInput) (string, e
 			return "", ctx.Err()
 		case <-time.After(asyncMergePoll):
 		}
-		uuid := r.Details.UUID
 		r = result{}
 		if _, err := c.Do(ctx, http.MethodGet, path+"/"+url.PathEscape(uuid), nil, &r); err != nil {
 			return "", err
-		}
-		if r.Details.UUID == "" {
-			r.Details.UUID = uuid
 		}
 	}
 }

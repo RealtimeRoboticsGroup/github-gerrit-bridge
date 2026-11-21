@@ -1,6 +1,7 @@
 package github
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -864,14 +865,19 @@ func TestMergePullAndCommits(t *testing.T) {
 // rules, and its result polled for: the commit it made, or GitHub's own
 // reason it failed.
 func TestMergePullStacked(t *testing.T) {
-	asyncMergePoll = time.Millisecond
-	t.Cleanup(func() { asyncMergePoll = 2 * time.Second })
+	asyncMergePoll, asyncMergeTries = time.Millisecond, 5
+	t.Cleanup(func() { asyncMergePoll, asyncMergeTries = 2*time.Second, 30 })
 	for _, tc := range []struct {
 		final, sha, err string
+		first           string // the merge's own answer, if not pending on u-1
 	}{
-		{`{"status":"merged","details":{"sha":"def"}}`, "def", ""},
-		{`{"status":"failed","details":{"message":"At least 1 approving review is required."}}`, "", "At least 1 approving review is required."},
-		{`{"status":"enqueued","details":{}}`, "", "did not merge it directly"},
+		{`{"status":"merged","details":{"sha":"def"}}`, "def", "", ""},
+		{`{"status":"failed","details":{"message":"At least 1 approving review is required."}}`, "", "At least 1 approving review is required.", ""},
+		{`{"status":"enqueued","details":{}}`, "", "did not merge it directly", ""},
+		{`{"status":"merged","details":{}}`, "", "did not say as which commit", ""},
+		{`{"status":"pending","details":{"uuid":"u-1"}}`, "", "still merging", ""}, // never done
+		{`{"status":"pending","details":{}}`, "", "still merging", ""},             // its uuid kept
+		{"", "", "still merging", `{"status":"pending","details":{}}`},             // nothing to poll for
 	} {
 		polls := 0
 		c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -885,7 +891,7 @@ func TestMergePullStacked(t *testing.T) {
 					t.Errorf("merge body %v", in)
 				}
 				w.WriteHeader(http.StatusAccepted)
-				io.WriteString(w, `{"status":"pending","details":{"uuid":"u-1"}}`)
+				io.WriteString(w, cmp.Or(tc.first, `{"status":"pending","details":{"uuid":"u-1"}}`))
 			case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/pulls/7/merge-async/u-1":
 				if polls++; polls < 3 {
 					io.WriteString(w, `{"status":"pending","details":{"uuid":"u-1"}}`)
@@ -898,7 +904,9 @@ func TestMergePullStacked(t *testing.T) {
 		})
 		sha, err := c.MergePull(context.Background(), 7, MergeInput{Message: "M", SHA: "abc", Method: "squash", Stacked: true, Base: "main"})
 		var ae *APIError
-		if sha != tc.sha || (tc.err == "") != (err == nil) || (err != nil && (!errors.As(err, &ae) || !strings.Contains(ae.Message, tc.err))) {
+		// GitHub's refusals are for the user: a status under 500, which
+		// /submit's reply quotes.
+		if sha != tc.sha || (tc.err == "") != (err == nil) || (err != nil && (!errors.As(err, &ae) || !strings.Contains(ae.Message, tc.err) || ae.Status >= 500)) {
 			t.Errorf("%s: %q %v", tc.final, sha, err)
 		}
 	}
