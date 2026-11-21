@@ -22,8 +22,26 @@ import (
 // by account: a login alone is a name a rename frees for anyone to take
 // (sixth and seventh audits), so whoever did something is given with the
 // numeric id GitHub says it with.
+//
+// Lookup's err is a lookup that could not answer (the directory cannot be
+// read, Gerrit cannot be asked): not "nobody", which some of what the
+// bridge does for (uploading as itself, posting as the bot) does for
+// good. Callers wait and try again (fifteenth review: a lookup that
+// failed mid-reconcile answered nobody).
 type Identity interface {
-	GerritUserFor(ctx context.Context, gh github.User) (string, bool)
+	Lookup(ctx context.Context, gh github.User) (user string, ok bool, err error)
+}
+
+// IdentityUnknown is a lookup that could not answer.
+type IdentityUnknown struct{ Err error }
+
+func (e *IdentityUnknown) Error() string { return "who is who is unknown for now: " + e.Err.Error() }
+func (e *IdentityUnknown) Unwrap() error { return e.Err }
+
+// isIdentityUnknown reports whether err is, or wraps, an IdentityUnknown.
+func isIdentityUnknown(err error) bool {
+	var u *IdentityUnknown
+	return errors.As(err, &u)
 }
 
 // UserQuerier finds Gerrit accounts.
@@ -62,8 +80,9 @@ type Users struct {
 	// administrator says, asked by the id GitHub says the actor with, and
 	// what it says is as an override is, its pins included. Who it does
 	// not list is nobody: Overrides and Gerrit are not asked (the owner's
-	// call, 2026-11-21: everyone must be in it). Any error reading it
-	// matches nobody.
+	// call, 2026-11-21: everyone must be in it). While it cannot be
+	// read, or what it names checked, lookups are unknown (an error), not
+	// nobody.
 	Directory GitHubDirectory
 	// Pins, with GitHub, pin each Gerrit account to the GitHub account
 	// (numeric id) it was first matched to (design §7.1). Nil: no pinning.
@@ -290,20 +309,23 @@ func (u *Users) byLogin(ctx context.Context, login string, fresh bool) cachedUse
 	return c
 }
 
-// GerritUserFor implements Identity. A login is only a name, which a
+// Lookup implements Identity. A login is only a name, which a
 // rename frees for someone else to take, and a lookup by it is reused for
 // a while: with pins, the account is gh's only if gh's numeric id is the
 // one checked against its pin, looked up afresh if the cached one was
 // someone else's (sixth audit: within the cache's two minutes, whoever
 // took a renamed trusted user's login acted as them), or if gh's id is
 // not known (seventh audit).
-func (u *Users) GerritUserFor(ctx context.Context, gh github.User) (string, bool) {
+func (u *Users) Lookup(ctx context.Context, gh github.User) (string, bool, error) {
 	if u.Directory == nil {
-		return u.byMatch(ctx, gh)
+		// As main did, unknown included: overrides and usernames answer
+		// nobody when Gerrit cannot be asked.
+		user, ok := u.byMatch(ctx, gh)
+		return user, ok, nil
 	}
 	for _, n := range u.NeverLogins {
 		if strings.EqualFold(n, gh.Login) {
-			return "", false
+			return "", false, nil
 		}
 	}
 	id := gh.ID
@@ -311,17 +333,24 @@ func (u *Users) GerritUserFor(ctx context.Context, gh github.User) (string, bool
 		// Not said with an id (GitHub gave none: a mannequin, say): the
 		// directory goes by id, and whoever holds the login now need not
 		// be who acted (fourteenth review).
-		return "", false
+		return "", false, nil
 	}
 	a, found, err := u.Directory.ByGitHubID(id)
 	if err != nil {
-		u.warnErr("the GitHub account directory cannot be read; matching nobody", gh.Login, err)
-		return "", false
+		u.warnErr("the GitHub account directory cannot be read; waiting", gh.Login, err)
+		return "", false, &IdentityUnknown{err}
 	}
 	if !found {
-		return "", false // not in the directory: nobody
+		return "", false, nil // not in the directory: nobody
 	}
 	return u.byDirectory(ctx, gh.Login, a)
+}
+
+// GerritUserFor is Lookup taking unknown for nobody: only for tests, and
+// what may (nothing in the bridge does).
+func (u *Users) GerritUserFor(ctx context.Context, gh github.User) (string, bool) {
+	user, ok, _ := u.Lookup(ctx, gh)
+	return user, ok
 }
 
 // byDirectory is GerritUserFor for GitHub account a.GitHubID, which the
@@ -329,15 +358,15 @@ func (u *Users) GerritUserFor(ctx context.Context, gh github.User) (string, bool
 // must be one Gerrit reads as itself, active, and not the bridge's own;
 // its pin is the directory's (pinDirectory). never_groups do not apply: the entry names
 // the account outright, as an override does.
-func (u *Users) byDirectory(ctx context.Context, login string, a ldap.Account) (string, bool) {
+func (u *Users) byDirectory(ctx context.Context, login string, a ldap.Account) (string, bool, error) {
 	// Asked every time, not reused (fourteenth review: a deactivated
 	// account was acted as for two minutes; no "recent enough" here).
 	user, ok, err := u.checkDirectory(ctx, login, a)
 	if err != nil {
-		u.warnErr("checking the Gerrit account the directory names; matching nobody", login, err)
-		return "", false
+		u.warnErr("checking the Gerrit account the directory names; waiting", login, err)
+		return "", false, &IdentityUnknown{err}
 	}
-	return user, ok
+	return user, ok, nil
 }
 
 // checkDirectory is byDirectory's check; user is Gerrit's own name for
@@ -375,8 +404,11 @@ func (u *Users) checkDirectory(ctx context.Context, login string, a ldap.Account
 			"directory_login", a.GitHubLogin, "github_id", a.GitHubID, "gerrit_user", name)
 	}
 	if u.Pins != nil {
+		// The directory decides, not the pins (which only guard username
+		// matching): a pin that cannot be read or written now is said,
+		// and is no reason to wait (fifteenth review).
 		if err := u.pinDirectory(ctx, a); err != nil {
-			return "", false, err
+			u.warnErr("pinning the GitHub account the directory gives a Gerrit user", login, err)
 		}
 	}
 	return accts[i].Username, true, nil

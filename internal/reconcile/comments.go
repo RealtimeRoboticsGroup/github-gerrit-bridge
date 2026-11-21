@@ -74,7 +74,8 @@ type UserGitHub interface {
 // (design §7.2), to post their content on GitHub as them.
 type Authors interface {
 	// Linked is the GitHub account Gerrit account posts as, if linked.
-	Linked(ctx context.Context, account int) (github.User, bool)
+	// err: the mapping that decides it is unknown for now.
+	Linked(ctx context.Context, account int) (github.User, bool, error)
 	// Client returns a client posting as it (ok false: as the bridge);
 	// err is a failure to renew its token that may pass.
 	Client(ctx context.Context, account int) (api UserGitHub, gh github.User, ok bool, err error)
@@ -423,7 +424,9 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 			c.settle(snap, first)
 		}
 		snap.posters = posters
-		c.recover(ctx, n, snap, m)
+		if err := c.recover(ctx, n, snap, m); err != nil {
+			return err
+		}
 		c.recoverThreads(snap, m, threads)
 		p1, err := c.gerritToGitHub(ctx, n, pr, snap, m, threads)
 		if err != nil {
@@ -604,8 +607,11 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	return s, nil
 }
 
-// recover adds mappings that the markers prove but state lacks.
-func (c *Comments) recover(ctx context.Context, n int, s *commentSnapshot, m *commentMap) {
+// recover adds mappings that the markers prove but state lacks. err: a
+// link it needed is unknown for now (a copy taken for a new comment
+// would be mirrored back).
+func (c *Comments) recover(ctx context.Context, n int, s *commentSnapshot, m *commentMap) error {
+	var unknown error
 	mark := func(body string, kind string, id int64) {
 		for _, sm := range gerritMarker.FindAllStringSubmatch(body, -1) {
 			if sm[1] == strconv.Itoa(n) {
@@ -657,7 +663,12 @@ func (c *Comments) recover(ctx context.Context, n int, s *commentSnapshot, m *co
 				if sm[1] != strconv.Itoa(n) {
 					continue
 				}
-				if gh, ok := c.Authors.Linked(ctx, authorOf(sm[2])); ok && gh.ID == u.ID && u.ID != 0 {
+				gh, ok, err := c.Authors.Linked(ctx, authorOf(sm[2]))
+				if err != nil {
+					unknown = cmp.Or(unknown, err)
+					return
+				}
+				if ok && gh.ID == u.ID && u.ID != 0 {
 					mc := state.Comment{GerritID: sm[2], GitHubID: id, Kind: kind, Origin: "gerrit", As: u.ID}
 					if gc := s.byID[sm[2]]; gc != nil {
 						mc.BodyHash = hashString(gc.Message)
@@ -692,6 +703,7 @@ func (c *Comments) recover(ctx context.Context, n int, s *commentSnapshot, m *co
 			m.add(mc)
 		}
 	}
+	return unknown
 }
 
 // recoverThreads links every mapped Gerrit thread root to its GitHub
@@ -1000,7 +1012,11 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 		// review, with or without words.
 		event := ""
 		if c.Authors != nil && c.ownMessage(msg) {
-			if _, linked := c.Authors.Linked(ctx, msg.Author.AccountID); linked {
+			_, linked, err := c.Authors.Linked(ctx, msg.Author.AccountID)
+			if err != nil {
+				return false, err
+			}
+			if linked {
 				switch v := codeReviewVote(msg.Message); {
 				case v >= 2:
 					event = "APPROVE"
@@ -1563,6 +1579,9 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 	// GitHub's numeric ids for the logins: a login names one account at
 	// a time, the same in every answer.
 	ids := map[string]int64{}
+	// unknown is a lookup that could not answer: then nothing is posted
+	// (as the bridge's, for good), and it all waits (fifteenth review).
+	var unknown error
 	for _, rc := range s.rcs {
 		ids[rc.User.Login] = rc.User.ID
 	}
@@ -1579,7 +1598,11 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		if u, ok := authors[login]; ok {
 			return u != ""
 		}
-		_, u := c.asUser(ctx, github.User{Login: login, ID: ids[login]})
+		_, u, err := c.asUser(ctx, github.User{Login: login, ID: ids[login]})
+		if err != nil {
+			unknown = cmp.Or(unknown, err) // nothing is posted, below
+			return false
+		}
 		authors[login] = u
 		return u != ""
 	}
@@ -1797,6 +1820,9 @@ func (c *Comments) githubToGerrit(ctx context.Context, n, pr int, s *commentSnap
 		add("issue/"+strconv.FormatInt(ic.ID, 10), login, ghComment{kindIssueComment, ic.ID, ic.Body}, ps, gerrit.PatchSetLevel,
 			gerrit.CommentInput{Message: gerritBody(ic.User.Login, ic.HTMLURL, ic.Body, asAuthor(login)), Unresolved: &f})
 	}
+	if unknown != nil {
+		return false, unknown
+	}
 	for _, k := range order {
 		b := batches[k]
 		if c.DryRun {
@@ -1970,7 +1996,10 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 			// audit). Gerrit has its text, saying it was not counted.
 			continue
 		}
-		user, ok := c.Users.GerritUserFor(ctx, rv.User)
+		user, ok, err := c.Users.Lookup(ctx, rv.User)
+		if err != nil {
+			return err
+		}
 		if !ok {
 			continue // never voted: the review is only text in Gerrit
 		}
@@ -2018,7 +2047,10 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 // the bridge cannot withdraw it, it says so on the change and the PR.
 // mc is the review's mirror, if mapped.
 func (c *Comments) dropDismissed(ctx context.Context, n, pr int, rv github.Review, mc *state.Comment, s *commentSnapshot, dismissals *map[int64]github.Dismissal) error {
-	g, user := c.asUser(ctx, rv.User)
+	g, user, err := c.asUser(ctx, rv.User)
+	if err != nil {
+		return err
+	}
 	if gerrit.AmbiguousUsername(user) {
 		user = ""
 	}
@@ -2271,8 +2303,11 @@ func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnap
 			if !hr {
 				msg = "Unresolved on GitHub."
 			}
-			_, user := c.asUser(ctx, resolver[t.GitHubThread])
-			err := c.setReviewAs(ctx, resolver[t.GitHubThread].Login, user, n, strconv.Itoa(last.PatchSet), gerrit.ReviewInput{
+			_, user, err := c.asUser(ctx, resolver[t.GitHubThread])
+			if err != nil {
+				return changed, err
+			}
+			err = c.setReviewAs(ctx, resolver[t.GitHubThread].Login, user, n, strconv.Itoa(last.PatchSet), gerrit.ReviewInput{
 				Comments: map[string][]gerrit.CommentInput{last.Path: {{
 					InReplyTo: last.ID, Line: last.Line, Range: last.Range, Side: last.Side,
 					Message: msg, Unresolved: &unresolved,
@@ -2747,14 +2782,18 @@ func (c *Comments) bridgePost(gc *gerrit.CommentInfo) bool {
 // as returns the Gerrit client to post GitHub user login's content with:
 // their own account if they have one and Run-As is set up, else the
 // bridge's.
-func (c *Comments) asUser(ctx context.Context, gh github.User) (GerritAPI, string) {
+func (c *Comments) asUser(ctx context.Context, gh github.User) (GerritAPI, string, error) {
 	if c.GerritAs == nil || c.Users == nil || gh.Login == "" {
-		return c.Gerrit, ""
+		return c.Gerrit, "", nil
 	}
-	if user, ok := c.Users.GerritUserFor(ctx, gh); ok {
-		return c.GerritAs(user), user
+	user, ok, err := c.Users.Lookup(ctx, gh)
+	if err != nil {
+		return nil, "", err
 	}
-	return c.Gerrit, ""
+	if ok {
+		return c.GerritAs(user), user, nil
+	}
+	return c.Gerrit, "", nil
 }
 
 // setReviewAs posts in as GitHub user login's Gerrit account user (Run-As;

@@ -1441,7 +1441,10 @@ func (c *Code) markUnlinked(ctx context.Context, s *Snapshot, repo string, open 
 		if ch.OwnerID != 0 && ch.OwnerID == c.BridgeAccount {
 			s.Unlinked[n] = true
 		} else if pr := open[num]; pr != nil && c.Identity != nil {
-			author, ok := c.Identity.GerritUserFor(ctx, pr.User)
+			author, ok, err := c.Identity.Lookup(ctx, pr.User)
+			if err != nil {
+				return err
+			}
 			s.Unlinked[n] = ok && strings.EqualFold(author, ch.Owner)
 		}
 	}
@@ -1566,7 +1569,10 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 		login := ev.Actor.Login
 		user, ok := "", false
 		if c.Identity != nil {
-			user, ok = c.Identity.GerritUserFor(ctx, ev.Actor)
+			var err error
+			if user, ok, err = c.Identity.Lookup(ctx, ev.Actor); err != nil {
+				return false, err
+			}
 		}
 		g := c.Gerrit
 		if ok {
@@ -1954,7 +1960,10 @@ func (c *Code) asEditor(ctx context.Context, ch *GerritChange, pr *github.PullRe
 	}
 	user, ok := "", false
 	if c.Identity != nil && login != "" {
-		user, ok = c.Identity.GerritUserFor(ctx, gh)
+		var err error
+		if user, ok, err = c.Identity.Lookup(ctx, gh); err != nil {
+			return "", err
+		}
 	}
 	g, as := c.Gerrit, "the bridge"
 	switch {

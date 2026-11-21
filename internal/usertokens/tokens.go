@@ -18,7 +18,9 @@ type Tokens struct {
 	// the identity mapping (pins, exclusions) as it is: a record is used
 	// only while it does, so an account excluded or re-pinned since its
 	// link stops posting as its GitHub account.
-	Check  func(ctx context.Context, gh github.User, gerritUser string) bool
+	// An error is the mapping unknown for now: neither yes nor no, and
+	// For and Linked say so.
+	Check  func(ctx context.Context, gh github.User, gerritUser string) (bool, error)
 	Logger *slog.Logger
 
 	mu  sync.Mutex // one refresh or link at a time: each voids the last token
@@ -55,7 +57,9 @@ func (t *Tokens) For(ctx context.Context, account int) (token string, gh github.
 	if !found {
 		return "", github.User{}, false, nil
 	}
-	if t.Check != nil && !t.Check(ctx, rec.GitHub, rec.GerritUser) {
+	if ok, err := t.check(ctx, rec); err != nil {
+		return "", github.User{}, false, err
+	} else if !ok {
 		t.logger().Info("linked GitHub account no longer maps to its Gerrit account; posting as the bridge",
 			"github_login", rec.GitHub.Login, "github_id", rec.GitHub.ID, "gerrit_user", rec.GerritUser)
 		return "", github.User{}, false, nil
@@ -120,8 +124,8 @@ func (t *Tokens) renew(ctx context.Context, id int64) (string, github.User, bool
 		if err := t.Store.Put(rec); err != nil {
 			t.logger().Error("saving user tokens", "err", err)
 		}
-		if t.Check != nil && !t.Check(ctx, rec.GitHub, rec.GerritUser) {
-			return "", github.User{}, false, nil
+		if ok, err := t.check(ctx, rec); err != nil || !ok {
+			return "", github.User{}, false, err
 		}
 	}
 	return tok.Access, rec.GitHub, true, nil
@@ -157,15 +161,26 @@ func (t *Tokens) Link(rec Record) error {
 // while the identity mapping still maps them, as For (tenth audit: a
 // stale link let its GitHub account's comment pass for the copy of the
 // Gerrit account's).
-func (t *Tokens) Linked(ctx context.Context, account int) (github.User, bool) {
+func (t *Tokens) Linked(ctx context.Context, account int) (github.User, bool, error) {
 	if t == nil || t.Store == nil || account == 0 {
-		return github.User{}, false
+		return github.User{}, false, nil
 	}
 	r, ok := t.byAccount(account)
-	if !ok || (t.Check != nil && !t.Check(ctx, r.GitHub, r.GerritUser)) {
-		return github.User{}, false
+	if !ok {
+		return github.User{}, false, nil
 	}
-	return r.GitHub, true
+	if ok, err := t.check(ctx, r); err != nil || !ok {
+		return github.User{}, false, err
+	}
+	return r.GitHub, true, nil
+}
+
+// check asks Check about rec's link (yes if there is no Check).
+func (t *Tokens) check(ctx context.Context, rec Record) (bool, error) {
+	if t.Check == nil {
+		return true, nil
+	}
+	return t.Check(ctx, rec.GitHub, rec.GerritUser)
 }
 
 // Source is a token source for GitHub account id's token access: GitHub

@@ -452,9 +452,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		app := &github.UserApp{ClientID: a.ClientID, ClientSecret: secret,
 			HTTP: &http.Client{Timeout: time.Minute, Transport: &httplog.Transport{Name: "github-app", Logger: logger}, CheckRedirect: noRedirects}}
 		tokens := &usertokens.Tokens{Store: linked, App: app, Logger: logger,
-			Check: func(ctx context.Context, gh github.User, user string) bool {
-				u, ok := users.GerritUserFor(ctx, gh)
-				return ok && strings.EqualFold(u, user)
+			Check: func(ctx context.Context, gh github.User, user string) (bool, error) {
+				u, ok, err := users.Lookup(ctx, gh)
+				return ok && strings.EqualFold(u, user), err
 			}}
 		comments.Authors = linkedAuthors{tokens: tokens, gh: gh}
 		if cfg.GitHubOwned() {
@@ -464,11 +464,11 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			code.Publishable, code.Importer.Publishable = pub, pub
 			code.LinkURL = strings.TrimSuffix(a.PublicURL, "/") + "/github/link"
 			// /submit merges on GitHub, as whoever asked.
-			merger = githubMerger{gerritUser: users.GerritUserFor, account: gerritAccount, tokenFor: tokens.For, source: tokens.Source, gh: gh}
+			merger = githubMerger{gerritUser: users.Lookup, account: gerritAccount, tokenFor: tokens.For, source: tokens.Source, gh: gh}
 		}
 		// Public: people link their GitHub account here (design §7.2).
 		(&usertokens.Linker{App: app, Tokens: tokens, PublicURL: a.PublicURL, GerritURL: cfg.Gerrit.URL, Logger: logger, GitHubOwned: cfg.GitHubOwned(),
-			GerritUser: users.GerritUserFor, GerritAccount: gerritAccount}).Register(mux)
+			GerritUser: users.Lookup, GerritAccount: gerritAccount, Directory: users.Directory != nil}).Register(mux)
 		logger.Info("people can link their GitHub accounts", "url", strings.TrimSuffix(a.PublicURL, "/")+"/github/link", "linked", len(linked.All()))
 	}
 	checks := &reconcile.Checks{
@@ -571,10 +571,14 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 // a GitHub account (linked, which checks the link still stands) that may
 // push to the repository (canPush). known is false if GitHub could not
 // say.
-func publishable(linked func(context.Context, int) (github.User, bool), canPush func(context.Context, github.User) (bool, error),
+func publishable(linked func(context.Context, int) (github.User, bool, error), canPush func(context.Context, github.User) (bool, error),
 	logger *slog.Logger) func(context.Context, int) (bool, bool) {
 	return func(ctx context.Context, account int) (bool, bool) {
-		u, ok := linked(ctx, account)
+		u, ok, err := linked(ctx, account)
+		if err != nil {
+			logger.Warn("whose a linked GitHub account is is unknown for now", "account", account, "err", err)
+			return false, false
+		}
 		if !ok {
 			return false, true
 		}
@@ -757,7 +761,7 @@ func checkAuthType(ctx context.Context, cfg *config.Config, rest *gerrit.Client)
 // account must still be the one their Gerrit account is matched to, and
 // the one they linked.
 type githubMerger struct {
-	gerritUser func(context.Context, github.User) (string, bool)
+	gerritUser func(context.Context, github.User) (string, bool, error)
 	account    func(context.Context, string) (int, error)
 	tokenFor   func(context.Context, int) (string, github.User, bool, error)
 	source     func(int64, string) github.TokenSource
@@ -765,9 +769,9 @@ type githubMerger struct {
 }
 
 func (m githubMerger) Merge(ctx context.Context, u github.User, pr int, head string, in github.MergeInput) (string, bool, error) {
-	user, ok := m.gerritUser(ctx, u)
-	if !ok {
-		return "", false, nil
+	user, ok, err := m.gerritUser(ctx, u)
+	if err != nil || !ok {
+		return "", false, err // err: unknown, which /submit waits out
 	}
 	account, err := m.account(ctx, user)
 	if err != nil {
@@ -823,7 +827,7 @@ type linkedAuthors struct {
 	gh     *github.Client // for where, and how
 }
 
-func (a linkedAuthors) Linked(ctx context.Context, account int) (github.User, bool) {
+func (a linkedAuthors) Linked(ctx context.Context, account int) (github.User, bool, error) {
 	return a.tokens.Linked(ctx, account)
 }
 

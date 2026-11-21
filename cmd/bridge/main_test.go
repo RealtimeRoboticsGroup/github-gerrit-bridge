@@ -127,8 +127,8 @@ func TestLinkedAuthors(t *testing.T) {
 	if _, _, ok, _ := a.Client(context.Background(), 1001); ok {
 		t.Error("an unlinked account has a client")
 	}
-	if u, ok := a.Linked(context.Background(), 1000); !ok || u.Login != "alice" {
-		t.Errorf("Linked = %+v %v", u, ok)
+	if u, ok, err := a.Linked(context.Background(), 1000); !ok || u.Login != "alice" || err != nil {
+		t.Errorf("Linked = %+v %v %v", u, ok, err)
 	}
 }
 
@@ -162,11 +162,14 @@ func TestMergeSettingProblems(t *testing.T) {
 // branches: linked, and allowed to push.
 func TestPublishable(t *testing.T) {
 	ctx := context.Background()
-	linked := func(_ context.Context, account int) (github.User, bool) {
-		if account == 0 {
-			return github.User{}, false
+	linked := func(_ context.Context, account int) (github.User, bool, error) {
+		switch account {
+		case 0:
+			return github.User{}, false, nil
+		case 4: // whose it is, unknown for now
+			return github.User{}, false, errors.New("the directory cannot be read")
 		}
-		return github.User{Login: fmt.Sprint("u", account), ID: int64(account)}, true
+		return github.User{Login: fmt.Sprint("u", account), ID: int64(account)}, true, nil
 	}
 	asked := 0
 	canPush := func(_ context.Context, u github.User) (bool, error) {
@@ -180,7 +183,7 @@ func TestPublishable(t *testing.T) {
 		return false, errors.New("GitHub is down")
 	}
 	pub := publishable(linked, canPush, slog.Default())
-	for account, want := range map[int][2]bool{0: {false, true}, 1: {true, true}, 2: {false, true}, 3: {false, false}} {
+	for account, want := range map[int][2]bool{0: {false, true}, 1: {true, true}, 2: {false, true}, 3: {false, false}, 4: {false, false}} {
 		ok, known := pub(ctx, account)
 		if ok != want[0] || known != want[1] {
 			t.Errorf("account %d: %v %v, want %v", account, ok, known, want)
@@ -216,8 +219,11 @@ func TestGitHubMergerMergesAsTheCommenter(t *testing.T) {
 	defer srv.Close()
 	bot := &github.Client{BaseURL: srv.URL, Owner: "o", Repo: "r", Tokens: github.StaticToken("bot-token")}
 	m := githubMerger{
-		gerritUser: func(_ context.Context, u github.User) (string, bool) {
-			return map[string]string{"alice": "alice", "carol": "carol"}[u.Login], u.Login != "bob"
+		gerritUser: func(_ context.Context, u github.User) (string, bool, error) {
+			if u.Login == "dave" {
+				return "", false, errors.New("the directory cannot be read")
+			}
+			return map[string]string{"alice": "alice", "carol": "carol"}[u.Login], u.Login != "bob", nil
 		},
 		account: func(_ context.Context, user string) (int, error) {
 			return map[string]int{"alice": 1, "carol": 3}[user], nil
@@ -243,6 +249,11 @@ func TestGitHubMergerMergesAsTheCommenter(t *testing.T) {
 		if _, linked, err := m.Merge(ctx, u, 7, "head1", github.MergeInput{}); linked || err != nil {
 			t.Errorf("%s: linked %v %v", u.Login, linked, err)
 		}
+	}
+	// Who asked, unknown for now: an error (/submit waits), not "not
+	// linked" (fifteenth review).
+	if _, _, err := m.Merge(ctx, github.User{Login: "dave", ID: 14}, 7, "head1", github.MergeInput{}); err == nil {
+		t.Error("dave, mapping unknown: no error")
 	}
 	if len(auth) != 1 {
 		t.Errorf("merged %d times, want only alice's", len(auth))

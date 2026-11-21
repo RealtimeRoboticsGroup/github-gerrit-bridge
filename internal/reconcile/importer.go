@@ -110,10 +110,12 @@ type imported struct {
 type syncError struct {
 	state string // pending (the user can fix it by pushing), failure
 	msg   string
-	retry bool // worth trying again soon, without a push
+	retry bool  // worth trying again soon, without a push
+	cause error // what it is, if not only its message
 }
 
 func (e *syncError) Error() string { return e.msg }
+func (e *syncError) Unwrap() error { return e.cause }
 
 var changeIDTrailer = regexp.MustCompile(`(?m)^Change-Id: (I[0-9a-f]{40})\s*$`)
 
@@ -428,6 +430,11 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 		end := trace.Region(ctx, fmt.Sprintf("import PR #%d", l.pr.Number))
 		res, err := im.importLayer(ctx, branch, l, done)
 		end()
+		if isIdentityUnknown(err) {
+			// Not the PR's problem, and nothing it decides is decided on
+			// a guess: it waits (fifteenth review).
+			err = &syncError{state: "pending", msg: "Waiting for the bridge to know who is who (see its log)", retry: true, cause: err}
+		}
 		if err != nil {
 			var se *syncError
 			changed := false
@@ -672,7 +679,11 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			im.Logger.Warn("adopted a change uploaded for a PR whose link was lost", "pr", pr.Number, "change", cur.Number)
 			return nil, &syncError{state: "pending", msg: fmt.Sprintf("Linked to Gerrit change %d", cur.Number), retry: true}
 		}
-		if author, ok := im.Identity.GerritUserFor(ctx, pr.User); !fromCommits || (ok && strings.EqualFold(cur.Owner.Username, author) && cur.Owner.AccountID != im.Bridge.AccountID) {
+		author, ok, err := im.Identity.Lookup(ctx, pr.User)
+		if err != nil {
+			return nil, err
+		}
+		if !fromCommits || (ok && strings.EqualFold(cur.Owner.Username, author) && cur.Owner.AccountID != im.Bridge.AccountID) {
 			break // the author's own change: theirs to sort out
 		}
 		// Someone else's change has the Change-Id of this PR's commits,
@@ -1105,7 +1116,11 @@ func (im *Importer) uploader(ctx context.Context, pr *github.PullRequest, cur *g
 		im.Logger.Info("the squash's parent leaves out base's: their code would be in its diff: the bridge uploads it", "pr", pr.Number, "pusher", login, "uploader", prev)
 		return "", login, nil
 	}
-	if pusher, ok := im.Identity.GerritUserFor(ctx, by); ok && strings.EqualFold(pusher, prev) {
+	pusher, ok, err := im.Identity.Lookup(ctx, by)
+	if err != nil {
+		return "", "", err
+	}
+	if ok && strings.EqualFold(pusher, prev) {
 		if parent != rev.Commit.Parent() {
 			// It moved base's code onto a new parent too, whose code is
 			// built with it: their Update branch onto the change below's
@@ -1202,7 +1217,10 @@ func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h
 	if !im.Uploader.CanActAs() {
 		return "", "", nil
 	}
-	author, ok := im.Identity.GerritUserFor(ctx, pr.User)
+	author, ok, err := im.Identity.Lookup(ctx, pr.User)
+	if err != nil {
+		return "", "", err
+	}
 	if !ok {
 		return "", pr.User.Login, nil
 	}
@@ -1217,7 +1235,11 @@ func (im *Importer) firstUploader(ctx context.Context, pr *github.PullRequest, h
 		// change would be the bridge's for good.
 		return "", "", &syncError{state: "pending", msg: "Waiting for GitHub to say who pushed it", retry: true}
 	}
-	if pusher, ok := im.Identity.GerritUserFor(ctx, by); !ok || !strings.EqualFold(pusher, author) {
+	pusher, ok, err := im.Identity.Lookup(ctx, by)
+	if err != nil {
+		return "", "", err
+	}
+	if !ok || !strings.EqualFold(pusher, author) {
 		im.Logger.Info("not every push in it the PR author's (as GitHub says): the bridge uploads it", "pr", pr.Number, "author", pr.User.Login, "pusher", login)
 		return "", login, nil
 	}

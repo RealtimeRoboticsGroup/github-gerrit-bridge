@@ -79,6 +79,19 @@ func (d *Dispatcher) Reconcile(ctx context.Context, k Key) error {
 			return waitFor(identityRetry)
 		}
 	}
+	err := d.reconcile(ctx, k)
+	if isIdentityUnknown(err) {
+		// The directory failed partway (fifteenth review): what is done
+		// is done; the rest waits, as at the start.
+		if d.Logger != nil {
+			d.Logger.Info("waiting: who is who is unknown for now", "key", k.String(), "err", err)
+		}
+		return waitFor(identityRetry)
+	}
+	return err
+}
+
+func (d *Dispatcher) reconcile(ctx context.Context, k Key) error {
 	switch {
 	case k.Branch != "":
 		return d.Code.Reconcile(ctx, k)

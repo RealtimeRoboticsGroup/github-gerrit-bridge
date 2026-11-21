@@ -227,10 +227,19 @@ func (c *Commands) run(ctx context.Context, n int, alone bool, read *prRead) err
 		} else if c.GitHubOwned && c.Merger == nil {
 			c.Logger.Warn("/submit: GitHub owns the branches, but the bridge has no way to merge there", "change", n)
 			reply = fmt.Sprintf("@%s: `/submit` was not run: the bridge cannot merge on GitHub here (see its log). Use the merge button.", ic.User.Login)
-		} else if c.GitHubOwned {
-			reply = c.merge(ctx, n, ic, heads, read.pull)
 		} else {
-			reply = c.submit(ctx, n, ic, heads)
+			var err error
+			if c.GitHubOwned {
+				reply, err = c.merge(ctx, n, ic, heads, read.pull)
+			} else {
+				reply, err = c.submit(ctx, n, ic, heads)
+			}
+			if err != nil {
+				// Who asked is unknown for now: not handled, and asked
+				// again (fifteenth review: a lookup that failed answered
+				// "not linked", and the command was spent).
+				return err
+			}
 		}
 		if err := updateStateFn(ctx, c.Store, n, fmt.Sprintf("Handled command %d", ic.ID), func(st *state.Change) {
 			st.State.HandledCommands = append(st.State.HandledCommands, ic.ID)
@@ -322,15 +331,18 @@ func (c *Commands) seen(ctx context.Context, n int, ic github.IssueComment, head
 	return rev, sha, st, ""
 }
 
-func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, heads []state.Head) string {
-	user, ok := c.Identity.GerritUserFor(ctx, ic.User)
+func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, heads []state.Head) (string, error) {
+	user, ok, err := c.Identity.Lookup(ctx, ic.User)
+	if err != nil {
+		return "", err
+	}
 	if !ok {
 		return fmt.Sprintf("@%s: `/submit` needs a linked Gerrit account, and yours is not linked. "+
-			"Ask an admin to add you to the bridge's identity map, or submit in Gerrit.", ic.User.Login)
+			"Ask an admin to add you to the bridge's identity map, or submit in Gerrit.", ic.User.Login), nil
 	}
 	rev, _, _, reply := c.seen(ctx, n, ic, heads)
 	if reply != "" {
-		return reply
+		return reply, nil
 	}
 	// Check first, so PRs are only reshaped for a submit that will happen.
 	if ok, why, err := c.Submitter.CanSubmitAs(ctx, user, n, rev); err != nil || !ok {
@@ -338,7 +350,7 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, he
 			c.Logger.Warn("checking submit from GitHub", "change", n, "by", ic.User.Login, "err", err)
 			why = "The bridge could not ask Gerrit (see its log)."
 		}
-		return fmt.Sprintf("@%s: Gerrit would not submit change %d:\n\n> %s", ic.User.Login, n, strings.ReplaceAll(forGitHub(why), "\n", "\n> "))
+		return fmt.Sprintf("@%s: Gerrit would not submit change %d:\n\n> %s", ic.User.Login, n, strings.ReplaceAll(forGitHub(why), "\n", "\n> ")), nil
 	}
 	if c.BeforeSubmit != nil {
 		if err := c.BeforeSubmit(ctx, n); err != nil {
@@ -347,11 +359,11 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, he
 			c.Logger.Warn("preparing PRs for submit", "change", n, "err", err)
 		}
 	}
-	err := c.Submitter.SubmitAs(ctx, user, n, rev)
+	err = c.Submitter.SubmitAs(ctx, user, n, rev)
 	if err == nil {
 		c.Logger.Info("submitted from GitHub", "change", n, "by", ic.User.Login, "as", user)
 		return fmt.Sprintf("@%s: submitted change %d in Gerrit as %s, with any changes below it. "+
-			"This PR closes once Gerrit reports the merge.", ic.User.Login, n, user)
+			"This PR closes once Gerrit reports the merge.", ic.User.Login, n, user), nil
 	}
 	c.Logger.Warn("submit from GitHub failed", "change", n, "by", ic.User.Login, "err", err)
 	// Gerrit's own refusals are for the user; anything else stays in the
@@ -362,7 +374,7 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, he
 		reason = strings.TrimSpace(ge.Body)
 	}
 	return fmt.Sprintf("@%s: Gerrit did not submit change %d:\n\n> %s", ic.User.Login, n,
-		strings.ReplaceAll(forGitHub(reason), "\n", "\n> "))
+		strings.ReplaceAll(forGitHub(reason), "\n", "\n> ")), nil
 }
 
 // maxListedCommits is how many of a PR's commits GitHub lists.
@@ -380,21 +392,21 @@ const maxListedCommits = 250
 // "Update branch", the bridge's own patch-set history): a merge commit
 // would bring every commit of it, Change-Id footers that close other
 // changes included. Gerrit-born PRs' history is the patch sets'.
-func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, heads []state.Head, pr *github.PullRequest) string {
+func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, heads []state.Head, pr *github.PullRequest) (string, error) {
 	_, sha, st, reply := c.seen(ctx, n, ic, heads)
 	if reply != "" {
-		return reply
+		return reply, nil
 	}
 	if pr == nil || !changeIDPattern.MatchString(st.State.ChangeID) {
 		c.Logger.Warn("/submit: PR or Change-Id unknown", "change", n, "pr", st.State.PR)
-		return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not tell which PR or change this is (see its log). Use the merge button.", ic.User.Login)
+		return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not tell which PR or change this is (see its log). Use the merge button.", ic.User.Login), nil
 	}
 	if pr.Base.Ref != st.State.Branch || (pr.Stack != nil && pr.Stack.Position != 1) {
 		// A stacked PR would merge into the one below it, not the
 		// branch, or (merged as a stack) take the PRs below it along:
 		// only a stack's bottom, on the branch, merges alone.
 		return fmt.Sprintf("@%s: `/submit` was not run: this PR is based on `%s`, not `%s`, or is not the bottom of its stack. Merge the PRs below it first.",
-			ic.User.Login, forGitHub(pr.Base.Ref), st.State.Branch)
+			ic.User.Login, forGitHub(pr.Base.Ref), st.State.Branch), nil
 	}
 	method := "squash"
 	if st.State.Origin == "github" {
@@ -406,7 +418,7 @@ func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, hea
 		}
 		if err != nil {
 			c.Logger.Warn("/submit: listing the PR's commits", "change", n, "pr", pr.Number, "err", err)
-			return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not read this PR's commits (see its log). Post it again, or use the merge button.", ic.User.Login)
+			return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not read this PR's commits (see its log). Post it again, or use the merge button.", ic.User.Login), nil
 		}
 		if has {
 			method = "merge"
@@ -427,16 +439,19 @@ func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, hea
 		Title:   fmt.Sprintf("%s (#%d)", strings.TrimSpace(pr.Title), pr.Number),
 		Message: msg + strings.Join(trailers, "\n"), Stacked: pr.Stack != nil, Base: st.State.Branch}
 	merged, linked, err := c.Merger.Merge(ctx, ic.User, pr.Number, sha, in)
+	if isIdentityUnknown(err) {
+		return "", err
+	}
 	switch {
 	case !linked && err == nil:
 		link := "link it"
 		if c.LinkURL != "" {
 			link = "link it at " + c.LinkURL
 		}
-		return fmt.Sprintf("@%s: `/submit` merges on GitHub as you, with your linked GitHub account, and yours is not linked: %s, or use the merge button.", ic.User.Login, link)
+		return fmt.Sprintf("@%s: `/submit` merges on GitHub as you, with your linked GitHub account, and yours is not linked: %s, or use the merge button.", ic.User.Login, link), nil
 	case err == nil:
 		c.Logger.Info("merged on GitHub for /submit", "change", n, "pr", pr.Number, "by", ic.User.Login, "method", method, "commit", merged)
-		return fmt.Sprintf("@%s: merged on GitHub as you (%s), as %s. Gerrit shows change %d merged once it has the commit.", ic.User.Login, map[string]string{"squash": "squashed", "merge": "with a merge commit"}[method], merged, n)
+		return fmt.Sprintf("@%s: merged on GitHub as you (%s), as %s. Gerrit shows change %d merged once it has the commit.", ic.User.Login, map[string]string{"squash": "squashed", "merge": "with a merge commit"}[method], merged, n), nil
 	}
 	c.Logger.Warn("merge on GitHub for /submit failed", "change", n, "pr", pr.Number, "by", ic.User.Login, "err", err)
 	// GitHub's own refusals are for the user (not mergeable, a newer
@@ -446,5 +461,5 @@ func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, hea
 	if errors.As(err, &ae) && ae.Status < 500 && ae.Message != "" {
 		why = ae.Message
 	}
-	return fmt.Sprintf("@%s: GitHub did not merge this PR:\n\n> %s", ic.User.Login, strings.ReplaceAll(forGitHub(why), "\n", "\n> "))
+	return fmt.Sprintf("@%s: GitHub did not merge this PR:\n\n> %s", ic.User.Login, strings.ReplaceAll(forGitHub(why), "\n", "\n> ")), nil
 }

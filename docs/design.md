@@ -1239,12 +1239,20 @@ trusted as an `identity.github_to_gerrit` override:
   login or uid in several entries, whatever slapd's unique overlay says)
   is left out with all the others in it; and while the directory cannot
   be read (a failed read, a referral or size limit, which leave the
-  answer partial, or no read for two intervals), nothing runs: every
-  reconcile waits and is tried again (`Dispatcher.Ready`), since
-  everyone would look unmapped, and some of what the bridge does for an
-  unmapped person is for good (a comment posted as the bot, a PR imported
-  as the bridge's). That includes the time from startup to the first
-  read. Each is logged. Every value of every entry counts toward a
+  answer partial, a read with no account the bridge can use, as an ACL
+  hiding them from anonymous binds gives, or no read for two intervals),
+  nothing runs: every reconcile waits and is tried again
+  (`Dispatcher.Ready`), since everyone would look unmapped, and some of
+  what the bridge does for an unmapped person is for good (a comment
+  posted as the bot, a PR imported as the bridge's). That includes the
+  time from startup to the first read. A lookup that cannot answer once
+  a reconcile is under way (the directory failing then, or Gerrit not
+  saying whether the account it names is active) is unknown, not
+  nobody (`IdentityUnknown`): its caller stops before acting on it, and
+  the work waits as above; a `/submit` stays unanswered and unhandled,
+  and a link page says to try later. Pins cannot make a lookup unknown:
+  the directory decides, and a pin that cannot be written is logged.
+  Each is logged. Every value of every entry counts toward a
   clash, valid entry or not, so a half-written second entry for someone
   leaves the first out too. Removing someone from LDAP stops them being
   acted as within one interval (at most an hour; every read replaces

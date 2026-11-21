@@ -34,7 +34,10 @@ type Linker struct {
 	PublicURL string
 	// GerritUser maps a GitHub account to its Gerrit username (identity
 	// mapping); GerritAccount gives that username's account id.
-	GerritUser    func(ctx context.Context, gh github.User) (string, bool)
+	GerritUser func(ctx context.Context, gh github.User) (string, bool, error)
+	// Directory: who is whose comes from a directory (identity.ldap), not
+	// from signing in to Gerrit with GitHub; what a page says follows.
+	Directory     bool
 	GerritAccount func(ctx context.Context, user string) (int, error)
 	// GerritURL is linked from the pages.
 	GerritURL string
@@ -242,10 +245,19 @@ func (l *Linker) finish(w http.ResponseWriter, r *http.Request) {
 		l.page(w, http.StatusBadGateway, "GitHub would not say who you are. Start again from the beginning.", l.linkPath())
 		return
 	}
-	user, ok := l.GerritUser(ctx, gh)
+	user, ok, err := l.GerritUser(ctx, gh)
+	if err != nil {
+		l.logger().Warn("linking a GitHub account: who is who is unknown for now", "github_login", gh.Login, "github_id", gh.ID, "err", err)
+		l.page(w, http.StatusServiceUnavailable, "The bridge cannot tell whose GitHub account this is right now. Try again later.", l.linkPath())
+		return
+	}
 	if !ok {
 		l.logger().Info("linking a GitHub account with no Gerrit account", "github_login", gh.Login, "github_id", gh.ID)
-		l.page(w, http.StatusOK, "Not linked: @"+gh.Login+" has no Gerrit account the bridge knows. Sign in to Gerrit with GitHub first, then link again.", l.GerritURL)
+		msg := "Not linked: @" + gh.Login + " has no Gerrit account the bridge knows. Sign in to Gerrit with GitHub first, then link again."
+		if l.Directory {
+			msg = "Not linked: @" + gh.Login + " is not in the directory as anyone's GitHub account. Ask an administrator to add it to your account there, then link again."
+		}
+		l.page(w, http.StatusOK, msg, l.GerritURL)
 		return
 	}
 	account, err := l.GerritAccount(ctx, user)

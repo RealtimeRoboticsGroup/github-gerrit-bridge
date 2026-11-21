@@ -157,8 +157,11 @@ match usernames on a Gerrit that signs in with LDAP.
 3. People link their GitHub accounts at `<public_url>/github/link`; until
    they have, their Gerrit changes stay out of GitHub (§3.1).
 4. While LDAP cannot be read (including from startup until the first
-   read), nothing runs; work waits and is tried again (§7). The log says
-   so.
+   read, and a read that finds no account it can use), nothing runs; work
+   waits and is tried again (§7). A lookup that cannot answer partway
+   through (LDAP failing then, or Gerrit not saying whether an account is
+   active) stops that work where it is, to be tried again: nothing is done
+   for someone as if they were nobody. The log says so.
 
 ## Upgrading a Gerrit-owned deployment (AOS) from main
 

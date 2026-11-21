@@ -364,11 +364,16 @@ type fakeAuthors struct {
 	refuse error // what GitHub answers their tokens
 	err    error // renewing a token fails
 	calls  int
+	// unknown: whose links are is unknown for now (Linked's error).
+	unknown error
 }
 
-func (a *fakeAuthors) Linked(_ context.Context, account int) (github.User, bool) {
+func (a *fakeAuthors) Linked(_ context.Context, account int) (github.User, bool, error) {
+	if a.unknown != nil {
+		return github.User{}, false, a.unknown
+	}
 	u, ok := a.linked[account]
-	return u, ok
+	return u, ok, nil
 }
 
 func (a *fakeAuthors) Client(_ context.Context, account int) (UserGitHub, github.User, bool, error) {

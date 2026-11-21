@@ -52,6 +52,7 @@ go_test(
         "follow_test.go",
         "gerrit_owned_regression_test.go",
         "identity_ldap_test.go",
+        "identity_unknown_test.go",
         "identity_test.go",
         "importer_test.go",
         "lock_test.go",

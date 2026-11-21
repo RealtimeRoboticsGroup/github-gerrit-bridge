@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -186,9 +187,9 @@ func TestTokensRenewAndDrop(t *testing.T) {
 	f.users["ghu_0"] = github.User{Login: "alice", ID: 42}
 	s.Put(Record{GitHub: github.User{Login: "alice", ID: 42}, GerritAccount: 1000, GerritUser: "alice",
 		Token: github.UserToken{Access: "ghu_0", AccessExpires: now.Add(time.Hour), Refresh: "ghr_0", RefreshExpires: now.Add(24 * time.Hour)}})
-	maps := true
-	tk := &Tokens{Store: s, App: f.app(), Check: func(_ context.Context, gh github.User, user string) bool {
-		return maps && gh.ID == 42 && user == "alice"
+	maps, unknown := true, error(nil)
+	tk := &Tokens{Store: s, App: f.app(), Check: func(_ context.Context, gh github.User, user string) (bool, error) {
+		return maps && gh.ID == 42 && user == "alice", unknown
 	}}
 
 	if tok, gh, ok, err := tk.For(ctx, 1000); err != nil || !ok || tok != "ghu_0" || gh.Login != "alice" {
@@ -266,18 +267,31 @@ func TestTokensRenewAndDrop(t *testing.T) {
 	if _, ok := s.Get(42); !ok {
 		t.Error("revoking another token dropped the link")
 	}
-	if gh, ok := tk.Linked(ctx, 1000); !ok || gh.ID != 42 {
-		t.Errorf("Linked = %+v %v", gh, ok)
+	if gh, ok, err := tk.Linked(ctx, 1000); !ok || gh.ID != 42 || err != nil {
+		t.Errorf("Linked = %+v %v %v", gh, ok, err)
 	}
-	if _, ok := tk.Linked(ctx, 1001); ok {
+	if _, ok, _ := tk.Linked(ctx, 1001); ok {
 		t.Error("an unlinked account is linked")
 	}
 	// Nor is one whose GitHub account no longer maps to it.
 	maps = false
-	if gh, ok := tk.Linked(ctx, 1000); ok {
-		t.Errorf("Linked = %+v though the account no longer maps", gh)
+	if gh, ok, err := tk.Linked(ctx, 1000); ok || err != nil {
+		t.Errorf("Linked = %+v %v though the account no longer maps", gh, err)
 	}
 	maps = true
+	// While the mapping is unknown, neither says yes or no: an error
+	// (fifteenth review: unknown was "not linked", and posted as the bot).
+	unknown = errors.New("the directory cannot be read")
+	if _, ok, err := tk.Linked(ctx, 1000); ok || err == nil {
+		t.Errorf("Linked, mapping unknown: %v %v", ok, err)
+	}
+	if _, _, ok, err := tk.For(ctx, 1000); ok || err == nil {
+		t.Errorf("For, mapping unknown: %v %v", ok, err)
+	}
+	if _, ok := s.Get(42); !ok {
+		t.Error("an unknown mapping dropped the link")
+	}
+	unknown = nil
 	// A 401 on the token GitHub was given drops the link.
 	src := tk.Source(42, "ghu_y")
 	if tok, _ := src.Token(ctx); tok != "ghu_y" {
@@ -292,12 +306,16 @@ func TestTokensRenewAndDrop(t *testing.T) {
 func TestLink(t *testing.T) {
 	f := newFakeGitHub(t)
 	s := &Store{Path: filepath.Join(t.TempDir(), "tokens"), Key: testKey()}
+	unknown := false
 	l := &Linker{App: f.app(), Tokens: &Tokens{Store: s, App: f.app()}, PublicURL: "https://bridge.example",
-		GerritUser: func(_ context.Context, gh github.User) (string, bool) {
-			if gh.ID == 42 && gh.Login == "alice" {
-				return "alice", true
+		GerritUser: func(_ context.Context, gh github.User) (string, bool, error) {
+			if unknown {
+				return "", false, errors.New("the directory cannot be read")
 			}
-			return "", false
+			if gh.ID == 42 && gh.Login == "alice" {
+				return "alice", true, nil
+			}
+			return "", false, nil
 		},
 		GerritAccount: func(_ context.Context, user string) (int, error) { return 1000, nil }}
 	mux := http.NewServeMux()
@@ -393,6 +411,24 @@ func TestLink(t *testing.T) {
 	if len(s.All()) != 0 {
 		t.Fatal("linked without the cookie")
 	}
+	// Whose account it is, unknown for now: try later, not "no Gerrit
+	// account" (fifteenth review).
+	unknown = true
+	state, cookie = start()
+	if w := do("GET", "/github/link/callback?code=c1&state="+state, cookie); w.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(w.Body.String(), "Try again later") || len(s.All()) != 0 {
+		t.Errorf("unknown: %d %s", w.Code, w.Body)
+	}
+	unknown = false
+	// Nobody's, where a directory says who is whose: ask its administrators.
+	l.Directory = true
+	f.codes["c2"] = "stranger"
+	state, cookie = start()
+	if w := do("GET", "/github/link/callback?code=c2&state="+state, cookie); !strings.Contains(w.Body.String(), "Ask an administrator") ||
+		strings.Contains(w.Body.String(), "Sign in to Gerrit with GitHub") || len(s.All()) != 0 {
+		t.Errorf("not in the directory: %d %s", w.Code, w.Body)
+	}
+	l.Directory = false
 
 	state, cookie = start()
 	w := do("GET", "/github/link/callback?code=c1&state="+state, cookie)
@@ -454,7 +490,7 @@ func TestLink(t *testing.T) {
 	l.mu.Lock()
 	n := len(l.used)
 	l.mu.Unlock()
-	if n != 2 { // alice's and bob's, which GitHub authorized
+	if n != 4 { // alice's (and while unknown), the stranger's and bob's, which GitHub authorized
 		t.Errorf("%d states kept", n)
 	}
 	s.Delete(42)
@@ -478,7 +514,7 @@ func TestLinkDuringRenewalStands(t *testing.T) {
 		Token: github.UserToken{Access: "ghu_0", AccessExpires: now, Refresh: "ghr_0", RefreshExpires: now.Add(time.Hour)}})
 	tk := &Tokens{Store: s, App: f.app()}
 	l := &Linker{App: f.app(), Tokens: tk, PublicURL: "https://bridge.example",
-		GerritUser:    func(_ context.Context, gh github.User) (string, bool) { return gh.Login, true },
+		GerritUser:    func(_ context.Context, gh github.User) (string, bool, error) { return gh.Login, true, nil },
 		GerritAccount: func(context.Context, string) (int, error) { return 1000, nil }}
 	mux := http.NewServeMux()
 	l.Register(mux)
@@ -562,7 +598,7 @@ func TestLinkUnderAPath(t *testing.T) {
 	f := newFakeGitHub(t)
 	s := &Store{Path: filepath.Join(t.TempDir(), "tokens"), Key: testKey()}
 	l := &Linker{App: f.app(), Tokens: &Tokens{Store: s, App: f.app()}, PublicURL: "https://gerrit.example/bridge/",
-		GerritUser:    func(context.Context, github.User) (string, bool) { return "", false },
+		GerritUser:    func(context.Context, github.User) (string, bool, error) { return "", false, nil },
 		GerritAccount: func(context.Context, string) (int, error) { return 1000, nil }}
 	mux := http.NewServeMux()
 	l.Register(mux)
