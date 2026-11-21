@@ -124,12 +124,22 @@ func (s *testServer) search(c net.Conn, id int64, op element, entries []testEntr
 	base := string(parts[0].body)
 	f, _ := children(parts[6].body)
 	class := string(f[1].body)
+	// The attributes asked for, as slapd answers: only those (by any
+	// case), or all if none.
+	sel, _ := children(parts[7].body)
+	var want []string
+	for _, a := range sel {
+		want = append(want, string(a.body))
+	}
 	for _, e := range entries {
 		if !strings.HasSuffix(strings.ToLower(e.dn), strings.ToLower(base)) || !containsFold(e.classes, class) {
 			continue
 		}
 		var attrs []byte
 		for name, vals := range e.attrs {
+			if len(want) > 0 && !containsFold(want, name) {
+				continue
+			}
 			var set []byte
 			for _, v := range vals {
 				set = append(set, encodeString(tagOctetString, v)...)
@@ -292,6 +302,7 @@ func TestDirectoryRefusesWhatItCannotTrust(t *testing.T) {
 		two,
 		{DN: "uid=nologin", Attrs: map[string][]string{"uid": {"nologin"}, "githubid": {"41"}}},
 		entry("ok39", strings.Repeat("b", 39), "42"),
+		entry("", "emptyuid", "51"), entry(" spaced", "spaceduid", "52"),
 	}}
 	d := &Directory{Searcher: f, BaseDN: "ou=People", ObjectClass: "githubAccount", Refresh: time.Minute}
 	if err := d.Read(context.Background()); err != nil {
@@ -302,12 +313,12 @@ func TestDirectoryRefusesWhatItCannotTrust(t *testing.T) {
 			t.Errorf("id %d: %+v %v %v, want %s", id, a, found, err, want)
 		}
 	}
-	for _, id := range []int64{5, 11, 12, 21, 22, 31, 32, 33, 7, 8, 41} {
+	for _, id := range []int64{5, 11, 12, 21, 22, 31, 32, 33, 7, 8, 41, 0, 35, 51, 52} {
 		if a, found, _ := d.ByGitHubID(id); found {
 			t.Errorf("id %d left in: %+v", id, a)
 		}
 	}
-	for _, user := range []string{"dupid1", "dupid2", "duplogin1", "dupuser", "multi", "badid"} {
+	for _, user := range []string{"dupid1", "dupid2", "duplogin1", "dupuser", "multi", "badid", "zeroid", "leadzero", "", " spaced", "spaced"} {
 		if _, found, _ := d.ByGerritUser(user); found {
 			t.Errorf("user %s left in", user)
 		}
@@ -409,11 +420,13 @@ func TestAgainstLDAPSearch(t *testing.T) {
 		parts[6].tag != tagFilterEquality || string(f[0].body) != "objectClass" || string(f[1].body) != "githubAccount" {
 		t.Errorf("ldapsearch's request % x", op.body)
 	}
-	mine := searchRequest(1, "ou=People,dc=spacecookies,dc=dev", "githubAccount", nil)
-	_, myOp, _ := splitMessage(mine)
-	myParts, _ := children(myOp.body)
-	if !bytes.Equal(myParts[6].body, parts[6].body) || !bytes.Equal(myParts[0].body, parts[0].body) || !bytes.Equal(myParts[1].body, parts[1].body) {
-		t.Errorf("the bridge's filter or scope differs from ldapsearch's: % x vs % x", myOp.body, op.body)
+	// The whole of the bridge's search, for the same base, filter and
+	// attributes, is ldapsearch's: scope, aliases, limits, typesOnly and
+	// all (fourteenth review: only some fields were compared, and a
+	// typesOnly search, say, would have returned no values).
+	_, myOp, _ := splitMessage(searchRequest(2, "ou=People,dc=spacecookies,dc=dev", "githubAccount", []string{"uid", "githubLogin", "githubId"}))
+	if !bytes.Equal(myOp.body, op.body) {
+		t.Errorf("the bridge's search differs from ldapsearch's:\n% x\n% x", myOp.body, op.body)
 	}
 }
 
