@@ -243,6 +243,7 @@ type fakeGitHub struct {
 	stack             *github.PRStack // the PR's native stack, if any
 	merged            bool            // the PR is merged (and closed)
 	closed            bool            // the PR is closed, unmerged
+	commits           int             // the PR's commit count (GetPull)
 	// refuse makes CreateIssueComment refuse (422) bodies containing it.
 	refuse string
 	// pushes is the activity log of the PR's branch, newest first.
@@ -485,7 +486,7 @@ func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error)
 }
 func (f *fakeGitHub) GetPull(_ context.Context, n int) (*github.PullRequest, error) {
 	pr := &github.PullRequest{Number: n, HTMLURL: "https://github.com/o/r/pull/1", Head: github.Ref{Ref: "topic", SHA: cmp.Or(f.head, "sha2")},
-		Title: f.title, Body: f.body, Base: github.Ref{Ref: cmp.Or(f.base, "main")}, Stack: f.stack, Merged: f.merged}
+		Title: f.title, Body: f.body, Base: github.Ref{Ref: cmp.Or(f.base, "main")}, Stack: f.stack, Merged: f.merged, Commits: f.commits}
 	if f.merged || f.closed {
 		pr.State = "closed"
 	}

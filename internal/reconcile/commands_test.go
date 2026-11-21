@@ -379,7 +379,7 @@ func (f *fakeMerger) Merge(_ context.Context, u github.User, pr int, head string
 	return "merged1", true, nil
 }
 
-func (f *fakeMerger) HasSubtree(context.Context, int) (bool, error) { return f.merges, nil }
+func (f *fakeMerger) HasSubtree(context.Context, int, string) (bool, error) { return f.merges, nil }
 
 // mergeCommands is newCommands where GitHub owns the branches: change 5's
 // Change-Id is known, and its PR has a title and description.
@@ -501,6 +501,21 @@ func TestSubmitMergeOnlyIntoTheBranch(t *testing.T) {
 	}
 	if last := h.ics[len(h.ics)-1].Body; len(m.calls) != 0 || !strings.Contains(last, "Merge the PRs below it first") {
 		t.Errorf("merges %v, reply %q", m.calls, last)
+	}
+}
+
+// GitHub lists at most 250 of a PR's commits: one with more is squashed,
+// never vetted for a merge commit by part of it (thirteenth review).
+func TestSubmitSquashesAPRTooLongToList(t *testing.T) {
+	c, h, _, m := mergeCommands(t, "github")
+	m.merges = true
+	h.commits = 250
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.calls) != 1 || m.calls[0].Method != "squash" {
+		t.Errorf("merges %+v", m.calls)
 	}
 }
 

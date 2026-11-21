@@ -247,8 +247,13 @@ func TestGitHubMergerMergesAsTheCommenter(t *testing.T) {
 		`[{"sha":"s","commit":{"message":"Squashed 'third_party/x/' content from commit abc\n\ngit-subtree-dir: third_party/x\ngit-subtree-split: abc"},"parents":[]},{"sha":"b","commit":{"message":"Merge commit 's' as 'third_party/x'"},"parents":[{"sha":"a"},{"sha":"s"}]}]`: true,
 	} {
 		commits = list
-		if has, err := m.HasSubtree(ctx, 7); has != want || err != nil {
+		head := "b" // the last listed, in the true case
+		if has, err := m.HasSubtree(ctx, 7, head); has != want || err != nil {
 			t.Errorf("subtree %v, want %v (%v): %s", has, want, err, list)
+		}
+		// Not at the head seen (pushed since): not vetted, squashed.
+		if has, _ := m.HasSubtree(ctx, 7, "newer"); has {
+			t.Errorf("subtree at another head: %s", list)
 		}
 	}
 }

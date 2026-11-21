@@ -78,9 +78,10 @@ type GitHubMerger interface {
 	// is false if u has no token, or no longer the Gerrit account it was
 	// linked from.
 	Merge(ctx context.Context, u github.User, pr int, head string, m github.MergeInput) (sha string, linked bool, err error)
-	// HasSubtree reports whether PR pr's own commits pull in a subtree
-	// (git subtree's commits, which name it with git-subtree-dir).
-	HasSubtree(ctx context.Context, pr int) (bool, error)
+	// HasSubtree reports whether PR pr's own commits, ending at head,
+	// pull in a subtree (git subtree's commits, which name it with
+	// git-subtree-dir).
+	HasSubtree(ctx context.Context, pr int, head string) (bool, error)
 }
 
 // CommandsGitHub is what commands need from GitHub.
@@ -364,6 +365,9 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, he
 		strings.ReplaceAll(forGitHub(reason), "\n", "\n> "))
 }
 
+// maxListedCommits is how many of a PR's commits GitHub lists.
+const maxListedCommits = 250
+
 // merge is /submit where GitHub owns the branches (design §3.1): the PR
 // is merged on GitHub with the commenter's own linked token, so GitHub's
 // branch protection decides as it would for their button press, and only
@@ -394,7 +398,12 @@ func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, hea
 	}
 	method := "squash"
 	if st.State.Origin == "github" {
-		has, err := c.Merger.HasSubtree(ctx, pr.Number)
+		// GitHub lists at most 250 of a PR's commits: one with more is
+		// never vetted whole, and squashed (thirteenth review).
+		has, err := false, error(nil)
+		if pr.Commits < maxListedCommits {
+			has, err = c.Merger.HasSubtree(ctx, pr.Number, sha)
+		}
 		if err != nil {
 			c.Logger.Warn("/submit: listing the PR's commits", "change", n, "pr", pr.Number, "err", err)
 			return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not read this PR's commits (see its log). Post it again, or use the merge button.", ic.User.Login)

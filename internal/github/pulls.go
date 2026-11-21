@@ -82,6 +82,9 @@ type PullRequest struct {
 	UpdatedAt           time.Time `json:"updated_at"`
 	// Stack is set when the PR is in a native stack.
 	Stack *PRStack `json:"stack"`
+	// Commits (GetPull only) is how many commits the PR has; its commits
+	// list stops at 250.
+	Commits int `json:"commits"`
 }
 
 // PRStack is the stack summary embedded in a pull request.

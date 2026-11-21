@@ -717,10 +717,15 @@ func (m githubMerger) Merge(ctx context.Context, u github.User, pr int, head str
 // commit's message, and a Change-Id footer there closes that change in
 // Gerrit) is made only then, and only if no commit of it carries a
 // Change-Id (twelfth review).
-func (m githubMerger) HasSubtree(ctx context.Context, pr int) (bool, error) {
+func (m githubMerger) HasSubtree(ctx context.Context, pr int, head string) (bool, error) {
 	commits, err := m.gh.PullCommits(ctx, pr)
 	if err != nil || slices.ContainsFunc(commits, func(c github.PullCommit) bool { return changeIDLine.MatchString(c.Commit.Message) }) {
 		return false, err
+	}
+	// What was listed must be what is merged: the head seen, at the end
+	// (thirteenth review: a push between the two was not vetted).
+	if len(commits) == 0 || commits[len(commits)-1].SHA != head {
+		return false, nil
 	}
 	return slices.ContainsFunc(commits, func(c github.PullCommit) bool {
 		return len(c.Parents) == 0 && subtreeDir.MatchString(c.Commit.Message)
