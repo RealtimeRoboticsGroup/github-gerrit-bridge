@@ -1065,8 +1065,23 @@ func (failingReader) inBranch(context.Context, string, string) (bool, error) {
 // let the push win over the patch set Gerrit should: the import fails, to
 // be tried again (thirteenth review).
 func TestImporterRetriesWhenTheWalkFails(t *testing.T) {
+	for _, origin := range []string{"gerrit", "github"} {
+		testImporterRetries(t, origin)
+	}
+}
+
+func testImporterRetries(t *testing.T, origin string) {
 	s, im, up, m1, g, ids := gerritBornWorld(t, false)
 	ctx := context.Background()
+	if origin == "github" {
+		// A GitHub-born PR, its branch the repository's own.
+		st, _ := im.Store.Load(ctx, 1)
+		st.State.Origin, st.State.HeadBranch = "github", "feature"
+		if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := map[string]string{"gerrit": "gerrit/" + ids[0], "github": "feature"}[origin]
 	im.GitHubOwned = true
 	im.Publishable = func(context.Context, int) (bool, bool) { return true, true }
 	im.Below = failingReader{}
@@ -1084,8 +1099,8 @@ func TestImporterRetriesWhenTheWalkFails(t *testing.T) {
 		Uploader: gerrit.AccountInfo{AccountID: 9}, Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, code))}
 	ci.CurrentRevision = code
 	h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
-	s.push("github.git", h, "refs/heads/gerrit/"+ids[0])
-	s.pulls[10].Head.SHA = h
+	s.push("github.git", h, "refs/heads/"+head)
+	s.pulls[10].Head.Ref, s.pulls[10].Head.SHA, s.pulls[10].User.Login = head, h, "austin"
 	s.webhookPush(im.Pushers, 10, "austin")
 	// That PR's import fails (logged, the rest of the branch going on):
 	// nothing is uploaded over Gerrit's patch set until it can be told.
@@ -1093,6 +1108,6 @@ func TestImporterRetriesWhenTheWalkFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(up.uploads) != 0 {
-		t.Errorf("uploaded %v while Gerrit could not say whose code it is", up.uploads)
+		t.Errorf("%s-born: uploaded %v while Gerrit could not say whose code it is", origin, up.uploads)
 	}
 }
