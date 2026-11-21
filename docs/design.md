@@ -137,12 +137,16 @@ checklist.
   GitHub account (§7.2) that may push to the repository (the collaborator
   permission API, checked against the linked account's id); owning the
   change is no pass. Others are withheld with a notice saying where to
-  link. A change based on a withheld one is withheld too (its PR would
-  carry the parent's code), and so is any change that would bring GitHub
-  a commit (between it and the branch, merges' other parents included)
-  that GitHub does not have and that no mirrored change's current patch
-  set is: an unlinked user's outdated, abandoned or private patch set,
-  say. The same rule replaces CI's trusted group for
+  link. The code below it counts too, as CI's `parentsTrusted` counts it
+  (gerrit-buildkite's, ported: one rule, `Code.mayReach`, for every push
+  of Gerrit code to GitHub, in both directions): every parent, merges'
+  others included, must be in the branch, the commit a change merged as,
+  the change's own commit GitHub already has on its branch, or a patch
+  set (of any change, outdated, abandoned or private ones included) whose
+  code passes the same rule, owning it no pass and the bridge's own
+  uploads (an unlinked author's PR, imported) none either; at most 50
+  commits are read. So a change based on a withheld one, or on an
+  unlinked user's old patch set, is withheld too. The same rule replaces CI's trusted group for
   Gerrit patch sets pushed to GitHub-born PRs' branches, where owning the
   change is no pass either unless the branch is the author's fork. The
   importer never restores ("Gerrit wins") a patch set the rule withholds. Nobody gets more through Gerrit

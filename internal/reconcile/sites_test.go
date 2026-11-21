@@ -110,6 +110,14 @@ func newSites(t *testing.T) *sites {
 	})
 	mux.HandleFunc("PUT /a/changes/{n}/message", s.setMessage)
 	mux.HandleFunc("GET /a/projects/{p}/branches/{b}", s.branch)
+	mux.HandleFunc("GET /a/projects/{p}/commits/{sha}/in", func(w http.ResponseWriter, r *http.Request) {
+		// The branches of gerrit.git that contain it.
+		out, _ := exec.Command("git", "-C", filepath.Join(s.dir, "gerrit.git"), "branch", "--format=%(refname:short)", "--contains", r.PathValue("sha")).Output()
+		in := struct {
+			Branches []string `json:"branches"`
+		}{strings.Fields(string(out))}
+		s.json(w, in, true)
+	})
 	mux.HandleFunc("POST /graphql", s.graphql)
 	mux.HandleFunc("GET /a/changes/{n}/submitted_together", s.submittedTogether)
 	mux.HandleFunc("GET /a/accounts/{user}", s.account)
@@ -658,3 +666,11 @@ func (s *sites) save(ctx context.Context, store *state.Store, n int, st *state.C
 		s.t.Fatal(err)
 	}
 }
+
+// noneBelow is a belowReader for tests whose commits are made up: each
+// patch set sits right on its branch.
+type noneBelow struct{}
+
+func (noneBelow) parentsOf(context.Context, string) ([]string, error)            { return nil, nil }
+func (noneBelow) inBranch(context.Context, string, string) (bool, error)         { return true, nil }
+func (noneBelow) changesOf(context.Context, string) ([]gerrit.ChangeInfo, error) { return nil, nil }

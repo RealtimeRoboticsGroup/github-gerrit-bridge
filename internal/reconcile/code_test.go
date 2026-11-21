@@ -4157,6 +4157,7 @@ func TestForeignCodeBelowAnEditOrRebase(t *testing.T) {
 	s := newSites(t)
 	ctx := context.Background()
 	c, store := s.code(ctx)
+	c.Below = noneBelow{} // made-up commits
 	c.BridgeAccount = 1
 	snap := &Snapshot{Changes: map[int]*GerritChange{}, State: map[int]*state.Change{}}
 	parent := func(sha string) gerrit.CommitInfo {
@@ -4234,6 +4235,7 @@ func TestForeignPatchSetsAreMarked(t *testing.T) {
 	s := newSites(t)
 	ctx := context.Background()
 	c, store := s.code(ctx)
+	c.Below = noneBelow{} // made-up commits
 	c.BridgeAccount = 1
 	unknown := false
 	c.Trusted = func(_ context.Context, account int) (bool, bool) { return account == 7, !unknown }

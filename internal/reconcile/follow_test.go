@@ -391,7 +391,8 @@ func TestForeignIsByPublishableWhereGitHubOwns(t *testing.T) {
 	} {
 		s := newSites(t)
 		c, _ := s.code(ctx)
-		c.DryRun = true // no notices
+		c.Below = noneBelow{} // made-up commits
+		c.DryRun = true       // no notices
 		c.GitHubOwned, c.Publishable = tc.owned, tc.publishable
 		c.Trusted = func(_ context.Context, account int) (bool, bool) { return account == 7, true }
 		snap := &Snapshot{Changes: map[int]*GerritChange{1: {Number: 1, Status: "NEW", Revision: "r1", PatchSet: 1,
@@ -417,6 +418,7 @@ func TestFoundOnGitHubIsStillForeign(t *testing.T) {
 	for _, found := range []bool{false, true} {
 		s := newSites(t)
 		c, _ := s.code(ctx)
+		c.Below = noneBelow{} // made-up commits
 		c.DryRun = true
 		c.GitHubOwned = true
 		c.Publishable = func(context.Context, int) (bool, bool) { return false, true }
@@ -597,52 +599,6 @@ func TestFollowOtherBranchesOnlyForward(t *testing.T) {
 	}
 }
 
-// Where GitHub owns the branches, a change based on a withheld one is
-// withheld too, its children as well: its PR (or frozen base) would bring
-// the withheld code to GitHub. A notice says why, once.
-func TestChildrenOfWithheldChangesAreWithheld(t *testing.T) {
-	ctx := context.Background()
-	for _, owned := range []bool{true, false} {
-		s := newSites(t)
-		c, store := s.code(ctx)
-		c.GitHubOwned = owned
-		snap := &Snapshot{Changes: map[int]*GerritChange{
-			1: {Number: 1, Status: "NEW", Revision: "r1", Parent: "m0", PatchSet: 1},
-			2: {Number: 2, Status: "NEW", Revision: "r2", Parent: "r1", PatchSet: 1},
-			3: {Number: 3, Status: "NEW", Revision: "r3", Parent: "r2", PatchSet: 1},
-			4: {Number: 4, Status: "NEW", Revision: "r4", Parent: "f1", PatchSet: 1},
-			5: {Number: 5, Status: "NEW", Revision: "f1", Parent: "m0", PatchSet: 1},
-			6: {Number: 6, Status: "NEW", Revision: "r6", Parent: "m0", PatchSet: 1},
-		}, State: map[int]*state.Change{}, Withheld: map[int]bool{1: true}, Foreign: map[int]bool{5: true}}
-		for n := range snap.Changes {
-			s.change(n, cid(n), s.commit("", fmt.Sprint(n), "x\n", "x"), "x", "NEW")
-		}
-		if err := c.withholdChildren(ctx, snap); err != nil {
-			t.Fatal(err)
-		}
-		want := map[int]bool{1: true}
-		if owned {
-			want = map[int]bool{1: true, 2: true, 3: true, 4: true}
-		}
-		if !reflect.DeepEqual(snap.Withheld, want) {
-			t.Errorf("GitHub owns %v: withheld %v, want %v", owned, snap.Withheld, want)
-		}
-		if owned {
-			if msgs := s.reviewMsgs[3]; len(msgs) != 1 || !strings.Contains(msgs[0], "based on change 2") {
-				t.Errorf("change 3's notices %q", msgs)
-			}
-			for n := range snap.Changes {
-				snap.State[n], _ = store.Load(ctx, n)
-			}
-			snap.Withheld = map[int]bool{1: true}
-			c.withholdChildren(ctx, snap)
-			if msgs := s.reviewMsgs[3]; len(msgs) != 1 {
-				t.Errorf("notice again: %q", msgs)
-			}
-		}
-	}
-}
-
 // A reconcile's look at the branch does it: a publishable member's change
 // on top of an unlinked one's is withheld with it.
 func TestObserveWithholdsChildrenOfWithheld(t *testing.T) {
@@ -657,13 +613,26 @@ func TestObserveWithholdsChildrenOfWithheld(t *testing.T) {
 		ci.Revisions[rev], ci.Owner = r, r.Uploader
 		return rev
 	}
-	add(2, add(1, base, 7), 8)
+	// A chain on an unlinked user's change, two deep; a linked writer's
+	// change on the branch, and one on it.
+	add(3, add(2, add(1, base, 7), 8), 8)
+	add(5, add(4, base, 8), 8)
 	snap, err := c.observe(ctx, "main", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snap.Withheld[1] || !snap.Withheld[2] {
-		t.Errorf("withheld %v, want both", snap.Withheld)
+	if want := map[int]bool{1: true, 2: true, 3: true}; !reflect.DeepEqual(snap.Withheld, want) {
+		t.Errorf("withheld %v, want %v", snap.Withheld, want)
+	}
+	// Said once per patch set.
+	if msgs := s.reviewMsgs[3]; len(msgs) != 1 || !strings.Contains(msgs[0], "has linked a GitHub account") {
+		t.Errorf("change 3's notices %q", msgs)
+	}
+	if _, err := c.observe(ctx, "main", nil); err != nil {
+		t.Fatal(err)
+	}
+	if msgs := s.reviewMsgs[3]; len(msgs) != 1 {
+		t.Errorf("notice again: %q", msgs)
 	}
 }
 
@@ -741,7 +710,7 @@ func TestGitHubBornIsNotWithheldAsUnlinked(t *testing.T) {
 // for: on an unlinked user's outdated, abandoned or private patch set, or
 // merging one in, it is withheld too (twelfth review).
 func TestObserveWithholdsWhatNobodyVouchesFor(t *testing.T) {
-	for _, how := range []string{"new patch set", "abandoned", "private", "merged in", "none", "on a mirrored one", "on one GitHub has", "on one recorded, not on GitHub"} {
+	for _, how := range []string{"new patch set", "abandoned", "private", "merged in", "none", "on a mirrored one", "on one GitHub has", "on one recorded, not on GitHub", "on a writer's outdated one", "on the bridge's import"} {
 		ctx := context.Background()
 		s, c, base := followSites(t)
 		c.Publishable = func(_ context.Context, a int) (bool, bool) { return a == 8, true }
@@ -756,7 +725,12 @@ func TestObserveWithholdsWhatNobodyVouchesFor(t *testing.T) {
 		mal := s.commit(base, "m", "m\n", fmt.Sprintf("C1\n\nChange-Id: %s\n", cid(1)))
 		if how == "none" {
 			mal = base // the writer's change is on the branch
-		} else if how == "on a mirrored one" {
+		} else if how == "on the bridge's import" {
+			// An unlinked author's PR, imported as the bridge: theirs,
+			// not the bridge's to vouch for.
+			c.BridgeAccount = 1
+			add(1, mal, 1)
+		} else if how == "on a mirrored one" || how == "on a writer's outdated one" {
 			add(1, mal, 8) // a linked writer's too
 		} else {
 			add(1, mal, 7)
@@ -777,8 +751,14 @@ func TestObserveWithholdsWhatNobodyVouchesFor(t *testing.T) {
 			s.save(ctx, c.Store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "github", Lifecycle: "NEW"},
 				Revisions: []state.Revision{{PatchSet: 1, GerritSHA: mal, GitHubSHA: gh}}})
 			add(1, s.commit(base, "m", "m2\n", fmt.Sprintf("C1\n\nChange-Id: %s\n", cid(1))), 7)
-		case "new patch set":
-			add(1, s.commit(base, "m", "m2\n", fmt.Sprintf("C1\n\nChange-Id: %s\n", cid(1))), 7)
+		case "new patch set", "on a writer's outdated one":
+			// Patch set 2, the first still there, outdated.
+			ci := s.changes[1]
+			rev := s.commit(base, "m", "m2\n", fmt.Sprintf("C1\n\nChange-Id: %s\n", cid(1)))
+			s.push("gerrit.git", rev, "refs/changes/01/1/2")
+			ci.Revisions[rev] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Ref: "refs/changes/01/1/2", Uploader: ci.Owner,
+				Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, rev))}
+			ci.CurrentRevision = rev
 		case "abandoned":
 			s.changes[1].Status = "ABANDONED"
 		case "private":
@@ -788,8 +768,99 @@ func TestObserveWithholdsWhatNobodyVouchesFor(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if snap.Withheld[2] != (how != "none" && how != "on a mirrored one" && how != "on one GitHub has") {
+		// An unlinked author's PR, imported, GitHub has (a fork's, say),
+		// but its code never ran there with the repository's secrets: as
+		// CI's parentsTrusted, it is not vouched for. A linked writer's
+		// outdated patch set is.
+		if snap.Withheld[2] != (how != "none" && how != "on a mirrored one" && how != "on a writer's outdated one") {
 			t.Errorf("%s: withheld %v", how, snap.Withheld)
+		}
+	}
+}
+
+// The same rule, in both directions, for a Gerrit patch set pushed to a
+// GitHub-born PR's branch: a trusted member's on a stranger's patch set
+// is not pushed, for the code below it is the stranger's (twelfth
+// review: as CI's parentsTrusted).
+func TestForeignCodeBelowIsForeign(t *testing.T) {
+	for _, owned := range []bool{false, true} {
+		ctx := context.Background()
+		s, c, base := followSites(t)
+		c.GitHubOwned = owned
+		c.Trusted = func(_ context.Context, a int) (bool, bool) { return a == 8, true }
+		c.Publishable = func(_ context.Context, a int) (bool, bool) { return a == 8, true }
+		for _, stranger := range []bool{false, true} {
+			below := 8
+			if stranger {
+				below = 9
+			}
+			low := s.commit(base, "low", "l\n", fmt.Sprintf("C1\n\nChange-Id: %s\n", cid(1)))
+			ci := s.change(1, cid(1), low, fmt.Sprintf("C1\n\nChange-Id: %s\n", cid(1)), "NEW")
+			r := ci.Revisions[low]
+			r.Uploader = gerrit.AccountInfo{AccountID: below}
+			ci.Revisions[low], ci.Owner = r, r.Uploader
+			top := s.commit(low, "top", "t\n", fmt.Sprintf("C2\n\nChange-Id: %s\n", cid(2)))
+			ci = s.change(2, cid(2), top, fmt.Sprintf("C2\n\nChange-Id: %s\n", cid(2)), "NEW")
+			r = ci.Revisions[top]
+			r.Uploader = gerrit.AccountInfo{AccountID: 8}
+			ci.Revisions[top], ci.Owner = r, gerrit.AccountInfo{AccountID: 5}
+			s.save(ctx, c.Store, 2, &state.Change{State: state.ChangeState{Change: 2, ChangeID: cid(2), PR: 20, Branch: "main", Origin: "github",
+				HeadBranch: "feature", Lifecycle: "NEW"}})
+			snap, err := c.observe(ctx, "main", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snap.Foreign[2] != stranger {
+				t.Errorf("GitHub owns %v, a stranger's below %v: foreign %v", owned, stranger, snap.Foreign[2])
+			}
+		}
+	}
+}
+
+// chainReader is a belowReader of made-up commits: c<i>'s parent is
+// c<i+1>, each a patch set of its own change by uploader, but merged
+// (the commit it merged as) where merged says; base is in the branch.
+type chainReader struct {
+	n, uploader int
+	merged      map[string]bool
+}
+
+func (r chainReader) parentsOf(context.Context, string) ([]string, error) { return nil, nil }
+func (r chainReader) inBranch(_ context.Context, _, sha string) (bool, error) {
+	return sha == fmt.Sprint("c", r.n), nil
+}
+func (r chainReader) changesOf(_ context.Context, sha string) ([]gerrit.ChangeInfo, error) {
+	var i int
+	fmt.Sscanf(sha, "c%d", &i)
+	rv := gerrit.RevisionInfo{Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: r.uploader}}
+	rv.Commit.Parents = append(rv.Commit.Parents, struct {
+		Commit string `json:"commit"`
+	}{fmt.Sprint("c", i+1)})
+	ci := gerrit.ChangeInfo{Number: i, Status: "NEW", CurrentRevision: sha, Revisions: map[string]gerrit.RevisionInfo{sha: rv}}
+	if r.merged[sha] {
+		ci.Status = "MERGED"
+	}
+	return []gerrit.ChangeInfo{ci}, nil
+}
+
+// As gerrit-buildkite's: at most maxBelow commits below are read, and the
+// commit a change merged as is trusted whoever uploaded it.
+func TestParentsTrustedBounds(t *testing.T) {
+	ctx := context.Background()
+	trusted := func(_ context.Context, a int) (bool, bool) { return a == 8, true }
+	for _, tc := range []struct {
+		n, uploader int
+		merged      map[string]bool
+		want        bool
+	}{
+		{maxBelow - 1, 8, nil, true}, // c0..c48 patch sets, c49 the branch: 50 read
+		{maxBelow, 8, nil, false},    // one more than it reads
+		{3, 9, nil, false},           // a stranger's
+		{3, 9, map[string]bool{"c0": true, "c1": true, "c2": true}, true}, // merged as
+	} {
+		ok, _, err := parentsTrusted(ctx, chainReader{tc.n, tc.uploader, tc.merged}, "main", []string{"c0"}, nil, trusted)
+		if ok != tc.want || err != nil {
+			t.Errorf("%+v: %v %v", tc, ok, err)
 		}
 	}
 }

@@ -81,6 +81,9 @@ type Code struct {
 	// have on GitHub. It stands in for Trusted for pushes to GitHub-born
 	// PRs' branches too. Unset there, no Gerrit patch set is pushed.
 	Publishable func(ctx context.Context, account int) (ok, known bool)
+	// Below, if set, is what parentsTrusted reads (tests); else the
+	// mirror and Gerrit.
+	Below belowReader
 	// LinkURL is where people link their GitHub accounts, for notices.
 	LinkURL string
 
@@ -482,7 +485,7 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 		}
 		if !w && c.GitHubOwned && !s.githubBorn(n) {
 			var known bool
-			w, known, err = c.unpublished(ctx, ch, linked)
+			w, known, err = c.unpublished(ctx, ch, s.State[n], branch, linked)
 			if err != nil || !known {
 				c.Logger.Warn("cannot tell whether a change's uploaders may push to GitHub; withheld", "change", n, "err", err)
 				s.Withheld[n] = true
@@ -522,141 +525,6 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 		c.Logger.Info("withheld from GitHub", "change", n, "patch_set", ch.PatchSet, "why", cmp.Or(why, "changes "+withheldWhat))
 	}
 	return nil
-}
-
-// withholdChildren, where GitHub owns the branches, withholds each open
-// change based on a withheld or foreign change's current patch set (or
-// on a change so withheld): its PR, or its frozen base, would bring that
-// code to GitHub, as if whoever chose the parent had pushed it, which one
-// click of Gerrit's Rebase does (review of the GitHub-owned mode). Each
-// gets a notice in Gerrit, once per patch set.
-func (c *Code) withholdChildren(ctx context.Context, s *Snapshot) error {
-	if !c.GitHubOwned {
-		return nil
-	}
-	for {
-		held := map[string]int{} // revision -> its withheld change
-		for n, ch := range s.Changes {
-			if ch.Status == "NEW" && (s.Withheld[n] || s.Foreign[n]) {
-				held[ch.Revision] = n
-			}
-		}
-		more := false
-		for _, n := range sortedKeys(s.Changes) {
-			ch := s.Changes[n]
-			parent, ok := held[ch.Parent]
-			if ch.Status != "NEW" || ch.Private || s.Withheld[n] || !ok {
-				continue
-			}
-			s.Withheld[n], more = true, true
-			if st := s.State[n]; c.DryRun || (st != nil && st.State.WithheldNotice == ch.PatchSet) {
-				continue
-			}
-			msg := fmt.Sprintf("Patch set %d is not mirrored to GitHub: it is based on change %d, which is not (see its messages), "+
-				"and its PR would bring that change's code to GitHub. Rebase it, or have that change mirrored first.", ch.PatchSet, parent)
-			if !c.notice(ctx, n, ch, msg) {
-				continue
-			}
-			if err := c.updateState(ctx, n, "withheld notice", func(st *state.Change) { st.State.WithheldNotice = ch.PatchSet }); err != nil {
-				return err
-			}
-		}
-		if !more {
-			return nil
-		}
-	}
-}
-
-// maxBrought is how many commits a change may bring to GitHub, beyond
-// its branch, for withholdUnvetted to look at; one bringing more is
-// withheld.
-const maxBrought = 1000
-
-// withholdUnvetted, where GitHub owns the branches, withholds each open
-// change that would bring GitHub a commit it does not have and nobody
-// mirrored vouches for: every commit between its patch set and the
-// branch (merges' other parents too) must be one GitHub has (a patch set
-// the bridge pushed or imported) or a mirrored change's current patch
-// set. withholdChildren only looks at a first parent that is a withheld
-// change's current patch set; an outdated, abandoned or private one's,
-// or a merged-in one's, would otherwise reach GitHub as part of a linked
-// writer's change (twelfth review). Nobody gets more through Gerrit than
-// they have on GitHub.
-func (c *Code) withholdUnvetted(ctx context.Context, s *Snapshot, branch string) error {
-	if !c.GitHubOwned {
-		return nil
-	}
-	onGitHub := map[string]bool{}
-	for _, st := range s.State {
-		for _, r := range st.Revisions {
-			if r.GitHubSHA != "" && r.GerritSHA != "" {
-				onGitHub[r.GerritSHA] = true // pushed, or imported: its code is GitHub's
-			}
-		}
-	}
-	mirrored := func(n int) bool {
-		ch := s.Changes[n]
-		return ch.Status == "NEW" && !ch.Private && ch.Revision != "" && !s.Withheld[n] && !s.Foreign[n]
-	}
-	not := []string{"--not", "refs/remotes/gerrit/heads/" + branch}
-	if c.DefaultBranch != "" && c.DefaultBranch != branch {
-		not = append(not, "refs/remotes/gerrit/heads/"+c.DefaultBranch)
-	}
-	brought := map[int][]string{}
-	for _, n := range sortedKeys(s.Changes) {
-		if !mirrored(n) {
-			continue
-		}
-		rev := s.Changes[n].Revision
-		out, err := c.Mirror.Git(ctx, nil, append([]string{"rev-list", fmt.Sprintf("--max-count=%d", maxBrought+1), rev}, not...)...)
-		if err != nil {
-			return fmt.Errorf("listing what change %d brings: %w", n, err)
-		}
-		brought[n] = strings.Fields(string(out))
-	}
-	for {
-		vouched := map[string]bool{}
-		for n, ch := range s.Changes {
-			if mirrored(n) {
-				vouched[ch.Revision] = true
-			}
-		}
-		more := false
-		for _, n := range sortedKeys(brought) {
-			ch := s.Changes[n]
-			if !mirrored(n) {
-				continue
-			}
-			bad := ""
-			if len(brought[n]) > maxBrought {
-				bad = fmt.Sprintf("more than %d commits", maxBrought)
-			}
-			for _, sha := range brought[n] {
-				if bad == "" && !onGitHub[sha] && !vouched[sha] { // its own patch set is vouched for
-					bad = "commit " + short(sha)
-				}
-			}
-			if bad == "" {
-				continue
-			}
-			s.Withheld[n], more = true, true
-			if st := s.State[n]; c.DryRun || (st != nil && st.State.WithheldNotice == ch.PatchSet) {
-				continue
-			}
-			msg := fmt.Sprintf("Patch set %d is not mirrored to GitHub: it would bring %s, which GitHub does not have and no mirrored change's "+
-				"current patch set is (an outdated, abandoned, private or withheld change's, say). Rebase it onto the branch or a mirrored change.", ch.PatchSet, bad)
-			if !c.notice(ctx, n, ch, msg) {
-				continue
-			}
-			if err := c.updateState(ctx, n, "withheld notice", func(st *state.Change) { st.State.WithheldNotice = ch.PatchSet }); err != nil {
-				return err
-			}
-			c.Logger.Info("withheld from GitHub", "change", n, "patch_set", ch.PatchSet, "why", "brings "+bad)
-		}
-		if !more {
-			return nil
-		}
-	}
 }
 
 // notice posts msg on change n's current patch set as the bridge, and
@@ -743,7 +611,7 @@ func (c *Code) pushTrust() func(context.Context, int) (bool, bool) {
 // current patch set (its uploader, and whoever made its code or chose its
 // parent: codeFrom) has no linked GitHub account that may push to the
 // repository. known is false if that could not be told.
-func (c *Code) unpublished(ctx context.Context, ch *GerritChange, memo map[int][2]bool) (bool, bool, error) {
+func (c *Code) unpublished(ctx context.Context, ch *GerritChange, st *state.Change, branch string, memo map[int][2]bool) (bool, bool, error) {
 	may := func(ctx context.Context, account int) (bool, bool) {
 		if r, ok := memo[account]; ok {
 			return r[0], r[1]
@@ -757,13 +625,9 @@ func (c *Code) unpublished(ctx context.Context, ch *GerritChange, memo map[int][
 	}
 	// Owner 0: owning the change is no pass; every one of them must be
 	// publishable themselves.
-	ok, known := mayPushToAuthor(ctx, may, c.BridgeAccount, 0, ch.UploaderID, ch.RealUploaderID)
-	if ok && (ch.PatchSet > 1 || ch.Kind != "REWORK") {
-		ci, err := c.Gerrit.GetChange(ctx, ch.Number, "ALL_REVISIONS", "ALL_COMMITS")
-		if err != nil {
-			return true, false, err
-		}
-		ok, known = authorsCode(ctx, may, c.BridgeAccount, 0, revisionsByNumber(ci), ch.PatchSet)
+	ok, known, err := c.mayReach(ctx, ch, st, branch, 0, may)
+	if err != nil {
+		return true, false, err
 	}
 	return !ok, known, nil
 }
@@ -832,17 +696,11 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 			continue
 		}
 		owner := ownerPass(c.GitHubOwned, ch.OwnerID, head)
-		ok, known := mayPushToAuthor(ctx, c.pushTrust(), c.BridgeAccount, owner, ch.UploaderID, ch.RealUploaderID)
-		if ok && (ch.PatchSet > 1 || ch.Kind != "REWORK") {
-			// Whose code, and parent, is it? (A REWORK can keep a parent
-			// someone else chose: sixth audit.)
-			ci, err := c.Gerrit.GetChange(ctx, n, "ALL_REVISIONS", "ALL_COMMITS")
-			if err != nil {
-				c.Logger.Warn("cannot read a change's patch sets; not pushing its latest", "change", n, "err", err)
-				s.Foreign[n] = true
-				continue
-			}
-			ok, known = authorsCode(ctx, c.pushTrust(), c.BridgeAccount, owner, revisionsByNumber(ci), ch.PatchSet)
+		ok, known, err := c.mayReach(ctx, ch, s.State[n], s.Branch, owner, c.pushTrust())
+		if err != nil {
+			c.Logger.Warn("cannot tell whose code a change's patch set is, or is below it; not pushing it", "change", n, "err", err)
+			s.Foreign[n] = true
+			continue
 		}
 		if ok {
 			continue
@@ -953,6 +811,184 @@ func authorsCode(ctx context.Context, trusted func(context.Context, int) (bool, 
 	return found && allowed(cur) && codeFrom(revs, ps, allowed), known
 }
 
+// belowReader is what parentsTrusted reads, as gerrit-buildkite's reader
+// is: a commit's parents, whether a commit is in a branch, and the
+// changes that have a commit as a patch set.
+type belowReader interface {
+	parentsOf(ctx context.Context, rev string) ([]string, error)
+	inBranch(ctx context.Context, branch, sha string) (bool, error)
+	changesOf(ctx context.Context, sha string) ([]gerrit.ChangeInfo, error)
+}
+
+// mirrorReader is belowReader from Gerrit (as gerrit-buildkite reads it),
+// and the bridge's mirror for a commit's parents (Code's, which observe
+// has just fetched).
+type mirrorReader struct {
+	g       *gerrit.Client
+	m       *gitmirror.Repo
+	project string
+}
+
+func (r mirrorReader) parentsOf(ctx context.Context, rev string) ([]string, error) {
+	out, err := r.m.Git(ctx, nil, "rev-list", "--parents", "-n1", rev)
+	if err != nil {
+		return nil, err
+	}
+	f := strings.Fields(string(out))
+	if len(f) == 0 || f[0] != rev {
+		return nil, fmt.Errorf("no commit %s in the mirror", short(rev))
+	}
+	return f[1:], nil
+}
+
+func (r mirrorReader) inBranch(ctx context.Context, branch, sha string) (bool, error) {
+	return r.g.InBranch(ctx, r.project, branch, sha)
+}
+
+func (r mirrorReader) changesOf(ctx context.Context, sha string) ([]gerrit.ChangeInfo, error) {
+	return r.g.QueryChanges(ctx, "project:"+gerrit.QueryString(r.project)+" commit:"+sha, "ALL_REVISIONS", "ALL_COMMITS", "DETAILED_ACCOUNTS")
+}
+
+// maxBelow bounds the commits below a patch set parentsTrusted reads, as
+// gerrit-buildkite's does.
+const maxBelow = 50
+
+// parentsTrusted is gerrit-buildkite's parentsTrusted (trust.go), the
+// same question for a push to GitHub as for a build: whether commit rev's
+// parents, of a patch set on branch, are trusted code, by trusted (as
+// authorsCode asks it, owning a change no pass): in the branch already,
+// the commit a change merged as, or a patch set of a change (any:
+// outdated, abandoned, the one below in a chain) whose code authorsCode
+// trusts, on parents trusted the same way. Whoever chose a parent need
+// not have read it: anyone may add a patch set to the change below a
+// trusted user's, which Gerrit's Rebase then puts under theirs (twelfth
+// review: the bridge had its own, weaker rule). known is false if trusted
+// could not tell.
+//
+// Commits in already (this change's own, on its PR's branch: imported
+// from it, or pushed there) count as the branch does: pushed there again
+// they bring nothing new.
+func parentsTrusted(ctx context.Context, r belowReader, branch string, parents []string, already map[string]bool,
+	trusted func(context.Context, int) (bool, bool)) (ok, known bool, err error) {
+	known = true
+	seen := map[string]bool{}
+	for todo := parents; len(todo) > 0; todo = todo[1:] {
+		sha := todo[0]
+		if seen[sha] {
+			continue
+		}
+		if seen[sha] = true; len(seen) > maxBelow {
+			return false, known, nil
+		}
+		if already[sha] {
+			continue
+		}
+		in, err := r.inBranch(ctx, branch, sha)
+		if err != nil {
+			return false, known, fmt.Errorf("is %s in %s? %w", short(sha), branch, err)
+		}
+		if in {
+			continue
+		}
+		cs, err := r.changesOf(ctx, sha)
+		if err != nil {
+			return false, known, fmt.Errorf("finding %s's change: %w", short(sha), err)
+		}
+		if len(cs) == 0 {
+			return false, known, nil // neither in the branch nor a patch set the bridge can see
+		}
+		for i := range cs {
+			ci := &cs[i]
+			if ci.Status == "MERGED" && ci.CurrentRevision == sha {
+				continue
+			}
+			p, found := ci.Revisions[sha]
+			if !found {
+				return false, known, nil
+			}
+			// No pass for the bridge's own uploads below: an import of
+			// an unlinked author's PR (a fork's, say) is theirs, and
+			// CI's trusted group has no bridge in it either.
+			ok, k := authorsCode(ctx, trusted, 0, 0, revisionsByNumber(ci), p.Number)
+			known = known && k
+			if !ok {
+				return false, known, nil
+			}
+			todo = append(todo, p.Commit.ParentSHAs()...)
+		}
+	}
+	return true, known, nil
+}
+
+// mayReach is the one answer to whether change ch's current patch set may
+// be pushed to GitHub (design §3.1, §6.5; twelfth review: four places
+// asked it four ways): whoever uploaded it, made its code and chose its
+// parents is trusted (authorsCode; owner, if not 0, passes for this
+// change), and so is the code below it (parentsTrusted). The callers only
+// decide what a no means: withheld, foreign, not restored. known is false
+// if that could not be told; err, if Gerrit or the mirror could not be
+// read (then not ok).
+func (c *Code) mayReach(ctx context.Context, ch *GerritChange, st *state.Change, branch string, owner int, trusted func(context.Context, int) (bool, bool)) (ok, known bool, err error) {
+	// A first patch set that is a REWORK is its uploader's: no need to
+	// read the rest.
+	first := gerrit.RevisionInfo{Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: ch.UploaderID}}
+	if ch.PatchSet == 1 && ch.Kind == "REWORK" {
+		// Its parents from the mirror, which observe fetched it into.
+		parents, err := c.belowReader().parentsOf(ctx, ch.Revision)
+		if err != nil {
+			return false, false, err
+		}
+		first.Commit.Parents = make([]struct {
+			Commit string `json:"commit"`
+		}, 0, len(parents))
+		for _, p := range parents {
+			first.Commit.Parents = append(first.Commit.Parents, struct {
+				Commit string `json:"commit"`
+			}{p})
+		}
+	}
+	if ch.RealUploaderID != 0 {
+		first.RealUploader = &gerrit.AccountInfo{AccountID: ch.RealUploaderID}
+	}
+	revs := map[int]gerrit.RevisionInfo{1: first}
+	if ch.PatchSet > 1 || ch.Kind != "REWORK" {
+		ci, err := c.Gerrit.GetChange(ctx, ch.Number, "ALL_REVISIONS", "ALL_COMMITS")
+		if err != nil {
+			return false, false, err
+		}
+		revs = revisionsByNumber(ci)
+	}
+	return mayReach(ctx, c.belowReader(), trusted, c.BridgeAccount, owner, revs, ch.PatchSet, branch, st)
+}
+
+// mayReach is Code.mayReach for patch set ps of revs (whose commits, and
+// so parents, are read: authorsCode refuses one whose are not).
+func mayReach(ctx context.Context, r belowReader, trusted func(context.Context, int) (bool, bool), bridge, owner int,
+	revs map[int]gerrit.RevisionInfo, ps int, branch string, st *state.Change) (ok, known bool, err error) {
+	ok, known = authorsCode(ctx, trusted, bridge, owner, revs, ps)
+	if !ok {
+		return false, known, nil
+	}
+	already := map[string]bool{}
+	if st != nil {
+		for _, rv := range st.Revisions {
+			if rv.GitHubSHA != "" && !rv.Found {
+				already[rv.GerritSHA] = true
+			}
+		}
+	}
+	ok, k, err := parentsTrusted(ctx, r, branch, revs[ps].Commit.ParentSHAs(), already, trusted)
+	return ok && err == nil, known && k, err
+}
+
+// belowReader is the Code's: Below, or its mirror and Gerrit.
+func (c *Code) belowReader() belowReader {
+	if c.Below != nil {
+		return c.Below
+	}
+	return mirrorReader{c.Gerrit, c.Mirror, c.Project}
+}
+
 // observe gathers a Snapshot for branch from Gerrit, the mirror, GitHub
 // and refs/bridge.
 func (c *Code) observe(ctx context.Context, branch string, refused map[int]string) (*Snapshot, error) {
@@ -1049,12 +1085,6 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]strin
 		return nil, err
 	}
 	if err := c.markForeign(ctx, s); err != nil {
-		return nil, err
-	}
-	if err := c.withholdChildren(ctx, s); err != nil {
-		return nil, err
-	}
-	if err := c.withholdUnvetted(ctx, s, branch); err != nil {
 		return nil, err
 	}
 	c.deferOverBudget(ctx, s)
