@@ -129,19 +129,8 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Gerrit only accepts commits (here, refs/bridge state) authored by
-	// the pushing account, so use its real name and email.
-	var self gerrit.AccountInfo
-	if err := rest.Do(ctx, http.MethodGet, "accounts/self", nil, &self); err != nil {
-		return fmt.Errorf("checking Gerrit REST access: %w", err)
-	}
-	if self.Email == "" {
-		return fmt.Errorf("gerrit account %s has no preferred email; state commits need one", cfg.Gerrit.HTTPUser)
-	}
-	if err := checkCapabilities(ctx, cfg, rest); err != nil {
-		return err
-	}
-	if err := checkAuthType(ctx, cfg, rest); err != nil {
+	self, err := checkGerrit(ctx, cfg, rest)
+	if err != nil {
 		return err
 	}
 	gitCfg, gitEnv := gitmirror.HTTPCredentials(cfg.Gerrit.URL, cfg.Gerrit.HTTPUser, gerritPassword)
@@ -520,8 +509,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	// hour per commenter.
 	commands.Replies = &reconcile.Budget{N: 20, Per: time.Hour}
 	setMode(cfg.GitHubOwned(), code, comments, commands, checks)
-	dispatch := &reconcile.Dispatcher{Code: code, Comments: comments, Commands: commands, Checks: checks, Store: store, Logger: logger,
-		Enqueue: q.Add, Ready: users.Ready}
+	dispatch := newDispatcher(code, comments, commands, checks, store, users, q.Add, logger)
 	wg.Go(func() { reconcile.Work(ctx, q, dispatch, cfg.Workers, tally, logger) })
 	wg.Go(func() {
 		// Stop if the bridge's account joins CI's trusted group.
@@ -659,6 +647,36 @@ func checkSecrets(cfg *config.Config, logger *slog.Logger) error {
 // Change-Id out of the commit's last paragraph whenever the commits are
 // signed off, and only check-and-fix then shows the change merged, not
 // abandoned. Where Gerrit owns them it is never needed, nor asked about.
+// checkGerrit is the bridge's own Gerrit account, once Gerrit has said
+// everything the bridge needs before it starts: that it can be reached,
+// the account has a preferred email (Gerrit only accepts commits, here
+// refs/bridge state, authored by the pushing account), the capabilities
+// the mode needs, and an auth type the identity mapping is safe with.
+func checkGerrit(ctx context.Context, cfg *config.Config, rest *gerrit.Client) (gerrit.AccountInfo, error) {
+	var self gerrit.AccountInfo
+	if err := rest.Do(ctx, http.MethodGet, "accounts/self", nil, &self); err != nil {
+		return self, fmt.Errorf("checking Gerrit REST access: %w", err)
+	}
+	if self.Email == "" {
+		return self, fmt.Errorf("gerrit account %s has no preferred email; state commits need one", cfg.Gerrit.HTTPUser)
+	}
+	if err := checkCapabilities(ctx, cfg, rest); err != nil {
+		return self, err
+	}
+	if err := checkAuthType(ctx, cfg, rest); err != nil {
+		return self, err
+	}
+	return self, nil
+}
+
+// newDispatcher routes work to its reconcilers, none of it while the
+// identity mapping cannot answer (users.Ready, design §7).
+func newDispatcher(code *reconcile.Code, comments *reconcile.Comments, commands *reconcile.Commands, checks *reconcile.Checks,
+	store *state.Store, users *reconcile.Users, enqueue func(reconcile.Key), logger *slog.Logger) *reconcile.Dispatcher {
+	return &reconcile.Dispatcher{Code: code, Comments: comments, Commands: commands, Checks: checks, Store: store, Logger: logger,
+		Enqueue: enqueue, Ready: users.Ready}
+}
+
 func checkCapabilities(ctx context.Context, cfg *config.Config, rest *gerrit.Client) error {
 	if !cfg.GitHubOwned() {
 		return nil

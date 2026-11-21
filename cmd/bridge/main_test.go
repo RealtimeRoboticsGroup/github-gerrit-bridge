@@ -436,3 +436,42 @@ type nopGitHub struct{}
 func (nopGitHub) UserID(context.Context, string) (int64, time.Time, error) {
 	return 0, time.Time{}, nil
 }
+
+// The bridge does not start unless Gerrit says all it needs: its own
+// account with an email, and an auth type the mapping is safe with
+// (fifteenth review, tests: checkAuthType was tested, but not that
+// startup asks it).
+func TestCheckGerrit(t *testing.T) {
+	for _, tc := range []struct {
+		email, auth string
+		ok          bool
+	}{{"bridge@example.com", "HTTP", true}, {"", "HTTP", false}, {"bridge@example.com", "LDAP", false}} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/a/accounts/self":
+				io.WriteString(w, ")]}'\n"+`{"_account_id":3,"username":"bridge","email":"`+tc.email+`"}`)
+			case "/a/config/server/info":
+				io.WriteString(w, ")]}'\n"+`{"auth":{"auth_type":"`+tc.auth+`"}}`)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		rest := &gerrit.Client{BaseURL: srv.URL, User: "bridge", Password: "p", HTTP: srv.Client()}
+		self, err := checkGerrit(context.Background(), &config.Config{}, rest)
+		srv.Close()
+		if (err == nil) != tc.ok || (tc.ok && self.AccountID != 3) {
+			t.Errorf("email %q, auth %s: %+v %v", tc.email, tc.auth, self, err)
+		}
+	}
+}
+
+// The dispatcher waits while the directory cannot answer: Ready is wired
+// to the mapping (fifteenth review, tests: dropping it passed).
+func TestNewDispatcherWaitsForTheDirectory(t *testing.T) {
+	dir := &ldap.Directory{BaseDN: "ou=People", ObjectClass: "githubAccount", Refresh: time.Hour} // never read
+	d := newDispatcher(nil, nil, nil, nil, nil, &reconcile.Users{Directory: dir}, nil, slog.Default())
+	// Nothing to reconcile with: running anything would panic.
+	if err := d.Reconcile(context.Background(), reconcile.Key{Branch: "main"}); err == nil {
+		t.Error("reconciled while the directory was never read")
+	}
+}
