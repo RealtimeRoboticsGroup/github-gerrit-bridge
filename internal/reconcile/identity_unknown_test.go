@@ -274,3 +274,36 @@ func TestFirstUploadWaitsForWhoWroteAndPushedIt(t *testing.T) {
 		})
 	}
 }
+
+// A PR whose commits carry the Change-Id of its author's own change, while
+// who the author is is unknown, is neither given a keyed Change-Id of its
+// own (a second change, and the author's never linked) nor refused: it
+// waits; once known, it is the author's to sort out, as ever. Sixteenth
+// review: nothing tested this wait.
+func TestOwnChangeIDWaitsForWhoTheAuthorIs(t *testing.T) {
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	up.alone = true // as deployed: no peer key, so no other lookup of the author
+	on := true
+	im.Identity = downFor{im.Identity, map[string]bool{"austin": true}, &on}
+	msg := "New\n\nChange-Id: " + cid(77) + "\n"
+	h := s.commit(m1, "new.txt", "n\n", msg)
+	s.push("github.git", h, "refs/heads/topic")
+	s.pr(60, "topic", h, "main", "austin")
+	s.pushed("o/r", "refs/heads/topic", h, "austin")
+	ci := s.change(77, cid(77), s.commit(m1, "own.txt", "o\n", msg), msg, "NEW")
+	ci.Owner = s.accounts["austin"]
+	if err := im.Import(ctx, "main"); !isIdentityUnknown(err) || len(up.uploads) != 0 {
+		t.Fatalf("unknown: err %v, uploads %v", err, up.uploads)
+	}
+	if sts := s.statuses[h]; len(sts) == 0 || sts[len(sts)-1].State != "pending" {
+		t.Errorf("unknown: gerrit/sync %+v, want pending", sts)
+	}
+	on = false
+	if err := im.Import(ctx, "main"); err != nil || len(up.uploads) != 0 {
+		t.Fatalf("known: err %v, uploads %v", err, up.uploads)
+	}
+	if sts := s.statuses[h]; sts[len(sts)-1].State != "failure" {
+		t.Errorf("known: gerrit/sync %+v, want the PR refused (the author's own change)", sts)
+	}
+}
