@@ -817,6 +817,11 @@ func TestForeignCodeBelowIsForeign(t *testing.T) {
 			if snap.Foreign[2] != stranger {
 				t.Errorf("GitHub owns %v, a stranger's below %v: foreign %v", owned, stranger, snap.Foreign[2])
 			}
+			// The notice names who qualifies in this direction.
+			want := map[bool]string{false: "in CI's trusted group", true: "linked a GitHub account that may push to the repository (owning the change counts only on the PR author's own fork)"}[owned]
+			if msgs := s.reviewMsgs[2]; stranger && (len(msgs) != 1 || !strings.Contains(msgs[0], want)) {
+				t.Errorf("GitHub owns %v: notices %q, want %q", owned, msgs, want)
+			}
 		}
 	}
 }

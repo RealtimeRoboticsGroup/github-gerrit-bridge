@@ -511,10 +511,7 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 				"that looks like a secret, say). Review it here.", ch.PatchSet)
 		case notLinked:
 			msg = fmt.Sprintf("Patch set %d is not mirrored to GitHub: GitHub owns this repository's branches, and a change reaches it "+
-				"only when whoever uploaded it, and wrote its code, has linked a GitHub account that may push there.", ch.PatchSet)
-			if c.LinkURL != "" {
-				msg += " Link yours at " + c.LinkURL + ", then upload again."
-			}
+				"only when %s", ch.PatchSet, c.whoMayPush(false))
 		}
 		if !c.notice(ctx, n, ch, msg) {
 			continue
@@ -709,8 +706,8 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 		if st := s.State[n]; c.DryRun || !known || (st != nil && st.State.ForeignNotice == ch.PatchSet) {
 			continue
 		}
-		msg := fmt.Sprintf("Patch set %d is not pushed to the GitHub PR's branch, which is its author's: only the change's owner, "+
-			"and members of CI's trusted group, have their patch sets pushed there.", ch.PatchSet)
+		msg := fmt.Sprintf("Patch set %d is not pushed to the GitHub PR's branch, which is its author's: a patch set is pushed there "+
+			"only when %s", ch.PatchSet, c.whoMayPush(true))
 		if !c.notice(ctx, n, ch, msg) {
 			continue
 		}
@@ -1923,6 +1920,25 @@ func (e *githubRefused) Error() string {
 
 // byGitHub marks a change GitHub refused in the export's refused set.
 const byGitHub = "github"
+
+// whoMayPush says who mayReach lets push Gerrit code to GitHub, for the
+// notices of withheld and foreign patch sets (twelfth review: the foreign
+// one named CI's trusted group where GitHub owns the branches), ending
+// with where to link, if linking is the way.
+func (c *Code) whoMayPush(prBranch bool) string {
+	if !c.GitHubOwned {
+		return "whoever uploaded it and wrote its code, and the code below it in Gerrit, is the change's owner or in CI's trusted group."
+	}
+	msg := "whoever uploaded it and wrote its code, and the code below it in Gerrit, has linked a GitHub account that may push to the repository"
+	if prBranch {
+		msg += " (owning the change counts only on the PR author's own fork)"
+	}
+	msg += "."
+	if c.LinkURL != "" {
+		msg += " Link yours at " + c.LinkURL + ", then upload again."
+	}
+	return msg
+}
 
 // notLinked is the reason withhold gives a change from someone without a
 // linked GitHub account that may push, where GitHub owns the branches.
