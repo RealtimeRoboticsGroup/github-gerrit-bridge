@@ -52,11 +52,15 @@ type fakeGerrit struct {
 	revs     map[string]int // sha -> ps
 	// created is when each patch set was uploaded ("" if not said).
 	created map[int]string
-	current string
-	files   map[string]string
-	clock   int
-	nextID  int
-	reviews int
+	// uploaders is who uploaded each patch set (nobody if not said),
+	// and owner the change's owner.
+	uploaders map[int]gerrit.AccountInfo
+	owner     gerrit.AccountInfo
+	current   string
+	files     map[string]string
+	clock     int
+	nextID    int
+	reviews   int
 }
 
 // vote sets user's vote on the current patch set, as Gerrit would.
@@ -194,7 +198,7 @@ func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ i
 
 func (f *fakeGerrit) GetChange(context.Context, int, ...string) (*gerrit.ChangeInfo, error) {
 	ci := &gerrit.ChangeInfo{CurrentRevision: f.current, Revisions: map[string]gerrit.RevisionInfo{}, Messages: f.messages,
-		Labels: map[string]gerrit.LabelInfo{}}
+		Labels: map[string]gerrit.LabelInfo{}, Owner: f.owner}
 	for label, byUser := range f.labels {
 		var l gerrit.LabelInfo
 		for _, u := range slices.Sorted(maps.Keys(byUser)) {
@@ -203,7 +207,7 @@ func (f *fakeGerrit) GetChange(context.Context, int, ...string) (*gerrit.ChangeI
 		ci.Labels[label] = l
 	}
 	for sha, ps := range f.revs {
-		ri := gerrit.RevisionInfo{Number: ps, Created: f.created[ps]}
+		ri := gerrit.RevisionInfo{Number: ps, Created: f.created[ps], Uploader: f.uploaders[ps]}
 		ri.Commit.Parents = make([]struct {
 			Commit string `json:"commit"`
 		}, cmp.Or(f.parents[ps], 1))

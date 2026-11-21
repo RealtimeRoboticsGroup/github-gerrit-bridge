@@ -222,10 +222,11 @@ Behaviour that changes, on purpose:
 - **A PR GitHub shows merged by the bridge's own push** into a bridge
   branch (a chain reordered) says so once, on the PR and on the change,
   while the change is still open in Gerrit.
-- **A Gerrit message posted on someone's behalf** (another account's
-  Run-As, or a vote with Label-As) is posted on GitHub as the bridge,
-  naming both ("**Carol**, as **Alice**, ..."), never with the named
-  person's own token nor as their GitHub review.
+- **A Gerrit reply posted on someone's behalf** (another account's
+  Run-As, or a vote with Label-As): its message, its comments and any
+  thread it resolves are posted on GitHub as the bridge, naming both
+  ("**Carol**, as **Alice**, ..."), never with the named person's own
+  token nor as their GitHub review.
 - **A linked user's +2 becomes their GitHub approval only while its
   commit is the PR's head**; mirrored after the PR moved on, it is a
   comment naming the patch set.

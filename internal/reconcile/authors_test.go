@@ -612,3 +612,63 @@ func TestLateVoteIsNoApprovalOfAMovedHead(t *testing.T) {
 		}
 	}
 }
+
+// Seventeenth review (impersonation), the comments' half of
+// TestVoteOnBehalfIsNoApprovalAsThem: carol posts a review on alice's
+// behalf (another account's Run-As, or on_behalf_of), a reply "Done"
+// that resolves a thread. Gerrit sets real_author only on the review's
+// change message; its comments, author alice, belong to it (their
+// change_message_id, and the same timestamp). They are carol's words
+// and carol's resolution: not to be posted, nor the thread resolved,
+// with alice's own token as alice.
+func TestCommentsOnBehalfAreNotPostedAsThem(t *testing.T) {
+	for _, byID := range []bool{false, true} {
+		t.Run(fmt.Sprint("by message id ", byID), func(t *testing.T) { commentsOnBehalf(t, byID) })
+	}
+}
+
+func commentsOnBehalf(t *testing.T, byID bool) {
+	e, _ := linkedEnv(t)
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	carol := gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}
+	e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: "c1", Path: "a.txt", PatchSet: 2, Line: 2, Message: "Please fix.", Updated: e.g.tick(),
+		Unresolved: true, Author: carol})
+	e.sync(t)
+	root := e.h.rcs[0].ID
+	// alice's own reply first: a comment is matched to its own message,
+	// not to any of its author's.
+	own := e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "m0", Author: alice, Date: own, Message: "Patch Set 2:\n\nLooking.", RevisionNumber: 2})
+	at := e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "m1", Author: alice, RealAuthor: &carol, Date: at,
+		Message: "Patch Set 2:\n\n(3 comments)", RevisionNumber: 2})
+	e.g.comments = append(e.g.comments,
+		gerrit.CommentInfo{ID: "c2", Path: "a.txt", PatchSet: 2, Line: 2, Message: "Done", InReplyTo: "c1", Updated: at, Author: alice},
+		gerrit.CommentInfo{ID: "c3", Path: gerrit.PatchSetLevel, PatchSet: 2, Message: "Ship it.", Updated: at, Author: alice},
+		gerrit.CommentInfo{ID: "c4", Path: "a.txt", PatchSet: 2, Line: 3, Message: "And this.", Updated: at, Author: alice})
+	if byID {
+		// Gerrit names the reply's change message; the times need not match.
+		for i := range e.g.comments[1:] {
+			e.g.comments[1+i].ChangeMessageID, e.g.comments[1+i].Updated = "m1", e.g.tick()
+		}
+	}
+	e.sync(t)
+	for _, rc := range e.h.rcs {
+		if rc.User == aliceGH {
+			t.Errorf("carol's comment on alice's behalf posted with alice's token: %q", rc.Body)
+		}
+	}
+	for _, ic := range e.h.ics {
+		if ic.User == aliceGH && !strings.Contains(ic.Body, "gerrit/5/m0") { // alice's own reply is hers
+			t.Errorf("carol's comment on alice's behalf posted with alice's token: %q", ic.Body)
+		}
+	}
+	if e.h.resolvedBy[root] == aliceGH {
+		t.Errorf("carol's resolution on alice's behalf made with alice's token")
+	}
+	if !slices.ContainsFunc(e.h.ics, func(ic github.IssueComment) bool {
+		return strings.Contains(ic.Body, "**Carol**, as **Alice Trusted (alice)**,") && strings.Contains(ic.Body, "Ship it.")
+	}) {
+		t.Errorf("no copy as the bridge naming both: %+v", e.h.ics)
+	}
+}

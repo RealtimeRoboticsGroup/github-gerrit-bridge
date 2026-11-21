@@ -456,6 +456,9 @@ type CommentInfo struct {
 	Tag            string          `json:"tag"`
 	Unresolved     bool            `json:"unresolved"`
 	FixSuggestions []FixSuggestion `json:"fix_suggestions"`
+	// ChangeMessageID is the change message of the reply it came with,
+	// which alone says who posted it on its author's behalf.
+	ChangeMessageID string `json:"change_message_id,omitempty"`
 }
 
 // Special file paths.
