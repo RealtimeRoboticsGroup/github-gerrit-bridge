@@ -406,3 +406,29 @@ func TestUnlinkedImportWaitsForWhoTheAuthorIs(t *testing.T) {
 		t.Errorf("known: err %v, unlinked %v", err, s.Unlinked)
 	}
 }
+
+// A linked user's Gerrit +2 while whose links are is unknown for now is
+// neither posted without its approval nor as the bridge: nothing is
+// posted, and it becomes their review once known. Sixteenth review:
+// untested.
+func TestLinkedVoteWaitsForWhoseLinksAre(t *testing.T) {
+	e, a := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2\n\nShip it.", RevisionNumber: 2}}
+	e.g.vote("alice", "Code-Review", 2)
+	a.unknown = &IdentityUnknown{errors.New("the directory cannot be read")}
+	posts := e.h.posts
+	if err := e.c.Sync(context.Background(), 5); !isIdentityUnknown(err) {
+		t.Fatalf("unknown: err %v", err)
+	}
+	if e.h.posts != posts || len(e.h.reviews) != 0 {
+		t.Fatalf("unknown: posted %d, reviews %+v", e.h.posts-posts, e.h.reviews)
+	}
+	a.unknown = nil
+	e.sync(t)
+	if len(e.h.reviews) != 1 || e.h.reviews[0].State != "APPROVED" || e.h.reviews[0].User != aliceGH {
+		t.Errorf("known: reviews %+v, want alice's approval", e.h.reviews)
+	}
+}
