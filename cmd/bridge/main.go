@@ -141,6 +141,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	if err := checkCapabilities(ctx, cfg, rest); err != nil {
 		return err
 	}
+	if err := checkAuthType(ctx, cfg, rest); err != nil {
+		return err
+	}
 	gitCfg, gitEnv := gitmirror.HTTPCredentials(cfg.Gerrit.URL, cfg.Gerrit.HTTPUser, gerritPassword)
 	mirror := &gitmirror.Repo{
 		Dir:    cfg.Gerrit.MirrorDir,
@@ -723,6 +726,29 @@ func newDirectory(l *config.LDAP, logger *slog.Logger) (*ldap.Directory, error) 
 		return nil, fmt.Errorf("identity.ldap: %w", err)
 	}
 	return &ldap.Directory{Searcher: srv, BaseDN: l.BaseDN, ObjectClass: l.ObjectClass, Refresh: l.Refresh, Logger: logger}, nil
+}
+
+// checkAuthType refuses username matching where Gerrit signs people in
+// with LDAP: its usernames are LDAP uids, not GitHub logins, and whoever
+// owns a GitHub login equal to a uid would be acted as that person
+// (design §7; fourteenth review: dropping identity.ldap from such a
+// config would have turned it on, the default).
+func checkAuthType(ctx context.Context, cfg *config.Config, rest *gerrit.Client) error {
+	if !cfg.Identity.MatchesUsernames() {
+		return nil
+	}
+	var info struct {
+		Auth struct {
+			Type string `json:"auth_type"`
+		} `json:"auth"`
+	}
+	if err := rest.Do(ctx, http.MethodGet, "config/server/info", nil, &info); err != nil {
+		return fmt.Errorf("reading Gerrit's auth type (username matching is on): %w", err)
+	}
+	if strings.HasPrefix(strings.ToUpper(info.Auth.Type), "LDAP") {
+		return fmt.Errorf("gerrit signs people in with %s, whose usernames are not GitHub logins: identity.match_usernames would act as whoever owns a GitHub login equal to someone's uid; use identity.ldap (or set match_usernames: false)", info.Auth.Type)
+	}
+	return nil
 }
 
 // githubMerger merges PRs on GitHub as whoever asked (/submit where GitHub

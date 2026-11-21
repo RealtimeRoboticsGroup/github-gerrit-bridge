@@ -372,3 +372,29 @@ func TestSetMode(t *testing.T) {
 		}
 	}
 }
+
+// Username matching is refused where Gerrit signs people in with LDAP,
+// and Gerrit is not asked when it is off (AOS signs in with GitHub).
+func TestCheckAuthType(t *testing.T) {
+	off := false
+	for _, tc := range []struct {
+		auth  string
+		match *bool
+		ok    bool
+	}{{"OAUTH", nil, true}, {"HTTP", nil, true}, {"LDAP", nil, false}, {"LDAP_BIND", nil, false}, {"LDAP", &off, true}} {
+		asked := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			asked = true
+			if r.URL.Path != "/a/config/server/info" {
+				t.Errorf("asked %s", r.URL)
+			}
+			io.WriteString(w, ")]}'\n"+`{"auth":{"auth_type":"`+tc.auth+`"}}`)
+		}))
+		rest := &gerrit.Client{BaseURL: srv.URL, User: "bridge", Password: "p", HTTP: srv.Client()}
+		err := checkAuthType(context.Background(), &config.Config{Identity: config.Identity{MatchUsernames: tc.match}}, rest)
+		srv.Close()
+		if (err == nil) != tc.ok || (tc.match != nil && asked) {
+			t.Errorf("%s, match %v: err %v, asked %v", tc.auth, tc.match, err, asked)
+		}
+	}
+}
