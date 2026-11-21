@@ -38,7 +38,8 @@ brt() { GH_TOKEN="$("${GH}" auth token --user AustinSchuhBRT)" "${GH}" "$@"; }
 # Gerrit REST as AustinSchuh (an administrator there): gerrit <path>, or
 # gerrit_as <user> <method> <path> [json].
 gerrit_as() {
-  curl -sf -u "$1:$(cat "${CREDS}/$1.http-password")" -H 'Content-Type: application/json' \
+  # The password through curl's config on stdin, never its argv (ps).
+  curl -sf -K- -H 'Content-Type: application/json' <<<"user = \"$1:$(cat "${CREDS}/$1.http-password")\"" \
     -X "$2" "${G}/a/$3" ${4:+-d "$4"} | tail -c +5
 }
 gerrit() { gerrit_as AustinSchuh GET "$1"; }
@@ -180,7 +181,7 @@ coauthored() { me api "repos/${R}/commits/${M2}" --jq .commit.message | grep -q 
 check "GitHub's squash commit ends with Co-authored-by (so Gerrit misses the Change-Id)" coauthored
 wait_for "Gerrit's main follows" followed main
 wait_for "the bridge marks change ${C2} merged at GitHub's commit (check-and-fix)" merged_at "${C2}" "${M2}"
-check "and says who merged it, in which PR" has_message "${C2}" "AustinSchuh in PR #${N2}, as ${M2} on main"
+wait_for "and says who merged it, in which PR" has_message "${C2}" "AustinSchuh in PR #${N2}, as ${M2} on main"
 
 # --- 3. The Change-Id edited out in the merge dialog ---
 step "3. A squash whose message lost the Change-Id"
@@ -232,10 +233,31 @@ S5="Unlinked ${RUN}"
   git -c "credential.http://127.0.0.1:18080.username=bob" -c "credential.http://127.0.0.1:18080.helper=" \
     -c "credential.http://127.0.0.1:18080.helper=!f() { test \"\$1\" = get && echo password=\$(cat ${CREDS}/bob.http-password); }; f" \
     push -q gerrit HEAD:refs/for/main 2>/dev/null)
-C5=$(change "${S5}")
-withheld() { has_message "${C5}" "GitHub owns this repository's branches"; }
-wait_for "change ${C5} is withheld, and says why (link a GitHub account)" withheld
+B5=$(cd "${ME_CLONE}" && git rev-parse HEAD)
+withheld() { C5=$(change "${S5}"); [[ -n "${C5}" ]] && has_message "${C5}" "GitHub owns this repository's branches"; }
+wait_for "bob's change is withheld, and says why (link a GitHub account)" withheld
+# What a withheld change must not do is push: a branch runs workflows.
+nowhere() { ! me api "repos/${R}/commits/$1" --silent 2>/dev/null; }
 check "and has no PR" test -z "$(pr_for "${S5}")"
+check "and its commit is on no GitHub branch" nowhere "${B5}"
+# A linked writer's change on top of it is withheld too, and stays so
+# when bob's patch set is outdated (the parent's code is still bob's).
+S5b="On unlinked ${RUN}"
+(cd "${ME_CLONE}" && echo "${S5b}" > "on-unlinked-${RUN}.txt" && git add . && git commit -qs -m "${S5b}" &&
+  git push -q gerrit HEAD:refs/for/main 2>/dev/null) || fail "setup: pushing ${S5b}"
+B5b=$(cd "${ME_CLONE}" && git rev-parse HEAD)
+child_withheld() { C5b=$(change "${S5b}"); [[ -n "${C5b}" ]] && has_message "${C5b}" "is based on change"; }
+wait_for "AustinSchuh's change on it is withheld too" child_withheld
+(cd "${ME_CLONE}" && git checkout -q HEAD^ && echo "${S5} v2" > "unlinked-${RUN}.txt" && git add . &&
+  git -c user.name=Bob -c user.email=bob@example.com commit -q --amend --no-edit &&
+  git -c "credential.http://127.0.0.1:18080.username=bob" -c "credential.http://127.0.0.1:18080.helper=" \
+    -c "credential.http://127.0.0.1:18080.helper=!f() { test \"\$1\" = get && echo password=\$(cat ${CREDS}/bob.http-password); }; f" \
+    push -q gerrit HEAD:refs/for/main 2>/dev/null) || fail "setup: bob's patch set 2"
+bob_ps2() { [[ "$(change_field "${C5}" .current_revision)" != "${B5}" ]]; }
+wait_for "bob uploads patch set 2" bob_ps2
+read_it
+check "AustinSchuh's change still has no PR" test -z "$(pr_for "${S5b}")"
+check "and neither bob's old commit nor it is on GitHub" eval 'nowhere "${B5}" && nowhere "${B5b}"'
 
 # --- 6. A subtree pulled in with git subtree --squash, merged with /submit ---
 step "6. A subtree, merged with a merge commit by /submit"
@@ -291,6 +313,7 @@ merged7a() { [[ "$(pr "${N7a}" .merged)" == true ]]; }
 wait_for "/submit merges the bottom, PR #${N7a} (GitHub's asynchronous merge)" merged7a
 M7a=$(pr "${N7a}" .merge_commit_sha)
 wait_for "change ${C7a} is merged" merged_at "${C7a}" "${M7a}"
+check "the top, PR #${N7b}, is still open (only the bottom merged)" test "$(pr "${N7b}" .state)" == open
 on_main() { [[ "$(pr "${N7b}" .base.ref)" == main ]]; }
 wait_for "the top is now based on main" on_main
 read_it
@@ -337,10 +360,10 @@ GS=$(gerrit_branch stable)
 FWD=$(cd "${ME_CLONE}" && git rev-parse HEAD)
 branch_at() { [[ "$(gerrit_branch "$1")" == "$2" ]]; }
 wait_for "a forward push to GitHub's stable is followed" branch_at stable "${FWD}"
-REFUSALS=$(grep -c 'only the default branch follows a force-push' "${LOG}")
+REFUSALS=$(grep 'only the default branch follows a force-push' "${LOG}" | grep -c 'branch=stable')
 (cd "${ME_CLONE}" && git checkout -q -B "stable-side-${RUN}" "${GS}" && echo side > "stable-side-${RUN}.txt" && git add . &&
   git commit -qs -m "Stable sideways ${RUN}" && git push -q -f github HEAD:refs/heads/stable)
-refused() { (($(grep -c 'only the default branch follows a force-push' "${LOG}") > REFUSALS)); }
+refused() { (($(grep 'only the default branch follows a force-push' "${LOG}" | grep -c 'branch=stable') > REFUSALS)); }
 wait_for "a force-push of it is not followed (logged)" refused
 check "Gerrit's stable stays where it was" test "$(gerrit_branch stable)" == "${FWD}"
 

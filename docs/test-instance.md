@@ -12,7 +12,7 @@ by hand before it goes near the real Gerrit:
 | Buildkite | `cmd/fakebuildkite` on `http://127.0.0.1:18090`: builds with two jobs, Build and Test, and the builds-by-commit API the bridge reads | stand-in |
 | Checks tab | `plugins/bridge-checks.js`, fetching from the bridge's `/checks` | real |
 | The bridge | `cmd/bridge`, config `~/tmp/gerrit-test/bridge/bridge-scratch.yaml` | real |
-| GitHub webhooks | `gh webhook forward` → `127.0.0.1:18081/webhook` | real (needs `admin:repo_hook`) |
+| GitHub webhooks | `gh webhook forward` → `127.0.0.1:18081/webhook` (and `18083` for the GitHub-owned project) | real (needs `gh`'s `repo` or `admin:repo_hook` scope) |
 | GitHub | `AustinSchuh/bridge-scratch` (public, so rulesets work on a free account) | real |
 
 Everything listens on 127.0.0.1 only. From your desktop, tunnel the web
@@ -48,6 +48,8 @@ journalctl is not used: logs are in ~/tmp/bridge-test/logs/<service>.log
 | `bridge-test-ci` | gerrit-buildkite, using the `buildkite` account (`~/tmp/gerrit-test/ci/`) |
 | `bridge-test-bridge` | the bridge, `--dry_run=false`; a full resync every 5 min backs up the webhooks |
 | `bridge-test-webhooks` | `gh webhook forward`: GitHub events reach the bridge in seconds |
+| `bridge-test-gh-bridge` | the GitHub-owned project's bridge (`branch_owner: github`), on `18083`, status page `18084` |
+| `bridge-test-gh-webhooks` | its webhook forwarder |
 
 Gerrit's own logs are in `~/tmp/gerrit-test/logs/` (`replication_log`,
 `sshd_log`, `error_log`).
@@ -91,6 +93,8 @@ it. Two clones are ready, each pushing as one person on both sides:
 |---|---|---|
 | `~/local/bridge-play` | AustinSchuh | AustinSchuh |
 | `~/local/bridge-play-brt` | AustinSchuhBRT | AustinSchuhBRT |
+| `~/local/bridge-play-gh` | AustinSchuh | AustinSchuh (the GitHub-owned project; the rehearsal makes it) |
+| `~/local/bridge-play-gh-brt` | AustinSchuhBRT | AustinSchuhBRT (likewise) |
 
 To act as AustinSchuhBRT with `gh`, prefix commands with
 `GH_TOKEN=$(gh auth token --user AustinSchuhBRT)`.
@@ -153,19 +157,23 @@ what only the people themselves can do, once:
 2. The linking App is installed on the repository, with Contents read &
    write (for `/submit`), and has
    `http://127.0.0.1:18083/github/link/callback` among its callback URLs.
-3. AustinSchuh links his account at `http://127.0.0.1:18083/github/link`.
+3. AustinSchuh links the account at `http://127.0.0.1:18083/github/link`.
 
 `tools/testenv/rehearsal-github.sh` then runs every GitHub-owned flow:
 a PR imported as its author's change, with the Change-Id appended to its
 description, comments both ways, GitHub Actions' checks, and the Checks
 tab refusing the signed-out; squash merges marked merged in Gerrit by its
-own auto-close (`/submit`), and by check-and-fix when GitHub's squash adds
-the commits' sign-offs after it or the Change-Id was edited out; a linked writer's Gerrit change becoming a
-PR, updated and merged with `/submit` (squashed, as them); an unlinked
-user's change withheld; a `git subtree --squash` PR merged with a merge
-commit by `/submit`; a GitHub stack, its top refused by `/submit` and
-its bottom merged by it (GitHub's asynchronous merge), then the top; a failing build, GitHub blocking the merge, closing and
-reopening; a force-push of `main` followed; and another branch followed
+own auto-close (`/submit` only: a button squash of signed-off commits
+always gets GitHub's sign-off paragraph after the Change-Id), and by
+check-and-fix for those and for a Change-Id edited out; a linked
+writer's Gerrit change becoming a PR, updated and merged with `/submit`
+(squashed, as them); an unlinked user's change withheld, pushed nowhere,
+and a linked writer's change on it withheld too, still after the
+unlinked one gets a new patch set; a `git subtree --squash` PR merged
+with a merge commit by `/submit`; a stack the bridge makes, its top
+refused by `/submit` and its bottom merged by it alone (GitHub's
+asynchronous merge), then the top; a failing build, GitHub blocking the
+merge, closing and reopening; a force-push of `main` followed; and another branch followed
 only forward. The signed-in Checks tab needs a browser: open a change of
 `bridge-scratch-gh` through `18079` and look.
 
