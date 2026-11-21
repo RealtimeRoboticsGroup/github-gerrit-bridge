@@ -184,7 +184,12 @@ Behaviour that changes, on purpose:
   maintainer's on a contributor's PR) are now checked for the code below
   them too, as gerrit-buildkite checks it (§7.1): one on a stranger's
   change is not pushed, with a notice saying which. This reads up to 50
-  commits below a patch set per look.
+  commits below a patch set per look. Every such notice says the rule as
+  it now is ("a patch set is pushed there only when whoever uploaded it,
+  wrote its code and chose its parents is the change's owner or in CI's
+  trusted group, and so is whoever did for the code below it"), not
+  main's "only the change's owner, and members of CI's trusted group".
+  An author's own change below their PR counts as theirs.
 - A patch set Gerrit says was uploaded on someone's behalf, without
   saying by whom, is nobody's.
 - A merged PR's reviews are no longer dismissed.
