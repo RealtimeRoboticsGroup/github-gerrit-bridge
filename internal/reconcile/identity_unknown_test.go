@@ -458,3 +458,48 @@ func TestRecoverWaitsForWhoseLinksAre(t *testing.T) {
 		t.Errorf("known: mapped %+v, PR comments %+v", m["c1"], e.h.ics)
 	}
 }
+
+// While who a reviewer is is unknown for now, their stale approval is not
+// dismissed, and their dismissed approval's vote not withdrawn (as the
+// bridge, or not at all): the sync waits, and does it once known.
+// Sixteenth review: dismissStale's and dropDismissed's waits were
+// untested.
+func TestDismissalsWaitForWhoTheReviewerIs(t *testing.T) {
+	t.Run("stale", func(t *testing.T) {
+		e := newCommentsEnv(t)
+		e.runAs()
+		e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+			HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+		e.sync(t)
+		on := true
+		e.c.Users = downFor{e.c.Users, map[string]bool{"bob": true}, &on}
+		e.g.vote("bobg", "Code-Review", -2)
+		if err := e.c.Sync(context.Background(), 5); !isIdentityUnknown(err) || len(e.h.dismissed) != 0 {
+			t.Fatalf("unknown: err %v, dismissed %v", err, e.h.dismissed)
+		}
+		on = false
+		e.sync(t)
+		if len(e.h.dismissed) != 1 {
+			t.Errorf("known: dismissed %v", e.h.dismissed)
+		}
+	})
+	t.Run("dismissed", func(t *testing.T) {
+		e := newCommentsEnv(t)
+		e.runAs()
+		e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+			HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+		e.sync(t)
+		on := true
+		e.c.Users = downFor{e.c.Users, map[string]bool{"bob": true}, &on}
+		e.h.dismiss(70, "maint", e.g.now())
+		votes := len(e.g.votes)
+		if err := e.c.Sync(context.Background(), 5); !isIdentityUnknown(err) || len(e.g.votes) != votes || e.g.labels["Code-Review"]["bobg"] != 2 {
+			t.Fatalf("unknown: err %v, votes %v", err, e.g.votes[votes:])
+		}
+		on = false
+		e.sync(t)
+		if v := e.g.labels["Code-Review"]["bobg"]; v != 0 {
+			t.Errorf("known: bobg's Code-Review = %d, want withdrawn", v)
+		}
+	})
+}
