@@ -749,7 +749,10 @@ func checkAuthType(ctx context.Context, cfg *config.Config, rest *gerrit.Client)
 	if err := rest.Do(ctx, http.MethodGet, "config/server/info", nil, &info); err != nil {
 		return fmt.Errorf("reading Gerrit's auth type (username matching is on): %w", err)
 	}
-	if strings.HasPrefix(strings.ToUpper(info.Auth.Type), "LDAP") {
+	// LDAP, LDAP_BIND, HTTP_LDAP, CLIENT_SSL_CERT_LDAP: all take their
+	// usernames from the directory (fifteenth review: only the first two
+	// were refused).
+	if strings.Contains(strings.ToUpper(info.Auth.Type), "LDAP") {
 		return fmt.Errorf("gerrit signs people in with %s, whose usernames are not GitHub logins: identity.match_usernames would act as whoever owns a GitHub login equal to someone's uid; use identity.ldap (or set match_usernames: false)", info.Auth.Type)
 	}
 	return nil

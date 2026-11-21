@@ -403,12 +403,17 @@ func TestCheckAuthType(t *testing.T) {
 		auth  string
 		match *bool
 		ok    bool
-	}{{"OAUTH", nil, true}, {"HTTP", nil, true}, {"LDAP", nil, false}, {"LDAP_BIND", nil, false}, {"LDAP", &off, true}} {
+	}{{"OAUTH", nil, true}, {"HTTP", nil, true}, {"LDAP", nil, false}, {"LDAP_BIND", nil, false}, {"HTTP_LDAP", nil, false},
+		{"CLIENT_SSL_CERT_LDAP", nil, false}, {"LDAP", &off, true}, {"", nil, false}} {
 		asked := false
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			asked = true
 			if r.URL.Path != "/a/config/server/info" {
 				t.Errorf("asked %s", r.URL)
+			}
+			if tc.auth == "" { // Gerrit cannot say: not started on a guess
+				http.Error(w, "down", http.StatusInternalServerError)
+				return
 			}
 			io.WriteString(w, ")]}'\n"+`{"auth":{"auth_type":"`+tc.auth+`"}}`)
 		}))
