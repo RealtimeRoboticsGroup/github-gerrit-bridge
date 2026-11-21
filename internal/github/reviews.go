@@ -383,7 +383,31 @@ func (c *Client) queryEdits(ctx context.Context, n int) (map[int64]string, error
 	const threadQ = `query($o: String!, $r: String!, $n: Int!, $after: String) {
   repository(owner: $o, name: $r) { pullRequest(number: $n) {
     reviewThreads(first: 50, after: $after) { pageInfo { hasNextPage endCursor }
-      nodes { comments(first: 100) { nodes { ` + fields + ` } } } } } } }`
+      nodes { id comments(first: 100) { pageInfo { hasNextPage endCursor } nodes { ` + fields + ` } } } } } } }`
+	// The rest of a thread's comments, past its first 100 (sixteenth
+	// review: an edit there by someone else went unseen).
+	const moreQ = `query($id: ID!, $after: String) {
+  node(id: $id) { ... on PullRequestReviewThread {
+    comments(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { ` + fields + ` } } } } }`
+	type comments struct {
+		PageInfo page      `json:"pageInfo"`
+		Nodes    []comment `json:"nodes"`
+	}
+	rest := func(id string, cs comments) error {
+		for cs.PageInfo.HasNextPage {
+			var data struct {
+				Node struct {
+					Comments comments `json:"comments"`
+				} `json:"node"`
+			}
+			if err := c.GraphQL(ctx, moreQ, map[string]any{"id": id, "after": cs.PageInfo.EndCursor}, &data); err != nil {
+				return err
+			}
+			cs = data.Node.Comments
+			note(cs.Nodes)
+		}
+		return nil
+	}
 	for after := any(nil); ; {
 		var data struct {
 			Repository struct {
@@ -412,9 +436,8 @@ func (c *Client) queryEdits(ctx context.Context, n int) (map[int64]string, error
 					ReviewThreads struct {
 						PageInfo page `json:"pageInfo"`
 						Nodes    []struct {
-							Comments struct {
-								Nodes []comment `json:"nodes"`
-							} `json:"comments"`
+							ID       string   `json:"id"`
+							Comments comments `json:"comments"`
 						} `json:"nodes"`
 					} `json:"reviewThreads"`
 				} `json:"pullRequest"`
@@ -426,6 +449,9 @@ func (c *Client) queryEdits(ctx context.Context, n int) (map[int64]string, error
 		ts := data.Repository.PullRequest.ReviewThreads
 		for _, t := range ts.Nodes {
 			note(t.Comments.Nodes)
+			if err := rest(t.ID, t.Comments); err != nil {
+				return nil, err
+			}
 		}
 		if !ts.PageInfo.HasNextPage {
 			return out, nil

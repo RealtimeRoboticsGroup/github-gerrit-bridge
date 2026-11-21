@@ -21,6 +21,7 @@ go_test(
     name = "github_test",
     srcs = [
         "client_test.go",
+        "edits_test.go",
         "userauth_test.go",
         "webhook_test.go",
     ],
