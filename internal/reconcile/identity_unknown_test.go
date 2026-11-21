@@ -150,9 +150,11 @@ func TestSubmitWaitsForWhoAsked(t *testing.T) {
 	}
 }
 
-// A push imported while who pushed it is unknown is not uploaded as the
-// bridge (the change's for good): it waits, and is uploaded as its
-// pusher once known.
+// A push to a Gerrit-born PR's branch imported while who pushed it is
+// unknown is not uploaded as the bridge (uploader's wait): it waits, and
+// is uploaded as its pusher once known. A new PR's first upload, which
+// would make the change the bridge's for good, is
+// TestFirstUploadWaitsForWhoWroteAndPushedIt's.
 func TestImportWaitsForWhoPushed(t *testing.T) {
 	s, im, up, m1, g, ids := gerritBornWorld(t, false)
 	down := true
