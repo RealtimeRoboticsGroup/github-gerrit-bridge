@@ -117,6 +117,11 @@ step "0. Ready"
 can_push() { [[ "$(me api "repos/${R}/collaborators/realtimeroboticsbot/permission" --jq .permission)" == write ]]; }
 check "the bot may push to ${R}" can_push
 wait_for "the GitHub-owned bridge is up" curl -sf -o /dev/null http://127.0.0.1:18083/healthz
+# Only the GitHub-owned bridge's own account has Maintain Server; the
+# Gerrit-owned one's, as AOS's, does not.
+caps() { gerrit "accounts/$1/capabilities?q=maintainServer" | jq -r 'has("maintainServer")'; }
+check "github-bridge-gh has Maintain Server" test "$(caps github-bridge-gh)" == true
+check "github-bridge (the Gerrit-owned bridge) does not" test "$(caps github-bridge)" == false
 # gh webhook forward exits while GitHub still has its last run's hook, and
 # systemd restarts it: events in between are only swept up later.
 forwarding() {
