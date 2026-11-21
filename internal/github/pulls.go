@@ -115,7 +115,9 @@ type MergeInput struct {
 	Method  string `json:"merge_method"`
 	// Stacked is set for a PR in a native stack, which GitHub merges only
 	// asynchronously: that merges it and the PRs below it in the stack.
-	Stacked bool `json:"-"`
+	// Base is the branch it must still be based on then.
+	Stacked bool   `json:"-"`
+	Base    string `json:"-"`
 }
 
 // MergePull merges PR n as the client's token's user, and returns the
@@ -155,6 +157,19 @@ func (c *Client) mergeAsync(ctx context.Context, n int, m MergeInput) (string, e
 		MergeInput
 		Action string `json:"merge_action"`
 	}{m, "direct_merge"}
+	// GitHub merges the PRs below it too, and its sha guards only this
+	// one's head: read again, as whoever merges, it must still be the
+	// stack's bottom, on the branch, at the head they saw. (A restack in
+	// the moment between this read and the merge is not caught: GitHub
+	// has no guard for a stack's shape.)
+	pr, err := c.GetPull(ctx, n)
+	if err != nil {
+		return "", err
+	}
+	if pr.Head.SHA != m.SHA || m.Base == "" || pr.Base.Ref != m.Base || (pr.Stack != nil && pr.Stack.Position != 1) {
+		return "", &APIError{Method: http.MethodGet, Path: c.RepoPath("pulls/" + strconv.Itoa(n)), Status: http.StatusConflict,
+			Message: "The PR or its stack changed (it must be the bottom of its stack, on " + m.Base + ", at the head you saw): look again, then post /submit again."}
+	}
 	path := c.RepoPath("pulls/" + strconv.Itoa(n) + "/merge-async")
 	var r result
 	// A refusal (409: another merge of it is pending) is GitHub's answer.

@@ -410,7 +410,7 @@ func TestSubmitMergesOnGitHub(t *testing.T) {
 	if len(sub.calls) != 0 {
 		t.Errorf("submitted in Gerrit: %v", sub.calls)
 	}
-	want := github.MergeInput{Title: "Fix the arm (#1)", Message: "It was bent.\n\nChange-Id: " + cid(5), SHA: "sha2", Method: "squash"}
+	want := github.MergeInput{Title: "Fix the arm (#1)", Message: "It was bent.\n\nChange-Id: " + cid(5), SHA: "sha2", Method: "squash", Base: "main"}
 	if len(m.calls) != 1 || m.calls[0] != want || m.as[0] != "AustinSchuh" {
 		t.Errorf("merges %+v as %v, want %+v as AustinSchuh", m.calls, m.as, want)
 	}
@@ -519,6 +519,20 @@ func TestSubmitMergesAStacksBottom(t *testing.T) {
 		if len(m.calls) != 1 || m.calls[0].Stacked != stacked {
 			t.Errorf("stacked %v: merges %+v", stacked, m.calls)
 		}
+	}
+}
+
+// A stacked PR other than the bottom, even based on the branch (GitHub
+// mid-retarget), would merge the PRs below it too: refused.
+func TestSubmitMergesOnlyAStacksBottom(t *testing.T) {
+	c, h, _, m := mergeCommands(t, "gerrit")
+	h.stack = &github.PRStack{ID: 1, Number: 2, Position: 2, Size: 2}
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if last := h.ics[len(h.ics)-1].Body; len(m.calls) != 0 || !strings.Contains(last, "not the bottom of its stack") {
+		t.Errorf("merges %v, reply %q", m.calls, last)
 	}
 }
 

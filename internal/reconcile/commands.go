@@ -378,10 +378,12 @@ func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, hea
 		c.Logger.Warn("/submit: PR or Change-Id unknown", "change", n, "pr", st.State.PR)
 		return fmt.Sprintf("@%s: `/submit` was not run: the bridge could not tell which PR or change this is (see its log). Use the merge button.", ic.User.Login)
 	}
-	if pr.Base.Ref != st.State.Branch {
+	if pr.Base.Ref != st.State.Branch || (pr.Stack != nil && pr.Stack.Position != 1) {
 		// A stacked PR would merge into the one below it, not the
-		// branch: its change would not merge.
-		return fmt.Sprintf("@%s: `/submit` was not run: this PR is based on `%s`, not `%s`. Merge the PRs below it first.", ic.User.Login, forGitHub(pr.Base.Ref), st.State.Branch)
+		// branch, or (merged as a stack) take the PRs below it along:
+		// only a stack's bottom, on the branch, merges alone.
+		return fmt.Sprintf("@%s: `/submit` was not run: this PR is based on `%s`, not `%s`, or is not the bottom of its stack. Merge the PRs below it first.",
+			ic.User.Login, forGitHub(pr.Base.Ref), st.State.Branch)
 	}
 	method := "squash"
 	if st.State.Origin == "github" {
@@ -407,7 +409,7 @@ func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, hea
 	// branch, it is the bottom, and merges alone.
 	in := github.MergeInput{Method: method, SHA: sha,
 		Title:   fmt.Sprintf("%s (#%d)", strings.TrimSpace(pr.Title), pr.Number),
-		Message: msg + strings.Join(trailers, "\n"), Stacked: pr.Stack != nil}
+		Message: msg + strings.Join(trailers, "\n"), Stacked: pr.Stack != nil, Base: st.State.Branch}
 	merged, linked, err := c.Merger.Merge(ctx, ic.User, pr.Number, sha, in)
 	switch {
 	case !linked && err == nil:

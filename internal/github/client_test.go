@@ -876,6 +876,8 @@ func TestMergePullStacked(t *testing.T) {
 		polls := 0
 		c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/pulls/7":
+				io.WriteString(w, `{"number":7,"head":{"sha":"abc"},"base":{"ref":"main"},"stack":{"position":1,"size":2}}`)
 			case r.Method == http.MethodPut && r.URL.Path == "/repos/o/r/pulls/7/merge-async":
 				var in map[string]any
 				json.NewDecoder(r.Body).Decode(&in)
@@ -894,10 +896,45 @@ func TestMergePullStacked(t *testing.T) {
 				t.Errorf("asked %s %s", r.Method, r.URL)
 			}
 		})
-		sha, err := c.MergePull(context.Background(), 7, MergeInput{Message: "M", SHA: "abc", Method: "squash", Stacked: true})
+		sha, err := c.MergePull(context.Background(), 7, MergeInput{Message: "M", SHA: "abc", Method: "squash", Stacked: true, Base: "main"})
 		var ae *APIError
 		if sha != tc.sha || (tc.err == "") != (err == nil) || (err != nil && (!errors.As(err, &ae) || !strings.Contains(ae.Message, tc.err))) {
 			t.Errorf("%s: %q %v", tc.final, sha, err)
 		}
+	}
+}
+
+// Read again before the merge, a stacked PR must still be the stack's
+// bottom, on the branch, at the head that was seen: GitHub merges the PRs
+// below it too, and its sha guards only this one's head.
+func TestMergePullStackedChanged(t *testing.T) {
+	for _, pr := range []string{
+		`{"head":{"sha":"new"},"base":{"ref":"main"},"stack":{"position":1}}`,
+		`{"head":{"sha":"abc"},"base":{"ref":"other"},"stack":{"position":1}}`,
+		`{"head":{"sha":"abc"},"base":{"ref":"main"},"stack":{"position":2}}`,
+	} {
+		c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/pulls/7" {
+				io.WriteString(w, pr)
+				return
+			}
+			t.Errorf("%s: asked %s %s", pr, r.Method, r.URL)
+		})
+		_, err := c.MergePull(context.Background(), 7, MergeInput{SHA: "abc", Method: "squash", Stacked: true, Base: "main"})
+		var ae *APIError
+		if !errors.As(err, &ae) || !strings.Contains(ae.Message, "changed") {
+			t.Errorf("%s: %v", pr, err)
+		}
+	}
+	// Nothing to compare the base with: refused too.
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			io.WriteString(w, `{"head":{"sha":"abc"},"base":{"ref":""}}`)
+			return
+		}
+		t.Errorf("asked %s %s", r.Method, r.URL)
+	})
+	if _, err := c.MergePull(context.Background(), 7, MergeInput{SHA: "abc", Method: "squash", Stacked: true}); err == nil {
+		t.Error("merged with no base to check")
 	}
 }
