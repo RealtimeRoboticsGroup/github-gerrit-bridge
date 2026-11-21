@@ -1165,6 +1165,13 @@ func (c *Comments) postVote(ctx context.Context, n, pr int, s *commentSnapshot, 
 		// counted (seventeenth review). Its words go as a comment.
 		return false, nil
 	}
+	if event == "APPROVE" && !s.stillApproves(msg) {
+		// Changed or withdrawn since (a vote not posted while its
+		// commit was not the head is looked at again each sync): their
+		// old +2 is not their approval now (seventeenth review: posted
+		// when the branch went back to its commit, after their -2).
+		return false, nil
+	}
 	if event == "APPROVE" && (s.pull == nil || s.pull.Head.SHA != sha) {
 		// An approval only while it is the PR's head: GitHub's "dismiss
 		// stale approvals" acts on a push, so one made after a push
@@ -1215,6 +1222,44 @@ func (c *Comments) ownMessage(msg gerrit.ChangeMessage) bool {
 // author's token nor as their review (sixteenth review).
 func onBehalf(msg gerrit.ChangeMessage) bool {
 	return msg.RealAuthor != nil && msg.RealAuthor.AccountID != msg.Author.AccountID
+}
+
+// stillApproves reports whether msg's Code-Review +2 is still its
+// author's: no later message of theirs votes Code-Review (or removes it),
+// and, on the current patch set, Gerrit still has their +2.
+func (s *commentSnapshot) stillApproves(msg gerrit.ChangeMessage) bool {
+	later := false
+	for _, m := range s.messages {
+		if m.ID == msg.ID {
+			later = true
+			continue
+		}
+		if later && m.Author.AccountID == msg.Author.AccountID && votesCodeReview(m.Message) {
+			return false
+		}
+	}
+	if msg.RevisionNumber != s.current {
+		return true
+	}
+	for _, a := range s.labels["Code-Review"].All {
+		if (a.AccountID != 0 && a.AccountID == msg.Author.AccountID) ||
+			(a.AccountID == 0 && a.Username != "" && a.Username == msg.Author.Username) {
+			return a.Value >= 2
+		}
+	}
+	return false
+}
+
+// votesCodeReview reports whether a change message's "Patch Set N: ..."
+// header sets or removes a Code-Review vote.
+func votesCodeReview(message string) bool {
+	_, rest, _ := strings.Cut(strings.TrimSpace(messageHeader.FindString(message)), ":")
+	for _, tok := range strings.Fields(inlineCount.ReplaceAllString(rest, "")) {
+		if m := voteToken.FindStringSubmatch(tok); m != nil && m[2] == "Code-Review" {
+			return true
+		}
+	}
+	return false
 }
 
 // codeReviewVote is the Code-Review vote a change message's "Patch Set

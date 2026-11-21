@@ -235,8 +235,8 @@ func TestLinkedVotesBecomeReviews(t *testing.T) {
 	carol := gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}
 	e.g.messages = []gerrit.ChangeMessage{
 		{ID: "m2", Author: alice, Message: "Patch Set 1: Code-Review-1\n\nNot like this.", RevisionNumber: 1},
-		{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2},
 		{ID: "m3", Author: alice, Message: "Patch Set 2: Code-Review+1\n\nCloser.", RevisionNumber: 2},
+		{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2},
 		{ID: "m4", Author: carol, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2},
 	}
 	e.g.vote("alice", "Code-Review", 2)
@@ -316,10 +316,11 @@ func TestLinkedVoteGitHubRefuses(t *testing.T) {
 		t.Errorf("reviews %+v, PR comments %+v", e.h.reviews, e.h.ics)
 	}
 	e.settled(t)
-	// Asked once each: the refused vote without words is not asked for
-	// again on every pass.
-	if e.h.voteTries != 2 {
-		t.Errorf("asked GitHub for %d reviews, want 2", e.h.voteTries)
+	// Asked once: the refused vote without words is not asked for again
+	// on every pass, and the +2 she changed to -2 is not asked for at all
+	// (seventeenth review: not her approval now).
+	if e.h.voteTries != 1 {
+		t.Errorf("asked GitHub for %d reviews, want 1", e.h.voteTries)
 	}
 }
 
@@ -532,6 +533,7 @@ func TestVoteReviewEditedByOtherIsRestored(t *testing.T) {
 	e, _ := linkedEnv(t)
 	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"},
 		Message: "Patch Set 2: Code-Review+2\n\nOnly the docs need work.", RevisionNumber: 2}}
+	e.g.vote("alice", "Code-Review", 2)
 	e.sync(t)
 	if len(e.h.reviews) != 1 || e.h.reviews[0].State != "APPROVED" {
 		t.Fatalf("setup: %+v", e.h.reviews)
@@ -723,4 +725,73 @@ func TestLinkedVoteOnOwnCodeIsNoApproval(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A +2 not posted while its commit was not the PR's head, then changed
+// to -2, is not posted as an approval when the branch goes back to that
+// commit (seventeenth review).
+func TestWithdrawnVoteIsNoLaterApproval(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2}}
+	e.g.vote("alice", "Code-Review", 2)
+	e.h.head = "sha3" // the author pushed right after her vote
+	e.sync(t)
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "m2", Author: alice, Message: "Patch Set 2: Code-Review-2\n\nNo, this is wrong.", RevisionNumber: 2})
+	e.g.vote("alice", "Code-Review", -2)
+	e.sync(t)
+	e.h.head = "sha2" // force-pushed back
+	e.sync(t)
+	last := ""
+	for _, rv := range e.h.reviews {
+		if rv.User == aliceGH {
+			last = rv.State
+		}
+	}
+	if last == "APPROVED" {
+		t.Errorf("alice's withdrawn +2 is her latest GitHub review: %+v", e.h.reviews)
+	}
+}
+
+// A +2 is an approval only while it is still its author's: not once
+// Gerrit no longer has it (removed by the owner, say, with no message of
+// theirs), nor, on an older patch set GitHub's PR is at, once they
+// removed it there (seventeenth review).
+func TestApprovalOnlyWhileTheVoteStands(t *testing.T) {
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	approved := func(e *commentsEnv) bool {
+		return slices.ContainsFunc(e.h.reviews, func(rv github.Review) bool { return rv.State == "APPROVED" && rv.User == aliceGH })
+	}
+	t.Run("removed in Gerrit", func(t *testing.T) {
+		e, _ := linkedEnv(t)
+		e.runAs()
+		e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+		e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2}}
+		e.g.vote("alice", "Code-Review", 0)
+		e.sync(t)
+		if approved(e) {
+			t.Errorf("approved with no +2 in Gerrit: %+v", e.h.reviews)
+		}
+		e.g.vote("alice", "Code-Review", 2)
+		e.sync(t)
+		if !approved(e) {
+			t.Errorf("not approved once Gerrit has it: %+v", e.h.reviews)
+		}
+	})
+	t.Run("removed on an older patch set", func(t *testing.T) {
+		e, _ := linkedEnv(t)
+		e.runAs()
+		e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+		e.h.head = "sha1"
+		e.g.messages = []gerrit.ChangeMessage{
+			{ID: "m1", Author: alice, Message: "Patch Set 1: Code-Review+2", RevisionNumber: 1},
+			{ID: "m2", Author: alice, Message: "Patch Set 1: -Code-Review", RevisionNumber: 1},
+		}
+		e.sync(t)
+		if approved(e) {
+			t.Errorf("approved after she removed it: %+v", e.h.reviews)
+		}
+	})
 }
