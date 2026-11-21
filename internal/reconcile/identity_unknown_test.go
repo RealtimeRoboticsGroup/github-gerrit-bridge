@@ -503,3 +503,27 @@ func TestDismissalsWaitForWhoTheReviewerIs(t *testing.T) {
 		}
 	})
 }
+
+// A thread resolved on GitHub by someone the bridge cannot place for now
+// is not resolved in Gerrit as the bridge: it waits, and is resolved as
+// them once known. Sixteenth review: syncResolution's wait was untested.
+func TestResolutionWaitsForWhoResolvedIt(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.g.user("c1", "a.txt", 2, 2, "Please fix.", "", true)
+	e.sync(t)
+	root := e.h.rcs[0].ID
+	e.h.resolved[root] = true
+	e.h.resolvedBy = map[int64]github.User{root: {Login: "bob", ID: 1}}
+	on := true
+	e.c.Users = downFor{e.c.Users, map[string]bool{"bob": true}, &on}
+	comments := len(e.g.comments)
+	if err := e.c.Sync(context.Background(), 5); !isIdentityUnknown(err) || len(e.g.comments) != comments {
+		t.Fatalf("unknown: err %v, posted %+v", err, e.g.comments[comments:])
+	}
+	on = false
+	e.sync(t)
+	if gc := e.g.comments[len(e.g.comments)-1]; gc.Message != "Resolved on GitHub." || gc.Author.Username != "bobg" {
+		t.Errorf("known: %+v, want resolved as bobg", gc)
+	}
+}
