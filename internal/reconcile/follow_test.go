@@ -766,9 +766,9 @@ func TestObserveWithholdsWhatNobodyVouchesFor(t *testing.T) {
 		}
 		var bob string
 		if how == "merged in" {
-			own := s.commit(base, "b", "b\n", "Bob's")
+			// On the branch, merging in mal: only mal can withhold it.
 			tree := s.git("work", "rev-parse", mal+"^{tree}")
-			bob = s.git("work", "commit-tree", tree, "-p", own, "-p", mal, "-m", fmt.Sprintf("C2\n\nChange-Id: %s\n", cid(2)))
+			bob = s.git("work", "commit-tree", tree, "-p", base, "-p", mal, "-m", fmt.Sprintf("C2\n\nChange-Id: %s\n", cid(2)))
 		} else {
 			bob = s.commit(mal, "b", "b\n", fmt.Sprintf("C2\n\nChange-Id: %s\n", cid(2)))
 		}
@@ -860,6 +860,7 @@ func TestForeignCodeBelowIsForeign(t *testing.T) {
 type chainReader struct {
 	n, uploader int
 	merged      map[string]bool
+	mergedAs    map[string]string // a merged change's commit, if not this one
 }
 
 func (r chainReader) parentsOf(context.Context, string) ([]string, error) { return nil, nil }
@@ -877,6 +878,10 @@ func (r chainReader) changesOf(_ context.Context, sha string) ([]gerrit.ChangeIn
 	ci := gerrit.ChangeInfo{Number: i, Status: "NEW", CurrentRevision: sha, Revisions: map[string]gerrit.RevisionInfo{sha: rv}}
 	if r.merged[sha] {
 		ci.Status = "MERGED"
+	}
+	if r.mergedAs[sha] != "" {
+		// Merged as another commit: this one is an older patch set.
+		ci.Status, ci.CurrentRevision = "MERGED", r.mergedAs[sha]
 	}
 	return []gerrit.ChangeInfo{ci}, nil
 }
@@ -896,10 +901,22 @@ func TestParentsTrustedBounds(t *testing.T) {
 		{3, 9, nil, false},           // a stranger's
 		{3, 9, map[string]bool{"c0": true, "c1": true, "c2": true}, true}, // merged as
 	} {
-		ok, _, _, err := parentsTrusted(ctx, chainReader{tc.n, tc.uploader, tc.merged}, "main", []string{"c0"}, nil, trusted)
+		ok, _, _, err := parentsTrusted(ctx, chainReader{n: tc.n, uploader: tc.uploader, merged: tc.merged}, "main", []string{"c0"}, nil, trusted)
 		if ok != tc.want || err != nil {
 			t.Errorf("%+v: %v %v", tc, ok, err)
 		}
+	}
+	// Who could not be told about (GitHub could not say whether they may
+	// push) is not known: withheld, with nothing said (thirteenth review).
+	unsure := func(_ context.Context, a int) (bool, bool) { return false, a != 9 }
+	if ok, known, _, _ := parentsTrusted(ctx, chainReader{n: 3, uploader: 9}, "main", []string{"c0"}, nil, unsure); ok || known {
+		t.Errorf("not known below: ok %v, known %v", ok, known)
+	}
+	// Only the commit it merged as: a stranger's older patch set of a
+	// merged change is theirs still (thirteenth review).
+	r := chainReader{n: 3, uploader: 9, mergedAs: map[string]string{"c0": "other", "c1": "other", "c2": "other"}}
+	if ok, _, _, _ := parentsTrusted(ctx, r, "main", []string{"c0"}, nil, trusted); ok {
+		t.Error("an older patch set of a merged change trusted as the merge")
 	}
 }
 
@@ -1033,13 +1050,13 @@ func TestParentWalkCost(t *testing.T) {
 // cannot see as anyone's patch set is not known, and named too.
 func TestParentWalkSaysWhy(t *testing.T) {
 	ctx := context.Background()
-	r := chainReader{3, 9, nil}
+	r := chainReader{n: 3, uploader: 9}
 	trusted := func(_ context.Context, a int) (bool, bool) { return a == 8, true }
 	ok, known, why, err := parentsTrusted(ctx, r, "main", []string{"c0"}, nil, trusted)
 	if ok || !known || err != nil || !strings.Contains(why, "change 0's patch set 1 below it") {
 		t.Errorf("a stranger's: %v %v %q %v", ok, known, why, err)
 	}
-	ok, known, why, err = parentsTrusted(ctx, chainReader{maxBelow + 5, 8, nil}, "main", []string{"c0"}, nil, trusted)
+	ok, known, why, err = parentsTrusted(ctx, chainReader{n: maxBelow + 5, uploader: 8}, "main", []string{"c0"}, nil, trusted)
 	if ok || err != nil || !strings.Contains(why, "more than 50 commits") {
 		t.Errorf("too deep: %v %v %q %v", ok, known, why, err)
 	}
@@ -1109,5 +1126,29 @@ func testImporterRetries(t *testing.T, origin string) {
 	}
 	if len(up.uploads) != 0 {
 		t.Errorf("%s-born: uploaded %v while Gerrit could not say whose code it is", origin, up.uploads)
+	}
+}
+
+// Who may push below could not be told (GitHub did not answer): the
+// change is withheld until it can be, and no notice blames anyone.
+func TestObserveWithholdsUnknownBelowQuietly(t *testing.T) {
+	ctx := context.Background()
+	s, c, base := followSites(t)
+	c.Publishable = func(_ context.Context, a int) (bool, bool) { return a == 8, a != 7 }
+	add := func(n int, parent string, who int) string {
+		rev := s.commit(parent, fmt.Sprint(n), "x\n", fmt.Sprintf("C%d\n\nChange-Id: %s\n", n, cid(n)))
+		ci := s.change(n, cid(n), rev, fmt.Sprintf("C%d\n\nChange-Id: %s\n", n, cid(n)), "NEW")
+		r := ci.Revisions[rev]
+		r.Uploader = gerrit.AccountInfo{AccountID: who}
+		ci.Revisions[rev], ci.Owner = r, r.Uploader
+		return rev
+	}
+	add(2, add(1, base, 7), 8)
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Withheld[2] || len(s.reviewMsgs[2]) != 0 {
+		t.Errorf("withheld %v, notices %q", snap.Withheld, s.reviewMsgs[2])
 	}
 }

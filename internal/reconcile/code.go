@@ -1056,6 +1056,11 @@ func parentsTrusted(ctx context.Context, r belowReader, branch string, parents [
 			// an unlinked author's PR (a fork's, say) is theirs, and
 			// CI's trusted group has no bridge in it either.
 			ok, k := authorsCode(ctx, trusted, 0, 0, revisionsByNumber(ci), p.Number)
+			if !ok && !k {
+				// Could not be told (GitHub did not say who may push):
+				// nobody is blamed; asked again next time.
+				return false, false, "", nil
+			}
 			known = known && k
 			if !ok {
 				return false, known, fmt.Sprintf("change %d's patch set %d below it (commit %s)", ci.Number, p.Number, short(sha)), nil
