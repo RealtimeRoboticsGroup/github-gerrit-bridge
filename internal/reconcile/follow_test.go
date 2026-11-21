@@ -543,7 +543,10 @@ func TestGerritBornNeedsPublishableUploaders(t *testing.T) {
 func TestGerritWinsNeverRestoresUnpublishedCode(t *testing.T) {
 	// noPub: GitHub-owned, but no Publishable: nobody, never CI's trusted
 	// group (thirteenth review: the importer took it for Gerrit-owned).
-	for _, tc := range []struct{ publishable, owner, noPub bool }{{false, false, false}, {true, false, false}, {false, true, false}, {true, false, true}} {
+	// unsure: GitHub could not say whether the uploader may push: not
+	// restored (fourteenth review: ok without known passed).
+	for _, tc := range []struct{ publishable, owner, noPub, unsure bool }{{false, false, false, false}, {true, false, false, false},
+		{false, true, false, false}, {true, false, true, false}, {true, false, false, true}} {
 		publishable := tc.publishable
 		s, im, up, m1, g, ids := gerritBornWorld(t, false)
 		ctx := context.Background()
@@ -554,6 +557,10 @@ func TestGerritWinsNeverRestoresUnpublishedCode(t *testing.T) {
 		if tc.noPub {
 			im.Publishable = nil
 			im.Trusted = func(context.Context, int) (bool, bool) { return true, true }
+			publishable = false
+		}
+		if tc.unsure {
+			im.Publishable = func(_ context.Context, account int) (bool, bool) { return account == 5 || account == 9, account != 9 }
 			publishable = false
 		}
 		ci := s.changes[1]

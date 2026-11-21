@@ -4768,16 +4768,26 @@ func TestConfigNoticeWhereGitHubOwns(t *testing.T) {
 // is not swapped onto the author's branch (thirteenth review: it read
 // only the uploader).
 func TestPrepareSubmitSwapAsksMayReach(t *testing.T) {
-	for _, strangerBelow := range []bool{false, true} {
+	// unsure: who may push could not be told (GitHub did not say): not a
+	// yes, refused too (fourteenth review: !known passed).
+	for _, tc := range []struct{ strangerBelow, unsure bool }{{false, false}, {true, false}, {false, true}} {
+		strangerBelow := tc.strangerBelow || tc.unsure
 		s := newSites(t)
 		ctx := context.Background()
 		c, store := s.code(ctx)
 		c.Trusted = func(_ context.Context, a int) (bool, bool) { return a == 6, true }
+		uploader := 6 // the owner
+		if tc.unsure {
+			// A maintainer GitHub cannot say about (not the owner, who
+			// passes without asking).
+			uploader = 7
+			c.Trusted = func(_ context.Context, a int) (bool, bool) { return a == 7, a != 7 }
+		}
 		m0 := s.commit("", "a.txt", "a\n", "base")
 		s.push("gerrit.git", m0, "refs/heads/main")
 		s.git("m.git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/gerrit/heads/main")
 		parent := m0
-		if strangerBelow {
+		if tc.strangerBelow {
 			low := s.commit(m0, "low.txt", "l\n", "Low\n\nChange-Id: "+cid(2)+"\n")
 			ci := s.change(2, cid(2), low, "Low\n\nChange-Id: "+cid(2)+"\n", "NEW")
 			r := ci.Revisions[low]
@@ -4790,7 +4800,7 @@ func TestPrepareSubmitSwapAsksMayReach(t *testing.T) {
 		ci := s.change(1, cid(1), sq, "Feature\n\nChange-Id: "+cid(1)+"\n", "NEW")
 		ci.Owner = gerrit.AccountInfo{AccountID: 6}
 		r := ci.Revisions[sq]
-		r.Uploader = ci.Owner
+		r.Uploader = gerrit.AccountInfo{AccountID: uploader}
 		ci.Revisions[sq] = r
 		s.push("github.git", h2, "refs/heads/feature")
 		s.pr(10, "feature", h2, "main", "brt")
