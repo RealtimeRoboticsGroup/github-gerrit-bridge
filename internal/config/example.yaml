@@ -62,9 +62,11 @@ github:
   # committer_email: gerrit@example.com
   # People can link their GitHub account at <public_url>/github/link, so
   # their Gerrit comments, replies and Code-Review votes are posted on
-  # GitHub as them. A GitHub App with only Pull requests and Issues read &
-  # write, installed on the repository, whose callback URL is
-  # <public_url>/github/link/callback (design §7.2).
+  # GitHub as them. A GitHub App with Pull requests and Issues read &
+  # write (and, where GitHub owns the branches, Contents read & write, for
+  # /submit), installed on the repository, whose callback URL is
+  # <public_url>/github/link/callback (design §7.2). public_url may be
+  # under a path (behind Gerrit's proxy, say).
   # user_app:
   #   client_id: Iv23liExample
   #   client_secret_file: /etc/github-bridge/user-app-secret

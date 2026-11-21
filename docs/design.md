@@ -1978,8 +1978,9 @@ notes; nothing on GitHub advertises the link.
   and an event for one of them moves it up: a resync of every open PR
   takes minutes, and in the rehearsal (seventh audit) each one held back
   the reviews, closes and comments that came after it as long.
-- `/healthz` and `/metrics` (Prometheus). Metrics: queue depth, reconcile
-  latency, API errors, and GitHub rate-limit budget.
+- `/healthz`. (Planned, not built: `/metrics` for Prometheus, with queue
+  depth, reconcile latency, API errors and GitHub's rate-limit budget;
+  the status page shows most of that now.)
 - A status page (`status_listen`, off by default; loopback addresses
   only, since it tells when the bridge is starved; it answers only GET
   and HEAD, and only to a loopback Host, so a page that rebinds its own
@@ -2029,9 +2030,12 @@ notes; nothing on GitHub advertises the link.
 - With `-v`, every Gerrit and GitHub request and git command is logged
   with its duration, and reconciles that wait or take more than 3s are
   always logged.
-- `bridge resync <change>` / `bridge resync --all` admin commands, and a dry-run
-  mode that only logs the actions it would take. The dry-run mode is essential
-  for bringing the bridge up against a real repo.
+- A dry-run mode (`--dry_run`, the default: pass `--dry_run=false` to
+  act) that only logs the actions it would take, essential for bringing
+  the bridge up against a real repo. (Planned, not built: `bridge resync
+  <change>` and `bridge resync --all`; a restart resyncs everything.)
+- Deployment checklists, for a GitHub-owned site with LDAP and for
+  upgrading a Gerrit-owned one: docs/deploying.md.
 
 ### 9.1 Deploying on the internet (audit 2026-10-18)
 
