@@ -398,3 +398,37 @@ func TestGerritOwnedUnsureTrustDoesNotWait(t *testing.T) {
 		t.Errorf("err %v, uploads %v; want the push uploaded, as main", err, up.uploads)
 	}
 }
+
+// A PR imported as the bridge says so on gerrit/sync. Where Gerrit owns
+// the branches, with the advice main gave (link your GitHub account);
+// where GitHub owns them, without it: who is who comes from the directory,
+// and linking changes no owner. The second is the branch's rule.
+func TestBridgeOwnedImportStatus(t *testing.T) {
+	for _, owned := range []bool{false, true} {
+		s, im, up, m1, _, _ := gerritBornWorld(t, false)
+		up.alone, up.create = true, true // no peer key: every import is the bridge's
+		im.link = func(ctx context.Context, n int, origin, branch, changeID string, pr *github.PullRequest) error {
+			return updateStateFn(ctx, im.Store, n, "Link", func(st *state.Change) {
+				st.State.Change, st.State.ChangeID, st.State.Branch, st.State.Origin, st.State.PR = n, changeID, branch, origin, pr.Number
+			})
+		}
+		im.GitHubOwned = owned
+		im.Publishable = func(context.Context, int) (bool, bool) { return true, true }
+		h := s.commit(m1, "new.txt", "n\n", "New")
+		s.push("github.git", h, "refs/heads/topic")
+		s.pushed("o/r", "refs/heads/topic", h, "austin")
+		s.pr(60, "topic", h, "main", "austin")
+		if err := im.Import(context.Background(), "main"); err != nil {
+			t.Fatal(err)
+		}
+		sts := s.statuses[h]
+		if len(sts) == 0 {
+			t.Fatalf("GitHub owns %v: no gerrit/sync", owned)
+		}
+		desc := sts[len(sts)-1].Description
+		want := map[bool]string{false: "; owned by the bridge (link your GitHub account to own it)", true: "; owned by the bridge in Gerrit"}[owned]
+		if !strings.Contains(desc, want) {
+			t.Errorf("GitHub owns %v: gerrit/sync %q, want %q in it", owned, desc, want)
+		}
+	}
+}

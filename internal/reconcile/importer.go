@@ -478,7 +478,14 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 			}
 		}
 		if res.bridgeOwned {
-			desc += "; owned by the bridge (link your GitHub account to own it)"
+			if im.GitHubOwned {
+				// Who is who comes from the directory, and linking
+				// changes no owner: the advice would be wrong (sixteenth
+				// review's follow-up).
+				desc += "; owned by the bridge in Gerrit"
+			} else {
+				desc += "; owned by the bridge (link your GitHub account to own it)"
+			}
 		}
 		if res.noSignOff {
 			desc += "; no Signed-off-by: use git commit -s if the project requires it"
