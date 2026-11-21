@@ -744,6 +744,14 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 // (seventh audit); and for whoever made its diff, the first REWORK below
 // it, past commit-message edits and rebases. A kind this does not know,
 // or a patch set whose commit is not said, is nobody's (fifth audit).
+//
+// Two differences from codeTrusted, on purpose (twelfth review): a
+// message-only patch set onto other parent commits chose them here (it
+// skips them; parentsTrusted then reads those parents either way), and a
+// REWORK need not be its uploader's own commit (codeTrusted's own(),
+// eighth audit): for a build, a trusted user with Forge Committer must not
+// vouch for someone else's commit unread, but who may push here may push
+// anyone's commit to GitHub themselves.
 func codeFrom(revs map[int]gerrit.RevisionInfo, ps int, allowed func(gerrit.RevisionInfo) bool) bool {
 	if r, ok := revs[chooser(revs, ps, slices.Equal[[]string])]; !ok || !allowed(r) {
 		return false
@@ -812,6 +820,12 @@ func authorsCode(ctx context.Context, trusted func(context.Context, int) (bool, 
 	allowed := func(r gerrit.RevisionInfo) bool {
 		real := 0
 		if r.RealUploader != nil {
+			if r.RealUploader.AccountID == 0 {
+				// Someone uploaded it on the uploader's behalf, and
+				// Gerrit did not say who: nobody's (gerrit-buildkite's
+				// RealUnknown; twelfth review).
+				return false
+			}
 			real = r.RealUploader.AccountID
 		}
 		a, k := mayPushToAuthor(ctx, trusted, bridge, owner, r.Uploader.AccountID, real)
@@ -962,7 +976,7 @@ func (c *Code) mayReach(ctx context.Context, ch *GerritChange, st *state.Change,
 		first.RealUploader = &gerrit.AccountInfo{AccountID: ch.RealUploaderID}
 	}
 	revs := map[int]gerrit.RevisionInfo{1: first}
-	if ch.PatchSet > 1 || ch.Kind != "REWORK" {
+	if ch.PatchSet > 1 || ch.Kind != "REWORK" || ch.RealUploaderUnknown {
 		ci, err := c.Gerrit.GetChange(ctx, ch.Number, "ALL_REVISIONS", "ALL_COMMITS")
 		if err != nil {
 			return false, false, err
@@ -1077,6 +1091,8 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]strin
 		}
 		if rev.RealUploader != nil {
 			s.Changes[ci.Number].RealUploaderID = rev.RealUploader.AccountID
+			// Not said who (0): mayReach reads the patch set to refuse it.
+			s.Changes[ci.Number].RealUploaderUnknown = rev.RealUploader.AccountID == 0
 		}
 		if ci.Status == "NEW" && !ci.IsPrivate {
 			refspecs = append(refspecs, "+"+rev.Ref+":refs/remotes/gerrit/"+strings.TrimPrefix(rev.Ref, "refs/"))

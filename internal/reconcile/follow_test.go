@@ -912,3 +912,37 @@ func TestPushTrustExported(t *testing.T) {
 		t.Error("CI's trusted group is exempt where GitHub owns the branches")
 	}
 }
+
+// A patch set uploaded on its uploader's behalf by someone Gerrit does not
+// name is nobody's, however trusted the uploader (gerrit-buildkite's
+// RealUnknown), read from Gerrit or from a look at the branch.
+func TestUnknownRealUploaderIsNobodys(t *testing.T) {
+	ctx := context.Background()
+	trusted := func(context.Context, int) (bool, bool) { return true, true }
+	rv := gerrit.RevisionInfo{Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 8}, RealUploader: &gerrit.AccountInfo{}}
+	rv.Commit.Parents = append(rv.Commit.Parents, struct {
+		Commit string `json:"commit"`
+	}{"p"})
+	if ok, _ := authorsCode(ctx, trusted, 0, 0, map[int]gerrit.RevisionInfo{1: rv}, 1); ok {
+		t.Error("trusted with an unknown real uploader")
+	}
+	rv.RealUploader = nil
+	if ok, _ := authorsCode(ctx, trusted, 0, 0, map[int]gerrit.RevisionInfo{1: rv}, 1); !ok {
+		t.Error("not trusted with no real uploader at all")
+	}
+	// The look's shortcut for a first patch set reads it instead.
+	s, c, base := followSites(t)
+	c.Publishable = trusted
+	rev := s.commit(base, "x", "x\n", fmt.Sprintf("C1\n\nChange-Id: %s\n", cid(1)))
+	ci := s.change(1, cid(1), rev, fmt.Sprintf("C1\n\nChange-Id: %s\n", cid(1)), "NEW")
+	r := ci.Revisions[rev]
+	r.Uploader, r.RealUploader = gerrit.AccountInfo{AccountID: 8}, &gerrit.AccountInfo{}
+	ci.Revisions[rev], ci.Owner = r, r.Uploader
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Withheld[1] {
+		t.Errorf("withheld %v", snap.Withheld)
+	}
+}
