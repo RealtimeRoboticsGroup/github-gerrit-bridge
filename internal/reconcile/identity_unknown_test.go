@@ -335,3 +335,27 @@ func TestMergeWaitsForWhoAsked(t *testing.T) {
 		t.Errorf("known: reply %q", last)
 	}
 }
+
+// A PR closed on GitHub by someone the bridge cannot place for now does
+// not abandon the change as the bridge, nor post a notice: it waits, and
+// abandons it as them once known. Sixteenth review: untested.
+func TestCloseWaitsForWhoClosedIt(t *testing.T) {
+	s, c, snap := prStatesWorld(t, "NEW", "closed")
+	s.ghEvent(70, "closed", "austin")
+	on := true
+	c.Identity = downFor{c.Identity, map[string]bool{"austin": true}, &on}
+	ctx := context.Background()
+	if _, err := c.mirrorPRStates(ctx, snap, map[int]bool{}); !isIdentityUnknown(err) {
+		t.Fatalf("unknown: err %v", err)
+	}
+	if s.changes[7].Status != "NEW" || len(s.comments[70]) != 0 {
+		t.Fatalf("unknown: status %s, notices %v", s.changes[7].Status, s.comments[70])
+	}
+	on = false
+	if changed, err := c.mirrorPRStates(ctx, snap, map[int]bool{}); err != nil || !changed {
+		t.Fatalf("known: changed %v, err %v", changed, err)
+	}
+	if ci := s.changes[7]; ci.Status != "ABANDONED" || ci.Messages[len(ci.Messages)-1].Author.Username != "austin" {
+		t.Errorf("known: status %s, messages %+v; want abandoned as austin", ci.Status, ci.Messages)
+	}
+}
