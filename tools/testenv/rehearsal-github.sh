@@ -161,6 +161,8 @@ by_brt() { gerrit "changes/${C1}/comments" | jq -e ".[][] | select(.message == \
 wait_for "the GitHub reply lands in Gerrit's thread, as AustinSchuhBRT" by_brt
 # /submit from a writer who has not linked (AustinSchuhBRT) is refused,
 # and nothing merges: it would merge as them, and nothing says it may.
+# A minute after the head reached GitHub, or it is refused for that.
+read_it
 brt api "repos/${R}/issues/${N1}/comments" -f body="/submit" --silent
 refused_unlinked() { me api "repos/${R}/issues/${N1}/comments" --jq '.[].body' | grep -q "is not linked"; }
 wait_for "/submit by an unlinked writer is refused" refused_unlinked
