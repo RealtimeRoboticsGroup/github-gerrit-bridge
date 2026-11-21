@@ -57,12 +57,13 @@ type Users struct {
 	// NeverLogins are GitHub logins never matched (the bridge's own: its
 	// edits and pushes are its own, not those of whoever owns its token).
 	NeverLogins []string
-	// Directory, if set, gives GitHub accounts (by numeric id) to Gerrit
-	// users as an administrator says (identity.ldap, design §7.1): it is
-	// asked first, by the id GitHub says the actor with, and what it says
-	// is as an override is, its pins included. Who it does not list falls
-	// to Overrides and Gerrit, but never to a Gerrit user it gives another
-	// GitHub account. Any error reading it matches nobody.
+	// Directory, if set, is the only mapping (identity.ldap, design §7):
+	// it gives GitHub accounts (by numeric id) to Gerrit users as an
+	// administrator says, asked by the id GitHub says the actor with, and
+	// what it says is as an override is, its pins included. Who it does
+	// not list is nobody: Overrides and Gerrit are not asked (the owner's
+	// call, 2026-11-21: everyone must be in it). Any error reading it
+	// matches nobody.
 	Directory GitHubDirectory
 	// Pins, with GitHub, pin each Gerrit account to the GitHub account
 	// (numeric id) it was first matched to (design §7.1). Nil: no pinning.
@@ -163,7 +164,6 @@ type cachedUser struct {
 // GitHubDirectory gives GitHub accounts to Gerrit users (ldap.Directory).
 type GitHubDirectory interface {
 	ByGitHubID(id int64) (a ldap.Account, found bool, err error)
-	ByGerritUser(user string) (a ldap.Account, found bool, err error)
 }
 
 // userCacheTTL bounds how long a lookup (including "no account") is reused:
@@ -311,33 +311,16 @@ func (u *Users) GerritUserFor(ctx context.Context, gh github.User) (string, bool
 		u.warnErr("the GitHub account directory cannot be read; matching nobody", gh.Login, err)
 		return "", false
 	}
-	if found {
-		return u.byDirectory(ctx, gh.Login, a)
+	if !found {
+		return "", false // not in the directory: nobody
 	}
-	user, ok := u.byMatch(ctx, github.User{Login: gh.Login, ID: id})
-	if !ok {
-		return "", false
-	}
-	// The directory says who has a Gerrit user it lists: nobody else, by
-	// an override or a username either.
-	if b, listed, err := u.Directory.ByGerritUser(user); err != nil {
-		u.warnErr("the GitHub account directory cannot be read; matching nobody", gh.Login, err)
-		return "", false
-	} else if listed {
-		if u.Logger != nil {
-			u.Logger.Warn("GitHub account maps to a Gerrit user the directory gives another GitHub account; not acting as it",
-				"github_login", gh.Login, "github_id", id, "gerrit_user", user, "directory_id", b.GitHubID, "dn", b.DN)
-		}
-		return "", false
-	}
-	return user, true
+	return u.byDirectory(ctx, gh.Login, a)
 }
 
 // byDirectory is GerritUserFor for GitHub account a.GitHubID, which the
 // directory gives a.GerritUser: as an override's, that user
-// must be one Gerrit reads as itself, active, not the bridge's own, and
-// no override may say login is someone else's; its pin is the
-// directory's (pinDirectory). never_groups do not apply: the entry names
+// must be one Gerrit reads as itself, active, and not the bridge's own;
+// its pin is the directory's (pinDirectory). never_groups do not apply: the entry names
 // the account outright, as an override does. Reused for userCacheTTL
 // while the directory still gives that account that user.
 func (u *Users) byDirectory(ctx context.Context, login string, a ldap.Account) (string, bool) {
@@ -368,15 +351,6 @@ func (u *Users) byDirectory(ctx context.Context, login string, a ldap.Account) (
 
 func (u *Users) checkDirectory(ctx context.Context, login string, a ldap.Account) (bool, error) {
 	user := a.GerritUser
-	for gh, over := range u.Overrides {
-		if strings.EqualFold(gh, login) && !strings.EqualFold(over, user) {
-			if u.Logger != nil {
-				u.Logger.Warn("an override and the directory give a GitHub account different Gerrit users; not acting as either",
-					"github_login", login, "github_id", a.GitHubID, "override", over, "directory", user, "dn", a.DN)
-			}
-			return false, nil
-		}
-	}
 	for _, n := range u.Never {
 		if strings.EqualFold(n, user) {
 			u.warn("the directory names a Gerrit account the bridge never acts as; not acting as it", login, user)
@@ -387,14 +361,10 @@ func (u *Users) checkDirectory(ctx context.Context, login string, a ldap.Account
 		u.warn("the directory names a Gerrit username Gerrit would read as another account; not acting as it", login, user)
 		return false, nil
 	}
-	q := u.Active
-	if q == nil {
-		q = u.Gerrit
-	}
-	if q == nil {
+	if u.Active == nil {
 		return false, errors.New("cannot check Gerrit accounts are active")
 	}
-	accts, err := q.QueryAccounts(ctx, "username:"+gerrit.QueryString(user)+" is:active")
+	accts, err := u.Active.QueryAccounts(ctx, "username:"+gerrit.QueryString(user)+" is:active")
 	if err != nil {
 		return false, err
 	}

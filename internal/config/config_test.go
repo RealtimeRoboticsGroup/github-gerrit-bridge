@@ -319,8 +319,16 @@ func TestIdentityLDAP(t *testing.T) {
 	if l := c.Identity.LDAP; l.ObjectClass != "githubAccount" || l.Refresh != 5*time.Minute || l.CAFile != "/etc/github-bridge/ldap-ca.pem" || c.Identity.MatchesUsernames() {
 		t.Errorf("%+v, match usernames %v", l, c.Identity.MatchesUsernames())
 	}
+	// Without match_usernames said, it is off: the directory is the only
+	// mapping.
+	c, err = Parse([]byte(full + "identity:\n  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n"))
+	if err != nil || c.Identity.MatchesUsernames() {
+		t.Errorf("match usernames %v with LDAP (%v)", c.Identity.MatchesUsernames(), err)
+	}
 	for _, bad := range []string{
 		"  ldap:\n    url: ldap://ldap.spacecookies.dev\n    base_dn: dc=x\n",
+		"  match_usernames: true\n  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n",
+		"  github_to_gerrit:\n    octocat: ocat\n  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n",
 		"  ldap:\n    url: ldaps://ldap.spacecookies.dev\n",
 		"  ldap:\n    base_dn: dc=x\n",
 		"  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n    refresh_interval: 1s\n",

@@ -317,7 +317,7 @@ func TestNewUsers(t *testing.T) {
 		dir  bool
 		err  bool
 	}{
-		{"AOS", config.Identity{}, false, false},
+		{"AOS", config.Identity{GitHubToGerrit: map[string]string{"octocat": "ocat"}}, false, false},
 		{"LDAP", config.Identity{MatchUsernames: &off, LDAP: &config.LDAP{URL: "ldaps://ldap.spacecookies.dev", CAFile: ca, BaseDN: "ou=People", ObjectClass: "githubAccount", Refresh: time.Minute}}, true, false},
 		{"no CA file", config.Identity{LDAP: &config.LDAP{URL: "ldaps://ldap.spacecookies.dev", CAFile: ca + ".missing", BaseDN: "ou=People"}}, false, true},
 	} {
@@ -330,7 +330,8 @@ func TestNewUsers(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		if (dir != nil) != tc.dir || (users.Directory != nil) != tc.dir || (users.Gerrit != nil) != tc.id.MatchesUsernames() || users.Active == nil {
+		if (dir != nil) != tc.dir || (users.Directory != nil) != tc.dir || (users.Gerrit != nil) != tc.id.MatchesUsernames() || users.Active == nil ||
+			(tc.dir && users.Overrides != nil) || (!tc.dir && users.Overrides == nil) {
 			t.Errorf("%s: directory %v, users %+v", tc.name, dir, users)
 		}
 		if dir != nil && (dir.BaseDN != "ou=People" || dir.Refresh != time.Minute || dir.Searcher.(*ldap.Server).RootCAs == nil) {

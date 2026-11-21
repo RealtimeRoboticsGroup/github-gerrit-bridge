@@ -1204,8 +1204,9 @@ GitHub by a trusted user started gerrit-buildkite.
 LDAP`), usernames are LDAP uids, not GitHub logins, and matching them is
 wrong both ways: GitHub's `AustinSchuh` is not Gerrit's `austin`, and
 whoever owns the GitHub login `james` is not our james (an older GitHub
-account would even pass the pin's age check). Such a deployment turns
-`match_usernames` off and lists GitHub accounts in LDAP instead: entries
+account would even pass the pin's age check). Such a deployment lists
+GitHub accounts in LDAP instead, and the directory is then the only
+mapping: entries
 of an auxiliary class (`githubAccount`, with `githubLogin` and the
 numeric `githubId`) under a base DN, whose `uid` is the Gerrit username.
 Only the directory's administrators write them, so an entry is as
@@ -1216,10 +1217,11 @@ trusted as an `identity.github_to_gerrit` override:
   the numeric id GitHub says the actor with, never the login, which a
   rename frees (a renamed user stays theirs; the new holder of the old
   login is nobody). An actor said without an id is looked up afresh.
-- It is asked first. Who it does not list falls to the overrides and, if
-  on, username matching, but never to a Gerrit user it gives another
-  GitHub account. An override saying a listed GitHub account is someone
-  else's matches neither.
+- It is the only mapping: everyone the bridge acts as must be in it,
+  under their Gerrit username (the owner's call, 2026-11-21). Whoever it
+  does not list is nobody; nothing falls back to overrides or username
+  matching, and the config refuses `github_to_gerrit` or
+  `match_usernames: true` beside it.
 - What an entry names is checked as an override's is: an active account,
   a username Gerrit reads as itself, not the bridge's own; and as for an
   override, `never_groups` do not apply: the entry names the account
@@ -1232,8 +1234,7 @@ trusted as an `identity.github_to_gerrit` override:
   is left out with all the others in it; and while the directory cannot
   be read (a failed read, a referral or size limit, which leave the
   answer partial, or no read for two intervals), the bridge matches
-  nobody at all, overrides included, since it cannot tell whether one
-  says otherwise. Each is logged. Removing someone from LDAP stops them
+  nobody at all. Each is logged. Removing someone from LDAP stops them
   being acted as within one interval (the refresh is the owner's choice;
   every read replaces the last whole).
 - Pins (§7.1) follow the directory, which wins: a Gerrit user is pinned

@@ -26,15 +26,17 @@ func ldapEntry(uid, login, id string) ldap.Entry {
 		Attrs: map[string][]string{"uid": {uid}, "githublogin": {login}, "githubid": {id}}}
 }
 
-// ldapUsers is Users with a directory (read once), Gerrit accounts
-// austin, james, bob and alice, and username matching on (as on AOS)
-// unless told otherwise.
+// ldapUsers is Users with a directory (read once) and Gerrit accounts
+// austin, james, bob and alice.
 func ldapUsers(t *testing.T, s *ldapSearcher) (*Users, *ldap.Directory) {
 	t.Helper()
 	d := &ldap.Directory{Searcher: s, BaseDN: "ou=People,dc=spacecookies,dc=dev", ObjectClass: "githubAccount", Refresh: time.Hour}
 	d.Read(context.Background())
 	accts := fakeAccounts{users: []string{"austin", "james", "bob", "alice", "1000000", "github-bridge"}, inactive: map[string]bool{}}
-	u := &Users{Directory: d, Gerrit: accts, Active: accts, GitHub: fakeIDs{"austinschuh": 294043, "james": 777, "jamesongh": 1234}}
+	// Overrides and username matching set too: with a directory, neither
+	// is asked.
+	u := &Users{Directory: d, Gerrit: accts, Active: accts, Overrides: map[string]string{"octocat": "alice"},
+		GitHub: fakeIDs{"austinschuh": 294043, "james": 777, "jamesongh": 1234}}
 	return u, d
 }
 
@@ -43,10 +45,12 @@ func gerritUser(u *Users, login string, id int64) string {
 	return user
 }
 
-// Design §7.1: the directory maps by the numeric id GitHub says the actor
+// Design §7: the directory maps by the numeric id GitHub says the actor
 // with, whatever the login (renamed); the GitHub user who owns the login
-// "james" is not our james, whom the directory gives another account; and
-// an actor said without an id is looked up afresh.
+// "james" is not our james; an actor said without an id is looked up
+// afresh; and whoever the directory does not list is nobody, whatever an
+// override or a matching username would say: everyone must be in it (the
+// owner's call, 2026-11-21).
 func TestDirectoryMapsByGitHubID(t *testing.T) {
 	u, _ := ldapUsers(t, &ldapSearcher{entries: []ldap.Entry{ldapEntry("austin", "AustinSchuh", "294043"), ldapEntry("james", "jamesonGH", "1234")}})
 	for _, tc := range []struct {
@@ -60,21 +64,12 @@ func TestDirectoryMapsByGitHubID(t *testing.T) {
 		{"james", 777, ""},       // GitHub's "james", not ours: username matching may not hand it over
 		{"AustinSchuh", 555, ""}, // the login, now someone else's
 		{"AustinSchuh", 0, "austin"},
-		{"bob", 31, "bob"}, // not in the directory: username matching, as before
+		{"bob", 31, ""},     // not in the directory: a matching username is no fallback
+		{"octocat", 32, ""}, // nor is an override
 	} {
 		if got := gerritUser(u, tc.login, tc.id); got != tc.want {
 			t.Errorf("%s (%d) = %q, want %q", tc.login, tc.id, got, tc.want)
 		}
-	}
-	// Without username matching (the LDAP deployment), the directory is
-	// the mapping.
-	u, _ = ldapUsers(t, &ldapSearcher{entries: []ldap.Entry{ldapEntry("austin", "AustinSchuh", "294043")}})
-	u.Gerrit = nil
-	if got := gerritUser(u, "bob", 31); got != "" {
-		t.Errorf("bob matched with username matching off: %q", got)
-	}
-	if got := gerritUser(u, "AustinSchuh", 294043); got != "austin" {
-		t.Errorf("austin with username matching off: %q", got)
 	}
 }
 
@@ -156,9 +151,8 @@ func TestDirectoryChangesAndPins(t *testing.T) {
 }
 
 // What the directory names is never acted as if Gerrit would read it as
-// another account, if it is inactive or the bridge's own, or if an
-// override says the GitHub account is someone else's; never_groups do
-// not apply (an entry names the account outright, as an override does).
+// another account, or if it is inactive or the bridge's own; never_groups
+// do not apply (an entry names the account outright, as an override does).
 func TestDirectoryNamesOnlyAccountsItMay(t *testing.T) {
 	s := &ldapSearcher{entries: []ldap.Entry{
 		ldapEntry("1000000", "numberGH", "10"),
@@ -173,8 +167,7 @@ func TestDirectoryNamesOnlyAccountsItMay(t *testing.T) {
 	accts.groups = map[string][]string{"Administrators": {"alice"}}
 	u.Gerrit, u.Active = accts, accts
 	u.Never, u.NeverGroups = []string{"github-bridge"}, []string{"Administrators"}
-	u.Overrides = map[string]string{"bobGH": "alice"}
-	for id, want := range map[int64]string{10: "", 1234: "", 20: "", 30: "alice", 40: ""} {
+	for id, want := range map[int64]string{10: "", 1234: "", 20: "", 30: "alice", 40: "bob"} {
 		login := map[int64]string{10: "numberGH", 1234: "jamesonGH", 20: "botGH", 30: "aliceGH", 40: "bobGH"}[id]
 		if got := gerritUser(u, login, id); got != want {
 			t.Errorf("%s (%d) = %q, want %q", login, id, got, want)

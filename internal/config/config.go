@@ -150,9 +150,10 @@ type Identity struct {
 	// see each one (Gerrit hides groups otherwise, e.g. Administrators
 	// unless "visible to all"); it will not start otherwise.
 	NeverGroups []string `yaml:"never_groups"`
-	// LDAP, if set, is a directory of GitHub accounts (design §7.1):
-	// asked first, by numeric GitHub id, and as trusted as GitHubToGerrit.
-	// Off by default.
+	// LDAP, if set, is a directory of GitHub accounts (design §7), and
+	// then the only mapping: by numeric GitHub id, as trusted as an
+	// override, and whoever it does not list is nobody (GitHubToGerrit
+	// and MatchUsernames may not be set with it). Off by default.
 	LDAP *LDAP `yaml:"ldap"`
 }
 
@@ -183,8 +184,11 @@ const (
 	OwnerGitHub = "github"
 )
 
-// MatchesUsernames reports whether MatchUsernames is on (the default).
-func (i Identity) MatchesUsernames() bool { return i.MatchUsernames == nil || *i.MatchUsernames }
+// MatchesUsernames reports whether MatchUsernames is on: the default,
+// but never with LDAP, which is then the only mapping.
+func (i Identity) MatchesUsernames() bool {
+	return i.LDAP == nil && (i.MatchUsernames == nil || *i.MatchUsernames)
+}
 
 // CI configures how Gerrit CI is mirrored to GitHub (design §6.5).
 type CI struct {
@@ -290,6 +294,14 @@ func (c *Config) validate() error {
 	}
 	req("gerrit.project", c.Gerrit.Project)
 	if l := c.Identity.LDAP; l != nil {
+		// The directory is the only mapping: everyone must be in it, so
+		// nothing else may say who someone is (the owner's call).
+		if len(c.Identity.GitHubToGerrit) > 0 {
+			errs = append(errs, errors.New("identity.github_to_gerrit with identity.ldap: the directory is the only mapping; list them in LDAP"))
+		}
+		if c.Identity.MatchUsernames != nil && *c.Identity.MatchUsernames {
+			errs = append(errs, errors.New("identity.match_usernames with identity.ldap: the directory is the only mapping"))
+		}
 		req("identity.ldap.url", l.URL)
 		req("identity.ldap.base_dn", l.BaseDN)
 		if l.URL != "" {

@@ -684,29 +684,31 @@ func setMode(githubOwned bool, code *reconcile.Code, comments *reconcile.Comment
 	checks.StatusBudget = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: exempt}
 }
 
-// newUsers is the identity mapping cfg says (design §7): overrides, the
-// LDAP directory if any (returned, for the caller to run), and username
-// matching if on. Never the bridge itself (user), a service account or an
+// newUsers is the identity mapping cfg says (design §7): the LDAP
+// directory alone if set (returned, for the caller to run); else the
+// overrides, and username matching if on. Never the bridge itself (user), a service account or an
 // administrator by matching usernames, even if someone registers that
 // login on GitHub; nor anyone for the bridge's own GitHub login. A Gerrit
 // account follows the GitHub account (numeric id) it was first matched
 // to, or the directory gives it, not whoever holds the login later.
 func newUsers(cfg *config.Config, rest *gerrit.Client, pins reconcile.Pins, gh reconcile.GitHubUsers, user, login string, dryRun bool,
 	logger *slog.Logger) (*reconcile.Users, *ldap.Directory, error) {
-	users := &reconcile.Users{Overrides: cfg.Identity.GitHubToGerrit, Logger: logger,
+	users := &reconcile.Users{Logger: logger,
 		Never: []string{user}, NeverGroups: cfg.Identity.NeverGroups, NeverLogins: []string{login},
 		Pins: pins, GitHub: gh, DryRun: dryRun, Active: rest}
-	if cfg.Identity.MatchesUsernames() {
-		users.Gerrit = rest
-	}
 	dir, err := newDirectory(cfg.Identity.LDAP, logger)
 	if err != nil {
 		return nil, nil, err
 	}
 	if dir != nil {
-		users.Directory = dir
+		users.Directory = dir // the only mapping
+		return users, dir, nil
 	}
-	return users, dir, nil
+	users.Overrides = cfg.Identity.GitHubToGerrit
+	if cfg.Identity.MatchesUsernames() {
+		users.Gerrit = rest
+	}
+	return users, nil, nil
 }
 
 // newDirectory is identity.ldap's directory of GitHub accounts, or nil if

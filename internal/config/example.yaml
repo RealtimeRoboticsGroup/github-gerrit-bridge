@@ -82,12 +82,14 @@ identity:
   github_to_gerrit:
     octocat: ocat
   # Where Gerrit's accounts are LDAP's (auth.type = LDAP), its usernames
-  # are not GitHub logins: turn match_usernames off and say whose GitHub
-  # account is whose in LDAP instead (design §7). Entries of object_class
-  # under base_dn give their uid (the Gerrit username) a githubLogin and
-  # githubId; only the directory's admins should write them. Read
-  # anonymously over LDAPS, verified against ca_file, every
-  # refresh_interval; unreadable, it matches nobody.
+  # are not GitHub logins: say whose GitHub account is whose in LDAP
+  # instead (design §7). It is then the only mapping: whoever it does not
+  # list is nobody, and match_usernames and github_to_gerrit may not be
+  # set beside it. Entries of object_class under base_dn give their uid
+  # (the Gerrit username) a githubLogin and githubId; only the
+  # directory's admins should write them. Read anonymously over LDAPS,
+  # verified against ca_file, every refresh_interval; unreadable, it
+  # matches nobody.
   # ldap:
   #   url: ldaps://ldap.spacecookies.dev:636
   #   ca_file: /etc/github-bridge/ldap-ca.pem
