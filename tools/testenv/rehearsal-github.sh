@@ -159,6 +159,12 @@ wait_for "a Gerrit comment appears on GitHub, as AustinSchuh (linked)" by_him
 brt api "repos/${R}/pulls/${N1}/comments/$(ghc .id)/replies" -f body="Rehearsal ${RUN}: because." --silent
 by_brt() { gerrit "changes/${C1}/comments" | jq -e ".[][] | select(.message == \"Rehearsal ${RUN}: because.\") | select(.author.username == \"AustinSchuhBRT\")"; }
 wait_for "the GitHub reply lands in Gerrit's thread, as AustinSchuhBRT" by_brt
+# /submit from a writer who has not linked (AustinSchuhBRT) is refused,
+# and nothing merges: it would merge as them, and nothing says it may.
+brt api "repos/${R}/issues/${N1}/comments" -f body="/submit" --silent
+refused_unlinked() { me api "repos/${R}/issues/${N1}/comments" --jq '.[].body' | grep -q "is not linked"; }
+wait_for "/submit by an unlinked writer is refused" refused_unlinked
+check "and the PR is not merged" test "$(pr "${N1}" .merged)" == false
 M1=$(merge "${N1}" squash)
 wait_for "Gerrit's main follows the squash" followed main
 # GitHub adds the commits' sign-offs in a paragraph after it, so Gerrit
