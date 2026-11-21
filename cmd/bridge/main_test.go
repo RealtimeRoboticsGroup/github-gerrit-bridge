@@ -493,3 +493,25 @@ func TestSubtreeMergeRefusesLinkFooter(t *testing.T) {
 		t.Errorf("a commit with a Link footer naming another change gets a merge commit: subtree %v (%v)", has, err)
 	}
 }
+
+// A link stands only while the mapping gives its GitHub account the
+// Gerrit user it was made for (any case); not once it gives that id to
+// someone else, nor nobody; a lookup that cannot answer is an error
+// (seventeenth review).
+func TestLinkStands(t *testing.T) {
+	down := errors.New("the directory cannot be read")
+	for _, tc := range []struct {
+		name string
+		user string
+		ok   bool
+		err  error
+		want bool
+	}{{"mapped", "alice", true, nil, true}, {"mapped, other case", "Alice", true, nil, true},
+		{"re-mapped", "bob", true, nil, false}, {"unmapped", "", false, nil, false}, {"unknown", "alice", true, down, false}} {
+		check := linkStands(func(context.Context, github.User) (string, bool, error) { return tc.user, tc.ok, tc.err })
+		got, err := check(context.Background(), github.User{Login: "alice-gh", ID: 7}, "alice")
+		if got != tc.want || !errors.Is(err, tc.err) {
+			t.Errorf("%s: %v %v, want %v %v", tc.name, got, err, tc.want, tc.err)
+		}
+	}
+}

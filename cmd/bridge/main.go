@@ -441,10 +441,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		app := &github.UserApp{ClientID: a.ClientID, ClientSecret: secret,
 			HTTP: &http.Client{Timeout: time.Minute, Transport: &httplog.Transport{Name: "github-app", Logger: logger}, CheckRedirect: noRedirects}}
 		tokens := &usertokens.Tokens{Store: linked, App: app, Logger: logger,
-			Check: func(ctx context.Context, gh github.User, user string) (bool, error) {
-				u, ok, err := users.Lookup(ctx, gh)
-				return ok && strings.EqualFold(u, user), err
-			}}
+			Check: linkStands(users.Lookup)}
 		comments.Authors = linkedAuthors{tokens: tokens, gh: gh}
 		if cfg.GitHubOwned() {
 			// Only they have Gerrit patch sets pushed to GitHub (design
@@ -576,6 +573,21 @@ func publishable(linked func(context.Context, int) (github.User, bool, error), c
 			return false, false
 		}
 		return may, true
+	}
+}
+
+// linkStands is the user tokens' Check: a link stands while the mapping
+// still gives its GitHub account the Gerrit user it was made for, not
+// once the directory gives that id to someone else, nor nobody; a lookup
+// that cannot answer is an error (seventeenth review: inline in run(),
+// untested).
+func linkStands(lookup func(context.Context, github.User) (string, bool, error)) func(context.Context, github.User, string) (bool, error) {
+	return func(ctx context.Context, gh github.User, user string) (bool, error) {
+		u, ok, err := lookup(ctx, gh)
+		if err != nil {
+			return false, err
+		}
+		return ok && strings.EqualFold(u, user), nil
 	}
 }
 
