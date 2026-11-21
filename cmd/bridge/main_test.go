@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/config"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/usertokens"
 	"os"
@@ -245,6 +246,34 @@ func TestGitHubMergerMergesAsTheCommenter(t *testing.T) {
 		commits = list
 		if has, err := m.HasSubtree(ctx, 7); has != want || err != nil {
 			t.Errorf("subtree %v, want %v (%v): %s", has, want, err, list)
+		}
+	}
+}
+
+// A GitHub-owned bridge needs Maintain Server, and will not start
+// without it; a Gerrit-owned one never asks.
+func TestCheckCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		owner, caps string
+		asked, ok   bool
+	}{
+		{config.OwnerGitHub, `{"maintainServer":true}`, true, true},
+		{config.OwnerGitHub, `{}`, true, false},
+		{config.OwnerGerrit, `{}`, false, true},
+	} {
+		asked := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/a/accounts/self/capabilities" || r.URL.Query().Get("q") != "maintainServer" {
+				t.Errorf("asked %s", r.URL)
+			}
+			asked = true
+			io.WriteString(w, ")]}'\n"+tc.caps)
+		}))
+		rest := &gerrit.Client{BaseURL: srv.URL, User: "bridge", Password: "p", HTTP: srv.Client()}
+		err := checkCapabilities(context.Background(), &config.Config{BranchOwner: tc.owner}, rest)
+		srv.Close()
+		if asked != tc.asked || (err == nil) != tc.ok {
+			t.Errorf("%s %s: asked %v, err %v", tc.owner, tc.caps, asked, err)
 		}
 	}
 }

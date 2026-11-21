@@ -112,15 +112,16 @@ checklist.
   `Co-authored-by:` for their authors, even those the description has
   already (checked 2026-11-20; on 3.14 the change stays open). Every
   squash of signed-off commits with the button takes this path, so where
-  sign-offs are the rule, the fallback is the usual way and Maintain
-  Server all but required (`/submit` writes its own message and does not
-  need it). Once the merge commit is on Gerrit's
-  branch, the bridge marks the change merged at it with Gerrit's
-  check-and-fix (`POST /changes/N/check`, `expect_merged_as`), which
+  sign-offs are the rule, the fallback is the usual way, and Maintain
+  Server is required in this mode (`/submit` writes its own message).
+  Once the merge commit is on Gerrit's branch, the bridge marks the
+  change merged at it with Gerrit's check-and-fix (`POST
+  /changes/N/check`, `expect_merged_as`), which needs Maintain Server and
   inserts it as the last patch set, and says who merged it, in which PR.
-  That needs Maintain Server; without it, or for a PR merged into another
-  branch (a stacked PR into the one below, whose change then carries the
-  code), the change is abandoned with that note (the owner's fallback).
+  If Gerrit refuses anyway (the capability revoked since startup), or for
+  a PR merged into another branch (a stacked PR into the one below, whose
+  change then carries the code), the change is abandoned with that note
+  (the owner's fallback).
   A merged PR is never reopened or edited meanwhile, and `/submit`
   refuses a PR not based on the target branch. A PR in a native stack
   (the bridge's own, of a relation chain, or one made on GitHub) merges
@@ -178,8 +179,10 @@ checks what it can):
 2. Gerrit, on the project's `refs/heads/*`, for the bridge's group: Push
    with force, Forge Author, Forge Committer, Push Merge Commits, Abandon;
    and the global Maintain Server capability, for marking changes merged
-   whose merge commit lost its Change-Id footer (else they are abandoned;
-   that is every squash of signed-off commits with GitHub's button).
+   whose merge commit lost its Change-Id footer (every squash of
+   signed-off commits with GitHub's button). The bridge will not start in
+   this mode without it; where Gerrit owns the branches it is never
+   needed, and not asked for.
    Gerrit takes GitHub's commits as they are: no Signed-off-by
    requirement, no commit validators GitHub's squash commits would fail,
    and `receive.maxBatchCommits` above what one merge brings (a subtree

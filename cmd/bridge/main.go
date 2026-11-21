@@ -137,6 +137,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	if self.Email == "" {
 		return fmt.Errorf("gerrit account %s has no preferred email; state commits need one", cfg.Gerrit.HTTPUser)
 	}
+	if err := checkCapabilities(ctx, cfg, rest); err != nil {
+		return err
+	}
 	gitCfg, gitEnv := gitmirror.HTTPCredentials(cfg.Gerrit.URL, cfg.Gerrit.HTTPUser, gerritPassword)
 	mirror := &gitmirror.Repo{
 		Dir:    cfg.Gerrit.MirrorDir,
@@ -642,6 +645,27 @@ func checkSecrets(cfg *config.Config, logger *slog.Logger) error {
 			return fmt.Errorf("%s is readable by others: make it 0600", f)
 		}
 		logger.Warn("secret file is readable by others; make it 0600", "file", f)
+	}
+	return nil
+}
+
+// checkCapabilities refuses to start a bridge whose Gerrit account lacks a
+// global capability its mode needs. Where GitHub owns the branches
+// (design §3.1) that is Maintain Server: GitHub's merge button leaves the
+// Change-Id out of the commit's last paragraph whenever the commits are
+// signed off, and only check-and-fix then shows the change merged, not
+// abandoned. Where Gerrit owns them it is never needed, nor asked about.
+func checkCapabilities(ctx context.Context, cfg *config.Config, rest *gerrit.Client) error {
+	if !cfg.GitHubOwned() {
+		return nil
+	}
+	var caps map[string]any
+	if err := rest.Do(ctx, http.MethodGet, "accounts/self/capabilities?q=maintainServer", nil, &caps); err != nil {
+		return fmt.Errorf("reading the Gerrit account's capabilities: %w", err)
+	}
+	if _, ok := caps["maintainServer"]; !ok {
+		return fmt.Errorf("gerrit account %s lacks the global Maintain Server capability, which branch_owner github needs "+
+			"to show changes merged on GitHub as merged (design §3.1): grant it to the bridge's group in All-Projects", cfg.Gerrit.HTTPUser)
 	}
 	return nil
 }
