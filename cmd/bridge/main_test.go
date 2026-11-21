@@ -476,3 +476,20 @@ func TestNewDispatcherWaitsForTheDirectory(t *testing.T) {
 		t.Error("reconciled while the directory was never read")
 	}
 }
+
+// A commit with a Link footer naming a change (Gerrit reads it as a
+// Change-Id) gets no merge commit, as one with a Change-Id gets none
+// (sixteenth review).
+func TestSubtreeMergeRefusesLinkFooter(t *testing.T) {
+	commits := `[{"sha":"s","commit":{"message":"Squashed 'third_party/x/' content from commit abc\n\ngit-subtree-dir: third_party/x\ngit-subtree-split: abc"},"parents":[]},` +
+		`{"sha":"c","commit":{"message":"Tweak\n\nLink: https://gerrit.example.com/id/I0000000000000000000000000000000000000002"},"parents":[{"sha":"a"}]},` +
+		`{"sha":"b","commit":{"message":"Merge commit 's' as 'third_party/x'"},"parents":[{"sha":"c"},{"sha":"s"}]}]`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, commits)
+	}))
+	defer srv.Close()
+	m := githubMerger{gh: &github.Client{BaseURL: srv.URL, Owner: "o", Repo: "r", Tokens: github.StaticToken("bot-token")}}
+	if has, err := m.HasSubtree(context.Background(), 7, "b"); has || err != nil {
+		t.Errorf("a commit with a Link footer naming another change gets a merge commit: subtree %v (%v)", has, err)
+	}
+}

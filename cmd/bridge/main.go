@@ -816,10 +816,12 @@ func (m githubMerger) Merge(ctx context.Context, u github.User, pr int, head str
 // author can write any message, so a merge commit (which brings every
 // commit's message, and a Change-Id footer there closes that change in
 // Gerrit) is made only then, and only if no commit of it carries a
-// Change-Id (twelfth review).
+// Change-Id (twelfth review), nor a Link footer Gerrit reads as one.
 func (m githubMerger) HasSubtree(ctx context.Context, pr int, head string) (bool, error) {
 	commits, err := m.gh.PullCommits(ctx, pr)
-	if err != nil || slices.ContainsFunc(commits, func(c github.PullCommit) bool { return changeIDLine.MatchString(c.Commit.Message) }) {
+	if err != nil || slices.ContainsFunc(commits, func(c github.PullCommit) bool {
+		return changeIDLine.MatchString(c.Commit.Message) || changeLinkLine.MatchString(c.Commit.Message)
+	}) {
 		return false, err
 	}
 	// What was listed must be what is merged: the head seen, at the end
@@ -839,6 +841,10 @@ var (
 	// changeIDLine is a Change-Id line, as Gerrit would read one in a
 	// footer (and more: anywhere in the message).
 	changeIDLine = regexp.MustCompile(`(?mi)^\s*change-id:`)
+	// changeLinkLine is a Link footer Gerrit reads as a Change-Id
+	// (receive.enableChangeIdLinkFooters, on by default), at any URL
+	// (sixteenth review).
+	changeLinkLine = regexp.MustCompile(`(?mi)^\s*link\s*:.*/id/I`)
 )
 
 // linkedAuthors posts linked users' content with their own token
