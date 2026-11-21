@@ -505,6 +505,13 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 		msg := fmt.Sprintf("Patch set %d is not mirrored to GitHub: it changes %s (here, below it in Gerrit or in the GitHub commits it "+
 			"builds on, or by being based on an older version of the branch), and GitHub would use that, with the repository's secrets, from the branch the bridge pushes. "+
 			"Review it here, or rebase it.", ch.PatchSet, withheldWhat)
+		if c.GitHubOwned {
+			// Nothing merges in Gerrit here: the way in is GitHub's.
+			msg = fmt.Sprintf("Patch set %d is not mirrored to GitHub: it changes %s (here, below it in Gerrit or in the GitHub commits it "+
+				"builds on, or by being based on an older version of the branch), which the bridge never pushes: GitHub would use that, "+
+				"with the repository's secrets, from the branch it pushes. GitHub owns this repository's branches, so this cannot merge "+
+				"from Gerrit: push it to a branch on GitHub yourself and open a PR there.", ch.PatchSet, withheldWhat)
+		}
 		switch why {
 		case byGitHub:
 			msg = fmt.Sprintf("Patch set %d is not mirrored to GitHub: GitHub refused its push (its push protection, on something in it "+

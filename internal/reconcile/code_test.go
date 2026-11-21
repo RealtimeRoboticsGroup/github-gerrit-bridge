@@ -4735,3 +4735,31 @@ func TestAPIIdsGitCouldMisread(t *testing.T) {
 		}
 	}
 }
+
+// Where GitHub owns the branches the rule stands, but nothing merges in
+// Gerrit: the notice says the way in is a push to GitHub.
+func TestConfigNoticeWhereGitHubOwns(t *testing.T) {
+	for _, owned := range []bool{false, true} {
+		s := newSites(t)
+		ctx := context.Background()
+		c, _ := s.code(ctx)
+		c.GitHubOwned = owned
+		m0 := s.commit("", "a.txt", "a\n", "base")
+		s.push("gerrit.git", m0, "refs/heads/main")
+		os.MkdirAll(filepath.Join(s.dir, "work", ".github", "workflows"), 0o755)
+		wf := s.commit(m0, ".github/workflows/x.yml", "on: push\n", "Workflow\n\nChange-Id: "+cid(1)+"\n")
+		s.change(1, cid(1), wf, "Workflow", "NEW")
+		for _, ref := range []string{"refs/changes/01/1/1", "refs/heads/main"} {
+			s.git("m.git", "fetch", "-q", "origin", "+"+ref+":"+strings.Replace(ref, "refs/", "refs/remotes/gerrit/", 1))
+		}
+		snap := &Snapshot{Changes: map[int]*GerritChange{1: {Number: 1, Status: "NEW", Revision: wf, PatchSet: 1}}, State: map[int]*state.Change{}}
+		if err := c.withhold(ctx, snap, "main", nil); err != nil {
+			t.Fatal(err)
+		}
+		msgs := s.reviewMsgs[1]
+		if !snap.Withheld[1] || len(msgs) != 1 || strings.Contains(msgs[0], "push it to a branch on GitHub yourself") != owned ||
+			strings.Contains(msgs[0], "Review it here") == owned {
+			t.Errorf("GitHub owns %v: withheld %v, notices %q", owned, snap.Withheld, msgs)
+		}
+	}
+}

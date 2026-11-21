@@ -150,7 +150,10 @@ checklist.
   Gerrit patch sets pushed to GitHub-born PRs' branches, where owning the
   change is no pass either unless the branch is the author's fork. The
   importer never restores ("Gerrit wins") a patch set the rule withholds. Nobody gets more through Gerrit
-  than they have on GitHub.
+  than they have on GitHub. A change touching `.github/` or `CODEOWNERS` is still withheld,
+  whoever made it (the owner's call, 2026-11-20: rarely hit); its notice
+  says to push it to GitHub and open a PR there, since nothing merges in
+  Gerrit.
 - **Status in Gerrit.** GitHub's reviews come over as always (linked
   users' votes as theirs). Gerrit's Checks tab shows the patch set's
   GitHub check runs (each attempt, result, title, summary, link), its
