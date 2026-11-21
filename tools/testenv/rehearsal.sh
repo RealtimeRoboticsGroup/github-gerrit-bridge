@@ -13,7 +13,6 @@ set -uo pipefail
 R=AustinSchuh/bridge-scratch
 G=http://127.0.0.1:18080/gerrit
 CREDS=${HOME}/tmp/gerrit-test/bridge
-ADMIN="admin:$(cat "${HOME}/tmp/gerrit-test/etc/testgerrit-admin-password")"
 ME_CLONE=${HOME}/local/bridge-play
 BRT_CLONE=${HOME}/local/bridge-play-brt
 GH=${GH:-${HOME}/bin/gh}
@@ -35,11 +34,13 @@ read_it() { sleep 65; }
 me() { "${GH}" "$@"; }
 brt() { GH_TOKEN="$("${GH}" auth token --user AustinSchuhBRT)" "${GH}" "$@"; }
 # Gerrit REST: gerrit GET <path>, or gerrit_as <user> <method> <path> [json].
-gerrit() { curl -sf -u "${ADMIN}" "${G}/a/$1" | tail -c +5; }
+# Reads are AustinSchuh's, who sees all the rehearsal does: no admin
+# password (as rehearsal-github.sh).
 gerrit_as() {
-  curl -sf -u "$1:$(cat "${CREDS}/$1.http-password")" -H 'Content-Type: application/json' \
+  curl -sf -K- -H 'Content-Type: application/json' <<<"user = \"$1:$(cat "${CREDS}/$1.http-password")\"" \
     -X "$2" "${G}/a/$3" ${4:+-d "$4"} | tail -c +5
 }
+gerrit() { gerrit_as AustinSchuh GET "$1"; }
 
 # wait_for <description> <command...>: retry until the command succeeds.
 wait_for() {
