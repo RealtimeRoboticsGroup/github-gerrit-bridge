@@ -387,6 +387,14 @@ func (u *Users) checkDirectory(ctx context.Context, login string, a ldap.Account
 		return "", false, errors.New("cannot check Gerrit accounts are active")
 	}
 	accts, err := u.Active.QueryAccounts(ctx, "username:"+gerrit.QueryString(name)+" is:active")
+	var ge *gerrit.Error
+	if errors.As(err, &ge) && ge.Status == http.StatusBadRequest {
+		// Gerrit cannot take the name in a query, and never will: a
+		// name no Gerrit account can be checked as, so nobody, not
+		// unknown for as long as the entry stands (sixteenth review).
+		u.warnErr("the directory names a Gerrit username Gerrit cannot query; not acting as it", login, err)
+		return "", false, nil
+	}
 	if err != nil {
 		return "", false, err
 	}

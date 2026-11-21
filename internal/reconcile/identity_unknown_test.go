@@ -207,3 +207,20 @@ func TestSubmitWaitingSpendsNoReplies(t *testing.T) {
 		t.Errorf("known: submits %v, want one", sub.calls)
 	}
 }
+
+// A name Gerrit refuses to query (400, every time) is nobody, not unknown
+// for as long as the entry stands; a 500 is unknown still (sixteenth
+// review).
+func TestDirectoryNameGerritCannotQueryIsNobody(t *testing.T) {
+	s := &ldapSearcher{entries: []ldap.Entry{ldapEntry(`bad"name`, "Bad", "55")}}
+	u, _ := ldapUsers(t, s)
+	bad := github.User{Login: "Bad", ID: 55}
+	u.Active = errAccounts{&gerrit.Error{Status: 400, Body: "line 1:10 mismatched character"}}
+	if _, ok, err := u.Lookup(context.Background(), bad); ok || err != nil {
+		t.Errorf("a query Gerrit refuses for good: %v %v, want nobody", ok, err)
+	}
+	u.Active = errAccounts{&gerrit.Error{Status: 500}}
+	if _, ok, err := u.Lookup(context.Background(), bad); ok || !isIdentityUnknown(err) {
+		t.Errorf("Gerrit failing: %v %v, want unknown", ok, err)
+	}
+}
