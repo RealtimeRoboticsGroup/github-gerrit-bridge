@@ -1400,3 +1400,51 @@ func TestGerritOwnedMergeNoticeOnlyWhileGerritSaysOpen(t *testing.T) {
 		}
 	}
 }
+
+// The walk's reads are shared by every change of one look (memoReader): a
+// record that is on GitHub for one fork's push is not for another's
+// (fifteenth review, tests: the memo key's into was untested, and
+// without it alice's answer was mallory's).
+func TestBelowReadsAreByFork(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, store := s.code(ctx)
+	c.BridgeAccount = 1
+	c.Trusted = func(_ context.Context, a int) (bool, bool) { return a == 6, true }
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.git("m.git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/gerrit/heads/main")
+	low := s.commit(m0, "low.txt", "l\n", "Low\n\nChange-Id: "+cid(2)+"\n")
+	ci := s.change(2, cid(2), low, "Low\n\nChange-Id: "+cid(2)+"\n", "NEW")
+	ci.Owner = gerrit.AccountInfo{AccountID: 5}
+	r := ci.Revisions[low]
+	r.Uploader = gerrit.AccountInfo{AccountID: 1}
+	ci.Revisions[low] = r
+	s.save(ctx, store, 2, &state.Change{State: state.ChangeState{Change: 2, ChangeID: cid(2), PR: 9, Branch: "main", Origin: "github", HeadBranch: "alice/r:low", Lifecycle: "NEW"},
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: low, GitHubSHA: low, Vetted: true}}})
+	for _, x := range []struct {
+		n     int
+		owner int
+		head  string
+		file  string
+	}{{1, 5, "alice/r:feature", "f.txt"}, {3, 7, "mallory/r:other", "g.txt"}} {
+		msg := "Top\n\nChange-Id: " + cid(x.n) + "\n"
+		top := s.commit(low, x.file, "2\n", msg)
+		ci := s.change(x.n, cid(x.n), top, msg, "NEW")
+		ci.Owner = gerrit.AccountInfo{AccountID: x.owner}
+		r := ci.Revisions[top]
+		r.Uploader = gerrit.AccountInfo{AccountID: x.owner}
+		ci.Revisions[top] = r
+		s.save(ctx, store, x.n, &state.Change{State: state.ChangeState{Change: x.n, ChangeID: cid(x.n), PR: 10 + x.n, Branch: "main", Origin: "github", HeadBranch: x.head, Lifecycle: "NEW"}})
+	}
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Foreign[1] {
+		t.Error("alice's own stack foreign")
+	}
+	if !snap.Foreign[3] {
+		t.Error("mallory's PR above alice's import not foreign")
+	}
+}
