@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -208,8 +209,11 @@ func TestSearch(t *testing.T) {
 	// The request: SEQUENCE { 1, SearchRequest { base, wholeSubtree,
 	// neverDeref, 0, 0, FALSE, (objectClass=githubAccount), attrs } }.
 	// An anonymous bind first, then the search.
-	if !bytes.Equal(ts.reqs[0], bindRequest(1)) {
-		t.Errorf("bind % x", ts.reqs[0])
+	// The bind, as RFC 4511 spells an anonymous one: message 1, version
+	// 3, no name, simple authentication with no password (fifteenth
+	// review: it was compared with itself).
+	if want := []byte{0x30, 0x0c, 0x02, 0x01, 0x01, 0x60, 0x07, 0x02, 0x01, 0x03, 0x04, 0x00, 0x80, 0x00}; !bytes.Equal(ts.reqs[0], want) {
+		t.Errorf("bind % x, want % x", ts.reqs[0], want)
 	}
 	want := searchRequest(2, "ou=People,dc=spacecookies,dc=dev", "githubAccount", []string{"uid", "githubLogin", "githubId"})
 	if len(ts.reqs) < 2 || !bytes.Equal(ts.reqs[1], want) {
@@ -274,11 +278,13 @@ func TestParseServer(t *testing.T) {
 
 // fakeSearcher answers with entries, or err.
 type fakeSearcher struct {
-	entries []Entry
-	err     error
+	entries  []Entry
+	err      error
+	searches atomic.Int32
 }
 
 func (f *fakeSearcher) Search(context.Context, string, string, []string) ([]Entry, error) {
+	f.searches.Add(1)
 	return f.entries, f.err
 }
 
@@ -463,15 +469,31 @@ func TestBindRefusedAndLongLengths(t *testing.T) {
 // A clash counts every entry, valid or not: an invalid second entry for
 // someone's id or uid leaves out the valid one too.
 func TestInvalidEntryStillClashes(t *testing.T) {
-	bad := entry("alice", "bad_login", "100") // invalid login, same id and uid
-	d := &Directory{Searcher: &fakeSearcher{entries: []Entry{entry("alice", "aliceGH", "100"), bad, entry("bob", "bobGH", "200")}},
-		BaseDN: "ou=People", ObjectClass: "githubAccount", Refresh: time.Minute}
-	d.Read(context.Background())
-	if a, found, _ := d.ByGitHubID(100); found {
+	read := func(bad Entry) *Directory {
+		d := &Directory{Searcher: &fakeSearcher{entries: []Entry{entry("alice", "aliceGH", "100"), bad, entry("bob", "bobGH", "200")}},
+			BaseDN: "ou=People", ObjectClass: "githubAccount", Refresh: time.Minute}
+		d.Read(context.Background())
+		if _, found, _ := d.ByGitHubID(200); !found {
+			t.Error("bob, in no clash, not matched")
+		}
+		return d
+	}
+	if a, found, _ := read(entry("alice", "bad_login", "100")).ByGitHubID(100); found { // invalid login, same id and uid
 		t.Errorf("alice still matched: %+v", a)
 	}
-	if _, found, _ := d.ByGitHubID(200); !found {
-		t.Error("bob, in no clash, not matched")
+	// Any one value of an attribute, however written, makes the clash:
+	// padded, or the second of two (fifteenth review, tests).
+	for _, tc := range []struct {
+		attr string
+		vals []string
+	}{
+		{"githubid", []string{" 100"}}, {"githubid", []string{"300", "100"}},
+		{"githublogin", []string{" aliceGH"}}, {"githublogin", []string{"daveGH", "aliceGH"}}, {"githublogin", []string{"ALICEGH"}},
+		{"uid", []string{"alice "}}, {"uid", []string{"dave", "alice"}},
+	} {
+		if a, found, _ := read(Entry{DN: "uid=x", Attrs: map[string][]string{tc.attr: tc.vals}}).ByGitHubID(100); found {
+			t.Errorf("%s %q: alice still matched: %+v", tc.attr, tc.vals, a)
+		}
 	}
 }
 
@@ -487,7 +509,10 @@ func TestDirectoryRun(t *testing.T) {
 	for d.Ready() != nil && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if err := d.Ready(); err != nil {
-		t.Errorf("not read at once: %v", err)
+	if err := d.Ready(); err != nil || f.searches.Load() == 0 {
+		t.Errorf("not read at once: %v, %d searches", err, f.searches.Load())
+	}
+	if a, found, _ := d.ByGitHubID(294043); !found || a.GerritUser != "austin" {
+		t.Errorf("austin %+v %v", a, found)
 	}
 }
