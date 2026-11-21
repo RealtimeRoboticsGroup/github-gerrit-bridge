@@ -386,7 +386,7 @@ func TestForeignIsByPublishableWhereGitHubOwns(t *testing.T) {
 		// it, so the PR still gets its description and Change-Id.
 		{true, nobody, 5, "feature", false, "r1"},
 		{true, nobody, 7, "feature", false, "r1"},
-		{false, nil, 9, "feature", true, "r1"}, // Gerrit-owned: unchanged
+		{false, nil, 9, "feature", true, "r1"},   // Gerrit-owned: unchanged
 		{true, nobody, 7, "feature", true, "r0"}, // an older patch set's, not this one
 	} {
 		s := newSites(t)
