@@ -216,3 +216,40 @@ func TestGerritOwnedMainsRecordOfAFoundHeadStaysForeign(t *testing.T) {
 		t.Error("main's record of a found head lets a stranger's patch set become the PR's")
 	}
 }
+
+// Sixteenth review: a bridge-owned import (alice's fork PR, alice
+// unlinked) on top of another bridge-owned import (a stranger's PR the
+// bridge uploaded) is foreign: the owner's pass below (c1a023d) is a
+// person's, never the bridge's, or the stranger's code is pushed to
+// alice's branch. The branch's rule (main read nothing below), which a
+// fix broke.
+func TestGerritOwnedBridgeImportBelowABridgeImport(t *testing.T) {
+	ctx := context.Background()
+	s := newSites(t)
+	base := s.commit("", "a", "a\n", "Base")
+	s.push("gerrit.git", base, "refs/heads/main")
+	s.push("github.git", base, "refs/heads/main")
+	c, _ := s.code(ctx)
+	c.BridgeAccount = 1
+	c.Trusted = func(_ context.Context, a int) (bool, bool) { return false, true }
+	bridge := gerrit.AccountInfo{AccountID: 1}
+	low := s.commit(base, "low", "stranger's\n", "C1\n\nChange-Id: "+cid(1)+"\n")
+	ci := s.change(1, cid(1), low, "C1\n\nChange-Id: "+cid(1)+"\n", "NEW")
+	r := ci.Revisions[low]
+	r.Uploader = bridge
+	ci.Revisions[low], ci.Owner = r, bridge
+	top := s.commit(low, "top", "t\n", "C2\n\nChange-Id: "+cid(2)+"\n")
+	ci = s.change(2, cid(2), top, "C2\n\nChange-Id: "+cid(2)+"\n", "NEW")
+	r = ci.Revisions[top]
+	r.Uploader = bridge
+	ci.Revisions[top], ci.Owner = r, bridge
+	s.save(ctx, c.Store, 2, &state.Change{State: state.ChangeState{Change: 2, ChangeID: cid(2), PR: 20, Branch: "main", Origin: "github",
+		HeadBranch: "alice/r:feature", Lifecycle: "NEW"}})
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Foreign[2] {
+		t.Error("a stranger's bridge import below a bridge-owned PR: not foreign (pushed to alice's branch)")
+	}
+}

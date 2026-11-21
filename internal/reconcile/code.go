@@ -1173,7 +1173,14 @@ func mayReach(ctx context.Context, r belowReader, trusted func(context.Context, 
 	if st != nil {
 		into = st.State.HeadBranch
 	}
-	ok, k, why, err := parentsTrusted(ctx, r, branch, into, revs[ps].Commit.ParentSHAs(), already, trusted, owner)
+	// The owner's pass below is a person's: never the bridge's, whose
+	// own changes below (other strangers' imports) are not this PR's
+	// author's (sixteenth review).
+	below := owner
+	if below == bridge {
+		below = 0
+	}
+	ok, k, why, err := parentsTrusted(ctx, r, branch, into, revs[ps].Commit.ParentSHAs(), already, trusted, below)
 	return ok && err == nil, known && k, why, err
 }
 
