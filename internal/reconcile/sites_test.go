@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -111,7 +112,12 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("PUT /a/changes/{n}/message", s.setMessage)
 	mux.HandleFunc("GET /a/projects/{p}/branches/{b}", s.branch)
 	mux.HandleFunc("GET /a/projects/{p}/commits/{sha}/in", func(w http.ResponseWriter, r *http.Request) {
-		// The branches of gerrit.git that contain it.
+		// The branches of gerrit.git that contain it; 404 for a commit it
+		// does not have, as Gerrit answers.
+		if exec.Command("git", "-C", filepath.Join(s.dir, "gerrit.git"), "cat-file", "-e", r.PathValue("sha")+"^{commit}").Run() != nil {
+			http.NotFound(w, r)
+			return
+		}
 		out, _ := exec.Command("git", "-C", filepath.Join(s.dir, "gerrit.git"), "branch", "--format=%(refname:short)", "--contains", r.PathValue("sha")).Output()
 		in := struct {
 			Branches []string `json:"branches"`
@@ -376,7 +382,27 @@ func (s *sites) getChange(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.json(w, ci, true)
+	s.json(w, asAsked(ci, r.URL.Query()["o"]), true)
+}
+
+// asAsked is ci as Gerrit answers for options o: every revision only with
+// ALL_REVISIONS (else the current one), and their commits only with
+// ALL_COMMITS (CURRENT_COMMIT: the current one's): thirteenth review,
+// the fake answered everything, so a missing option passed.
+func asAsked(ci *gerrit.ChangeInfo, o []string) *gerrit.ChangeInfo {
+	all, allCommits, curCommit := slices.Contains(o, "ALL_REVISIONS"), slices.Contains(o, "ALL_COMMITS"), slices.Contains(o, "CURRENT_COMMIT")
+	cp := *ci
+	cp.Revisions = map[string]gerrit.RevisionInfo{}
+	for sha, rv := range ci.Revisions {
+		if !all && sha != ci.CurrentRevision {
+			continue
+		}
+		if !allCommits && !(curCommit && sha == ci.CurrentRevision) {
+			rv.Commit = gerrit.CommitInfo{}
+		}
+		cp.Revisions[sha] = rv
+	}
+	return &cp
 }
 
 // queryChanges answers "... change:<Change-Id>" and "... status:open".
@@ -385,12 +411,16 @@ func (s *sites) queryChanges(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	q := r.URL.Query().Get("q")
 	out := []*gerrit.ChangeInfo{}
+	if strings.Contains(q, "project:") && !strings.Contains(q, `project:"p"`) && !strings.Contains(q, "project:p ") {
+		s.json(w, out, true)
+		return
+	}
 	for _, n := range sortedKeys(s.changes) {
 		ci := s.changes[n]
 		_, hasCommit := ci.Revisions[strings.TrimPrefix(q[strings.LastIndex(q, " ")+1:], "commit:")]
 		if strings.Contains(q, "change:"+ci.ChangeID) || (strings.Contains(q, "status:open") && ci.Status == "NEW") ||
 			(strings.Contains(q, "commit:") && hasCommit) {
-			out = append(out, ci)
+			out = append(out, asAsked(ci, r.URL.Query()["o"]))
 		}
 	}
 	s.json(w, out, true)

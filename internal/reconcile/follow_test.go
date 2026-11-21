@@ -1152,3 +1152,19 @@ func TestObserveWithholdsUnknownBelowQuietly(t *testing.T) {
 		t.Errorf("withheld %v, notices %q", snap.Withheld, s.reviewMsgs[2])
 	}
 }
+
+// oddReader answers a commit query with a change that does not have the
+// commit (Gerrit does not, but the walk must not take it as vouched for).
+type oddReader struct{ noneBelow }
+
+func (oddReader) inBranch(context.Context, string, string) (bool, error) { return false, nil }
+func (oddReader) changesOf(context.Context, string) ([]gerrit.ChangeInfo, error) {
+	return []gerrit.ChangeInfo{{Number: 1, Status: "NEW", CurrentRevision: "other"}}, nil
+}
+
+func TestParentsTrustedRefusesAnOddAnswer(t *testing.T) {
+	trusted := func(context.Context, int) (bool, bool) { return true, true }
+	if ok, _, _, _ := parentsTrusted(context.Background(), oddReader{}, "main", []string{"c0"}, nil, trusted); ok {
+		t.Error("trusted a commit its change does not have")
+	}
+}
