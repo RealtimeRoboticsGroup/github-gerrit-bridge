@@ -1199,6 +1199,48 @@ never vote. A Run-As refusal falls back to the bridge account, minus any
 vote: the bridge never votes as itself. Verified live: a `retest` posted on
 GitHub by a trusted user started gerrit-buildkite.
 
+**An LDAP directory of GitHub accounts (`identity.ldap`, built
+2026-11-20).** Where Gerrit signs people in with LDAP (`auth.type =
+LDAP`), usernames are LDAP uids, not GitHub logins, and matching them is
+wrong both ways: GitHub's `AustinSchuh` is not Gerrit's `austin`, and
+whoever owns the GitHub login `james` is not our james (an older GitHub
+account would even pass the pin's age check). Such a deployment turns
+`match_usernames` off and lists GitHub accounts in LDAP instead: entries
+of an auxiliary class (`githubAccount`, with `githubLogin` and the
+numeric `githubId`) under a base DN, whose `uid` is the Gerrit username.
+Only the directory's administrators write them, so an entry is as
+trusted as an `identity.github_to_gerrit` override:
+- The bridge reads them over LDAPS, anonymously, verifying the server
+  against a CA file (never without verifying), the whole set every
+  `refresh_interval` (5 minutes), and looks people up in that read: by
+  the numeric id GitHub says the actor with, never the login, which a
+  rename frees (a renamed user stays theirs; the new holder of the old
+  login is nobody). An actor said without an id is looked up afresh.
+- It is asked first. Who it does not list falls to the overrides and, if
+  on, username matching, but never to a Gerrit user it gives another
+  GitHub account. An override saying a listed GitHub account is someone
+  else's matches neither.
+- What an entry names is checked as an override's is: an active account,
+  a username Gerrit reads as itself, not the bridge's own; and as for an
+  override, `never_groups` do not apply: the entry names the account
+  outright, so an administrator listed in LDAP is acted as. The bridge's
+  own GitHub login maps to nobody, whatever any entry says.
+- Fail closed: an entry that is not valid (a value missing or given twice,
+  a login GitHub would not allow, which slapd does not check, an id that
+  is not a positive number) is left out; every entry in a clash (one id,
+  login or uid in several entries, whatever slapd's unique overlay says)
+  is left out with all the others in it; and while the directory cannot
+  be read (a failed read, a referral or size limit, which leave the
+  answer partial, or no read for two intervals), the bridge matches
+  nobody at all, overrides included, since it cannot tell whether one
+  says otherwise. Each is logged. Removing someone from LDAP stops them
+  being acted as within one interval (the refresh is the owner's choice;
+  every read replaces the last whole).
+- Pins (§7.1) follow the directory, which wins: a Gerrit user is pinned
+  to the GitHub account it gives them, replacing an older pin (an
+  administrator moved them to a new account), and another Gerrit user's
+  pin to that account is removed; each change is logged and committed.
+
 **v1: the bot does everything** (except for people who link their GitHub
 account, §7.2).
 - On GitHub, a GitHub App posts all mirrored content, with an attribution
@@ -1503,7 +1545,10 @@ defenses, by threat:
   account the bridge had not seen yet (`admin`, an LDAP account, someone
   who renamed). A renamed owner keeps their account
   through an `identity.github_to_gerrit` override, since their id is
-  unchanged. (Gerrit's github plugin matches logins at sign-in, so the
+  unchanged. Where Gerrit's accounts are LDAP's, `identity.ldap` (§7)
+  closes this gap: the directory names each account's GitHub id, so the
+  pin is the directory's from the start, not first sight's, and the
+  directory wins over a pin that disagrees. (Gerrit's github plugin matches logins at sign-in, so the
   same takeover may work there; the pin only protects the bridge.)
 - **Branches Gerrit owns.** The importer refuses a PR whose head is the
   default branch or any branch Gerrit has, and the applier refuses to push
@@ -1785,8 +1830,8 @@ notes; nothing on GitHub advertises the link.
   HttpOnly cookie on `/github/link`, and PKCE. The callback, once per
   state and within 10 minutes, needs the cookie to match, trades the code
   for a token, asks GitHub whom it acts as (`GET /user`), and keeps it for
-  the Gerrit account the identity mapping (§7, pins included) gives that
-  GitHub account then. Nothing is kept for someone without one. Whoever
+  the Gerrit account the identity mapping (§7, pins included; the LDAP
+  directory where there is one) gives that GitHub account then. Nothing is kept for someone without one. Whoever
   links, the token is their own, and only their own Gerrit account's words
   are posted with it: someone tricked into following another's link links
   their own account, and nobody can link anyone else's. A link being made
@@ -1805,7 +1850,10 @@ notes; nothing on GitHub advertises the link.
   acts as another account, or when its refresh token expires. A link is
   used only while the identity mapping still maps its GitHub account to
   its Gerrit account, so an account excluded, deactivated or re-pinned
-  since stops posting as them. People unlink by revoking the App in
+  since stops posting as them; with `identity.ldap`, while the directory
+  still gives that GitHub account that user (removed, or given to
+  someone else, it stops within one refresh, and while the directory
+  cannot be read, no link is used). People unlink by revoking the App in
   GitHub's settings.
 - **Posting.** Each sync asks once per Gerrit author. Their content goes
   with their token. If GitHub refuses it (401, 403, 404: the App not

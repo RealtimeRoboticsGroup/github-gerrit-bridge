@@ -81,6 +81,19 @@ identity:
   # Exceptions: GitHub login -> Gerrit username.
   github_to_gerrit:
     octocat: ocat
+  # Where Gerrit's accounts are LDAP's (auth.type = LDAP), its usernames
+  # are not GitHub logins: turn match_usernames off and say whose GitHub
+  # account is whose in LDAP instead (design §7). Entries of object_class
+  # under base_dn give their uid (the Gerrit username) a githubLogin and
+  # githubId; only the directory's admins should write them. Read
+  # anonymously over LDAPS, verified against ca_file, every
+  # refresh_interval; unreadable, it matches nobody.
+  # ldap:
+  #   url: ldaps://ldap.spacecookies.dev:636
+  #   ca_file: /etc/github-bridge/ldap-ca.pem
+  #   base_dn: ou=People,dc=spacecookies,dc=dev
+  #   object_class: githubAccount   # the default
+  #   refresh_interval: 5m          # the default
 
 ci:
   # Uploads by members of this group are built automatically by
