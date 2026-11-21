@@ -538,3 +538,56 @@ func TestDirectoryRun(t *testing.T) {
 		t.Errorf("austin %+v %v", a, found)
 	}
 }
+
+// Seventeenth review (mutation testing): BER's bounds, each of which keeps a
+// malformed reply from panicking the bridge or allocating gigabytes.
+func TestBERBounds(t *testing.T) {
+	bad := map[string][]byte{
+		"one byte":              {0x04},
+		"multi-byte tag":        {0x1f, 0x01, 0x00},
+		"indefinite length":     {0x04, 0x80, 0x00, 0x00},
+		"five length bytes":     {0x04, 0x85, 0, 0, 0, 0, 1, 0},
+		"eight length bytes":    {0x04, 0x88, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0},
+		"truncated length":      {0x04, 0x82, 0x01},
+		"over maxMessage":       {0x04, 0x84, 0x7f, 0xff, 0xff, 0xff, 0},
+		"contents past the end": {0x04, 0x05, 'a', 'b'},
+	}
+	for name, b := range bad {
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					t.Errorf("%s: next panicked: %v", name, p)
+				}
+			}()
+			if _, _, err := next(b); err == nil {
+				t.Errorf("%s: next(% x) is no error", name, b)
+			}
+		}()
+	}
+	for _, b := range [][]byte{{}, {0x80}, {1, 2, 3, 4, 5, 6, 7, 8, 9}} {
+		if _, err := intValue(element{tagInteger, b}); err == nil {
+			t.Errorf("intValue(% x) is no error", b)
+		}
+	}
+	// A reply's own header, read off the wire: as bounded.
+	for _, b := range [][]byte{{0x30, 0x85, 0, 0, 0, 0, 1}, {0x30, 0x80}, {0x04, 0x01, 0}} {
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					t.Errorf("readMessage(% x) panicked: %v", b, p)
+				}
+			}()
+			if _, err := readMessage(bytes.NewReader(b)); err == nil {
+				t.Errorf("readMessage(% x) is no error", b)
+			}
+		}()
+	}
+	// Too long is refused before it is read, not allocated and then found
+	// short.
+	if _, err := readMessage(bytes.NewReader([]byte{0x30, 0x84, 0x7f, 0xff, 0xff, 0xff})); err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Errorf("a 2 GB reply: %v", err)
+	}
+	if maxSearchBytes != 64<<20 || maxMessage != 1<<20 {
+		t.Errorf("maxSearchBytes %d, maxMessage %d", maxSearchBytes, maxMessage)
+	}
+}

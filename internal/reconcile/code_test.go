@@ -4912,3 +4912,26 @@ func TestProtectedBranchWithholdsOnlyItsChange(t *testing.T) {
 		t.Error("pushed to feature, which GitHub protects")
 	}
 }
+
+// Seventeenth review (mutation testing): a push to a branch whose protection
+// GitHub will not say is refused (code.go applyOne: the error was ignored
+// and the push made, with no test failing).
+func TestApplyRefusesBranchesWhoseProtectionIsUnknown(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	c.GitHubOwned = true
+	s.unreadable = map[string]bool{"production": true}
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	snap := &Snapshot{Branch: "main", DefaultBranch: "main"}
+	// The refusal is GitHub's unanswered question, not a later step's
+	// failure (this world's pushes fail further on: TestApplyRefuses-
+	// BranchesGitHubProtects' "pushed to" check cannot fail).
+	err := c.applyOne(ctx, snap, Action{Kind: PushBranches, Refs: map[string]string{"production": m0}, Leases: map[string]string{"production": ""}})
+	if ae := (*github.APIError)(nil); !errors.As(err, &ae) || ae.Status != 403 {
+		t.Errorf("err = %v, want GitHub's 403 on the branch's protection", err)
+	}
+	if out, _ := exec.Command("git", "-C", filepath.Join(s.dir, "github.git"), "rev-parse", "--verify", "--quiet", "refs/heads/production").Output(); len(out) != 0 {
+		t.Error("pushed to production")
+	}
+}

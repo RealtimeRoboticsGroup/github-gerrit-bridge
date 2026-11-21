@@ -49,10 +49,12 @@ type sites struct {
 	// protected are the branches GitHub protects ("classic"), and
 	// ruled those a ruleset's rules apply to.
 	protected, ruled map[string]bool
-	pulls            map[int]*github.PullRequest
-	events           map[int][]github.IssueEvent
-	comments         map[int][]string
-	statuses         map[string][]github.Status // sha -> statuses
+	// unreadable are the branches whose protection GitHub will not say.
+	unreadable map[string]bool
+	pulls      map[int]*github.PullRequest
+	events     map[int][]github.IssueEvent
+	comments   map[int][]string
+	statuses   map[string][]github.Status // sha -> statuses
 	// pushLog is GitHub's activity log per "owner/repo refs/heads/x",
 	// oldest first.
 	pushLog map[string][]pushEntry
@@ -133,6 +135,10 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("GET /repos/o/r/branches/{b...}", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if s.unreadable[r.PathValue("b")] {
+			http.Error(w, `{"message":"Resource not accessible by integration"}`, http.StatusForbidden)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{"name": r.PathValue("b"), "protected": s.protected[r.PathValue("b")]})
 	})
 	mux.HandleFunc("GET /repos/o/r/rules/branches/{b...}", func(w http.ResponseWriter, r *http.Request) {

@@ -1531,3 +1531,22 @@ func TestPRFromABranchGitHubProtectsIsNotImported(t *testing.T) {
 		t.Errorf("uploads %v, want only feature's", up.uploads)
 	}
 }
+
+// Seventeenth review (mutation testing): a branch whose protection GitHub will not
+// say is no branch to import from, as if protected (importer.go: the
+// error was ignored and the PR imported, with no test failing).
+func TestPRFromABranchWhoseProtectionIsUnknownIsNotImported(t *testing.T) {
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	im.GitHubOwned = true
+	im.Publishable = func(context.Context, int) (bool, bool) { return true, true }
+	s.unreadable = map[string]bool{"production": true}
+	h := s.commit(m1, "production.txt", "v2\n", "Deploy production")
+	s.push("github.git", h, "refs/heads/production")
+	s.pr(77, "production", h, "main", "austin")
+	s.pushed("o/r", "refs/heads/production", h, "austin")
+	im.Import(ctx, "main")
+	if len(up.uploads) != 0 {
+		t.Errorf("uploads %v, want none", up.uploads)
+	}
+}

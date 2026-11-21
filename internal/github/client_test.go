@@ -991,3 +991,70 @@ func TestGetPullCommits(t *testing.T) {
 		t.Errorf("%+v %v", pr, err)
 	}
 }
+
+// Seventeenth review (mutation testing): BranchProtected had no test, so the
+// importer's and applyOne's refusals rested on nothing.
+func TestBranchProtected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/branches/classic":
+			fmt.Fprint(w, `{"protected":true}`)
+		case "/repos/o/r/branches/ruled", "/repos/o/r/branches/plain":
+			fmt.Fprint(w, `{"protected":false}`)
+		case "/repos/o/r/rules/branches/ruled", "/repos/o/r/rules/branches/new":
+			fmt.Fprint(w, `[{"type":"pull_request"}]`)
+		case "/repos/o/r/rules/branches/plain", "/repos/o/r/rules/branches/classic":
+			fmt.Fprint(w, `[]`)
+		case "/repos/o/r/branches/denied", "/repos/o/r/rules/branches/rulesdenied":
+			http.Error(w, `{"message":"no"}`, http.StatusForbidden)
+		case "/repos/o/r/branches/rulesdenied":
+			fmt.Fprint(w, `{"protected":false}`)
+		default:
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	for _, tc := range []struct {
+		branch      string
+		want, isErr bool
+	}{
+		{"classic", true, false},     // classic protection
+		{"ruled", true, false},       // a ruleset's rule
+		{"new", true, false},         // not yet a branch, but a ruleset covers it
+		{"plain", false, false},      // neither
+		{"gone", false, false},       // no branch, no rules (404s)
+		{"denied", false, true},      // cannot read the branch
+		{"rulesdenied", false, true}, // cannot read its rules
+	} {
+		got, err := c.BranchProtected(context.Background(), tc.branch)
+		if got != tc.want || (err != nil) != tc.isErr {
+			t.Errorf("BranchProtected(%s) = %v, %v; want %v, error %v", tc.branch, got, err, tc.want, tc.isErr)
+		}
+	}
+}
+
+// Seventeenth review: a failed read of a thread's comments past its first 100 is
+// an error, not an answer that leaves their edits out.
+func TestEditsErrsWhenTheRestOfAThreadCannotBeRead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/graphql" {
+			fmt.Fprint(w, "[]")
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.Contains(string(b), "node(id:"):
+			http.Error(w, `{"message":"no"}`, http.StatusForbidden)
+		case strings.Contains(string(b), "reviewThreads("):
+			fmt.Fprint(w, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"T1","comments":{"pageInfo":{"hasNextPage":true,"endCursor":"c100"},"nodes":[]}}]}}}}}`)
+		default:
+			fmt.Fprint(w, `{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}`)
+		}
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	if edits, err := c.Edits(context.Background(), 1); err == nil {
+		t.Errorf("Edits = %v, nil; want an error", edits)
+	}
+}

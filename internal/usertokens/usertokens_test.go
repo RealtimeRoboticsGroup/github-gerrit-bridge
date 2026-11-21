@@ -652,3 +652,63 @@ func TestLinkUnderAPath(t *testing.T) {
 		t.Errorf("forbidden page: %d %s", w.Code, w.Body)
 	}
 }
+
+// Seventeenth review (mutation testing): every way a link's callback can fail
+// links nobody, and says which.
+func TestLinkFailuresLinkNobody(t *testing.T) {
+	f := newFakeGitHub(t)
+	f.codes["c1"] = "alice"
+	account, accountErr := 1000, error(nil)
+	path := filepath.Join(t.TempDir(), "tokens")
+	s := &Store{Path: path, Key: testKey()}
+	l := &Linker{App: f.app(), Tokens: &Tokens{Store: s, App: f.app()}, PublicURL: "https://bridge.example",
+		GerritUser:    func(context.Context, github.User) (string, bool, error) { return "alice", true, nil },
+		GerritAccount: func(context.Context, string) (int, error) { return account, accountErr }}
+	mux := http.NewServeMux()
+	l.Register(mux)
+	callback := func(query string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/github/link", nil)
+		req.Header.Set("Origin", "https://bridge.example")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		cs := w.Result().Cookies()
+		if len(cs) != 1 {
+			t.Fatalf("start: %d %v", w.Code, cs)
+		}
+		req = httptest.NewRequest("GET", "/github/link/callback?state="+url.QueryEscape(cs[0].Value)+"&"+query, nil)
+		req.AddCookie(cs[0])
+		w = httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+	for _, tc := range []struct {
+		name, query string
+		setup       func()
+		code        int
+		says        string
+	}{
+		{"declined on GitHub", "error=access_denied", nil, http.StatusOK, "did not authorize"},
+		{"no code", "", nil, http.StatusBadRequest, "sent no code"},
+		{"a code GitHub refuses", "code=nope", nil, http.StatusBadGateway, "would not finish the link"},
+		{"no Gerrit account id", "code=c1", func() { account, accountErr = 0, nil }, http.StatusBadGateway, "Gerrit would not say"},
+		{"Gerrit errs", "code=c1", func() { account, accountErr = 1000, errors.New("gerrit is down") }, http.StatusBadGateway, "Gerrit would not say"},
+		{"the store cannot save", "code=c1", func() {
+			account, accountErr = 1000, nil
+			s.Path = filepath.Join(t.TempDir(), "missing", "dir", "tokens")
+		}, http.StatusInternalServerError, "could not save"},
+	} {
+		if tc.setup != nil {
+			tc.setup()
+		}
+		w := callback(tc.query)
+		if w.Code != tc.code || !strings.Contains(w.Body.String(), tc.says) || strings.Contains(w.Body.String(), "Linked:") {
+			t.Errorf("%s: %d %s", tc.name, w.Code, w.Body)
+		}
+		if _, ok := s.Get(42); ok && tc.code != http.StatusInternalServerError {
+			t.Errorf("%s: linked", tc.name)
+		}
+	}
+	if csp := callback("error=access_denied").Header().Get("Content-Security-Policy"); !strings.Contains(csp, "frame-ancestors 'none'") {
+		t.Errorf("CSP %q", csp)
+	}
+}
