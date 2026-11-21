@@ -93,7 +93,10 @@ nobody. Before the bridge reads it:
    messages are "Pull request title and description"; rebase merging off.
    Branch protection or rulesets as the team wants (reviews, checks), but
    the bot must still be able to push the bridge's `gerrit/*` and
-   `gerrit-base/*` branches.
+   `gerrit-base/*` branches. A PR from any other branch GitHub protects
+   (classic protection, or a ruleset's rule) is not imported, and the
+   bridge never pushes there: Gerrit patch sets would reach it as the
+   bot, past the rules.
 2. **The bot's token**: Contents read & write (its branches), Pull
    requests and Issues read & write, Checks read (the Checks tab),
    Administration read (else the merge-settings check at startup only

@@ -1487,3 +1487,30 @@ func TestBelowReadsAreByFork(t *testing.T) {
 		t.Error("mallory's PR above alice's import not foreign")
 	}
 }
+
+// Where GitHub owns the branches, a PR from a branch GitHub protects that
+// Gerrit does not follow (production) is not imported: Gerrit patch sets
+// of it would be pushed there by the bot, past its rules (sixteenth
+// review). One from a branch a ruleset covers neither; an unprotected
+// one is.
+func TestPRFromABranchGitHubProtectsIsNotImported(t *testing.T) {
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	im.GitHubOwned = true
+	im.Publishable = func(context.Context, int) (bool, bool) { return true, true }
+	s.protected = map[string]bool{"production": true}
+	s.ruled = map[string]bool{"release-1": true}
+	for i, b := range []string{"production", "release-1", "feature"} {
+		h := s.commit(m1, b+".txt", "v2\n", "Deploy "+b)
+		s.push("github.git", h, "refs/heads/"+b)
+		s.pr(77+i, b, h, "main", "austin")
+		s.pushed("o/r", "refs/heads/"+b, h, "austin")
+	}
+	if err := im.Import(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	// Only feature's.
+	if len(up.uploads) != 1 || !strings.Contains(s.gitOut("m.git", "show", "--name-only", "--format=", strings.Fields(up.uploads[0])[1]), "feature.txt") {
+		t.Errorf("uploads %v, want only feature's", up.uploads)
+	}
+}

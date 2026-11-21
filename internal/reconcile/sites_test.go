@@ -46,10 +46,13 @@ type sites struct {
 	accounts map[string]gerrit.AccountInfo
 	together map[int][]int // change -> submitted together
 	// GitHub
-	pulls    map[int]*github.PullRequest
-	events   map[int][]github.IssueEvent
-	comments map[int][]string
-	statuses map[string][]github.Status // sha -> statuses
+	// protected are the branches GitHub protects ("classic"), and
+	// ruled those a ruleset's rules apply to.
+	protected, ruled map[string]bool
+	pulls            map[int]*github.PullRequest
+	events           map[int][]github.IssueEvent
+	comments         map[int][]string
+	statuses         map[string][]github.Status // sha -> statuses
 	// pushLog is GitHub's activity log per "owner/repo refs/heads/x",
 	// oldest first.
 	pushLog map[string][]pushEntry
@@ -127,6 +130,20 @@ func newSites(t *testing.T) *sites {
 	mux.HandleFunc("POST /graphql", s.graphql)
 	mux.HandleFunc("GET /a/changes/{n}/submitted_together", s.submittedTogether)
 	mux.HandleFunc("GET /a/accounts/{user}", s.account)
+	mux.HandleFunc("GET /repos/o/r/branches/{b...}", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"name": r.PathValue("b"), "protected": s.protected[r.PathValue("b")]})
+	})
+	mux.HandleFunc("GET /repos/o/r/rules/branches/{b...}", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		rules := []map[string]string{}
+		if s.ruled[r.PathValue("b")] {
+			rules = append(rules, map[string]string{"type": "pull_request"})
+		}
+		json.NewEncoder(w).Encode(rules)
+	})
 	mux.HandleFunc("GET /repos/o/r/pulls", s.listPulls)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/activity", s.activityLog)
 	mux.HandleFunc("GET /repos/o/r/pulls/{n}", s.getPull)

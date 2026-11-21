@@ -2269,6 +2269,15 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 				} else if owned {
 					return fmt.Errorf("refusing to push to %s, which Gerrit owns", name)
 				}
+				if c.GitHubOwned && !bridgeBranch(name) {
+					// Nor one GitHub protects (the importer's rule; a
+					// branch protected since).
+					if protected, err := c.GitHub.BranchProtected(ctx, name); err != nil {
+						return err
+					} else if protected {
+						return fmt.Errorf("refusing to push to %s, which GitHub protects", name)
+					}
+				}
 			}
 		}
 		urls := []string{c.GitHubURL}

@@ -3192,6 +3192,35 @@ func TestApplyRefusesBranchesGerritHas(t *testing.T) {
 	}
 }
 
+// Where GitHub owns the branches, the bridge never pushes to one GitHub
+// protects (a ruleset's, or classic protection) other than its own
+// (sixteenth review); an unprotected PR branch is pushed.
+func TestApplyRefusesBranchesGitHubProtects(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	c.GitHubOwned = true
+	s.protected = map[string]bool{"production": true, "gerrit/I1": true}
+	s.ruled = map[string]bool{"release-1": true}
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	snap := &Snapshot{Branch: "main", DefaultBranch: "main"}
+	for _, b := range []string{"production", "release-1"} {
+		err := c.applyOne(ctx, snap, Action{Kind: PushBranches, Refs: map[string]string{b: m0}, Leases: map[string]string{b: ""}})
+		if err == nil || !strings.Contains(err.Error(), "which GitHub protects") {
+			t.Errorf("%s: err = %v", b, err)
+		}
+		if out, _ := exec.Command("git", "-C", filepath.Join(s.dir, "github.git"), "rev-parse", "--verify", "--quiet", "refs/heads/"+b).Output(); len(out) != 0 {
+			t.Errorf("pushed to %s", b)
+		}
+	}
+	for _, b := range []string{"feature", "gerrit/I1"} {
+		err := c.applyOne(ctx, snap, Action{Kind: PushBranches, Refs: map[string]string{b: m0}, Leases: map[string]string{b: ""}})
+		if err != nil && strings.Contains(err.Error(), "protects") {
+			t.Errorf("%s: %v", b, err)
+		}
+	}
+}
+
 // Who pushed comes from GitHub's activity log for the PR's branch, so a
 // restart (no webhook remembered) loses nothing, and the log wins over a
 // webhook remembered for the same commit elsewhere.

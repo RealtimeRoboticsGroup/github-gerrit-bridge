@@ -286,6 +286,21 @@ func (im *Importer) Import(ctx context.Context, branch string) error {
 				im.Logger.Info("not importing a PR from a branch Gerrit owns", "pr", pr.Number, "branch", key)
 				continue
 			}
+			if im.GitHubOwned {
+				// Where GitHub owns the branches, Gerrit has only those it
+				// follows: a protected one it does not (production, a
+				// release) would get Gerrit's patch sets pushed by the
+				// bot, past rules its pushers cannot pass (sixteenth
+				// review).
+				protected, err := im.GitHub.BranchProtected(ctx, key)
+				if err != nil {
+					return err
+				}
+				if protected {
+					im.Logger.Info("not importing a PR from a branch GitHub protects", "pr", pr.Number, "branch", key)
+					continue
+				}
+			}
 		}
 		if other := byHead[key]; other != nil && !im.rather(pr, other, bases) {
 			continue

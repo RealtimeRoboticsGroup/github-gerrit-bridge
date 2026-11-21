@@ -3,6 +3,8 @@ package github
 import (
 	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -320,4 +322,28 @@ func (c *Client) Pushes(ctx context.Context, repo, ref string) ([]Push, error) {
 		next = nextLink(resp.Header.Get("Link"))
 	}
 	return pushes, nil
+}
+
+// BranchProtected reports whether GitHub protects branch: classic branch
+// protection, or any rule of a ruleset that applies to it. A branch that
+// does not exist yet may still be covered by a ruleset.
+func (c *Client) BranchProtected(ctx context.Context, branch string) (bool, error) {
+	var b struct {
+		Protected bool `json:"protected"`
+	}
+	_, err := c.Do(ctx, http.MethodGet, c.RepoPath("branches/"+escapePath(branch)), nil, &b)
+	var ae *APIError
+	switch {
+	case errors.As(err, &ae) && ae.Status == http.StatusNotFound:
+	case err != nil:
+		return false, err
+	case b.Protected:
+		return true, nil
+	}
+	var rules []json.RawMessage
+	_, err = c.Do(ctx, http.MethodGet, c.RepoPath("rules/branches/"+escapePath(branch)), nil, &rules)
+	if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+		return false, nil
+	}
+	return len(rules) > 0, err
 }
