@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/ldap"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/usertokens"
 	"os"
 	"path/filepath"
@@ -322,7 +324,11 @@ func TestNewUsers(t *testing.T) {
 		{"no CA file", config.Identity{LDAP: &config.LDAP{URL: "ldaps://ldap.spacecookies.dev", CAFile: ca + ".missing", BaseDN: "ou=People"}}, false, true},
 	} {
 		cfg := &config.Config{Identity: tc.id}
-		users, dir, err := newUsers(cfg, rest, nil, nil, "github-bridge", "bridge-bot", false, slog.Default())
+		if !tc.dir {
+			cfg.Identity.NeverGroups = []string{"Administrators"}
+		}
+		pins, gh := &nopPins{}, nopGitHub{}
+		users, dir, err := newUsers(cfg, rest, pins, gh, "github-bridge", "bridge-bot", true, slog.Default())
 		if (err != nil) != tc.err {
 			t.Errorf("%s: %v", tc.name, err)
 			continue
@@ -339,6 +345,11 @@ func TestNewUsers(t *testing.T) {
 		}
 		if len(users.Never) != 1 || users.Never[0] != "github-bridge" || len(users.NeverLogins) != 1 || users.NeverLogins[0] != "bridge-bot" {
 			t.Errorf("%s: never %v %v", tc.name, users.Never, users.NeverLogins)
+		}
+		// Pins, GitHub's ids, the dry run and never_groups reach it too.
+		if users.Pins != reconcile.Pins(pins) || users.GitHub != reconcile.GitHubUsers(gh) || !users.DryRun ||
+			strings.Join(users.NeverGroups, ",") != strings.Join(cfg.Identity.NeverGroups, ",") {
+			t.Errorf("%s: users %+v", tc.name, users)
 		}
 	}
 }
@@ -397,4 +408,15 @@ func TestCheckAuthType(t *testing.T) {
 			t.Errorf("%s, match %v: err %v, asked %v", tc.auth, tc.match, err, asked)
 		}
 	}
+}
+
+type nopPins struct{}
+
+func (*nopPins) LoadIdentities(context.Context) (*state.Identities, error)       { return nil, nil }
+func (*nopPins) SaveIdentities(context.Context, *state.Identities, string) error { return nil }
+
+type nopGitHub struct{}
+
+func (nopGitHub) UserID(context.Context, string) (int64, time.Time, error) {
+	return 0, time.Time{}, nil
 }

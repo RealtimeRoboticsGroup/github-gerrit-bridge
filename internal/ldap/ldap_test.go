@@ -465,3 +465,20 @@ func TestInvalidEntryStillClashes(t *testing.T) {
 		t.Error("bob, in no clash, not matched")
 	}
 }
+
+// Run reads at once, not a whole interval later, and again every
+// interval.
+func TestDirectoryRun(t *testing.T) {
+	f := &fakeSearcher{entries: []Entry{entry("austin", "AustinSchuh", "294043")}}
+	d := &Directory{Searcher: f, BaseDN: "ou=People", ObjectClass: "githubAccount", Refresh: time.Hour}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go d.Run(ctx)
+	deadline := time.Now().Add(5 * time.Second)
+	for d.Ready() != nil && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := d.Ready(); err != nil {
+		t.Errorf("not read at once: %v", err)
+	}
+}
