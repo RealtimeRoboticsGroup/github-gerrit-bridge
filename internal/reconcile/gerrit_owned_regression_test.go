@@ -253,3 +253,48 @@ func TestGerritOwnedBridgeImportBelowABridgeImport(t *testing.T) {
 		t.Error("a stranger's bridge import below a bridge-owned PR: not foreign (pushed to alice's branch)")
 	}
 }
+
+// Sixteenth review, a regression (main pushed it): alice's own fork PR,
+// imported as alice through Run-As (Gerrit says the bridge uploaded it
+// on her behalf), below her own in-repo PR, is hers: her patch set is
+// not foreign.
+func TestGerritOwnedAuthorsOwnRunAsImportBelow(t *testing.T) {
+	ctx := context.Background()
+	s := newSites(t)
+	base := s.commit("", "a", "a\n", "Base")
+	s.push("gerrit.git", base, "refs/heads/main")
+	s.push("github.git", base, "refs/heads/main")
+	c, _ := s.code(ctx)
+	c.BridgeAccount = 1
+	c.Trusted = func(_ context.Context, a int) (bool, bool) { return false, true }
+	low := s.commit(base, "low", "alice's\n", "Low\n\nChange-Id: "+cid(1)+"\n")
+	ci := s.change(1, cid(1), low, "Low\n\nChange-Id: "+cid(1)+"\n", "NEW")
+	r := ci.Revisions[low]
+	r.Uploader, r.RealUploader = gerrit.AccountInfo{AccountID: 5}, &gerrit.AccountInfo{AccountID: 1}
+	ci.Revisions[low], ci.Owner = r, gerrit.AccountInfo{AccountID: 5}
+	s.save(ctx, c.Store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "github",
+		HeadBranch: "alice/r:low", Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: low, GitHubSHA: "1111111111111111111111111111111111111111", Vetted: true}}})
+	msg := "Top\n\nChange-Id: " + cid(2) + "\n"
+	p1 := s.commit(low, "top", "1\n", msg)
+	p2 := s.commit(low, "top", "2\n", msg)
+	ci = s.change(2, cid(2), p2, msg, "NEW")
+	r2 := ci.Revisions[p2]
+	r2.Number, r2.Ref, r2.Uploader, r2.Kind = 2, "refs/changes/02/2/2", gerrit.AccountInfo{AccountID: 5}, "REWORK"
+	ci.Revisions = map[string]gerrit.RevisionInfo{
+		p1: {Number: 1, Ref: "refs/changes/02/2/1", Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 5}, RealUploader: &gerrit.AccountInfo{AccountID: 1},
+			Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, p1))},
+		p2: r2,
+	}
+	ci.Owner = gerrit.AccountInfo{AccountID: 5}
+	s.push("gerrit.git", p1, "refs/changes/02/2/1")
+	s.push("gerrit.git", p2, "refs/changes/02/2/2")
+	s.save(ctx, c.Store, 2, &state.Change{State: state.ChangeState{Change: 2, ChangeID: cid(2), PR: 20, Branch: "main", Origin: "github",
+		HeadBranch: "feature", Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: p1, GitHubSHA: "2222222222222222222222222222222222222222", Vetted: true}}})
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Foreign[2] {
+		t.Error("alice's patch set over her own Run-As import is foreign")
+	}
+}

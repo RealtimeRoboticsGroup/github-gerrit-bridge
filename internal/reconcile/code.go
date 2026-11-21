@@ -1041,7 +1041,7 @@ const maxBelow = 50
 // change below their GitHub-born PR made it foreign). Anyone else's
 // below has no owner's pass.
 func parentsTrusted(ctx context.Context, r belowReader, branch, into string, parents []string, already map[string]bool,
-	trusted func(context.Context, int) (bool, bool), owner int) (ok, known bool, why string, err error) {
+	trusted func(context.Context, int) (bool, bool), bridge, owner int) (ok, known bool, why string, err error) {
 	known = true
 	seen := map[string]bool{}
 	for todo := parents; len(todo) > 0; todo = todo[1:] {
@@ -1094,7 +1094,19 @@ func parentsTrusted(ctx context.Context, r belowReader, branch, into string, par
 			if owner != 0 && ci.Owner.AccountID == owner {
 				lower = owner
 			}
-			ok, k := authorsCode(ctx, trusted, 0, lower, revisionsByNumber(ci), p.Number)
+			revs := revisionsByNumber(ci)
+			for n, rv := range revs {
+				if bridge != 0 && rv.RealUploader != nil && rv.RealUploader.AccountID == bridge {
+					// The bridge's import as its uploader (Run-As) is
+					// their push: theirs, as if they had uploaded it
+					// (sixteenth review: an author's own import below
+					// their PR made it foreign). The bridge's own
+					// uploads still have no pass.
+					rv.RealUploader = nil
+					revs[n] = rv
+				}
+			}
+			ok, k := authorsCode(ctx, trusted, 0, lower, revs, p.Number)
 			if !ok && !k {
 				// Could not be told (GitHub did not say who may push):
 				// nobody is blamed; asked again next time.
@@ -1180,7 +1192,7 @@ func mayReach(ctx context.Context, r belowReader, trusted func(context.Context, 
 	if below == bridge {
 		below = 0
 	}
-	ok, k, why, err := parentsTrusted(ctx, r, branch, into, revs[ps].Commit.ParentSHAs(), already, trusted, below)
+	ok, k, why, err := parentsTrusted(ctx, r, branch, into, revs[ps].Commit.ParentSHAs(), already, trusted, bridge, below)
 	return ok && err == nil, known && k, why, err
 }
 
