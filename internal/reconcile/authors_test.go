@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -553,5 +554,36 @@ func TestVoteReviewEditedByOtherIsRestored(t *testing.T) {
 	e.sync(t)
 	if !strings.Contains(e.h.reviews[0].Body, "Only the docs and tests") {
 		t.Errorf("alice's own edit was undone: %q", e.h.reviews[0].Body)
+	}
+}
+
+// Sixteenth review (impersonation, bad code submitted): a vote cast in Gerrit
+// on alice's behalf by someone else (on_behalf_of with Label-As, or
+// another account's Run-As: Gerrit sets real_author) is not alice's: it
+// must not become her GitHub approval, posted with her own token, which
+// is what GitHub's required reviews count where GitHub owns the branches.
+func TestVoteOnBehalfIsNoApprovalAsThem(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	carol := gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}
+	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, RealAuthor: &carol, Message: "Patch Set 2: Code-Review+2\n\nLGTM.", RevisionNumber: 2}}
+	e.g.vote("alice", "Code-Review", 2)
+	e.sync(t)
+	for _, rv := range e.h.reviews {
+		if rv.User == aliceGH {
+			t.Errorf("carol's vote on alice's behalf became alice's own GitHub review: %+v", rv)
+		}
+	}
+	for _, ic := range e.h.ics {
+		if ic.User == aliceGH {
+			t.Errorf("carol's message on alice's behalf posted with alice's token: %q", ic.Body)
+		}
+	}
+	if !slices.ContainsFunc(e.h.ics, func(ic github.IssueComment) bool {
+		return strings.Contains(ic.Body, "**Carol**, as **Alice Trusted (alice)**,") && strings.Contains(ic.Body, "LGTM.")
+	}) {
+		t.Errorf("no copy as the bridge naming both: %+v", e.h.ics)
 	}
 }

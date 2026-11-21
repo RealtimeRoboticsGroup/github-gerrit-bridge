@@ -1036,7 +1036,11 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			deferred++
 			continue
 		}
-		p, err := c.posterFor(ctx, s, msg.Author.AccountID)
+		account := msg.Author.AccountID
+		if onBehalf(msg) {
+			account = 0 // as the bridge, naming both
+		}
+		p, err := c.posterFor(ctx, s, account)
 		if err != nil {
 			return posted, err
 		}
@@ -1128,6 +1132,15 @@ func (c *Comments) ownMessage(msg gerrit.ChangeMessage) bool {
 		(c.CIMessage == nil || !c.CIMessage.MatchString(msg.Message))
 }
 
+// onBehalf reports whether change message msg was posted by someone
+// other than its author: on_behalf_of with Label-As, or another account's
+// Run-As (Gerrit sets real_author). Its words and votes are not its
+// author's own, so it goes as the bridge, naming both, never with the
+// author's token nor as their review (sixteenth review).
+func onBehalf(msg gerrit.ChangeMessage) bool {
+	return msg.RealAuthor != nil && msg.RealAuthor.AccountID != msg.Author.AccountID
+}
+
 // codeReviewVote is the Code-Review vote a change message's "Patch Set
 // N: ..." header gives, 0 if none.
 func codeReviewVote(message string) int {
@@ -1153,7 +1166,11 @@ func (c *Comments) messageBody(n int, msg gerrit.ChangeMessage, text string, s *
 		if v != "" {
 			votes = ", **" + v + "**"
 		}
-		head = fmt.Sprintf("**%s** ([Gerrit](%s)) on patch set %d%s:\n\n", whoMD(msg.Author), c.messageURL(n, msg), msg.RevisionNumber, votes)
+		who := "**" + whoMD(msg.Author) + "**"
+		if onBehalf(msg) {
+			who = "**" + whoMD(*msg.RealAuthor) + "**, as **" + whoMD(msg.Author) + "**,"
+		}
+		head = fmt.Sprintf("%s ([Gerrit](%s)) on patch set %d%s:\n\n", who, c.messageURL(n, msg), msg.RevisionNumber, votes)
 	case v != "":
 		head = "**" + v + "**\n\n"
 		if ps, _ := s.latestOnGitHub(msg.RevisionNumber); ps != msg.RevisionNumber {

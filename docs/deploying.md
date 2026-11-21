@@ -219,6 +219,10 @@ Behaviour that changes, on purpose:
 - **A PR GitHub shows merged by the bridge's own push** into a bridge
   branch (a chain reordered) says so once, on the PR and on the change,
   while the change is still open in Gerrit.
+- **A Gerrit message posted on someone's behalf** (another account's
+  Run-As, or a vote with Label-As) is posted on GitHub as the bridge,
+  naming both ("**Carol**, as **Alice**, ..."), never with the named
+  person's own token nor as their GitHub review.
 - Maintain Server is neither needed nor asked about.
 
 The Checks tab plugin keeps working; regenerating it is optional.
