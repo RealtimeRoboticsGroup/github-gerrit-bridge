@@ -4804,3 +4804,46 @@ func TestPrepareSubmitSwapAsksMayReach(t *testing.T) {
 		}
 	}
 }
+
+// A Gerrit-born push is recorded as vetted only where GitHub owns the
+// branches (withhold gated it); where Gerrit owns them any registered
+// user's change is pushed, so its record vouches for nothing below
+// (fourteenth review).
+func TestGerritBornPushIsRecordedVettedOnlyWhereGitHubOwns(t *testing.T) {
+	for _, owned := range []bool{false, true} {
+		s := newSites(t)
+		ctx := context.Background()
+		c, store := s.code(ctx)
+		c.GitHubOwned = owned
+		c.Publishable = func(context.Context, int) (bool, bool) { return true, true }
+		m0 := s.commit("", "a.txt", "a\n", "base")
+		s.push("gerrit.git", m0, "refs/heads/main")
+		s.push("github.git", m0, "refs/heads/main")
+		msg := "Feature\n\nChange-Id: " + cid(1) + "\n"
+		rev := s.commit(m0, "f.txt", "f\n", msg)
+		ci := s.change(1, cid(1), rev, msg, "NEW")
+		r := ci.Revisions[rev]
+		r.Uploader = gerrit.AccountInfo{AccountID: 8}
+		ci.Revisions[rev], ci.Owner = r, r.Uploader
+		if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+			t.Fatal(err)
+		}
+		st, _ := store.Load(ctx, 1)
+		if len(st.Revisions) != 1 || st.Revisions[0].Vetted != owned {
+			t.Errorf("GitHub owns %v: recorded %+v", owned, st.Revisions)
+		}
+		// Patch set 2, appended to the PR's history: the same.
+		rev2 := s.commit(m0, "f.txt", "f2\n", msg)
+		s.push("gerrit.git", rev2, "refs/changes/01/1/2")
+		ci.Revisions[rev2] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Ref: "refs/changes/01/1/2", Uploader: r.Uploader,
+			Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, rev2))}
+		ci.CurrentRevision = rev2
+		if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+			t.Fatal(err)
+		}
+		st, _ = store.Load(ctx, 1)
+		if len(st.Revisions) != 2 || st.Revisions[1].Vetted != owned {
+			t.Errorf("GitHub owns %v: patch set 2 recorded %+v", owned, st.Revisions)
+		}
+	}
+}

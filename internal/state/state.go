@@ -104,6 +104,12 @@ type Revision struct {
 	// branch, put there by someone, not imported or pushed by the
 	// bridge: GitHub has it, but nobody vouched for it as this PR's.
 	Found bool `json:"found,omitempty"`
+	// Vetted is set for a commit whose code was checked before it was
+	// put on GitHub, or came from it: an import, an append to a
+	// GitHub-born PR's branch (markForeign), or, where GitHub owns the
+	// branches, a Gerrit-born push (withhold). Not a Gerrit-born push
+	// where Gerrit owns them, which any registered user's change gets.
+	Vetted bool `json:"vetted,omitempty"`
 }
 
 // Head is a commit the PR's branch was seen at (heads.json): from At,

@@ -50,6 +50,7 @@ go_test(
         "comments_test.go",
         "dispatch_test.go",
         "follow_test.go",
+        "gerrit_owned_regression_test.go",
         "identity_ldap_test.go",
         "identity_test.go",
         "importer_test.go",

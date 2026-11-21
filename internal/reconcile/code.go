@@ -858,7 +858,7 @@ type belowReader interface {
 	parentsOf(ctx context.Context, rev string) ([]string, error)
 	inBranch(ctx context.Context, branch, sha string) (bool, error)
 	changesOf(ctx context.Context, sha string) ([]gerrit.ChangeInfo, error)
-	onRepoBranch(ctx context.Context, change int, sha string) (bool, error)
+	onRepoBranch(ctx context.Context, change int, sha, into string) (bool, error)
 }
 
 // mirrorReader is belowReader from the bridge's mirror (whose
@@ -901,7 +901,7 @@ func (r mirrorReader) changesOf(ctx context.Context, sha string) ([]gerrit.Chang
 	return r.g.QueryChanges(ctx, "project:"+gerrit.QueryString(r.project)+" commit:"+sha, "ALL_REVISIONS", "ALL_COMMITS", "DETAILED_ACCOUNTS")
 }
 
-func (r mirrorReader) onRepoBranch(ctx context.Context, change int, sha string) (bool, error) {
+func (r mirrorReader) onRepoBranch(ctx context.Context, change int, sha, into string) (bool, error) {
 	if r.store == nil {
 		return false, nil
 	}
@@ -909,20 +909,35 @@ func (r mirrorReader) onRepoBranch(ctx context.Context, change int, sha string) 
 	if err != nil {
 		return false, err
 	}
-	return recordedOnRepoBranch(st, sha), nil
+	return recordedOnRepoBranch(st, sha, into), nil
 }
 
 // recordedOnRepoBranch reports whether st records Gerrit commit sha as
 // imported from, or pushed to, its PR's branch, one of the repository's
-// own (not a fork's: code there never ran with the repository's secrets):
-// GitHub has it there, and pushed again it brings nothing new. Not one
-// found there (Found: whoever put it there is not known).
-func recordedOnRepoBranch(st *state.Change, sha string) bool {
-	if st == nil || isForkHead(st.State.HeadBranch) {
+// own (not a fork's: code there never ran with the repository's secrets),
+// its code vetted on the way (Vetted): GitHub has it there, and pushed
+// again it brings nothing new. Not one found there (Found: whoever put it
+// there is not known), nor one pushed unvetted (fourteenth review: where
+// Gerrit owns the branches every registered user's change is pushed to
+// one, and was taken for vouched-for code below a trusted user's).
+//
+// A fork's record counts only for a push into that same fork (into, the
+// pushed change's head): its own code going back to it brings nothing
+// new (fourteenth review: an author's fork stack was refused the swap).
+func recordedOnRepoBranch(st *state.Change, sha, into string) bool {
+	if st == nil {
 		return false
 	}
+	if fork, _, ok := github.SplitHeadKey(st.State.HeadBranch); ok {
+		if target, _, intoFork := github.SplitHeadKey(into); !intoFork || !strings.EqualFold(target, fork) {
+			return false
+		}
+	}
 	for _, r := range st.Revisions {
-		if r.GerritSHA == sha && r.GitHubSHA != "" && !r.Found {
+		// A GitHub-born change's records are imports, or appends that
+		// passed markForeign: vetted, whenever written; a Gerrit-born
+		// one's only if marked so.
+		if r.GerritSHA == sha && r.GitHubSHA != "" && !r.Found && (r.Vetted || st.State.Origin == "github") {
 			return true
 		}
 	}
@@ -970,12 +985,12 @@ func (m *memoReader) changesOf(ctx context.Context, sha string) ([]gerrit.Change
 	return v, err
 }
 
-func (m *memoReader) onRepoBranch(ctx context.Context, change int, sha string) (bool, error) {
-	k := fmt.Sprint(change, " ", sha)
+func (m *memoReader) onRepoBranch(ctx context.Context, change int, sha, into string) (bool, error) {
+	k := fmt.Sprint(change, " ", sha, " ", into)
 	if v, ok := m.onRepo[k]; ok {
 		return v, nil
 	}
-	v, err := m.r.onRepoBranch(ctx, change, sha)
+	v, err := m.r.onRepoBranch(ctx, change, sha, into)
 	if err == nil {
 		m.onRepo[k] = v
 	}
@@ -1005,7 +1020,7 @@ const maxBelow = 50
 // is, and the walk stops there (thirteenth review: an in-repo PR's code
 // has run with the repository's secrets already; and a chain of mirrored
 // changes is a step each, not a walk each).
-func parentsTrusted(ctx context.Context, r belowReader, branch string, parents []string, already map[string]bool,
+func parentsTrusted(ctx context.Context, r belowReader, branch, into string, parents []string, already map[string]bool,
 	trusted func(context.Context, int) (bool, bool)) (ok, known bool, why string, err error) {
 	known = true
 	seen := map[string]bool{}
@@ -1045,7 +1060,7 @@ func parentsTrusted(ctx context.Context, r belowReader, branch string, parents [
 			if !found {
 				return false, false, fmt.Sprintf("commit %s below it", short(sha)), nil
 			}
-			on, err := r.onRepoBranch(ctx, ci.Number, sha)
+			on, err := r.onRepoBranch(ctx, ci.Number, sha, into)
 			if err != nil {
 				return false, known, "", fmt.Errorf("reading change %d's state: %w", ci.Number, err)
 			}
@@ -1130,7 +1145,11 @@ func mayReach(ctx context.Context, r belowReader, trusted func(context.Context, 
 			}
 		}
 	}
-	ok, k, why, err := parentsTrusted(ctx, r, branch, revs[ps].Commit.ParentSHAs(), already, trusted)
+	into := ""
+	if st != nil {
+		into = st.State.HeadBranch
+	}
+	ok, k, why, err := parentsTrusted(ctx, r, branch, into, revs[ps].Commit.ParentSHAs(), already, trusted)
 	return ok && err == nil, known && k, why, err
 }
 
@@ -1633,12 +1652,24 @@ func (c *Code) mergedOnGitHub(ctx context.Context, s *Snapshot, n int, ch *Gerri
 		// branch, say, which any writer may press) abandons nothing, as
 		// nobody's say-so but the bridge's would (thirteenth review:
 		// closing a PR abandons only as its closer, if Gerrit lets them).
-		// Said once on the PR; the plan never edits a merged PR.
+		// Into the target branch it is replication's doing (only it
+		// writes there), the submit racing this look: nothing to say
+		// (fourteenth review). Else said once on the PR, once Gerrit
+		// still says the change is open; the plan never edits a merged
+		// PR.
+		if pr.Base.Ref == s.Branch {
+			return false, nil
+		}
 		if st := s.State[n]; st == nil || st.State.MergedNoticePosted || c.DryRun {
 			return false, nil
 		}
+		if now, err := c.Gerrit.GetChange(ctx, n); err != nil {
+			return false, err
+		} else if now.Status != "NEW" {
+			return false, nil
+		}
 		note := fmt.Sprintf("This PR was merged on GitHub into `%s`, but Gerrit owns this repository's branches: [change %d](%s) stays open "+
-			"there, as it is. Abandon or update it in Gerrit.\n\n%s", forGitHub(pr.Base.Ref), n, ch.URL, noticeMarker)
+			"there, as it is, and this PR no longer follows it. Abandon it in Gerrit if it is not to be merged.\n\n%s", forGitHub(pr.Base.Ref), n, ch.URL, noticeMarker)
 		if _, err := c.GitHub.CreateIssueComment(ctx, pr.Number, note); err != nil {
 			return false, err
 		}
@@ -2274,7 +2305,7 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			tree, parentTree := c.trees(ctx, ap.Revision)
 			err := c.updateState(ctx, ap.Change, fmt.Sprintf("Export patch set %d to %s", ap.PatchSet, name), func(st *state.Change) {
 				st.Revisions = append(st.Revisions, state.Revision{PatchSet: ap.PatchSet, GerritSHA: ap.Revision,
-					GitHubSHA: commit, Tree: tree, ParentTree: parentTree, At: time.Now()})
+					GitHubSHA: commit, Tree: tree, ParentTree: parentTree, At: time.Now(), Vetted: st.State.Origin == "github" || c.GitHubOwned})
 				if st.State.PR != 0 {
 					// The PR's head from the push on: a review a minute
 					// on is about it, however long before a sync reads the
@@ -2626,7 +2657,7 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan, skip *skips) er
 				newRevision[n] = true
 				st.Revisions = append(st.Revisions, state.Revision{
 					PatchSet: ch.PatchSet, GerritSHA: ch.Revision, GitHubSHA: gh,
-					Tree: tree, ParentTree: parentTree, At: time.Now(),
+					Tree: tree, ParentTree: parentTree, At: time.Now(), Vetted: st.State.Origin == "github" || c.GitHubOwned,
 				})
 			}
 		}})

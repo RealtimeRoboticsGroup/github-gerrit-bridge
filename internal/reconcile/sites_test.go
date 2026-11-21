@@ -703,7 +703,7 @@ func (s *sites) save(ctx context.Context, store *state.Store, n int, st *state.C
 // patch set's own code; the sites-based ones check what is below.
 type noneBelow struct{}
 
-func (noneBelow) parentsOf(context.Context, string) ([]string, error)            { return nil, nil }
-func (noneBelow) inBranch(context.Context, string, string) (bool, error)         { return true, nil }
-func (noneBelow) changesOf(context.Context, string) ([]gerrit.ChangeInfo, error) { return nil, nil }
-func (noneBelow) onRepoBranch(context.Context, int, string) (bool, error)        { return false, nil }
+func (noneBelow) parentsOf(context.Context, string) ([]string, error)             { return nil, nil }
+func (noneBelow) inBranch(context.Context, string, string) (bool, error)          { return true, nil }
+func (noneBelow) changesOf(context.Context, string) ([]gerrit.ChangeInfo, error)  { return nil, nil }
+func (noneBelow) onRepoBranch(context.Context, int, string, string) (bool, error) { return false, nil }
