@@ -107,9 +107,14 @@ checklist.
   startup about merge settings that leave it out.
 - **The fallback.** Gerrit reads the Change-Id only from the commit's
   last paragraph, and GitHub's merge commit may not have it there:
-  someone edited it out in the merge dialog, or GitHub added
-  `Co-authored-by:` lines after it (a PR with several authors; checked on
-  3.14, the change stays open). Once the merge commit is on Gerrit's
+  someone edited it out in the merge dialog, or GitHub's squash added its
+  own paragraph after it: the PR's commits' `Signed-off-by:` lines, and
+  `Co-authored-by:` for their authors, even those the description has
+  already (checked 2026-11-20; on 3.14 the change stays open). Every
+  squash of signed-off commits with the button takes this path, so where
+  sign-offs are the rule, the fallback is the usual way and Maintain
+  Server all but required (`/submit` writes its own message and does not
+  need it). Once the merge commit is on Gerrit's
   branch, the bridge marks the change merged at it with Gerrit's
   check-and-fix (`POST /changes/N/check`, `expect_merged_as`), which
   inserts it as the last patch set, and says who merged it, in which PR.
@@ -173,7 +178,8 @@ checks what it can):
 2. Gerrit, on the project's `refs/heads/*`, for the bridge's group: Push
    with force, Forge Author, Forge Committer, Push Merge Commits, Abandon;
    and the global Maintain Server capability, for marking changes merged
-   whose merge commit lost its Change-Id footer (else they are abandoned).
+   whose merge commit lost its Change-Id footer (else they are abandoned;
+   that is every squash of signed-off commits with GitHub's button).
    Gerrit takes GitHub's commits as they are: no Signed-off-by
    requirement, no commit validators GitHub's squash commits would fail,
    and `receive.maxBatchCommits` above what one merge brings (a subtree
