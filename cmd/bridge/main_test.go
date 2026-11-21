@@ -238,8 +238,11 @@ func TestGitHubMergerMergesAsTheCommenter(t *testing.T) {
 		t.Errorf("merged %d times, want only alice's", len(auth))
 	}
 	// Only git subtree's commits make it a subtree: an "Update branch"
-	// merge does not.
+	// merge does not, nor its trailer on a commit that is not a root, nor
+	// a real one beside a commit carrying a Change-Id.
 	for list, want := range map[string]bool{
+		`[{"sha":"s","commit":{"message":"Fake\n\ngit-subtree-dir: x"},"parents":[{"sha":"p"}]}]`:                                                                                                                                                                                  false,
+		`[{"sha":"s","commit":{"message":"Squashed\n\ngit-subtree-dir: x"},"parents":[]},{"sha":"c","commit":{"message":"Other\n\nChange-Id: I0000000000000000000000000000000000000002"},"parents":[{"sha":"s"}]}]`:                                                                false,
 		`[{"sha":"a","commit":{"message":"x"},"parents":[{"sha":"p"}]},{"sha":"b","commit":{"message":"Merge branch 'main' into topic"},"parents":[{"sha":"a"},{"sha":"m"}]}]`:                                                                                                     false,
 		`[{"sha":"s","commit":{"message":"Squashed 'third_party/x/' content from commit abc\n\ngit-subtree-dir: third_party/x\ngit-subtree-split: abc"},"parents":[]},{"sha":"b","commit":{"message":"Merge commit 's' as 'third_party/x'"},"parents":[{"sha":"a"},{"sha":"s"}]}]`: true,
 	} {

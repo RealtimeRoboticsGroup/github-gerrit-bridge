@@ -705,14 +705,30 @@ func (m githubMerger) Merge(ctx context.Context, u github.User, pr int, head str
 	return sha, true, err
 }
 
+// HasSubtree reports whether PR pr pulls in a subtree as git subtree
+// --squash does: a root commit naming its directory, merged in. Its
+// author can write any message, so a merge commit (which brings every
+// commit's message, and a Change-Id footer there closes that change in
+// Gerrit) is made only then, and only if no commit of it carries a
+// Change-Id (twelfth review).
 func (m githubMerger) HasSubtree(ctx context.Context, pr int) (bool, error) {
 	commits, err := m.gh.PullCommits(ctx, pr)
-	return slices.ContainsFunc(commits, func(c github.PullCommit) bool { return subtreeDir.MatchString(c.Commit.Message) }), err
+	if err != nil || slices.ContainsFunc(commits, func(c github.PullCommit) bool { return changeIDLine.MatchString(c.Commit.Message) }) {
+		return false, err
+	}
+	return slices.ContainsFunc(commits, func(c github.PullCommit) bool {
+		return len(c.Parents) == 0 && subtreeDir.MatchString(c.Commit.Message)
+	}), nil
 }
 
-// subtreeDir is git subtree's trailer naming the directory a commit pulls
-// a subtree into.
-var subtreeDir = regexp.MustCompile(`(?m)^git-subtree-dir: \S`)
+var (
+	// subtreeDir is git subtree's trailer naming the directory a commit
+	// pulls a subtree into.
+	subtreeDir = regexp.MustCompile(`(?m)^git-subtree-dir: \S`)
+	// changeIDLine is a Change-Id line, as Gerrit would read one in a
+	// footer (and more: anywhere in the message).
+	changeIDLine = regexp.MustCompile(`(?mi)^\s*change-id:`)
+)
 
 // linkedAuthors posts linked users' content with their own token
 // (design §7.2).
