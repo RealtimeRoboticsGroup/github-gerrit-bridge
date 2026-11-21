@@ -97,14 +97,21 @@ func (d *Directory) Read(ctx context.Context) error {
 	}
 	snap := build(entries, d.log())
 	snap.at = d.clock()
-	// Every read says what it found: a search the server's ACLs keep from
-	// anonymous binds succeeds with nothing, and nobody is matched then.
-	if len(entries) == 0 {
-		d.log().Warn("LDAP lists no GitHub accounts: nobody is matched (can an anonymous bind read them? are base_dn and object_class right?)",
-			"base_dn", d.BaseDN, "object_class", d.ObjectClass)
-	} else {
-		d.log().Info("read GitHub accounts from LDAP", "entries", len(entries), "matched", len(snap.byID))
+	// A read with no account it can use is no answer: an ACL that keeps
+	// anonymous binds from the entries, or from their GitHub attributes,
+	// succeeds with nothing usable, and with everyone unmapped the bridge
+	// would do for good what it does for strangers (fifteenth review).
+	if len(snap.byID) == 0 {
+		err := fmt.Errorf("ldap: %d entries under %s, none with a GitHub account the bridge can use (can an anonymous bind read uid, githubLogin and githubId? are base_dn and object_class right?)",
+			len(entries), d.BaseDN)
+		if d.snap != nil {
+			d.logChanges(d.snap, snap)
+		}
+		d.snap, d.err = nil, err
+		d.log().Error("reading GitHub accounts from LDAP; matching nobody by it until it can be read", "base_dn", d.BaseDN, "err", err)
+		return err
 	}
+	d.log().Info("read GitHub accounts from LDAP", "entries", len(entries), "matched", len(snap.byID))
 	if d.snap != nil {
 		d.logChanges(d.snap, snap)
 	}

@@ -348,10 +348,19 @@ func TestDirectoryFollowsTheDirectory(t *testing.T) {
 	if a, found, _ := d.ByGitHubID(999); !found || a.GerritUser != "austin" {
 		t.Errorf("the new id: %+v %v", a, found)
 	}
-	f.entries = nil
+	f.entries = []Entry{entry("bob", "bobGH", "7")} // austin removed
 	d.Read(ctx)
 	if _, found, err := d.ByGitHubID(999); found || err != nil {
 		t.Errorf("removed: %v %v", found, err)
+	}
+	// A directory that lists nobody usable is no answer (an ACL hiding
+	// the entries, or their GitHub attributes): not ready (fifteenth
+	// review).
+	for _, es := range [][]Entry{nil, {{DN: "uid=x", Attrs: map[string][]string{"uid": {"x"}}}}} {
+		f.entries = es
+		if d.Read(ctx) == nil || d.Ready() == nil {
+			t.Errorf("%d entries, none usable: ready", len(es))
+		}
 	}
 	f.entries = []Entry{entry("austin", "AustinSchuh", "294043")}
 	d.Read(ctx)

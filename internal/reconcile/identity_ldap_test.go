@@ -213,7 +213,7 @@ func TestUsersReadyFollowsTheDirectory(t *testing.T) {
 	if u.Ready() == nil {
 		t.Error("ready after a failed read")
 	}
-	s.err = nil
+	s.err, s.entries = nil, []ldap.Entry{ldapEntry("austin", "AustinSchuh", "294043")}
 	d.Read(context.Background())
 	if err := u.Ready(); err != nil {
 		t.Errorf("not ready after a read: %v", err)

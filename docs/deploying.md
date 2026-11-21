@@ -59,8 +59,9 @@ nobody. Before the bridge reads it:
 3. **Who may read them: anonymous.** The bridge binds anonymously and
    searches `(objectClass=githubAccount)` under the base DN for `uid`,
    `githubLogin` and `githubId`. An ACL that hides them from anonymous
-   binds makes the search succeed with nothing; the bridge then warns
-   ("LDAP lists no GitHub accounts") and matches nobody.
+   binds makes the search succeed with nothing usable; the bridge takes
+   that as no answer (as if LDAP were down): nothing runs until a read
+   finds an account it can use.
 4. **The size limit** for anonymous searches (slapd's default is 500)
    must exceed the number of entries: a search that hits it is refused
    whole, and nobody is matched.
