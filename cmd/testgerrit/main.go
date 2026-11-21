@@ -152,29 +152,36 @@ func run() error {
 		log.Printf("Bridge config for %s: %s", *replicate, pcfg)
 	}
 	if *follow != "" {
-		if *followGitHub == "" || *tokenFile == "" || *userAppFrom == "" {
-			return errors.New("--follow_project needs --follow_github, --github_token_file and --user_app_from")
-		}
-		prefix := *basePath + "/bridge-" + *follow
-		frontURL := "http://" + *front + *basePath
-		fcfg, err := followProject(ctx, s, bridgeDir, followSetup{
-			project: *follow, repo: *followGitHub, listen: *followListen, statusListen: *followStatus,
-			tokenFile: *tokenFile, identity: *identity, bot: *bot, userAppFrom: *userAppFrom,
-			gerritURL: frontURL, checksURL: "http://" + *front + prefix,
-		})
-		if err != nil {
-			return err
-		}
-		js := gerritchecks.Plugin("http://"+*front+prefix, *follow, false)
-		if err := os.WriteFile(filepath.Join(*site, "plugins", "bridge-checks-"+*follow+".js"), js, 0o644); err != nil {
-			return err
-		}
-		go func() {
-			if err := serveFront(ctx, *front, s.URL, prefix, "http://"+*followListen); err != nil {
-				log.Printf("front proxy: %v", err)
+		// Extra: whatever stops it leaves the rest of the instance up.
+		err := func() error {
+			if *followGitHub == "" || *tokenFile == "" || *userAppFrom == "" {
+				return errors.New("--follow_project needs --follow_github, --github_token_file and --user_app_from")
 			}
+			prefix := *basePath + "/bridge-" + *follow
+			frontURL := "http://" + *front + *basePath
+			fcfg, err := followProject(ctx, s, bridgeDir, followSetup{
+				project: *follow, repo: *followGitHub, listen: *followListen, statusListen: *followStatus,
+				tokenFile: *tokenFile, identity: *identity, bot: *bot, userAppFrom: *userAppFrom,
+				gerritURL: frontURL, checksURL: "http://" + *front + prefix,
+			})
+			if err != nil {
+				return err
+			}
+			js := gerritchecks.Plugin("http://"+*front+prefix, *follow, false)
+			if err := os.WriteFile(filepath.Join(*site, "plugins", "bridge-checks-"+*follow+".js"), js, 0o644); err != nil {
+				return err
+			}
+			go func() {
+				if err := serveFront(ctx, *front, s.URL, prefix, "http://"+*followListen); err != nil {
+					log.Printf("front proxy: %v", err)
+				}
+			}()
+			log.Printf("Bridge config for %s (GitHub-owned): %s; Gerrit with its Checks tab at %s", *follow, fcfg, frontURL)
+			return nil
 		}()
-		log.Printf("Bridge config for %s (GitHub-owned): %s; Gerrit with its Checks tab at %s", *follow, fcfg, frontURL)
+		if err != nil {
+			log.Printf("GitHub-owned project %s left out: %v", *follow, err)
+		}
 	}
 	for user, email := range map[string]string{"alice": *aliceEmail, "bob": *bobEmail} {
 		if email == "" {

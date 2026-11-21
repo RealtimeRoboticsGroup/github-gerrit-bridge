@@ -61,10 +61,20 @@ fi
 # No GitHub Actions: the bridge pushes every Gerrit change, from anyone
 # registered there, to a branch of this repository (design §9.1).
 "${GH}" api -X PUT "repos/${REPO}/actions/permissions" -F enabled=false --silent
+# The GitHub-owned project is extra: anything it lacks leaves it out, not
+# the rest of the instance.
 FOLLOW_FLAGS=""
+if [[ -n "${FOLLOW_REPO}" ]] && ! grep -q '^ *user_app:' "${SITE}/bridge/bridge-scratch.yaml" 2>/dev/null; then
+  echo "NOTE: ${SITE}/bridge/bridge-scratch.yaml has no github.user_app (see docs/test-instance.md): leaving out the GitHub-owned project" >&2
+  FOLLOW_REPO=""
+fi
 if [[ -n "${FOLLOW_REPO}" ]]; then
-  "${WS}/tools/testenv/github-owned-setup.sh" "${GH}" "${FOLLOW_REPO}" "${BOT}" "${SECOND}"
-  FOLLOW_FLAGS=" --follow_project ${FOLLOW_PROJECT} --follow_github ${FOLLOW_REPO} --user_app_from ${SITE}/bridge/bridge-scratch.yaml"
+  if "${WS}/tools/testenv/github-owned-setup.sh" "${GH}" "${FOLLOW_REPO}" "${BOT}" "${SECOND}"; then
+    FOLLOW_FLAGS=" --follow_project ${FOLLOW_PROJECT} --follow_github ${FOLLOW_REPO} --user_app_from ${SITE}/bridge/bridge-scratch.yaml"
+  else
+    echo "WARNING: setting up ${FOLLOW_REPO} failed: leaving out the GitHub-owned project" >&2
+    FOLLOW_REPO=""
+  fi
 fi
 # Read whole: grep -q quitting early would fail the pipe (pipefail).
 HOOK_SCOPE="$("${GH}" auth status 2>&1 || true)"
@@ -128,6 +138,7 @@ fi
 systemctl --user daemon-reload
 for s in gerrit buildkite ci bridge webhooks gh-bridge gh-webhooks; do
   [[ -f "${UNITS}/bridge-test-${s}.service" ]] || continue
+  [[ "${s}" == gh-* && -z "${FOLLOW_REPO}" ]] && { systemctl --user disable --now --quiet "bridge-test-${s}.service"; continue; }
   systemctl --user enable --quiet "bridge-test-${s}.service"
   systemctl --user restart "bridge-test-${s}.service"
   [[ "${s}" == gerrit ]] && for _ in $(seq 180); do curl -sf -o /dev/null http://127.0.0.1:18080/gerrit/config/server/version && break; sleep 1; done
