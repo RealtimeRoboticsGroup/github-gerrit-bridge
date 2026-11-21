@@ -224,3 +224,53 @@ func TestDirectoryNameGerritCannotQueryIsNobody(t *testing.T) {
 		t.Errorf("Gerrit failing: %v %v, want unknown", ok, err)
 	}
 }
+
+// downFor is a mapping whose lookups of the logins in down cannot answer
+// while *on, and are known's otherwise.
+type downFor struct {
+	known Identity
+	down  map[string]bool
+	on    *bool
+}
+
+func (d downFor) Lookup(ctx context.Context, gh github.User) (string, bool, error) {
+	if *d.on && d.down[gh.Login] {
+		return "", false, &IdentityUnknown{errors.New("the directory cannot be read")}
+	}
+	return d.known.Lookup(ctx, gh)
+}
+
+// A new GitHub-born PR whose author, or whose pusher, is unknown for now
+// is not uploaded as the bridge (its change would be the bridge's for
+// good): it waits, and is uploaded as its author once known. Sixteenth
+// review: nothing tested firstUploader's waits.
+func TestFirstUploadWaitsForWhoWroteAndPushedIt(t *testing.T) {
+	for _, who := range []string{"austin", "austin-laptop"} {
+		t.Run(who, func(t *testing.T) {
+			s, im, up, m1, _, _ := gerritBornWorld(t, false)
+			ctx := context.Background()
+			on := true
+			// austin pushes as another GitHub account of theirs, which the
+			// mapping also gives austin.
+			im.Identity = downFor{&Users{Overrides: map[string]string{"austin": "austin", "austin-laptop": "austin"}}, map[string]bool{who: true}, &on}
+			h := s.commit(m1, "new.txt", "n\n", "New")
+			s.push("github.git", h, "refs/heads/topic")
+			s.pushed("o/r", "refs/heads/topic", h, "austin-laptop")
+			s.pushLog["o/r refs/heads/topic"][0].before = m1
+			s.pr(60, "topic", h, "main", "austin")
+			if err := im.Import(ctx, "main"); !isIdentityUnknown(err) || len(up.uploads) != 0 {
+				t.Fatalf("unknown: err %v, uploads %v", err, up.uploads)
+			}
+			if sts := s.statuses[h]; len(sts) == 0 || sts[len(sts)-1].State != "pending" {
+				t.Errorf("unknown: gerrit/sync %+v, want pending", sts)
+			}
+			on = false
+			if err := im.Import(ctx, "main"); err != nil {
+				t.Fatal(err)
+			}
+			if len(up.uploads) != 1 || !strings.HasPrefix(up.uploads[0], "austin ") {
+				t.Errorf("known: uploads %v, want one as austin", up.uploads)
+			}
+		})
+	}
+}
