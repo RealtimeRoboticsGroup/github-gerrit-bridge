@@ -1254,6 +1254,9 @@ func (s *commentSnapshot) stillApproves(msg gerrit.ChangeMessage) bool {
 		if later && m.Author.AccountID == msg.Author.AccountID && votesCodeReview(m.Message) {
 			return false
 		}
+		if later && removesVote(m.Message, msg.Author) {
+			return false
+		}
 	}
 	if msg.RevisionNumber != s.current {
 		return true
@@ -1265,6 +1268,20 @@ func (s *commentSnapshot) stillApproves(msg gerrit.ChangeMessage) bool {
 		}
 	}
 	return false
+}
+
+// removesVote reports whether a change message is Gerrit's for deleting
+// someone's Code-Review vote, or removing a reviewer, that may be who's:
+// one naming their full name (any, if they have none: Gerrit then
+// names them otherwise). Its author is
+// whoever deleted it, often not the voter, and it has no "Patch Set N:"
+// header (eighteenth review: a vote deleted on an older patch set,
+// which no label shows, became an approval).
+func removesVote(message string, who gerrit.AccountInfo) bool {
+	if !strings.HasPrefix(message, "Removed Code-Review") && !strings.HasPrefix(message, "Removed reviewer") && !strings.HasPrefix(message, "Removed vote") {
+		return false
+	}
+	return who.Name == "" || strings.Contains(message, who.Name)
 }
 
 // votesCodeReview reports whether a change message's "Patch Set N: ..."

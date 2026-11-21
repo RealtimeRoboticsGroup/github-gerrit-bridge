@@ -944,3 +944,39 @@ func TestOnBehalfUnsureIsOnBehalf(t *testing.T) {
 		})
 	}
 }
+
+// A +2 deleted in Gerrit (by its owner, an admin, or the voter's own X)
+// leaves "Removed Code-Review+2 by ..." by whoever deleted it, with no
+// "Patch Set N:" header; on a patch set no longer current no label shows
+// it either. It is not their approval (eighteenth review); a removal of
+// someone else's vote does not withdraw theirs.
+func TestDeletedVoteIsNoApproval(t *testing.T) {
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	bob := gerrit.AccountInfo{AccountID: 7, Name: "Bob", Username: "bobg"}
+	for _, tc := range []struct {
+		removal  string
+		approved bool
+	}{
+		{"", true},
+		{"Removed Code-Review+2 by Alice Trusted <alice@example.com>\n", false},
+		{"Removed reviewer Alice Trusted <alice@example.com> with the following votes:\n\n* Code-Review+2 by Alice Trusted <alice@example.com>\n", false},
+		{"Removed Code-Review+2 by Carol <carol@example.com>\n", true},
+	} {
+		e, _ := linkedEnv(t)
+		e.runAs()
+		e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+		e.h.head = "sha1"
+		e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 1: Code-Review+2", RevisionNumber: 1}}
+		if tc.removal != "" {
+			e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "m2", Author: bob, Message: tc.removal, RevisionNumber: 1})
+		}
+		e.sync(t)
+		approved := false
+		for _, rv := range e.h.reviews {
+			approved = approved || (rv.State == "APPROVED" && rv.User == aliceGH)
+		}
+		if approved != tc.approved {
+			t.Errorf("%q: approved %v (reviews %+v)", tc.removal, approved, e.h.reviews)
+		}
+	}
+}
