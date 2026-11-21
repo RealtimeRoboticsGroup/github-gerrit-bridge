@@ -359,3 +359,28 @@ func TestCloseWaitsForWhoClosedIt(t *testing.T) {
 		t.Errorf("known: status %s, messages %+v; want abandoned as austin", ci.Status, ci.Messages)
 	}
 }
+
+// A PR's title edited by someone the bridge cannot place for now is not
+// made a commit message as the bridge, nor refused: it waits, and is
+// made as them once known. Sixteenth review: untested.
+func TestPREditWaitsForWhoEditedIt(t *testing.T) {
+	s, c, snap := editsWorld(t, "github")
+	s.pulls[70].Title = "Seven, better"
+	s.activity[70] = github.PRActivity{TitleEditor: github.User{Login: "austin"}, BodyEditor: github.User{Login: "austin"}}
+	on := true
+	c.Identity = downFor{c.Identity, map[string]bool{"austin": true}, &on}
+	ctx := context.Background()
+	if _, err := c.mirrorPREdits(ctx, snap, map[int]bool{}); !isIdentityUnknown(err) {
+		t.Fatalf("unknown: err %v", err)
+	}
+	if len(s.calls) != 0 || len(s.comments[70]) != 0 {
+		t.Fatalf("unknown: calls %v, notices %v", s.calls, s.comments[70])
+	}
+	on = false
+	if changed, err := c.mirrorPREdits(ctx, snap, map[int]bool{}); err != nil || !changed {
+		t.Fatalf("known: changed %v, err %v", changed, err)
+	}
+	if len(s.calls) != 1 || s.calls[0] != "message 7 as austin" {
+		t.Errorf("known: calls %v", s.calls)
+	}
+}
