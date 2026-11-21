@@ -188,7 +188,11 @@ func TestTokensRenewAndDrop(t *testing.T) {
 	s.Put(Record{GitHub: github.User{Login: "alice", ID: 42}, GerritAccount: 1000, GerritUser: "alice",
 		Token: github.UserToken{Access: "ghu_0", AccessExpires: now.Add(time.Hour), Refresh: "ghr_0", RefreshExpires: now.Add(24 * time.Hour)}})
 	maps, unknown := true, error(nil)
+	unknownRenamed := false // the directory cannot say who the new login is
 	tk := &Tokens{Store: s, App: f.app(), Check: func(_ context.Context, gh github.User, user string) (bool, error) {
+		if unknownRenamed && gh.Login == "alice-renamed" {
+			return false, errors.New("the directory cannot be read")
+		}
 		return maps && gh.ID == 42 && user == "alice", unknown
 	}}
 
@@ -223,6 +227,16 @@ func TestTokensRenewAndDrop(t *testing.T) {
 	r, _ := s.Get(42)
 	r.Token.AccessExpires = tk.clock().Add(time.Minute)
 	s.Put(r)
+	// Who the new login is cannot be told for now: an error, not "not
+	// linked" (sixteenth review: untested), and the link stays.
+	unknownRenamed = true
+	if _, _, ok, err := tk.For(ctx, 1000); ok || err == nil {
+		t.Errorf("renamed, unknown: %v %v, want an error", ok, err)
+	}
+	if _, ok := s.Get(42); !ok {
+		t.Fatal("renamed, unknown: link dropped")
+	}
+	unknownRenamed = false
 	if _, gh, ok, err := tk.For(ctx, 1000); err != nil || !ok || gh.Login != "alice-renamed" {
 		t.Errorf("renamed: %+v %v %v", gh, ok, err)
 	}
