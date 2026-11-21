@@ -192,8 +192,11 @@ checks what it can):
    and `receive.maxBatchCommits` above what one merge brings (a subtree
    without `--squash`). A refused copy is logged and retried; the rest of
    the branch is mirrored meanwhile.
-   Nobody gets Submit (Gerrit's branch is GitHub's). No replication of the
-   project to GitHub. Read restricted to the team.
+   Nobody gets Submit (Gerrit's branch is GitHub's), and nobody but the
+   bridge's group gets Push on `refs/heads/*`: a commit pushed straight to
+   Gerrit's branch would be taken as on GitHub's, and Follow then refuses
+   that branch. No replication of the project to GitHub. Read restricted
+   to the team.
 3. `github.user_app` (required): the linking App needs Contents read &
    write too, for `/submit` (a linked token can then push as its owner:
    leave `/submit` unused, and the App without it, if that is too much).
@@ -216,6 +219,12 @@ closes that change as merged, at that commit, and Gerrit cannot reopen
 a merged change. The bridge does not hold the branch back to prevent
 it: GitHub's branch is the truth, and who may merge what is for GitHub's
 branch protection to decide (the owner's decision, 2026-11-20).
+The description is the button's message too, and a GitHub-born PR's
+author (a fork's, even) may edit it: one ending with another open
+change's Change-Id, merged before the bridge rewrites it, closes that
+change. `/submit` writes its own message, and makes a merge commit only
+for a real subtree (a root commit naming its directory, merged in) none
+of whose commits carries a Change-Id.
 `/submit` squashes, but for subtree merges, so it brings only the PR's
 own message.
 
