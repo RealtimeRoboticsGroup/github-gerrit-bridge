@@ -102,7 +102,7 @@ func TestGerritOwnedSwapOfAnAuthorsOwnForkStack(t *testing.T) {
 	r.Uploader = gerrit.AccountInfo{AccountID: 1} // the bridge's import of alice's PR
 	ci.Revisions[low] = r
 	s.save(ctx, store, 2, &state.Change{State: state.ChangeState{Change: 2, PR: 9, Branch: "main", Origin: "github", HeadBranch: "alice/r:low", Lifecycle: "NEW"},
-		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: low, GitHubSHA: low}}})
+		Revisions: []state.Revision{{PatchSet: 1, GerritSHA: low, GitHubSHA: low, Vetted: true}}})
 	sq := s.commit(low, "f.txt", "2\n", "Feature\n\nChange-Id: "+cid(1)+"\n")
 	ci = s.change(1, cid(1), sq, "Feature\n\nChange-Id: "+cid(1)+"\n", "NEW")
 	ci.Owner = gerrit.AccountInfo{AccountID: 5}
@@ -172,5 +172,47 @@ func TestGerritOwnedAuthorsOwnChangeBelow(t *testing.T) {
 		if snap.Foreign[2] != tc.foreign {
 			t.Errorf("%s below: foreign %v, want %v", tc.name, snap.Foreign[2], tc.foreign)
 		}
+	}
+}
+
+// Fifteenth review (passed on main): state main wrote for Gerrit's own
+// patch set found on a PR's branch (Importer.recordGerritHead: no Found
+// field then), a stranger's patch set someone pushed there, stays foreign
+// after the upgrade: its text never becomes the PR's description. The
+// branch read the record as GitHub's own.
+func TestGerritOwnedMainsRecordOfAFoundHeadStaysForeign(t *testing.T) {
+	ctx := context.Background()
+	s := newSites(t)
+	base := s.commit("", "a", "a\n", "Base")
+	s.push("gerrit.git", base, "refs/heads/main")
+	s.push("github.git", base, "refs/heads/main")
+	c, store := s.code(ctx)
+	c.BridgeAccount = 1
+	c.Trusted = func(_ context.Context, a int) (bool, bool) { return a == 7, true }
+	msg := fmt.Sprintf("Top\n\nChange-Id: %s\n", cid(2))
+	p1 := s.commit(base, "top", "1\n", msg)
+	p2 := s.commit(base, "top", "2\n", "Stranger's text\n\nChange-Id: "+cid(2)+"\n")
+	ci := s.change(2, cid(2), p2, "Stranger's text\n\nChange-Id: "+cid(2)+"\n", "NEW")
+	r2 := ci.Revisions[p2]
+	r2.Number, r2.Ref, r2.Uploader = 2, "refs/changes/02/2/2", gerrit.AccountInfo{AccountID: 9}
+	ci.Revisions = map[string]gerrit.RevisionInfo{
+		p1: {Number: 1, Ref: "refs/changes/02/2/1", Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: 1},
+			Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, p1))},
+		p2: r2,
+	}
+	ci.Owner = gerrit.AccountInfo{AccountID: 5}
+	s.push("gerrit.git", p1, "refs/changes/02/2/1")
+	s.push("gerrit.git", p2, "refs/changes/02/2/2")
+	s.save(ctx, store, 2, &state.Change{State: state.ChangeState{Change: 2, ChangeID: cid(2), PR: 20, Branch: "main", Origin: "github",
+		HeadBranch: "feature", Lifecycle: "NEW"}, Revisions: []state.Revision{
+		{PatchSet: 1, GerritSHA: p1, GitHubSHA: "1111111111111111111111111111111111111111"},
+		{PatchSet: 2, GerritSHA: p2, GitHubSHA: p2}, // "Gerrit's patch set 2 is on GitHub", as main records it
+	}})
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Foreign[2] {
+		t.Error("main's record of a found head lets a stranger's patch set become the PR's")
 	}
 }

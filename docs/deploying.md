@@ -173,7 +173,11 @@ The config needs no change, except:
 
 State (`refs/bridge/*`) gains fields (`found`, `vetted`,
 `merged_notice_posted`), all optional: main reads them back (going back
-loses them, and with them those fixes).
+loses them, and with them those fixes). A record main wrote of a Gerrit
+patch set found on a GitHub-born PR's branch (no `found` then) is read
+as found: one commit on both sides, and not `vetted`. An old import of
+a commit that already carried its Change-Id looks the same, and is
+looked at again (at worst, one notice).
 
 Behaviour that changes, on purpose:
 - **Gerrit patch sets pushed to a GitHub-born PR's branch** (a

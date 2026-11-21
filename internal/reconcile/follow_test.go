@@ -361,6 +361,9 @@ func TestImporterForeignIsByPublishable(t *testing.T) {
 		}
 		st, _ := im.Store.Load(ctx, 1)
 		st.State.Origin, st.State.HeadBranch = "github", "feature"
+		for i := range st.Revisions {
+			st.Revisions[i].Vetted = true // an import's, as written now
+		}
 		if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
 			t.Fatal(err)
 		}
@@ -461,7 +464,7 @@ func TestFoundOnGitHubIsStillForeign(t *testing.T) {
 		snap := &Snapshot{Changes: map[int]*GerritChange{1: {Number: 1, Status: "NEW", Revision: "r1", PatchSet: 2,
 			OwnerID: 5, UploaderID: 7, Kind: "REWORK"}},
 			State: map[int]*state.Change{1: {State: state.ChangeState{Change: 1, Origin: "github", HeadBranch: "feature"},
-				Revisions: []state.Revision{{PatchSet: 2, GerritSHA: "r1", GitHubSHA: "r1", Found: found}}}}}
+				Revisions: []state.Revision{{PatchSet: 2, GerritSHA: "r1", GitHubSHA: "r1", Found: found, Vetted: !found}}}}}
 		if err := c.markForeign(ctx, snap); err != nil {
 			t.Fatal(err)
 		}
@@ -1215,7 +1218,7 @@ func TestFoundBelowIsCheckedLikeAnyCode(t *testing.T) {
 		// The stranger's patch set is on GitHub: imported (theirs to the
 		// branch's history), or found there (pushed by someone).
 		s.save(ctx, c.Store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "github",
-			HeadBranch: "feature", Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: low, GitHubSHA: low, Found: found}}})
+			HeadBranch: "feature", Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: low, GitHubSHA: low, Found: found, Vetted: !found}}})
 		snap, err := c.observe(ctx, "main", nil)
 		if err != nil {
 			t.Fatal(err)

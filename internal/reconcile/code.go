@@ -580,6 +580,19 @@ func (c *Code) deferOverBudget(ctx context.Context, s *Snapshot) {
 	}
 }
 
+// found reports whether rv records a commit found on GitHub (someone
+// pushed Gerrit's commit to a GitHub-born PR's branch), not one the
+// bridge put there or imported. main (a01d401) wrote those without Found
+// (fifteenth review): on a GitHub-born change, a record that is not
+// vetted (this branch vets every one it writes there) with one commit
+// on both sides (an import's Gerrit commit carries a Change-Id the
+// GitHub one may lack, an append's is Gerrit's own) is taken for one.
+// That may take an old import of a commit that already had its Change-Id
+// for found: that fails closed (a notice, a patch set looked at again).
+func found(st *state.Change, rv state.Revision) bool {
+	return rv.Found || (st != nil && st.State.Origin == "github" && !rv.Vetted && rv.GerritSHA == rv.GitHubSHA)
+}
+
 // ownerPass is the owner whose Gerrit patch sets may go to a GitHub-born
 // change's PR branch, head, as theirs (mayPushToAuthor): owner, or, where
 // GitHub owns the branches and head is the repository's own branch, none
@@ -687,7 +700,7 @@ func onGitHub(st *state.Change, revision string) bool {
 		// One found there (someone pushed Gerrit's commit to the PR's
 		// branch) is GitHub's, but not this PR's author's: its text
 		// would become their description (twelfth review).
-		if r.GerritSHA == revision && r.GitHubSHA != "" && !r.Found {
+		if r.GerritSHA == revision && r.GitHubSHA != "" && !found(st, r) {
 			return true
 		}
 	}
@@ -937,7 +950,7 @@ func recordedOnRepoBranch(st *state.Change, sha, into string) bool {
 		// A GitHub-born change's records are imports, or appends that
 		// passed markForeign: vetted, whenever written; a Gerrit-born
 		// one's only if marked so.
-		if r.GerritSHA == sha && r.GitHubSHA != "" && !r.Found && (r.Vetted || st.State.Origin == "github") {
+		if r.GerritSHA == sha && r.GitHubSHA != "" && !found(st, r) && (r.Vetted || st.State.Origin == "github") {
 			return true
 		}
 	}
@@ -1151,7 +1164,7 @@ func mayReach(ctx context.Context, r belowReader, trusted func(context.Context, 
 	already := map[string]bool{}
 	if st != nil {
 		for _, rv := range st.Revisions {
-			if rv.GitHubSHA != "" && !rv.Found {
+			if rv.GitHubSHA != "" && !found(st, rv) {
 				already[rv.GerritSHA] = true
 			}
 		}
