@@ -538,10 +538,10 @@ func MakePlan(s *Snapshot) *Plan {
 			continue
 		}
 		finalBase[pr.Number] = d.Base
-		if s.GitHubOwned && pr.Merged {
-			// Merged on GitHub while its change is open here: nothing
-			// reopens or edits a merged PR (Code.mergedOnGitHub closes
-			// the change).
+		if pr.Merged && (s.GitHubOwned || c.Status == "NEW") {
+			// Merged on GitHub (while its change is open here, where
+			// Gerrit owns the branch): nothing reopens or edits a merged
+			// PR (Code.mergedOnGitHub closes the change).
 			continue
 		}
 		u := &github.PullUpdate{}

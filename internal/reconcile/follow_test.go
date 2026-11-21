@@ -247,13 +247,17 @@ func TestMergedOnGitHubIsAbandonedIfGerritWillNot(t *testing.T) {
 
 // A PR merged into another branch (a stacked PR into the one below) does
 // not merge as its change: abandoned, saying where it went, at once.
+// So too where Gerrit owns the branches (twelfth review).
 func TestMergedOnGitHubIntoAnotherBranchIsAbandoned(t *testing.T) {
-	s, c, _ := mergedSites(t, "One (#10)\n")
-	s.maintainServer = true
-	s.pulls[10].Base.Ref = "gerrit/I2"
-	mirrorStates(t, c, false)
-	if got := s.changes[1].Status; got != "ABANDONED" || !strings.Contains(s.actionMsgs[1], "PR #10 into gerrit/I2, not main") {
-		t.Errorf("change 1 is %s: %q", got, s.actionMsgs[1])
+	for _, owned := range []bool{true, false} {
+		s, c, _ := mergedSites(t, "One (#10)\n")
+		c.GitHubOwned = owned
+		s.maintainServer = true
+		s.pulls[10].Base.Ref = "gerrit/I2"
+		mirrorStates(t, c, false)
+		if got := s.changes[1].Status; got != "ABANDONED" || !strings.Contains(s.actionMsgs[1], "PR #10 into gerrit/I2, not main") {
+			t.Errorf("GitHub owns %v: change 1 is %s: %q", owned, got, s.actionMsgs[1])
+		}
 	}
 }
 

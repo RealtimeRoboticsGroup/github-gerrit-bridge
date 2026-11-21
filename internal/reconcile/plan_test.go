@@ -1513,16 +1513,20 @@ func TestGitHubOwnedTrailerIsOnlyAChangeID(t *testing.T) {
 // Where GitHub owns main, a PR merged on GitHub while its change is still
 // open (into another branch, say, before the bridge closes the change) is
 // not reopened, retargeted or edited: GitHub refuses, every time.
+// So too where Gerrit owns it (a stacked PR merged into the one below:
+// twelfth review).
 func TestGitHubOwnedMergedPRIsLeftAlone(t *testing.T) {
-	w := newWorld(t)
-	w.githubOwned = true
-	w.upload(1, "a1", "m0")
-	w.converge()
-	pr := w.pr(1)
-	pr.State, pr.Merged, pr.Base.Ref, pr.Title = "closed", true, "gerrit/I2", "Edited"
-	for _, a := range MakePlan(w.snapshot()).Actions {
-		if a.PR == pr.Number {
-			t.Errorf("planned %v on the merged PR", a)
+	for _, owned := range []bool{true, false} {
+		w := newWorld(t)
+		w.githubOwned = owned
+		w.upload(1, "a1", "m0")
+		w.converge()
+		pr := w.pr(1)
+		pr.State, pr.Merged, pr.Base.Ref, pr.Title = "closed", true, "gerrit/I2", "Edited"
+		for _, a := range MakePlan(w.snapshot()).Actions {
+			if a.PR == pr.Number {
+				t.Errorf("GitHub owns %v: planned %v on the merged PR", owned, a)
+			}
 		}
 	}
 }

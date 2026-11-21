@@ -1343,7 +1343,7 @@ func (c *Code) mirrorPRStates(ctx context.Context, s *Snapshot, handled map[int]
 			continue
 		}
 		pr := s.PRs[st.State.PR]
-		if s.GitHubOwned && ch.Status == "NEW" && pr.Merged {
+		if ch.Status == "NEW" && pr.Merged {
 			did, err := c.mergedOnGitHub(ctx, s, n, ch, pr)
 			if err != nil {
 				return changed, err
@@ -1455,8 +1455,16 @@ func (c *Code) mergedOnGitHub(ctx context.Context, s *Snapshot, n int, ch *Gerri
 		by = "@" + pr.MergedBy.Login
 	}
 	if pr.Base.Ref != s.Branch {
+		// Either way the branches are owned (twelfth review: Gerrit-owned
+		// was left planning a retarget GitHub refuses, every reconcile).
 		return c.abandonMerged(ctx, n, pr, fmt.Sprintf("Merged on GitHub by %s in PR #%d into %s, not %s, so it will not merge here as this change: "+
 			"abandoned. Whatever it merged into carries its code (a stacked PR's branch: the change below it).", by, pr.Number, pr.Base.Ref, s.Branch))
+	}
+	if !s.GitHubOwned {
+		// Into the branch Gerrit owns, which only replication writes:
+		// not a merge Gerrit follows; left as it is.
+		c.Logger.Warn("a PR merged on GitHub into a branch Gerrit owns; leaving its change", "change", n, "pr", pr.Number, "branch", s.Branch)
+		return false, nil
 	}
 	if _, err := c.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", sha, "refs/remotes/gerrit/heads/"+s.Branch); err != nil {
 		// Not followed yet (or not there at all): the change waits.
