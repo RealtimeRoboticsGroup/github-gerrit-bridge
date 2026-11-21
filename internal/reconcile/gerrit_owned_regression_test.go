@@ -11,8 +11,10 @@ package reconcile
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
@@ -504,5 +506,119 @@ func TestGerritOwnedOwnersGitHubApprovalVotes(t *testing.T) {
 	e := ownApproval(t, false, bob, map[int]gerrit.AccountInfo{1: bob, 2: bob})
 	if len(e.h.dismissed) != 0 || len(e.g.votes) != 1 {
 		t.Errorf("dismissed %v, Gerrit votes %v; want one vote, none dismissed", e.h.dismissed, e.g.votes)
+	}
+}
+
+// Eighteenth review (regression, passes on main): a linked, budgeted
+// user's vote-only +2 that is not posted (its commit is no longer the
+// PR's head) is looked at again each sync; no look may spend their
+// PostBudget, or their own words are deferred.
+func TestGerritOwnedStaleVoteSpendsNoBudget(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	e.c.PostBudget = &Budget{N: 3, Per: time.Hour}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2}}
+	e.g.vote("alice", "Code-Review", 2)
+	e.h.head = "sha3"
+	for i := 0; i < 4; i++ {
+		e.sync(t)
+	}
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "m2", Author: alice, Message: "Patch Set 2:\n\nPlease also fix the docs.", RevisionNumber: 2})
+	e.sync(t)
+	if !slices.ContainsFunc(e.h.ics, func(ic github.IssueComment) bool { return strings.Contains(ic.Body, "Please also fix the docs.") }) {
+		t.Errorf("alice's words deferred: her budget was spent on re-looking at an unposted vote (ics %d, reviews %+v)", len(e.h.ics), e.h.reviews)
+	}
+}
+
+// Eighteenth review (regression guard, passes on main): a linked user's +2 on their own Gerrit-born
+// change, on the PR's head and still their vote, is their GitHub
+// approval, as on main (GitHub-owned's ownCode rule must not apply).
+func TestGerritOwnedOwnChangeApprovalPosted(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.owner = alice
+	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2\n\nLGTM.", RevisionNumber: 2}}
+	e.g.vote("alice", "Code-Review", 2)
+	e.sync(t)
+	if !slices.ContainsFunc(e.h.reviews, func(rv github.Review) bool {
+		return rv.State == "APPROVED" && rv.User == aliceGH && rv.CommitID == "sha2"
+	}) {
+		t.Errorf("no approval as alice on sha2: %+v", e.h.reviews)
+	}
+}
+
+// Eighteenth review (regression guard, passes on main): a vote the bridge cast as a linked user
+// (Run-As: real_author is the bridge, as when a GitHub approval is
+// mirrored) is the bridge's: never mirrored back as a GitHub review or
+// comment, and not taken for a later vote of theirs that withdraws
+// their own earlier +2.
+func TestGerritOwnedBridgeRunAsVoteNotMirrored(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	bridge := gerrit.AccountInfo{AccountID: bridgeID, Name: "Bridge", Username: "bridge"}
+	e.g.messages = []gerrit.ChangeMessage{
+		{ID: "m1", Author: alice, RealAuthor: &bridge, Message: "Patch Set 2: Code-Review-1\n\nFrom GitHub.", RevisionNumber: 2},
+	}
+	e.sync(t)
+	if len(e.h.reviews) != 0 || len(e.h.ics) != 0 {
+		t.Errorf("the bridge's own Run-As vote was mirrored back: reviews %+v ics %+v", e.h.reviews, e.h.ics)
+	}
+}
+
+// Eighteenth review (regression, passes on main): the same for a +2
+// Gerrit no longer has (removed by the owner), vote-only.
+func TestGerritOwnedRemovedVoteSpendsNoBudget(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	e.c.PostBudget = &Budget{N: 3, Per: time.Hour}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2}}
+	e.g.vote("alice", "Code-Review", 0)
+	for i := 0; i < 4; i++ {
+		e.sync(t)
+	}
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "m2", Author: alice, Message: "Patch Set 2:\n\nPlease also fix the docs.", RevisionNumber: 2})
+	e.sync(t)
+	if !slices.ContainsFunc(e.h.ics, func(ic github.IssueComment) bool { return strings.Contains(ic.Body, "Please also fix the docs.") }) {
+		t.Errorf("alice's words deferred (ics %d, reviews %+v)", len(e.h.ics), e.h.reviews)
+	}
+}
+
+// Eighteenth review (regression, passes on main): a linked user's +2 with words, not posted as an approval
+// because the PR's head moved on (sixteenth review's rule), goes as a PR
+// comment with her own token; it must name the patch set it was given on
+// (docs/deploying.md: "its words are a comment naming the patch set"),
+// not read as her +2 of the PR as it is now. Main: her approval of
+// sha2's commit, which GitHub shows on that commit.
+func TestGerritOwnedLateVoteCommentNamesItsPatchSet(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2\n\nLGTM, ship it.", RevisionNumber: 2}}
+	e.g.vote("alice", "Code-Review", 2)
+	e.h.head = "sha3"
+	e.sync(t)
+	if slices.ContainsFunc(e.h.reviews, func(rv github.Review) bool { return rv.State == "APPROVED" && rv.CommitID == "sha2" }) {
+		return // main: an approval GitHub shows on sha2
+	}
+	found := false
+	for _, ic := range e.h.ics {
+		if strings.Contains(ic.Body, "LGTM, ship it.") {
+			found = true
+			if !strings.Contains(strings.ToLower(ic.Body), "patch set 2") {
+				t.Errorf("her +2 of patch set 2 posted as %s without naming it, on a PR now at sha3: %q", ic.User.Login, ic.Body)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("her words were not posted: %+v", e.h.ics)
 	}
 }

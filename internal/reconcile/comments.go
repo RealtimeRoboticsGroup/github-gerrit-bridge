@@ -1132,7 +1132,11 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			}
 		}
 		if text == "" {
-			continue // only a vote, which statuses show
+			// Only a vote, which statuses show: nothing posted, nothing
+			// spent (eighteenth review: one waiting for its commit to be
+			// the head spent its author's budget on every sync).
+			c.PostBudget.Refund(ctx, msg.Author.AccountID)
+			continue
 		}
 		var out *github.IssueComment
 		as, err := c.post(n, p, func(api UserGitHub, as int64) (err error) {
@@ -1328,10 +1332,15 @@ func (c *Comments) messageBody(n int, msg gerrit.ChangeMessage, text string, s *
 		head = fmt.Sprintf("%s ([Gerrit](%s)) on patch set %d%s:\n\n", who, c.messageURL(n, msg), msg.RevisionNumber, votes)
 	case v != "":
 		head = "**" + v + "**\n\n"
-		if ps, _ := s.latestOnGitHub(msg.RevisionNumber); ps != msg.RevisionNumber {
+		switch ps, sha := s.latestOnGitHub(msg.RevisionNumber); {
+		case ps != msg.RevisionNumber:
 			// Votes on code GitHub does not have: posted as their
 			// author, they must not read as theirs on this PR's.
 			head = fmt.Sprintf("**%s** on [patch set %d](%s), which is not on GitHub\n\n", v, msg.RevisionNumber, c.messageURL(n, msg))
+		case s.pull != nil && s.pull.Head.SHA != sha:
+			// Nor on code it was not given on (eighteenth review: a +2
+			// posted after a push read as theirs of the new head).
+			head = fmt.Sprintf("**%s** on [patch set %d](%s), not the PR's head\n\n", v, msg.RevisionNumber, c.messageURL(n, msg))
 		}
 	}
 	foot := "\n\n" + gerritFooter(n, msg.ID)
