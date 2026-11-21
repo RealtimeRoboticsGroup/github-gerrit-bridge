@@ -872,6 +872,9 @@ type belowReader interface {
 	inBranch(ctx context.Context, branch, sha string) (bool, error)
 	changesOf(ctx context.Context, sha string) ([]gerrit.ChangeInfo, error)
 	onRepoBranch(ctx context.Context, change int, sha, into string) (bool, error)
+	// headOf is a GitHub-born change's PR branch as its state records it
+	// (a fork's "owner/repo:branch"), "" if none.
+	headOf(ctx context.Context, change int) (string, error)
 }
 
 // mirrorReader is belowReader from the bridge's mirror (whose
@@ -923,6 +926,17 @@ func (r mirrorReader) onRepoBranch(ctx context.Context, change int, sha, into st
 		return false, err
 	}
 	return recordedOnRepoBranch(st, sha, into), nil
+}
+
+func (r mirrorReader) headOf(ctx context.Context, change int) (string, error) {
+	if r.store == nil {
+		return "", nil
+	}
+	st, err := r.store.Load(ctx, change)
+	if err != nil {
+		return "", err
+	}
+	return st.State.HeadBranch, nil
 }
 
 // recordedOnRepoBranch reports whether st records Gerrit commit sha as
@@ -996,6 +1010,10 @@ func (m *memoReader) changesOf(ctx context.Context, sha string) ([]gerrit.Change
 		m.changes[sha] = v
 	}
 	return v, err
+}
+
+func (m *memoReader) headOf(ctx context.Context, change int) (string, error) {
+	return m.r.headOf(ctx, change)
 }
 
 func (m *memoReader) onRepoBranch(ctx context.Context, change int, sha, into string) (bool, error) {
@@ -1089,10 +1107,27 @@ func parentsTrusted(ctx context.Context, r belowReader, branch, into string, par
 			}
 			// No pass for the bridge's own uploads below: an import of
 			// an unlinked author's PR (a fork's, say) is theirs, and
-			// CI's trusted group has no bridge in it either.
+			// CI's trusted group has no bridge in it either. The owner's
+			// pass is a person's: where the pushed change is the
+			// bridge's (an unlinked author's import), only for the
+			// bridge's change of a PR from the same fork, the same
+			// author's (sixteenth review: given to the bridge, other
+			// strangers' imports below passed; seventeenth: withheld
+			// from it, an unlinked author's own change below was a
+			// stranger's).
 			lower := 0
-			if owner != 0 && ci.Owner.AccountID == owner {
+			switch {
+			case owner == 0 || ci.Owner.AccountID != owner:
+			case owner != bridge:
 				lower = owner
+			default:
+				same, err := sameFork(ctx, r, into, ci.Number)
+				if err != nil {
+					return false, known, "", fmt.Errorf("reading change %d's state: %w", ci.Number, err)
+				}
+				if same {
+					lower = owner
+				}
 			}
 			revs := revisionsByNumber(ci)
 			for n, rv := range revs {
@@ -1185,15 +1220,24 @@ func mayReach(ctx context.Context, r belowReader, trusted func(context.Context, 
 	if st != nil {
 		into = st.State.HeadBranch
 	}
-	// The owner's pass below is a person's: never the bridge's, whose
-	// own changes below (other strangers' imports) are not this PR's
-	// author's (sixteenth review).
-	below := owner
-	if below == bridge {
-		below = 0
-	}
-	ok, k, why, err := parentsTrusted(ctx, r, branch, into, revs[ps].Commit.ParentSHAs(), already, trusted, bridge, below)
+	ok, k, why, err := parentsTrusted(ctx, r, branch, into, revs[ps].Commit.ParentSHAs(), already, trusted, bridge, owner)
 	return ok && err == nil, known && k, why, err
+}
+
+// sameFork reports whether change's PR is from the fork into (the pushed
+// change's PR branch) is: one author's, as recordedOnRepoBranch takes a
+// fork's records for its own.
+func sameFork(ctx context.Context, r belowReader, into string, change int) (bool, error) {
+	fork, _, ok := github.SplitHeadKey(into)
+	if !ok || fork == "" {
+		return false, nil
+	}
+	head, err := r.headOf(ctx, change)
+	if err != nil {
+		return false, err
+	}
+	other, _, ok := github.SplitHeadKey(head)
+	return ok && strings.EqualFold(other, fork), nil
 }
 
 // snapReader is the reader for one look at a branch: s's, made once.

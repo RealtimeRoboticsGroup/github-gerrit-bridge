@@ -729,3 +729,4 @@ func (noneBelow) parentsOf(context.Context, string) ([]string, error)           
 func (noneBelow) inBranch(context.Context, string, string) (bool, error)          { return true, nil }
 func (noneBelow) changesOf(context.Context, string) ([]gerrit.ChangeInfo, error)  { return nil, nil }
 func (noneBelow) onRepoBranch(context.Context, int, string, string) (bool, error) { return false, nil }
+func (noneBelow) headOf(context.Context, int) (string, error)                     { return "", nil }

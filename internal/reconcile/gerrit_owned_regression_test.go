@@ -432,3 +432,65 @@ func TestBridgeOwnedImportStatus(t *testing.T) {
 		}
 	}
 }
+
+// Seventeenth review, a regression (main pushed it): unlinked alice's two
+// stacked fork PRs, both the bridge's imports. Her lower PR's description
+// edit made a message-only patch set the bridge uploaded, which GitHub
+// never had; a trusted maintainer rebases her upper change onto it in
+// Gerrit. Her own change below (the same fork's) is hers: not foreign.
+// Another fork's bridge import below still is: that case is the branch's
+// rule (main read nothing below).
+func TestGerritOwnedUnlinkedAuthorsOwnBridgeImportBelow(t *testing.T) {
+	for _, lowHead := range []string{"alice/r:low", "Alice/R:low", "mallory/r:low"} {
+		t.Run(lowHead, func(t *testing.T) { unlinkedAuthorsOwnBelow(t, lowHead, lowHead != "mallory/r:low") })
+	}
+}
+
+func unlinkedAuthorsOwnBelow(t *testing.T, lowHead string, hers bool) {
+	ctx := context.Background()
+	s := newSites(t)
+	base := s.commit("", "a", "a\n", "Base")
+	s.push("gerrit.git", base, "refs/heads/main")
+	s.push("github.git", base, "refs/heads/main")
+	c, _ := s.code(ctx)
+	c.BridgeAccount = 1
+	c.Trusted = func(_ context.Context, a int) (bool, bool) { return a == 7, true }
+	bridge := gerrit.AccountInfo{AccountID: 1}
+	lowMsg := "Low\n\nChange-Id: " + cid(1) + "\n"
+	low1 := s.commit(base, "low", "alice's\n", lowMsg)
+	low2 := s.commit(base, "low", "alice's\n", "Low, edited on GitHub\n\nChange-Id: "+cid(1)+"\n")
+	ci := s.change(1, cid(1), low2, lowMsg, "NEW")
+	ci.Revisions = map[string]gerrit.RevisionInfo{
+		low1: {Number: 1, Ref: "refs/changes/01/1/1", Kind: "REWORK", Uploader: bridge,
+			Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, low1))},
+		low2: {Number: 2, Ref: "refs/changes/01/1/2", Kind: "NO_CODE_CHANGE", Uploader: bridge,
+			Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, low2))},
+	}
+	ci.Owner = bridge
+	s.push("gerrit.git", low1, "refs/changes/01/1/1")
+	s.push("gerrit.git", low2, "refs/changes/01/1/2")
+	s.save(ctx, c.Store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "github",
+		HeadBranch: lowHead, Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: low1, GitHubSHA: "1111111111111111111111111111111111111111", Vetted: true}}})
+	msg := "Top\n\nChange-Id: " + cid(2) + "\n"
+	p1 := s.commit(low1, "top", "1\n", msg)
+	p2 := s.commit(low2, "top", "1\n", msg)
+	ci = s.change(2, cid(2), p2, msg, "NEW")
+	ci.Revisions = map[string]gerrit.RevisionInfo{
+		p1: {Number: 1, Ref: "refs/changes/02/2/1", Kind: "REWORK", Uploader: bridge,
+			Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, p1))},
+		p2: {Number: 2, Ref: "refs/changes/02/2/2", Kind: "TRIVIAL_REBASE", Uploader: gerrit.AccountInfo{AccountID: 7},
+			Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, p2))},
+	}
+	ci.Owner = bridge
+	s.push("gerrit.git", p1, "refs/changes/02/2/1")
+	s.push("gerrit.git", p2, "refs/changes/02/2/2")
+	s.save(ctx, c.Store, 2, &state.Change{State: state.ChangeState{Change: 2, ChangeID: cid(2), PR: 20, Branch: "main", Origin: "github",
+		HeadBranch: "alice/r:top", Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: p1, GitHubSHA: "2222222222222222222222222222222222222222", Vetted: true}}})
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Foreign[2] == hers {
+		t.Errorf("lower change from %s: foreign %v (main pushed alice's own)", lowHead, snap.Foreign[2])
+	}
+}

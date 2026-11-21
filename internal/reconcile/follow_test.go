@@ -906,6 +906,7 @@ func (r chainReader) parentsOf(context.Context, string) ([]string, error) { retu
 func (r chainReader) inBranch(_ context.Context, _, sha string) (bool, error) {
 	return sha == fmt.Sprint("c", r.n), nil
 }
+func (r chainReader) headOf(context.Context, int) (string, error) { return "", nil }
 func (r chainReader) onRepoBranch(context.Context, int, string, string) (bool, error) {
 	return false, nil
 }
@@ -1074,6 +1075,9 @@ func (c *countingReader) inBranch(ctx context.Context, b, sha string) (bool, err
 func (c *countingReader) changesOf(ctx context.Context, sha string) ([]gerrit.ChangeInfo, error) {
 	c.changes++
 	return c.r.changesOf(ctx, sha)
+}
+func (c *countingReader) headOf(ctx context.Context, n int) (string, error) {
+	return c.r.headOf(ctx, n)
 }
 func (c *countingReader) onRepoBranch(ctx context.Context, n int, sha, into string) (bool, error) {
 	c.state++
