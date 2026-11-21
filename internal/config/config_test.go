@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -361,5 +362,26 @@ func TestNeverGroupsDefault(t *testing.T) {
 	c, err := Parse([]byte(full + "identity:\n  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n"))
 	if err != nil || len(c.Identity.NeverGroups) != 0 {
 		t.Errorf("with LDAP: %v %v", c.Identity.NeverGroups, err)
+	}
+}
+
+// An empty never_groups: (every entry commented out) is none, as on
+// main; not there at all, the default (fifteenth review: the default came
+// back).
+func TestEmptyNeverGroupsKeyMeansNone(t *testing.T) {
+	c, err := Parse([]byte(full + "identity:\n  never_groups:\n  # - Service Users\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Identity.NeverGroups) != 0 {
+		t.Errorf("never_groups = %q, want none", c.Identity.NeverGroups)
+	}
+	if c, err = Parse([]byte(full)); err != nil || !slices.Equal(c.Identity.NeverGroups, []string{"Service Users", "Administrators"}) {
+		t.Errorf("unset: %q %v", c.Identity.NeverGroups, err)
+	}
+	// Changing one config's never changes the next's default.
+	c.Identity.NeverGroups[0] = "Changed"
+	if c, err = Parse([]byte(full)); err != nil || c.Identity.NeverGroups[0] != "Service Users" {
+		t.Errorf("default shared: %q %v", c.Identity.NeverGroups, err)
 	}
 }

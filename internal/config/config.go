@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -254,8 +255,11 @@ func Parse(b []byte) (*Config, error) {
 			KeepaliveInterval: 15 * time.Second,
 			KeepaliveCountMax: 3,
 		}},
-		// Identity.NeverGroups' default is set after decoding: set
-		// beside identity.ldap, it is an error.
+		// Identity.NeverGroups' default, as main set it: before decoding,
+		// so an empty never_groups: (every entry commented out) is none
+		// (fifteenth review); left as it is, it is dropped beside
+		// identity.ldap, where setting it is an error.
+		Identity: Identity{NeverGroups: defaultNeverGroups},
 		CI: CI{
 			TrustedGroup:   "Verified Users",
 			Labels:         []string{"Verified"},
@@ -268,9 +272,12 @@ func Parse(b []byte) (*Config, error) {
 		return nil, err
 	}
 	c.Gerrit.URL = strings.TrimRight(c.Gerrit.URL, "/")
-	neverGroupsSet := c.Identity.NeverGroups != nil
-	if !neverGroupsSet && c.Identity.LDAP == nil {
-		c.Identity.NeverGroups = []string{"Service Users", "Administrators"}
+	if g := c.Identity.NeverGroups; len(g) > 0 && &g[0] == &defaultNeverGroups[0] {
+		// Not in the file: the default, but none beside identity.ldap.
+		c.Identity.NeverGroups = slices.Clone(g)
+		if c.Identity.LDAP != nil {
+			c.Identity.NeverGroups = nil
+		}
 	}
 	if l := c.Identity.LDAP; l != nil {
 		l.ObjectClass = cmp.Or(l.ObjectClass, "githubAccount")
@@ -283,6 +290,10 @@ func Parse(b []byte) (*Config, error) {
 	}
 	return c, nil
 }
+
+// defaultNeverGroups is identity.never_groups when the file does not
+// say (decoding replaces it, so it is told apart by its backing array).
+var defaultNeverGroups = []string{"Service Users", "Administrators"}
 
 func (c *Config) validate() error {
 	var errs []error
