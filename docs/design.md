@@ -117,7 +117,13 @@ checklist.
   branch (a stacked PR into the one below, whose change then carries the
   code), the change is abandoned with that note (the owner's fallback).
   A merged PR is never reopened or edited meanwhile, and `/submit`
-  refuses a PR not based on the target branch.
+  refuses a PR not based on the target branch. A PR in a native stack
+  (the bridge's own, of a relation chain, or one made on GitHub) merges
+  only through GitHub's asynchronous merge (checked 2026-11-20: the other
+  endpoint answers 403), which `/submit` uses for it: being based on the
+  branch, it is the stack's bottom, and merges alone, directly, with no
+  rule bypassed. Merging a stack's top with GitHub's button merges the
+  PRs below it too, each as its own commit on the branch.
 - **Who reaches GitHub.** A pushed branch runs the repository's workflows
   with its secrets. A Gerrit-born change is mirrored only if everyone
   responsible for its current patch set (uploader, real uploader, and

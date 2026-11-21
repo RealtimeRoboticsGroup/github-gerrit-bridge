@@ -240,6 +240,7 @@ type fakeGitHub struct {
 	issueListings int
 	// title, body and base are the PR's (GetPull; base "main" if unset).
 	title, body, base string
+	stack             *github.PRStack // the PR's native stack, if any
 	// refuse makes CreateIssueComment refuse (422) bodies containing it.
 	refuse string
 	// pushes is the activity log of the PR's branch, newest first.
@@ -482,7 +483,7 @@ func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error)
 }
 func (f *fakeGitHub) GetPull(_ context.Context, n int) (*github.PullRequest, error) {
 	pr := &github.PullRequest{Number: n, HTMLURL: "https://github.com/o/r/pull/1", Head: github.Ref{Ref: "topic", SHA: cmp.Or(f.head, "sha2")},
-		Title: f.title, Body: f.body, Base: github.Ref{Ref: cmp.Or(f.base, "main")}}
+		Title: f.title, Body: f.body, Base: github.Ref{Ref: cmp.Or(f.base, "main")}, Stack: f.stack}
 	pr.Head.Repo = &struct {
 		FullName string `json:"full_name"`
 	}{"o/r"}

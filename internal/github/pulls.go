@@ -1,7 +1,9 @@
 package github
 
 import (
+	"cmp"
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -111,16 +113,84 @@ type MergeInput struct {
 	Message string `json:"commit_message"`
 	SHA     string `json:"sha"`
 	Method  string `json:"merge_method"`
+	// Stacked is set for a PR in a native stack, which GitHub merges only
+	// asynchronously: that merges it and the PRs below it in the stack.
+	Stacked bool `json:"-"`
 }
 
 // MergePull merges PR n as the client's token's user, and returns the
 // commit the merge made.
 func (c *Client) MergePull(ctx context.Context, n int, m MergeInput) (string, error) {
+	if m.Stacked {
+		return c.mergeAsync(ctx, n, m)
+	}
 	var out struct {
 		SHA string `json:"sha"`
 	}
 	_, err := c.Do(ctx, http.MethodPut, c.RepoPath("pulls/"+strconv.Itoa(n)+"/merge"), m, &out)
 	return out.SHA, err
+}
+
+// asyncMergePoll is how often, and asyncMergeTries how many times, an
+// asynchronous merge's result is asked for.
+var (
+	asyncMergePoll  = 2 * time.Second
+	asyncMergeTries = 30
+)
+
+// mergeAsync is MergePull for a stacked PR: GitHub's merge-async, merging
+// directly (never queued, and no rule bypassed: the button's default),
+// then its result. GitHub's refusals, then or while it runs, are
+// APIErrors with its own message.
+func (c *Client) mergeAsync(ctx context.Context, n int, m MergeInput) (string, error) {
+	type result struct {
+		Status  string `json:"status"` // pending, merged, enqueued, failed
+		Details struct {
+			UUID    string `json:"uuid"`
+			SHA     string `json:"sha"`
+			Message string `json:"message"`
+		} `json:"details"`
+	}
+	in := struct {
+		MergeInput
+		Action string `json:"merge_action"`
+	}{m, "direct_merge"}
+	path := c.RepoPath("pulls/" + strconv.Itoa(n) + "/merge-async")
+	var r result
+	// A refusal (409: another merge of it is pending) is GitHub's answer.
+	if _, err := c.Do(ctx, http.MethodPut, path, in, &r); err != nil {
+		return "", err
+	}
+	for try := 0; ; try++ {
+		switch r.Status {
+		case "merged":
+			if r.Details.SHA == "" {
+				return "", fmt.Errorf("GitHub merged PR %d but did not say as which commit", n)
+			}
+			return r.Details.SHA, nil
+		case "failed":
+			return "", &APIError{Method: http.MethodPut, Path: path, Status: http.StatusMethodNotAllowed, Message: cmp.Or(r.Details.Message, "The merge failed.")}
+		case "pending":
+		default: // enqueued, or anything new: not merged
+			return "", &APIError{Method: http.MethodPut, Path: path, Status: http.StatusAccepted, Message: "GitHub did not merge it directly (status " + r.Status + ")."}
+		}
+		if r.Details.UUID == "" || try >= asyncMergeTries {
+			return "", &APIError{Method: http.MethodPut, Path: path, Status: http.StatusAccepted, Message: "GitHub is still merging it. Gerrit shows the change merged once it is."}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(asyncMergePoll):
+		}
+		uuid := r.Details.UUID
+		r = result{}
+		if _, err := c.Do(ctx, http.MethodGet, path+"/"+url.PathEscape(uuid), nil, &r); err != nil {
+			return "", err
+		}
+		if r.Details.UUID == "" {
+			r.Details.UUID = uuid
+		}
+	}
 }
 
 // PullCommit is one of a PR's own commits.

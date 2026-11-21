@@ -859,3 +859,45 @@ func TestMergePullAndCommits(t *testing.T) {
 		t.Errorf("commits: %+v %v", commits, err)
 	}
 }
+
+// A stacked PR is merged with merge-async, directly and without bypassing
+// rules, and its result polled for: the commit it made, or GitHub's own
+// reason it failed.
+func TestMergePullStacked(t *testing.T) {
+	asyncMergePoll = time.Millisecond
+	t.Cleanup(func() { asyncMergePoll = 2 * time.Second })
+	for _, tc := range []struct {
+		final, sha, err string
+	}{
+		{`{"status":"merged","details":{"sha":"def"}}`, "def", ""},
+		{`{"status":"failed","details":{"message":"At least 1 approving review is required."}}`, "", "At least 1 approving review is required."},
+		{`{"status":"enqueued","details":{}}`, "", "did not merge it directly"},
+	} {
+		polls := 0
+		c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodPut && r.URL.Path == "/repos/o/r/pulls/7/merge-async":
+				var in map[string]any
+				json.NewDecoder(r.Body).Decode(&in)
+				if in["merge_method"] != "squash" || in["sha"] != "abc" || in["merge_action"] != "direct_merge" || in["bypass_rules"] != nil || in["Stacked"] != nil {
+					t.Errorf("merge body %v", in)
+				}
+				w.WriteHeader(http.StatusAccepted)
+				io.WriteString(w, `{"status":"pending","details":{"uuid":"u-1"}}`)
+			case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/pulls/7/merge-async/u-1":
+				if polls++; polls < 3 {
+					io.WriteString(w, `{"status":"pending","details":{"uuid":"u-1"}}`)
+					return
+				}
+				io.WriteString(w, tc.final)
+			default:
+				t.Errorf("asked %s %s", r.Method, r.URL)
+			}
+		})
+		sha, err := c.MergePull(context.Background(), 7, MergeInput{Message: "M", SHA: "abc", Method: "squash", Stacked: true})
+		var ae *APIError
+		if sha != tc.sha || (tc.err == "") != (err == nil) || (err != nil && (!errors.As(err, &ae) || !strings.Contains(ae.Message, tc.err))) {
+			t.Errorf("%s: %q %v", tc.final, sha, err)
+		}
+	}
+}

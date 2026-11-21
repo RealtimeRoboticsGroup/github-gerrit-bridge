@@ -402,9 +402,12 @@ func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, hea
 	// in the trailer paragraph.
 	user, _ := splitBody(pr.Body)
 	trailers := append(signOffs(user), "Change-Id: "+st.State.ChangeID)
+	// A PR in a native stack (the bridge's own, of a relation chain, or
+	// one made on GitHub) merges only asynchronously; being based on the
+	// branch, it is the bottom, and merges alone.
 	in := github.MergeInput{Method: method, SHA: sha,
 		Title:   fmt.Sprintf("%s (#%d)", strings.TrimSpace(pr.Title), pr.Number),
-		Message: msg + strings.Join(trailers, "\n")}
+		Message: msg + strings.Join(trailers, "\n"), Stacked: pr.Stack != nil}
 	merged, linked, err := c.Merger.Merge(ctx, ic.User, pr.Number, sha, in)
 	switch {
 	case !linked && err == nil:

@@ -504,6 +504,24 @@ func TestSubmitMergeOnlyIntoTheBranch(t *testing.T) {
 	}
 }
 
+// The bottom PR of a native stack is merged as GitHub merges stacks
+// (asynchronously); any other PR as before.
+func TestSubmitMergesAStacksBottom(t *testing.T) {
+	for _, stacked := range []bool{false, true} {
+		c, h, _, m := mergeCommands(t, "gerrit")
+		if stacked {
+			h.stack = &github.PRStack{ID: 1, Number: 2, Position: 1, Size: 2}
+		}
+		h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+		if err := c.Run(context.Background(), 5); err != nil {
+			t.Fatal(err)
+		}
+		if len(m.calls) != 1 || m.calls[0].Stacked != stacked {
+			t.Errorf("stacked %v: merges %+v", stacked, m.calls)
+		}
+	}
+}
+
 // The description's sign-offs stay in the merge's trailers, as the merge
 // button keeps them.
 func TestSubmitMergeKeepsSignOffs(t *testing.T) {
