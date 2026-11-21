@@ -1,10 +1,12 @@
 package reconcile
 
 // Gerrit-owned regressions: what the default direction (branch_owner:
-// gerrit, as AOS runs it) does on main, kept so the GitHub-owned work can
-// go on without changing it unseen (the owner's ask, 2026-11-21). Each
-// test here passed on main (a01d401) and was broken by a change on the
-// github-owner branch, found in review; add one for every such find.
+// gerrit, as AOS runs it) does, kept so the GitHub-owned work can go on
+// without changing it unseen (the owner's ask, 2026-11-21). Each test
+// pins a regression found in review: what main (a01d401) did, which the
+// branch broke, or, where a test says so, the rule the branch means to
+// keep in place of main's (an intended change, docs/deploying.md), which
+// a fix broke. Add one for every such find.
 
 import (
 	"context"
@@ -19,7 +21,8 @@ import (
 
 // Fourteenth review: a stranger's Gerrit-born change the bridge mirrored to its
 // own gerrit/* branch (every change is, where Gerrit owns the branches)
-// is still a stranger's below a GitHub-born change.
+// is still a stranger's below a GitHub-born change. The branch's rule
+// (main did not look below at all), which a fix broke.
 func TestGerritOwnedMirroredStrangerBelowIsStillAStrangers(t *testing.T) {
 	for _, owned := range []bool{false, true} {
 		ctx := context.Background()
@@ -81,7 +84,8 @@ func TestGerritOwnedReplicationMergeGetsNoNotice(t *testing.T) {
 
 // Fourteenth review: where Gerrit owns the branches, an author's fork PR above
 // their own other PR (imported by the bridge) may have Gerrit's squash
-// swapped in: the code below is the author's own.
+// swapped in: the code below is the author's own. The branch's rule (on
+// main the swap read only the uploader), which a fix broke.
 func TestGerritOwnedSwapOfAnAuthorsOwnForkStack(t *testing.T) {
 	s := newSites(t)
 	ctx := context.Background()
@@ -119,5 +123,54 @@ func TestGerritOwnedSwapOfAnAuthorsOwnForkStack(t *testing.T) {
 	st.State.HeadBranch = "mallory/r:feature"
 	if err := c.maySwap(ctx, full, rev, st); err == nil {
 		t.Error("swapped another fork's import into a different fork")
+	}
+}
+
+// Fifteenth review (passed on main): an author's own Gerrit-born change
+// below their GitHub-born PR is theirs, not a stranger's: main pushed
+// patch set on top, and the branch made it foreign. Each of the change
+// below's patch sets must still be the owner's (or the trusted's): one a
+// stranger uploaded there is not, and the pass is the owner's on their
+// own changes only (those two are the branch's intended change, §7.1:
+// main did not look below).
+func TestGerritOwnedAuthorsOwnChangeBelow(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		lowerOwner, lowerUploader int
+		foreign                   bool
+	}{
+		{"the author's own", 5, 5, false},
+		{"a stranger's patch set on it", 5, 9, true},
+		{"another's change, though the author uploaded it", 9, 5, true},
+	} {
+		ctx := context.Background()
+		s := newSites(t)
+		base := s.commit("", "a", "a\n", "Base")
+		s.push("gerrit.git", base, "refs/heads/main")
+		s.push("github.git", base, "refs/heads/main")
+		c, _ := s.code(ctx)
+		c.BridgeAccount = 1
+		c.Trusted = func(_ context.Context, a int) (bool, bool) { return false, true }
+		low := s.commit(base, "low", "l\n", "C1\n\nChange-Id: "+cid(1)+"\n")
+		ci := s.change(1, cid(1), low, "C1\n\nChange-Id: "+cid(1)+"\n", "NEW")
+		r := ci.Revisions[low]
+		r.Uploader = gerrit.AccountInfo{AccountID: tc.lowerUploader}
+		ci.Revisions[low], ci.Owner = r, gerrit.AccountInfo{AccountID: tc.lowerOwner}
+		s.save(ctx, c.Store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "gerrit",
+			HeadBranch: "gerrit/" + cid(1), Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: low, GitHubSHA: low}}})
+		top := s.commit(low, "top", "t\n", "C2\n\nChange-Id: "+cid(2)+"\n")
+		ci = s.change(2, cid(2), top, "C2\n\nChange-Id: "+cid(2)+"\n", "NEW")
+		r = ci.Revisions[top]
+		r.Uploader = gerrit.AccountInfo{AccountID: 5}
+		ci.Revisions[top], ci.Owner = r, r.Uploader
+		s.save(ctx, c.Store, 2, &state.Change{State: state.ChangeState{Change: 2, ChangeID: cid(2), PR: 20, Branch: "main", Origin: "github",
+			HeadBranch: "alice/r:feature", Lifecycle: "NEW"}})
+		snap, err := c.observe(ctx, "main", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snap.Foreign[2] != tc.foreign {
+			t.Errorf("%s below: foreign %v, want %v", tc.name, snap.Foreign[2], tc.foreign)
+		}
 	}
 }

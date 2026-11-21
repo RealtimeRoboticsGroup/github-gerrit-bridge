@@ -925,7 +925,7 @@ func TestParentsTrustedBounds(t *testing.T) {
 		{3, 9, nil, false},           // a stranger's
 		{3, 9, map[string]bool{"c0": true, "c1": true, "c2": true}, true}, // merged as
 	} {
-		ok, _, _, err := parentsTrusted(ctx, chainReader{n: tc.n, uploader: tc.uploader, merged: tc.merged}, "main", "", []string{"c0"}, nil, trusted)
+		ok, _, _, err := parentsTrusted(ctx, chainReader{n: tc.n, uploader: tc.uploader, merged: tc.merged}, "main", "", []string{"c0"}, nil, trusted, 0)
 		if ok != tc.want || err != nil {
 			t.Errorf("%+v: %v %v", tc, ok, err)
 		}
@@ -933,13 +933,13 @@ func TestParentsTrustedBounds(t *testing.T) {
 	// Who could not be told about (GitHub could not say whether they may
 	// push) is not known: withheld, with nothing said (thirteenth review).
 	unsure := func(_ context.Context, a int) (bool, bool) { return false, a != 9 }
-	if ok, known, _, _ := parentsTrusted(ctx, chainReader{n: 3, uploader: 9}, "main", "", []string{"c0"}, nil, unsure); ok || known {
+	if ok, known, _, _ := parentsTrusted(ctx, chainReader{n: 3, uploader: 9}, "main", "", []string{"c0"}, nil, unsure, 0); ok || known {
 		t.Errorf("not known below: ok %v, known %v", ok, known)
 	}
 	// Only the commit it merged as: a stranger's older patch set of a
 	// merged change is theirs still (thirteenth review).
 	r := chainReader{n: 3, uploader: 9, mergedAs: map[string]string{"c0": "other", "c1": "other", "c2": "other"}}
-	if ok, _, _, _ := parentsTrusted(ctx, r, "main", "", []string{"c0"}, nil, trusted); ok {
+	if ok, _, _, _ := parentsTrusted(ctx, r, "main", "", []string{"c0"}, nil, trusted, 0); ok {
 		t.Error("an older patch set of a merged change trusted as the merge")
 	}
 }
@@ -1076,15 +1076,15 @@ func TestParentWalkSaysWhy(t *testing.T) {
 	ctx := context.Background()
 	r := chainReader{n: 3, uploader: 9}
 	trusted := func(_ context.Context, a int) (bool, bool) { return a == 8, true }
-	ok, known, why, err := parentsTrusted(ctx, r, "main", "", []string{"c0"}, nil, trusted)
+	ok, known, why, err := parentsTrusted(ctx, r, "main", "", []string{"c0"}, nil, trusted, 0)
 	if ok || !known || err != nil || !strings.Contains(why, "change 0's patch set 1 below it") {
 		t.Errorf("a stranger's: %v %v %q %v", ok, known, why, err)
 	}
-	ok, known, why, err = parentsTrusted(ctx, chainReader{n: maxBelow + 5, uploader: 8}, "main", "", []string{"c0"}, nil, trusted)
+	ok, known, why, err = parentsTrusted(ctx, chainReader{n: maxBelow + 5, uploader: 8}, "main", "", []string{"c0"}, nil, trusted, 0)
 	if ok || err != nil || !strings.Contains(why, "more than 50 commits") {
 		t.Errorf("too deep: %v %v %q %v", ok, known, why, err)
 	}
-	ok, known, why, err = parentsTrusted(ctx, unseenReader{}, "main", "", []string{"c0"}, nil, trusted)
+	ok, known, why, err = parentsTrusted(ctx, unseenReader{}, "main", "", []string{"c0"}, nil, trusted, 0)
 	if ok || known || err != nil || !strings.Contains(why, "nor a patch set the bridge can see") {
 		t.Errorf("unseen: %v %v %q %v", ok, known, why, err)
 	}
@@ -1188,7 +1188,7 @@ func (oddReader) changesOf(context.Context, string) ([]gerrit.ChangeInfo, error)
 
 func TestParentsTrustedRefusesAnOddAnswer(t *testing.T) {
 	trusted := func(context.Context, int) (bool, bool) { return true, true }
-	if ok, _, _, _ := parentsTrusted(context.Background(), oddReader{}, "main", "", []string{"c0"}, nil, trusted); ok {
+	if ok, _, _, _ := parentsTrusted(context.Background(), oddReader{}, "main", "", []string{"c0"}, nil, trusted, 0); ok {
 		t.Error("trusted a commit its change does not have")
 	}
 }

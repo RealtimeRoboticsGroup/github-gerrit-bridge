@@ -1020,8 +1020,15 @@ const maxBelow = 50
 // is, and the walk stops there (thirteenth review: an in-repo PR's code
 // has run with the repository's secrets already; and a chain of mirrored
 // changes is a step each, not a walk each).
+//
+// owner is the pushed change's owner where it has the owner's pass
+// (ownerPass), else 0: a change below that it also owns passes on the
+// same terms as its own, every patch set's code its or the trusted's
+// (fifteenth review, a Gerrit-owned regression: an author's own Gerrit
+// change below their GitHub-born PR made it foreign). Anyone else's
+// below has no owner's pass.
 func parentsTrusted(ctx context.Context, r belowReader, branch, into string, parents []string, already map[string]bool,
-	trusted func(context.Context, int) (bool, bool)) (ok, known bool, why string, err error) {
+	trusted func(context.Context, int) (bool, bool), owner int) (ok, known bool, why string, err error) {
 	known = true
 	seen := map[string]bool{}
 	for todo := parents; len(todo) > 0; todo = todo[1:] {
@@ -1070,7 +1077,11 @@ func parentsTrusted(ctx context.Context, r belowReader, branch, into string, par
 			// No pass for the bridge's own uploads below: an import of
 			// an unlinked author's PR (a fork's, say) is theirs, and
 			// CI's trusted group has no bridge in it either.
-			ok, k := authorsCode(ctx, trusted, 0, 0, revisionsByNumber(ci), p.Number)
+			lower := 0
+			if owner != 0 && ci.Owner.AccountID == owner {
+				lower = owner
+			}
+			ok, k := authorsCode(ctx, trusted, 0, lower, revisionsByNumber(ci), p.Number)
 			if !ok && !k {
 				// Could not be told (GitHub did not say who may push):
 				// nobody is blamed; asked again next time.
@@ -1149,7 +1160,7 @@ func mayReach(ctx context.Context, r belowReader, trusted func(context.Context, 
 	if st != nil {
 		into = st.State.HeadBranch
 	}
-	ok, k, why, err := parentsTrusted(ctx, r, branch, into, revs[ps].Commit.ParentSHAs(), already, trusted)
+	ok, k, why, err := parentsTrusted(ctx, r, branch, into, revs[ps].Commit.ParentSHAs(), already, trusted, owner)
 	return ok && err == nil, known && k, why, err
 }
 
