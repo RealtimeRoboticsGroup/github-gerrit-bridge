@@ -145,8 +145,10 @@ by_brt() { gerrit "changes/${C1}/comments" | jq -e ".[][] | select(.message == \
 wait_for "the GitHub reply lands in Gerrit's thread, as AustinSchuhBRT" by_brt
 M1=$(merge "${N1}" squash)
 wait_for "Gerrit's main follows the squash" followed main
-id_last() { [[ "$(me api "repos/${R}/commits/$1" --jq .commit.message | tail -1)" == "Change-Id: $(change_field "$2" .change_id)" ]]; }
-check "GitHub's squash commit ends with the Change-Id (the description is the message)" id_last "${M1}" "${C1}"
+# GitHub adds the commits' sign-offs in a paragraph after it, so Gerrit
+# does not close the change itself: the bridge's check-and-fix does.
+has_id() { me api "repos/${R}/commits/$1" --jq .commit.message | grep -qx "Change-Id: $(change_field "$2" .change_id)"; }
+check "GitHub's squash commit has the Change-Id (the description is the message)" has_id "${M1}" "${C1}"
 wait_for "change ${C1} is merged, at GitHub's commit" merged_at "${C1}" "${M1}"
 not_created() { ! gerrit "projects/${P}/branches/gh-${RUN}-1" | jq -e .revision; }
 check "the PR's branch is not created in Gerrit" not_created
@@ -240,6 +242,7 @@ N6=$(pr_for "${S6}")
 wait_for "PR #${N6} becomes a change" has_change "${S6}"
 C6=$(change "${S6}")
 wait_for "its description has the Change-Id" trailer "${N6}" "${C6}"
+read_it
 REV6=$(brt api "repos/${R}/pulls/${N6}/reviews" -f event=APPROVE -f body="Rehearsal ${RUN}: LGTM" --jq .id)
 brt_cr() { gerrit "changes/${C6}?o=DETAILED_LABELS" | jq -e '[.labels["Code-Review"].all[]? | select(.username == "AustinSchuhBRT") | (.value // 0)] | .[0] == 1'; }
 wait_for "AustinSchuhBRT's GitHub approval shows in Gerrit as their Code-Review +1" brt_cr
@@ -253,8 +256,8 @@ check "with a merge commit (the PR has a subtree)" two_parents
 wait_for "Gerrit's main follows" followed main
 wait_for "change ${C6} is merged at the merge commit" merged_at "${C6}" "${M6}"
 
-# --- 7. A stacked PR merged into the PR below it ---
-step "7. A stack: the top merged into the bottom, then the bottom into main"
+# --- 7. A stack: GitHub stacks a PR based on another's branch ---
+step "7. A stack: /submit refuses the top, merges the bottom, then the top"
 S7a="Stack bottom ${RUN}"; S7b="Stack top ${RUN}"
 gh_pr "${BRT_CLONE}" brt "gh-${RUN}-7a" main "stack-a-${RUN}.txt" "${S7a}"
 (cd "${BRT_CLONE}" && git checkout -q -B "gh-${RUN}-7b" && echo top > "stack-b-${RUN}.txt" && git add . &&
@@ -264,12 +267,29 @@ N7a=$(pr_for "${S7a}"); N7b=$(pr_for "${S7b}")
 both() { C7a=$(change "${S7a}"); C7b=$(change "${S7b}"); [[ -n "${C7a}" && -n "${C7b}" ]]; }
 wait_for "PRs #${N7a} and #${N7b} become changes" both
 C7a=$(change "${S7a}"); C7b=$(change "${S7b}")
-merge "${N7b}" squash >/dev/null
-abandoned_into() { status_of "${C7b}" ABANDONED && has_message "${C7b}" "into gh-${RUN}-7a"; }
-wait_for "the top's change ${C7b} is abandoned, saying where it merged" abandoned_into
-M7=$(merge "${N7a}" squash)
+stacked() { [[ "$(pr "${N7b}" .stack.size)" == 2 ]]; }
+check "GitHub stacks them" stacked
+both_built() { check_run "$(pr "${N7a}" .head.sha)" build success && check_run "$(pr "${N7b}" .head.sha)" build success; }
+wait_for "both build" both_built
+read_it
+for n in "${N7a}" "${N7b}"; do me api "repos/${R}/pulls/${n}/reviews" -f event=APPROVE -f body="Rehearsal ${RUN}: LGTM" --silent; done
+me api "repos/${R}/issues/${N7b}/comments" -f body="/submit" --silent
+said() { me api "repos/${R}/issues/$1/comments" --jq '.[].body' | grep -q "$2"; }
+wait_for "/submit on the top is refused (merge the PRs below it first)" said "${N7b}" "Merge the PRs below it first"
+me api "repos/${R}/issues/${N7a}/comments" -f body="/submit" --silent
+merged7a() { [[ "$(pr "${N7a}" .merged)" == true ]]; }
+wait_for "/submit merges the bottom, PR #${N7a} (GitHub's asynchronous merge)" merged7a
+M7a=$(pr "${N7a}" .merge_commit_sha)
+wait_for "change ${C7a} is merged" merged_at "${C7a}" "${M7a}"
+on_main() { [[ "$(pr "${N7b}" .base.ref)" == main ]]; }
+wait_for "the top is now based on main" on_main
+read_it
+me api "repos/${R}/issues/${N7b}/comments" -f body="/submit" --silent
+merged7b() { [[ "$(pr "${N7b}" .merged)" == true ]]; }
+wait_for "/submit merges the top, PR #${N7b}" merged7b
+M7b=$(pr "${N7b}" .merge_commit_sha)
 wait_for "Gerrit's main follows" followed main
-wait_for "the bottom's change ${C7a} is merged" merged_at "${C7a}" "${M7}"
+wait_for "change ${C7b} is merged" merged_at "${C7b}" "${M7b}"
 
 # --- 8. CI failing, closing and reopening ---
 step "8. A PR whose build fails; closed and reopened"

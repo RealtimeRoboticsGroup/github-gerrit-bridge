@@ -159,12 +159,12 @@ what only the people themselves can do, once:
 a PR imported as its author's change, with the Change-Id appended to its
 description, comments both ways, GitHub Actions' checks, and the Checks
 tab refusing the signed-out; squash merges marked merged in Gerrit by its
-own auto-close, and by check-and-fix when GitHub adds `Co-authored-by` or
-the Change-Id was edited out; a linked writer's Gerrit change becoming a
-PR, updated and merged with `/submit` (squashed, as him); an unlinked
+own auto-close (`/submit`), and by check-and-fix when GitHub's squash adds
+the commits' sign-offs after it or the Change-Id was edited out; a linked writer's Gerrit change becoming a
+PR, updated and merged with `/submit` (squashed, as them); an unlinked
 user's change withheld; a `git subtree --squash` PR merged with a merge
-commit by `/submit`; a stacked PR merged into the one below it
-(abandoned); a failing build, GitHub blocking the merge, closing and
+commit by `/submit`; a GitHub stack, its top refused by `/submit` and
+its bottom merged by it (GitHub's asynchronous merge), then the top; a failing build, GitHub blocking the merge, closing and
 reopening; a force-push of `main` followed; and another branch followed
 only forward. The signed-in Checks tab needs a browser: open a change of
 `bridge-scratch-gh` through `18079` and look.
