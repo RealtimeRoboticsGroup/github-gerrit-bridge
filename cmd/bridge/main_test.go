@@ -263,6 +263,7 @@ func TestCheckCapabilities(t *testing.T) {
 		{config.OwnerGitHub, `{"maintainServer":true}`, true, true},
 		{config.OwnerGitHub, `{}`, true, false},
 		{config.OwnerGerrit, `{}`, false, true},
+		{config.OwnerGitHub, "", true, false}, // Gerrit fails to answer: not started either
 	} {
 		asked := false
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -270,6 +271,10 @@ func TestCheckCapabilities(t *testing.T) {
 				t.Errorf("asked %s", r.URL)
 			}
 			asked = true
+			if tc.caps == "" {
+				http.Error(w, "down", http.StatusInternalServerError)
+				return
+			}
 			io.WriteString(w, ")]}'\n"+tc.caps)
 		}))
 		rest := &gerrit.Client{BaseURL: srv.URL, User: "bridge", Password: "p", HTTP: srv.Client()}
