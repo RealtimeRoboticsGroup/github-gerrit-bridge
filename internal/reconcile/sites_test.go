@@ -411,12 +411,17 @@ func (s *sites) queryChanges(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	q := r.URL.Query().Get("q")
 	out := []*gerrit.ChangeInfo{}
-	if strings.Contains(q, "project:") && !strings.Contains(q, `project:"p"`) && !strings.Contains(q, "project:p ") {
-		s.json(w, out, true)
-		return
+	// Only the project asked about: a change of another project (its
+	// Project set) has nothing to say here.
+	project := ""
+	if i := strings.Index(q, "project:"); i >= 0 {
+		project = strings.Trim(strings.Fields(q[i+len("project:"):])[0], `"`)
 	}
 	for _, n := range sortedKeys(s.changes) {
 		ci := s.changes[n]
+		if project != "" && ci.Project != project {
+			continue
+		}
 		_, hasCommit := ci.Revisions[strings.TrimPrefix(q[strings.LastIndex(q, " ")+1:], "commit:")]
 		if strings.Contains(q, "change:"+ci.ChangeID) || (strings.Contains(q, "status:open") && ci.Status == "NEW") ||
 			(strings.Contains(q, "commit:") && hasCommit) {

@@ -1314,3 +1314,33 @@ func TestUnseenBelowIsNamed(t *testing.T) {
 		}
 	}
 }
+
+// A commit's patch set in another project (a fork in the same Gerrit,
+// say) does not vouch for it in this one (fourteenth review: the fake
+// Gerrit had one project, so the query's project: was untested).
+func TestAnotherProjectsPatchSetDoesNotVouch(t *testing.T) {
+	ctx := context.Background()
+	s, c, base := followSites(t)
+	c.GitHubOwned = false // where Gerrit owns the branches: the trusted group decides
+	c.Trusted = func(_ context.Context, a int) (bool, bool) { return a == 8, true }
+	low := s.commit(base, "low", "l\n", "Elsewhere")
+	other := s.change(9, cid(9), low, "Elsewhere", "NEW")
+	other.Project = "fork"
+	r := other.Revisions[low]
+	r.Uploader = gerrit.AccountInfo{AccountID: 8} // trusted, but there
+	other.Revisions[low] = r
+	top := s.commit(low, "top", "t\n", "C2\n\nChange-Id: "+cid(2)+"\n")
+	ci := s.change(2, cid(2), top, "C2\n\nChange-Id: "+cid(2)+"\n", "NEW")
+	r = ci.Revisions[top]
+	r.Uploader = gerrit.AccountInfo{AccountID: 8}
+	ci.Revisions[top], ci.Owner = r, gerrit.AccountInfo{AccountID: 5}
+	s.save(ctx, c.Store, 2, &state.Change{State: state.ChangeState{Change: 2, ChangeID: cid(2), PR: 20, Branch: "main", Origin: "github",
+		HeadBranch: "feature", Lifecycle: "NEW"}})
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Foreign[2] {
+		t.Errorf("another project's patch set vouched for the code below; notices %q", s.reviewMsgs[2])
+	}
+}
