@@ -1282,3 +1282,35 @@ func TestUnvettedPushIsNotVouchedFor(t *testing.T) {
 		}
 	}
 }
+
+// A commit below that is neither on the branch nor a patch set the bridge
+// can see is not known, so the change waits; but it is named, in both
+// directions' notices, not left silent (fourteenth review).
+func TestUnseenBelowIsNamed(t *testing.T) {
+	for _, owned := range []bool{true, false} {
+		ctx := context.Background()
+		s, c, base := followSites(t)
+		c.GitHubOwned = owned
+		c.Trusted = func(_ context.Context, a int) (bool, bool) { return a == 8, true }
+		c.Publishable = c.Trusted
+		unseen := s.commit(base, "u", "u\n", "Nobody's change")
+		top := s.commit(unseen, "top", "t\n", "C2\n\nChange-Id: "+cid(2)+"\n")
+		ci := s.change(2, cid(2), top, "C2\n\nChange-Id: "+cid(2)+"\n", "NEW")
+		r := ci.Revisions[top]
+		r.Uploader = gerrit.AccountInfo{AccountID: 8}
+		ci.Revisions[top], ci.Owner = r, gerrit.AccountInfo{AccountID: 5}
+		if !owned {
+			// Gerrit-owned: a GitHub-born change's Gerrit patch set.
+			s.save(ctx, c.Store, 2, &state.Change{State: state.ChangeState{Change: 2, ChangeID: cid(2), PR: 20, Branch: "main", Origin: "github",
+				HeadBranch: "feature", Lifecycle: "NEW"}})
+		}
+		snap, err := c.observe(ctx, "main", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held := snap.Withheld[2] || snap.Foreign[2]
+		if msgs := s.reviewMsgs[2]; !held || len(msgs) != 1 || !strings.Contains(msgs[0], "neither on the branch nor a patch set the bridge can see") {
+			t.Errorf("GitHub owns %v: held %v, notices %q", owned, held, msgs)
+		}
+	}
+}
