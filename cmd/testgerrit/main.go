@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/config"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerritchecks"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/testgerrit"
 )
@@ -307,18 +308,37 @@ func followProject(ctx context.Context, s *testgerrit.Server, bridgeDir string, 
 	if err != nil {
 		return "", err
 	}
+	// Its bridge's own account and group: only it gets Maintain Server
+	// (thirteenth review), its secrets named for the project.
+	secrets := f.project + "-"
+	if err := s.CreateGroup(ctx, testgerrit.GitHubOwnedGroup); err != nil {
+		var ge *gerrit.Error
+		if !errors.As(err, &ge) || ge.Status != http.StatusConflict {
+			return "", fmt.Errorf("group %s: %w", testgerrit.GitHubOwnedGroup, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(bridgeDir, secrets+"gerrit-http-password")); os.IsNotExist(err) {
+		u, err := s.CreateUser(ctx, testgerrit.GitHubOwnedAccount, "GitHub Bridge (GitHub-owned)", testgerrit.GitHubOwnedGroup)
+		if err != nil {
+			return "", fmt.Errorf("account %s (its secrets are not in %s): %w", testgerrit.GitHubOwnedAccount, bridgeDir, err)
+		}
+		if err := s.WriteSecrets(bridgeDir, secrets, u); err != nil {
+			return "", err
+		}
+	}
 	if !exists {
 		log.Printf("Creating %s from github.com/%s main", f.project, f.repo)
 		if err := s.MirrorProject(ctx, f.project, "https://github.com/"+f.repo+".git", tok, "main"); err != nil {
 			return "", err
 		}
-	} else if err := s.ConfigureProject(ctx, f.project); err != nil {
+	}
+	if err := s.ConfigureProjectFor(ctx, f.project, testgerrit.GitHubOwnedGroup); err != nil {
 		return "", err
 	}
-	if err := s.GrantRunAs(ctx, f.project); err != nil {
+	if err := s.GrantRunAsTo(ctx, f.project, testgerrit.GitHubOwnedGroup); err != nil {
 		return "", err
 	}
-	if err := s.GrantGitHubOwned(ctx, f.project); err != nil {
+	if err := s.GrantGitHubOwned(ctx, f.project, testgerrit.GitHubOwnedGroup); err != nil {
 		return "", err
 	}
 	path := filepath.Join(bridgeDir, f.project+".yaml")
@@ -350,6 +370,7 @@ func followProject(ctx context.Context, s *testgerrit.Server, bridgeDir string, 
 	owner, name, _ := strings.Cut(f.repo, "/")
 	return s.WriteProjectConfig(bridgeDir, testgerrit.ProjectConfig{
 		File: f.project + ".yaml", Project: f.project, Owner: owner, Repo: name, Listen: f.listen, StatusListen: f.statusListen,
+		Account: testgerrit.GitHubOwnedAccount, Secrets: secrets,
 		Identity: ids, ImportCreatedAfter: time.Now(), ResyncInterval: 15 * time.Minute, TokenUser: f.bot,
 		GitHubOwned: true, GerritURL: f.gerritURL, ChecksURL: f.checksURL,
 		UserApp: &testgerrit.UserApp{

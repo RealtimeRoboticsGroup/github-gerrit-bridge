@@ -24,7 +24,7 @@ BOT="${BOT:-realtimeroboticsbot}"
 SECOND="${SECOND:-AustinSchuhBRT}"
 # The GitHub-owned project (branch_owner: github, design §3.1): GitHub
 # merges, Gerrit follows. FOLLOW_REPO= leaves it out.
-FOLLOW_REPO="${FOLLOW_REPO-AustinSchuh/bridge-scratch-gh}"
+FOLLOW_REPO="${FOLLOW_REPO-AustinSchuh/bridge-scratch-gh2}"
 FOLLOW_PROJECT="${FOLLOW_REPO##*/}"
 UNITS="${HOME}/.config/systemd/user"
 
@@ -130,7 +130,7 @@ if [[ -n "${FOLLOW_REPO}" ]]; then
     "Environment=PATH=$(dirname "${GH}"):/usr/bin:/bin"
   if [[ "${HOOK_SCOPE}" == *admin:repo_hook* || "${HOOK_SCOPE}" == *\'repo\'* ]]; then
     unit bridge-test-gh-webhooks "Bridge test instance: GitHub webhook forwarding, GitHub-owned project" \
-      "${WS}/tools/testenv/webhook-forward.sh ${GH} ${FOLLOW_REPO} pull_request,pull_request_review,pull_request_review_comment,pull_request_review_thread,issue_comment,push http://127.0.0.1:18083/webhook ${SITE}/bridge/webhook-secret" \
+      "${WS}/tools/testenv/webhook-forward.sh ${GH} ${FOLLOW_REPO} pull_request,pull_request_review,pull_request_review_comment,pull_request_review_thread,issue_comment,push http://127.0.0.1:18083/webhook ${SITE}/bridge/${FOLLOW_PROJECT}-webhook-secret" \
       "After=bridge-test-gh-bridge.service" "Environment=PATH=$(dirname "${GH}"):/usr/bin:/bin"
   fi
 fi

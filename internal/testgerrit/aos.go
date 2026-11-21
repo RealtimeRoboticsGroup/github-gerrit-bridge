@@ -69,24 +69,29 @@ var (
 		{"--add", "capability.runAs", "group " + BridgeGroup},
 		{"--add", "capability.streamEvents", "group " + BridgeGroup},
 	}
-	BridgeProject = [][]string{
+	BridgeProject = BridgeProjectFor(BridgeGroup)
+)
+
+// BridgeProjectFor is BridgeProject for the bridge whose group is group.
+func BridgeProjectFor(group string) [][]string {
+	return [][]string{
 		// Only the bridge can see or write its state (design §4.4), whatever
 		// else grants Push or Create on refs/* (seventh audit).
 		{"--add", "access.refs/bridge/*.exclusiveGroupPermissions", "create push read"}, // as Gerrit writes it
-		{"--add", "access.refs/bridge/*.read", "group " + BridgeGroup},
-		{"--add", "access.refs/bridge/*.push", "group " + BridgeGroup},
-		{"--add", "access.refs/bridge/*.create", "group " + BridgeGroup},
+		{"--add", "access.refs/bridge/*.read", "group " + group},
+		{"--add", "access.refs/bridge/*.push", "group " + group},
+		{"--add", "access.refs/bridge/*.create", "group " + group},
 		// Imports keep their real authors (unless a Gerrit user's:
 		// Importer.squash). On the branches only, as AOS's own grant
 		// is (fifth audit).
-		{"--add", "access.refs/heads/*.forgeAuthor", "group " + BridgeGroup},
+		{"--add", "access.refs/heads/*.forgeAuthor", "group " + group},
 		// Administrate Server is not applied through Run-As: closing a
 		// PR (abandon) or marking it a draft (WIP) as an administrator
 		// needs the explicit grants, on this project only.
 		{"--add", "access.refs/heads/*.abandon", "group Administrators"},
 		{"--add", "access.refs/heads/*.toggleWipState", "group Administrators"},
 	}
-)
+}
 
 // ConfigureAllProjects gives All-Projects AOS's access rules, plus the
 // bridge's (BridgeAllProjects), creating the groups they name. Unchanged,

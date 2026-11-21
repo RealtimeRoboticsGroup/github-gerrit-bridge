@@ -1,6 +1,7 @@
 package testgerrit
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -25,6 +26,14 @@ import (
 // BridgeGroup is the group the bridge account is in; refs/bridge/* is
 // visible to it alone.
 const BridgeGroup = "GitHub Bridge"
+
+// GitHubOwnedGroup and GitHubOwnedAccount are a GitHub-owned project's
+// bridge's own: only it has Maintain Server, which a Gerrit-owned bridge
+// (as AOS's) never needs (thirteenth review: they shared one account).
+const (
+	GitHubOwnedGroup   = "GitHub Bridge (GitHub-owned)"
+	GitHubOwnedAccount = "github-bridge-gh"
+)
 
 // TrustedGroup is the CI group from design §6.5. The bridge is not in it.
 const TrustedGroup = "Verified Users"
@@ -111,9 +120,39 @@ func (s *Server) WriteBridgeConfig(dir string, e *Env, owner, repo string, liste
 	})
 }
 
+// WriteSecrets writes a bridge account's secret files into dir, named
+// with prefix (see ProjectConfig.Secrets): its HTTP password and SSH key,
+// a peer key of its own, and a webhook secret of its own.
+func (s *Server) WriteSecrets(dir, prefix string, u *User) error {
+	peer, err := s.CreatePeerKey()
+	if err != nil {
+		return err
+	}
+	secret := make([]byte, 16)
+	if _, err := rand.Read(secret); err != nil {
+		return err
+	}
+	for name, content := range map[string]string{
+		"gerrit-http-password": u.HTTPPassword + "\n",
+		"id_ed25519":           string(u.PrivateKeyPEM),
+		"webhook-secret":       fmt.Sprintf("%x\n", secret),
+		"peer_key":             string(peer),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, prefix+name), []byte(content), 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ProjectConfig describes a bridge config written by WriteProjectConfig.
 type ProjectConfig struct {
 	File, Project, Owner, Repo, Listen string
+	// Account is the bridge's Gerrit account ("github-bridge" if empty),
+	// and Secrets the prefix of its secret files in the directory
+	// (gerrit-http-password, id_ed25519, peer_key, webhook-secret): ""
+	// for the first bridge's.
+	Account, Secrets string
 	// StatusListen, if set, is where the bridge serves its status page.
 	StatusListen string
 	// Identity maps GitHub logins to Gerrit usernames.
@@ -149,6 +188,7 @@ type UserApp struct {
 // using the credentials WriteBridgeConfig put there. Each project gets its
 // own mirror directory.
 func (s *Server) WriteProjectConfig(dir string, c ProjectConfig) (string, error) {
+	account := cmp.Or(c.Account, "github-bridge")
 	gerritURL := s.URL
 	if c.GerritURL != "" {
 		gerritURL = c.GerritURL
@@ -160,12 +200,12 @@ resync_interval: %s
 gerrit:
   url: %s
   project: %s
-  http_user: github-bridge
+  http_user: %s
   http_password_file: %s
   mirror_dir: %s
   ssh:
     address: %s
-    user: github-bridge
+    user: %s
     key_file: %s
     peer_key_file: %s
     known_hosts_file: %s
@@ -174,9 +214,9 @@ github:
   repo: %s
   webhook_secret_file: %s
   token_command: [%s]
-`, c.Listen, c.ResyncInterval, gerritURL, c.Project, filepath.Join(dir, "gerrit-http-password"),
-		filepath.Join(dir, c.Project+"-mirror.git"), s.SSHAddr, filepath.Join(dir, "id_ed25519"),
-		filepath.Join(dir, "peer_key"), filepath.Join(dir, "known_hosts"), c.Owner, c.Repo, filepath.Join(dir, "webhook-secret"), tokenCommand(c.TokenUser))
+`, c.Listen, c.ResyncInterval, gerritURL, c.Project, account, filepath.Join(dir, c.Secrets+"gerrit-http-password"),
+		filepath.Join(dir, c.Project+"-mirror.git"), s.SSHAddr, account, filepath.Join(dir, c.Secrets+"id_ed25519"),
+		filepath.Join(dir, c.Secrets+"peer_key"), filepath.Join(dir, "known_hosts"), c.Owner, c.Repo, filepath.Join(dir, c.Secrets+"webhook-secret"), tokenCommand(c.TokenUser))
 	if !c.ImportCreatedAfter.IsZero() {
 		fmt.Fprintf(&b, "  import_created_after: %s\n", c.ImportCreatedAfter.UTC().Format(time.RFC3339))
 	}
@@ -264,8 +304,14 @@ func (s *Server) groupID(ctx context.Context, name string) (string, error) {
 // requirements, Verified for Service Users), plus what the bridge needs
 // (BridgeProject).
 func (s *Server) ConfigureProject(ctx context.Context, project string) error {
+	return s.ConfigureProjectFor(ctx, project, BridgeGroup)
+}
+
+// ConfigureProjectFor is ConfigureProject for the bridge whose group is
+// group.
+func (s *Server) ConfigureProjectFor(ctx context.Context, project, group string) error {
 	return s.WriteAccess(ctx, project, "Configure like AOS, plus the bridge's", AOSProject,
-		append(append([][]string{}, ProjectFor314...), BridgeProject...))
+		append(append([][]string{}, ProjectFor314...), BridgeProjectFor(group)...))
 }
 
 // GrantRunAs gives the bridge group the global capabilities the bridge
@@ -275,7 +321,12 @@ func (s *Server) ConfigureProject(ctx context.Context, project string) error {
 // administrators' abandon and WIP grants move from All-Projects to
 // project.
 func (s *Server) GrantRunAs(ctx context.Context, project string) error {
-	bridge, err := s.groupID(ctx, BridgeGroup)
+	return s.GrantRunAsTo(ctx, project, BridgeGroup)
+}
+
+// GrantRunAsTo is GrantRunAs for the bridge whose group is group.
+func (s *Server) GrantRunAsTo(ctx context.Context, project, group string) error {
+	bridge, err := s.groupID(ctx, group)
 	if err != nil {
 		return err
 	}
@@ -325,15 +376,25 @@ func (s *Server) GrantRunAs(ctx context.Context, project string) error {
 // merge commits and abandon, and nobody may submit; and the bridge's
 // group has Maintain Server, for marking changes merged whose merge
 // commit lost its Change-Id. It is idempotent.
-func (s *Server) GrantGitHubOwned(ctx context.Context, project string) error {
-	bridge, err := s.groupID(ctx, BridgeGroup)
+func (s *Server) GrantGitHubOwned(ctx context.Context, project, group string) error {
+	bridge, err := s.groupID(ctx, group)
+	if err != nil {
+		return err
+	}
+	shared, err := s.groupID(ctx, BridgeGroup)
 	if err != nil {
 		return err
 	}
 	allow := map[string]any{"rules": map[string]any{bridge: map[string]any{"action": "ALLOW"}}}
-	if err := s.Admin.Do(ctx, http.MethodPost, "projects/All-Projects/access", map[string]any{
+	in := map[string]any{
 		"add": map[string]any{"GLOBAL_CAPABILITIES": map[string]any{"permissions": map[string]any{"maintainServer": allow}}},
-	}, nil); err != nil {
+	}
+	if shared != bridge {
+		// Not the Gerrit-owned bridges' group, which had it once.
+		in["remove"] = map[string]any{"GLOBAL_CAPABILITIES": map[string]any{"permissions": map[string]any{
+			"maintainServer": map[string]any{"rules": map[string]any{shared: map[string]any{}}}}}}
+	}
+	if err := s.Admin.Do(ctx, http.MethodPost, "projects/All-Projects/access", in, nil); err != nil {
 		return fmt.Errorf("Maintain Server: %w", err)
 	}
 	return s.Admin.Do(ctx, http.MethodPost, "projects/"+url.PathEscape(project)+"/access", map[string]any{

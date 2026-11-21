@@ -93,8 +93,8 @@ it. Two clones are ready, each pushing as one person on both sides:
 |---|---|---|
 | `~/local/bridge-play` | AustinSchuh | AustinSchuh |
 | `~/local/bridge-play-brt` | AustinSchuhBRT | AustinSchuhBRT |
-| `~/local/bridge-play-gh` | AustinSchuh | AustinSchuh (the GitHub-owned project; the rehearsal makes it) |
-| `~/local/bridge-play-gh-brt` | AustinSchuhBRT | AustinSchuhBRT (likewise) |
+| `~/local/bridge-play-bridge-scratch-gh2` | AustinSchuh | AustinSchuh (the GitHub-owned project; the rehearsal makes it) |
+| `~/local/bridge-play-bridge-scratch-gh2-brt` | AustinSchuhBRT | AustinSchuhBRT (likewise) |
 
 To act as AustinSchuhBRT with `gh`, prefix commands with
 `GH_TOKEN=$(gh auth token --user AustinSchuhBRT)`.
@@ -144,11 +144,11 @@ A second project where GitHub owns `main` and Gerrit follows
 
 | Piece | Where |
 |---|---|
-| GitHub | `AustinSchuh/bridge-scratch-gh` (public, for rulesets): squash and merge commits take the PR's title and description, rebase merging off; ruleset "GitHub owns main" requires one approval and the `build` check, admins bypass it; GitHub Actions `build` (fails on a file containing `CI-MUST-FAIL`) and `lint` |
-| Gerrit | project `bridge-scratch-gh`, seeded from GitHub's main; the bridge's group may push with force, forge, push merges and abandon there, nobody may submit, and it has Maintain Server (shared with the other bridge: both are `github-bridge`) |
-| The bridge | `bridge-test-gh-bridge`, on `127.0.0.1:18083` (status page `18084`), config `~/tmp/gerrit-test/bridge/bridge-scratch-gh.yaml`; the same linking App as the other bridge, with its own tokens (GitHub rotates refresh tokens, so two bridges cannot share them) |
+| GitHub | `AustinSchuh/bridge-scratch-gh2` (public, for rulesets): squash and merge commits take the PR's title and description, rebase merging off; ruleset "GitHub owns main" requires one approval and the `build` check, admins bypass it; GitHub Actions `build` (fails on a file containing `CI-MUST-FAIL`) and `lint` |
+| Gerrit | project `bridge-scratch-gh2`, seeded from GitHub's main; its bridge is its own account, `github-bridge-gh` in `GitHub Bridge (GitHub-owned)`, with its own secrets (`bridge-scratch-gh2-*` in `~/tmp/gerrit-test/bridge/`); that group may push with force, forge, push merges and abandon there, nobody may submit, and it alone has Maintain Server, which the Gerrit-owned bridge (`github-bridge`, as AOS's) does not. (`bridge-scratch-gh`, the first such project, shared `github-bridge`; it is left as it was, unused.) |
+| The bridge | `bridge-test-gh-bridge`, on `127.0.0.1:18083` (status page `18084`), config `~/tmp/gerrit-test/bridge/bridge-scratch-gh2.yaml`; the same linking App as the other bridge, with its own tokens (GitHub rotates refresh tokens, so two bridges cannot share them) |
 | Webhooks | `bridge-test-gh-webhooks` → `127.0.0.1:18083/webhook` |
-| Checks tab | `plugins/bridge-checks-bridge-scratch-gh.js`, fetching `http://127.0.0.1:18079/gerrit/bridge-bridge-scratch-gh/checks/`: testgerrit serves Gerrit on `18079` too, behind a proxy that forwards that path to the bridge, as production's proxy does. Browse Gerrit at `http://127.0.0.1:18079/gerrit/` to see it (sign in on `18080` first: the session cookie is the same) |
+| Checks tab | `plugins/bridge-checks-bridge-scratch-gh2.js`, fetching `http://127.0.0.1:18079/gerrit/bridge-bridge-scratch-gh2/checks/`: testgerrit serves Gerrit on `18079` too, behind a proxy that forwards that path to the bridge, as production's proxy does. Browse Gerrit at `http://127.0.0.1:18079/gerrit/` to see it (sign in on `18080` first: the session cookie is the same) |
 
 `install.sh` sets up all of it (`FOLLOW_REPO=` leaves it out), except
 what only the people themselves can do, once:
@@ -175,7 +175,7 @@ refused by `/submit` and its bottom merged by it alone (GitHub's
 asynchronous merge), then the top; a failing build, GitHub blocking the
 merge, closing and reopening; a force-push of `main` followed; and another branch followed
 only forward. The signed-in Checks tab needs a browser: open a change of
-`bridge-scratch-gh` through `18079` and look.
+`bridge-scratch-gh2` through `18079` and look.
 
 ## Project rules (like AOS)
 

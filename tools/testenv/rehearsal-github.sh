@@ -7,19 +7,19 @@
 #   tools/testenv/rehearsal-github.sh
 #
 # People: AustinSchuh (admin on both sides, linked to this project's
-# bridge) works in ~/local/bridge-play-gh; AustinSchuhBRT (a writer on
-# GitHub, not linked) in ~/local/bridge-play-gh-brt; bob (Gerrit only,
+# bridge) works in ~/local/bridge-play-<repo>; AustinSchuhBRT (a writer on
+# GitHub, not linked) in ~/local/bridge-play-<repo>-brt; bob (Gerrit only,
 # not linked) pushes to Gerrit. Every run uses fresh branches and subjects.
 set -uo pipefail
 
-R=${FOLLOW_REPO:-AustinSchuh/bridge-scratch-gh}
+R=${FOLLOW_REPO:-AustinSchuh/bridge-scratch-gh2}
 P=${R##*/}
 G=http://127.0.0.1:18080/gerrit
 FRONT=http://127.0.0.1:18079/gerrit
 CREDS=${HOME}/tmp/gerrit-test/bridge
 LOG=${HOME}/tmp/bridge-test/logs/bridge-test-gh-bridge.log
-ME_CLONE=${HOME}/local/bridge-play-gh
-BRT_CLONE=${HOME}/local/bridge-play-gh-brt
+ME_CLONE=${HOME}/local/bridge-play-${R##*/}
+BRT_CLONE=${HOME}/local/bridge-play-${R##*/}-brt
 GH=${GH:-${HOME}/bin/gh}
 RUN=$(date +%H%M%S)
 TIMEOUT=${TIMEOUT:-240}
