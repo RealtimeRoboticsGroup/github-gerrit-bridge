@@ -1646,6 +1646,14 @@ func (c *Code) mergedOnGitHub(ctx context.Context, s *Snapshot, n int, ch *Gerri
 	if pr.MergedBy != nil && pr.MergedBy.Login != "" {
 		by = "@" + pr.MergedBy.Login
 	}
+	if !s.GitHubOwned && pr.Base.Ref == s.Branch {
+		// Into the target branch, where Gerrit owns it: replication's
+		// doing (only it writes there, perhaps with the bridge's GitHub
+		// account), the submit racing this look: nothing to say
+		// (fourteenth review; fifteenth: credited to the bridge's login,
+		// it said "stays open").
+		return false, nil
+	}
 	if pr.MergedBy != nil && c.BridgeLogin != "" && strings.EqualFold(pr.MergedBy.Login, c.BridgeLogin) {
 		// GitHub's own doing after a push of the bridge's (a chain
 		// reordered: a lower branch now holds an upper PR's head), not a
@@ -1653,6 +1661,13 @@ func (c *Code) mergedOnGitHub(ctx context.Context, s *Snapshot, n int, ch *Gerri
 		// once, on the PR and in Gerrit, and logged once (fourteenth
 		// review: silent, with a warning every reconcile).
 		if st := s.State[n]; st == nil || st.State.MergedNoticePosted || c.DryRun {
+			return false, nil
+		}
+		// Said only while Gerrit still says the change is open: this
+		// look's may be older than a submit (fifteenth review).
+		if now, err := c.Gerrit.GetChange(ctx, n); err != nil {
+			return false, err
+		} else if now.Status != "NEW" {
 			return false, nil
 		}
 		note := fmt.Sprintf("GitHub shows this PR merged into `%s`, by the bridge's own push (its branch came to hold this PR's commits, "+
@@ -1671,14 +1686,9 @@ func (c *Code) mergedOnGitHub(ctx context.Context, s *Snapshot, n int, ch *Gerri
 		// branch, say, which any writer may press) abandons nothing, as
 		// nobody's say-so but the bridge's would (thirteenth review:
 		// closing a PR abandons only as its closer, if Gerrit lets them).
-		// Into the target branch it is replication's doing (only it
-		// writes there), the submit racing this look: nothing to say
-		// (fourteenth review). Else said once on the PR, once Gerrit
-		// still says the change is open; the plan never edits a merged
-		// PR.
-		if pr.Base.Ref == s.Branch {
-			return false, nil
-		}
+		// (Into the target branch: nothing, above.) Said once on the PR,
+		// once Gerrit still says the change is open; the plan never
+		// edits a merged PR.
 		if st := s.State[n]; st == nil || st.State.MergedNoticePosted || c.DryRun {
 			return false, nil
 		}

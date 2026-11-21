@@ -54,14 +54,27 @@ func TestGerritOwnedMirroredStrangerBelowIsStillAStrangers(t *testing.T) {
 // Fourteenth review: where Gerrit owns the branches, a PR shown merged into the
 // target branch is replication's doing (only it may write main): the PR
 // gets no "merged on GitHub, abandon it in Gerrit" notice.
+//
+// Fifteenth review: nor when GitHub credits it to the bridge's own login
+// (replication pushing with the bridge's GitHub account, as the test
+// instance's does): it said "stays open in Gerrit", on the PR and on the
+// change.
 func TestGerritOwnedReplicationMergeGetsNoNotice(t *testing.T) {
-	s, c, _ := mergedSites(t, "One (#10)\n")
-	c.GitHubOwned = false
-	s.pulls[10].MergedBy = &github.User{Login: "replicator"}
-	mirrorStates(t, c, false)
-	for _, body := range s.comments[10] {
-		if strings.Contains(body, "Gerrit owns this repository's branches") || strings.Contains(body, "Abandon") {
-			t.Errorf("notice on a replication merge: %q", body)
+	for _, login := range []string{"replicator", "bot"} {
+		s, c, _ := mergedSites(t, "One (#10)\n")
+		c.GitHubOwned = false
+		c.BridgeLogin = "bot"
+		s.pulls[10].MergedBy = &github.User{Login: login}
+		mirrorStates(t, c, false)
+		for _, body := range s.comments[10] {
+			if strings.Contains(body, "Gerrit owns this repository's branches") || strings.Contains(body, "Abandon") || strings.Contains(body, "stays open") {
+				t.Errorf("merged by %s: notice on a replication merge: %q", login, body)
+			}
+		}
+		for _, m := range s.changes[1].Messages {
+			if strings.Contains(m.Message, "stays open") {
+				t.Errorf("merged by %s: notice in Gerrit: %q", login, m.Message)
+			}
 		}
 	}
 }

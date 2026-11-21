@@ -187,7 +187,11 @@ Behaviour that changes, on purpose:
 - **A PR merged on GitHub into another branch** (a stacked PR into the
   bridge's branch below it) is no longer reopened and retargeted over and
   over: the change stays open in Gerrit, and the PR says so once. A PR
-  shown merged into the target branch (replication) gets nothing.
+  shown merged into the target branch (replication, whatever GitHub
+  account it pushes with) gets nothing.
+- **A PR GitHub shows merged by the bridge's own push** into a bridge
+  branch (a chain reordered) says so once, on the PR and on the change,
+  while the change is still open in Gerrit.
 - Maintain Server is neither needed nor asked about.
 
 The Checks tab plugin keeps working; regenerating it is optional.

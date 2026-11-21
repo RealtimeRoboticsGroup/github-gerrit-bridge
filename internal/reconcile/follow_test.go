@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1342,5 +1343,57 @@ func TestAnotherProjectsPatchSetDoesNotVouch(t *testing.T) {
 	}
 	if !snap.Foreign[2] {
 		t.Errorf("another project's patch set vouched for the code below; notices %q", s.reviewMsgs[2])
+	}
+}
+
+// A PR GitHub shows merged by the bridge's own push gets its notice only
+// while Gerrit still says the change is open: a look older than a submit
+// says nothing (fifteenth review). Without the submit, it is said.
+func TestBridgeMergeNoticeOnlyWhileGerritSaysOpen(t *testing.T) {
+	for _, submitted := range []bool{false, true} {
+		s, c, _ := mergedSites(t, "One (#10)\n")
+		c.BridgeLogin = "bot"
+		s.pulls[10].MergedBy = &github.User{Login: "bot"}
+		ctx := context.Background()
+		snap, err := c.observe(ctx, "main", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if submitted {
+			s.changes[1].Status = "MERGED" // since the look
+		}
+		if _, err := c.mirrorPRStates(ctx, snap, map[int]bool{}); err != nil {
+			t.Fatal(err)
+		}
+		said := slices.ContainsFunc(s.comments[10], func(b string) bool { return strings.Contains(b, "the bridge's own push") })
+		if said == submitted {
+			t.Errorf("submitted since the look %v: notice %v: %q", submitted, said, s.comments[10])
+		}
+	}
+}
+
+// Where Gerrit owns the branches, a PR merged on GitHub into another
+// branch gets its notice only while Gerrit still says the change is open
+// (fourteenth review's re-read: a look older than a submit says nothing).
+func TestGerritOwnedMergeNoticeOnlyWhileGerritSaysOpen(t *testing.T) {
+	for _, submitted := range []bool{false, true} {
+		s, c, _ := mergedSites(t, "One (#10)\n")
+		c.GitHubOwned = false
+		s.pulls[10].Base.Ref = "feature"
+		ctx := context.Background()
+		snap, err := c.observe(ctx, "main", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if submitted {
+			s.changes[1].Status = "MERGED"
+		}
+		if _, err := c.mirrorPRStates(ctx, snap, map[int]bool{}); err != nil {
+			t.Fatal(err)
+		}
+		said := slices.ContainsFunc(s.comments[10], func(b string) bool { return strings.Contains(b, "Gerrit owns this repository's branches") })
+		if said == submitted {
+			t.Errorf("submitted since the look %v: notice %v: %q", submitted, said, s.comments[10])
+		}
 	}
 }
