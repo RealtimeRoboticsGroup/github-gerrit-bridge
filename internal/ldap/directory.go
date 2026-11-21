@@ -57,7 +57,6 @@ type snapshot struct {
 	byID   map[int64]Account
 	byUser map[string]Account // lower-cased uid
 	at     time.Time
-	gen    int
 }
 
 // Attribute names read (and written by the directory's admins).
@@ -99,7 +98,6 @@ func (d *Directory) Read(ctx context.Context) error {
 	snap := build(entries, d.log())
 	snap.at = d.clock()
 	if d.snap != nil {
-		snap.gen = d.snap.gen + 1
 		d.logChanges(d.snap, snap)
 	}
 	d.snap, d.err = snap, nil
@@ -224,15 +222,14 @@ func (d *Directory) current() (*snapshot, error) {
 	return d.snap, nil
 }
 
-// ByGitHubID is the account the directory gives GitHub id id, if any;
-// gen says which read answered (it changes with every read).
-func (d *Directory) ByGitHubID(id int64) (a Account, found bool, gen int, err error) {
+// ByGitHubID is the account the directory gives GitHub id id, if any.
+func (d *Directory) ByGitHubID(id int64) (a Account, found bool, err error) {
 	s, err := d.current()
 	if err != nil {
-		return Account{}, false, 0, err
+		return Account{}, false, err
 	}
 	a, found = s.byID[id]
-	return a, found, s.gen, nil
+	return a, found, nil
 }
 
 // ByGerritUser is the account the directory gives Gerrit user user, if

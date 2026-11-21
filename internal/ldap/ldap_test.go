@@ -290,12 +290,12 @@ func TestDirectoryRefusesWhatItCannotTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 	for id, want := range map[int64]string{294043: "austin", 42: "ok39"} {
-		if a, found, _, err := d.ByGitHubID(id); err != nil || !found || a.GerritUser != want {
+		if a, found, err := d.ByGitHubID(id); err != nil || !found || a.GerritUser != want {
 			t.Errorf("id %d: %+v %v %v, want %s", id, a, found, err, want)
 		}
 	}
 	for _, id := range []int64{5, 11, 12, 21, 22, 31, 32, 33, 7, 8, 41} {
-		if a, found, _, _ := d.ByGitHubID(id); found {
+		if a, found, _ := d.ByGitHubID(id); found {
 			t.Errorf("id %d left in: %+v", id, a)
 		}
 	}
@@ -317,22 +317,21 @@ func TestDirectoryFollowsTheDirectory(t *testing.T) {
 	f := &fakeSearcher{entries: []Entry{entry("austin", "AustinSchuh", "294043")}}
 	now := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
 	d := &Directory{Searcher: f, BaseDN: "ou=People", ObjectClass: "githubAccount", Refresh: 5 * time.Minute, now: func() time.Time { return now }}
-	if _, _, _, err := d.ByGitHubID(294043); !errors.Is(err, ErrNoDirectory) {
+	if _, _, err := d.ByGitHubID(294043); !errors.Is(err, ErrNoDirectory) {
 		t.Errorf("before any read: %v", err)
 	}
 	d.Read(ctx)
-	_, _, gen0, _ := d.ByGitHubID(294043)
 	f.entries = []Entry{entry("austin", "AustinSchuh2", "999")}
 	d.Read(ctx)
-	if _, found, _, _ := d.ByGitHubID(294043); found {
+	if _, found, _ := d.ByGitHubID(294043); found {
 		t.Error("the old id still matches")
 	}
-	if a, found, gen, _ := d.ByGitHubID(999); !found || a.GerritUser != "austin" || gen == gen0 {
-		t.Errorf("the new id: %+v %v gen %d", a, found, gen)
+	if a, found, _ := d.ByGitHubID(999); !found || a.GerritUser != "austin" {
+		t.Errorf("the new id: %+v %v", a, found)
 	}
 	f.entries = nil
 	d.Read(ctx)
-	if _, found, _, err := d.ByGitHubID(999); found || err != nil {
+	if _, found, err := d.ByGitHubID(999); found || err != nil {
 		t.Errorf("removed: %v %v", found, err)
 	}
 	f.entries = []Entry{entry("austin", "AustinSchuh", "294043")}
@@ -341,13 +340,13 @@ func TestDirectoryFollowsTheDirectory(t *testing.T) {
 	if d.Read(ctx) == nil {
 		t.Fatal("no error")
 	}
-	if _, found, _, err := d.ByGitHubID(294043); found || !errors.Is(err, ErrNoDirectory) || !strings.Contains(err.Error(), "ldap down") {
+	if _, found, err := d.ByGitHubID(294043); found || !errors.Is(err, ErrNoDirectory) || !strings.Contains(err.Error(), "ldap down") {
 		t.Errorf("after a failed read: %v %v", found, err)
 	}
 	f.err = nil
 	d.Read(ctx)
 	now = now.Add(11 * time.Minute)
-	if _, _, _, err := d.ByGitHubID(294043); !errors.Is(err, ErrNoDirectory) {
+	if _, _, err := d.ByGitHubID(294043); !errors.Is(err, ErrNoDirectory) {
 		t.Errorf("read two intervals ago: %v", err)
 	}
 }
@@ -361,7 +360,7 @@ func TestDirectoryOverTLS(t *testing.T) {
 	if err := d.Read(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if a, found, _, _ := d.ByGitHubID(1234); !found || a.GerritUser != "james" || a.GitHubLogin != "jamesonGH" {
+	if a, found, _ := d.ByGitHubID(1234); !found || a.GerritUser != "james" || a.GitHubLogin != "jamesonGH" {
 		t.Errorf("%+v %v", a, found)
 	}
 }

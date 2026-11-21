@@ -14,6 +14,7 @@ import (
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/ldap"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
@@ -56,6 +57,13 @@ type Users struct {
 	// NeverLogins are GitHub logins never matched (the bridge's own: its
 	// edits and pushes are its own, not those of whoever owns its token).
 	NeverLogins []string
+	// Directory, if set, gives GitHub accounts (by numeric id) to Gerrit
+	// users as an administrator says (identity.ldap, design §7.1): it is
+	// asked first, by the id GitHub says the actor with, and what it says
+	// is as an override is, its pins included. Who it does not list falls
+	// to Overrides and Gerrit, but never to a Gerrit user it gives another
+	// GitHub account. Any error reading it matches nobody.
+	Directory GitHubDirectory
 	// Pins, with GitHub, pin each Gerrit account to the GitHub account
 	// (numeric id) it was first matched to (design §7.1). Nil: no pinning.
 	Pins   Pins
@@ -150,6 +158,12 @@ type cachedUser struct {
 	at   time.Time
 	// id is the GitHub account checked against the pin (0 without pins).
 	id int64
+}
+
+// GitHubDirectory gives GitHub accounts to Gerrit users (ldap.Directory).
+type GitHubDirectory interface {
+	ByGitHubID(id int64) (a ldap.Account, found bool, err error)
+	ByGerritUser(user string) (a ldap.Account, found bool, err error)
 }
 
 // userCacheTTL bounds how long a lookup (including "no account") is reused:
@@ -272,6 +286,189 @@ func (u *Users) byLogin(ctx context.Context, login string, fresh bool) cachedUse
 // took a renamed trusted user's login acted as them), or if gh's id is
 // not known (seventh audit).
 func (u *Users) GerritUserFor(ctx context.Context, gh github.User) (string, bool) {
+	if u.Directory == nil {
+		return u.byMatch(ctx, gh)
+	}
+	for _, n := range u.NeverLogins {
+		if strings.EqualFold(n, gh.Login) {
+			return "", false
+		}
+	}
+	id := gh.ID
+	if id == 0 {
+		// Not said with an id: who holds the login now, asked afresh.
+		if u.GitHub == nil || gh.Login == "" {
+			return "", false
+		}
+		var err error
+		if id, _, err = u.GitHub.UserID(ctx, gh.Login); err != nil {
+			u.warnErr("looking up a GitHub login's id; matching nobody", gh.Login, err)
+			return "", false
+		}
+	}
+	a, found, err := u.Directory.ByGitHubID(id)
+	if err != nil {
+		u.warnErr("the GitHub account directory cannot be read; matching nobody", gh.Login, err)
+		return "", false
+	}
+	if found {
+		return u.byDirectory(ctx, gh.Login, a)
+	}
+	user, ok := u.byMatch(ctx, github.User{Login: gh.Login, ID: id})
+	if !ok {
+		return "", false
+	}
+	// The directory says who has a Gerrit user it lists: nobody else, by
+	// an override or a username either.
+	if b, listed, err := u.Directory.ByGerritUser(user); err != nil {
+		u.warnErr("the GitHub account directory cannot be read; matching nobody", gh.Login, err)
+		return "", false
+	} else if listed {
+		if u.Logger != nil {
+			u.Logger.Warn("GitHub account maps to a Gerrit user the directory gives another GitHub account; not acting as it",
+				"github_login", gh.Login, "github_id", id, "gerrit_user", user, "directory_id", b.GitHubID, "dn", b.DN)
+		}
+		return "", false
+	}
+	return user, true
+}
+
+// byDirectory is GerritUserFor for GitHub account a.GitHubID, which the
+// directory gives a.GerritUser: as an override's, that user
+// must be one Gerrit reads as itself, active, not the bridge's own, and
+// no override may say login is someone else's; its pin is the
+// directory's (pinDirectory). never_groups do not apply: the entry names
+// the account outright, as an override does. Reused for userCacheTTL
+// while the directory still gives that account that user.
+func (u *Users) byDirectory(ctx context.Context, login string, a ldap.Account) (string, bool) {
+	key := fmt.Sprintf("directory:%d", a.GitHubID)
+	u.mu.Lock()
+	if c, ok := u.cache[key]; ok && c.user == a.GerritUser && time.Since(c.at) < userCacheTTL {
+		u.mu.Unlock()
+		return c.user, c.ok
+	}
+	u.mu.Unlock()
+	ok, err := u.checkDirectory(ctx, login, a)
+	if err != nil {
+		u.warnErr("checking the Gerrit account the directory names; matching nobody", login, err)
+		return "", false
+	}
+	c := cachedUser{user: a.GerritUser, ok: ok, at: time.Now(), id: a.GitHubID}
+	u.mu.Lock()
+	if u.cache == nil {
+		u.cache = map[string]cachedUser{}
+	}
+	u.cache[key] = c
+	u.mu.Unlock()
+	if !ok {
+		return "", false
+	}
+	return a.GerritUser, true
+}
+
+func (u *Users) checkDirectory(ctx context.Context, login string, a ldap.Account) (bool, error) {
+	user := a.GerritUser
+	for gh, over := range u.Overrides {
+		if strings.EqualFold(gh, login) && !strings.EqualFold(over, user) {
+			if u.Logger != nil {
+				u.Logger.Warn("an override and the directory give a GitHub account different Gerrit users; not acting as either",
+					"github_login", login, "github_id", a.GitHubID, "override", over, "directory", user, "dn", a.DN)
+			}
+			return false, nil
+		}
+	}
+	for _, n := range u.Never {
+		if strings.EqualFold(n, user) {
+			u.warn("the directory names a Gerrit account the bridge never acts as; not acting as it", login, user)
+			return false, nil
+		}
+	}
+	if gerrit.AmbiguousUsername(user) {
+		u.warn("the directory names a Gerrit username Gerrit would read as another account; not acting as it", login, user)
+		return false, nil
+	}
+	q := u.Active
+	if q == nil {
+		q = u.Gerrit
+	}
+	if q == nil {
+		return false, errors.New("cannot check Gerrit accounts are active")
+	}
+	accts, err := q.QueryAccounts(ctx, "username:"+gerrit.QueryString(user)+" is:active")
+	if err != nil {
+		return false, err
+	}
+	if !slices.ContainsFunc(accts, func(x gerrit.AccountInfo) bool { return x.Username == user }) {
+		u.warn("the directory names no active Gerrit account; not acting as it", login, user)
+		return false, nil
+	}
+	if a.GitHubLogin != "" && !strings.EqualFold(a.GitHubLogin, login) && login != "" && u.Logger != nil {
+		// By id, whatever the login: a rename the directory has not
+		// caught up with.
+		u.Logger.Info("GitHub account's login is not the directory's (renamed?); matching it by id", "github_login", login,
+			"directory_login", a.GitHubLogin, "github_id", a.GitHubID, "gerrit_user", user)
+	}
+	if u.Pins != nil {
+		if err := u.pinDirectory(ctx, a); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// pinDirectory makes the pins agree with the directory, which an
+// administrator curates: a.GerritUser is pinned to a.GitHubID, replacing
+// a pin to another GitHub account (an administrator moved the user to a
+// new one), and no other Gerrit account stays pinned to that GitHub
+// account. Each change is logged, and written as its own commit.
+func (u *Users) pinDirectory(ctx context.Context, a ldap.Account) error {
+	u.pinMu.Lock()
+	defer u.pinMu.Unlock()
+	for range 3 {
+		ids, err := u.Pins.LoadIdentities(ctx)
+		if err != nil {
+			return err
+		}
+		key := strings.ToLower(a.GerritUser)
+		var msgs []string
+		if p, ok := ids.ByUser[key]; !ok || p.GitHubID != a.GitHubID {
+			if ok && u.Logger != nil {
+				u.Logger.Warn("the directory gives a Gerrit user another GitHub account than the one pinned; the directory wins",
+					"gerrit_user", a.GerritUser, "github_id", a.GitHubID, "github_login", a.GitHubLogin, "pinned_id", p.GitHubID, "pinned_login", p.GitHubLogin)
+			}
+			ids.ByUser[key] = state.Identity{GitHubID: a.GitHubID, GitHubLogin: a.GitHubLogin, Pinned: time.Now().UTC()}
+			msgs = append(msgs, fmt.Sprintf("Pin %s to GitHub @%s (id %d), as the directory says", a.GerritUser, a.GitHubLogin, a.GitHubID))
+		}
+		for _, other := range sortedStringKeys(ids.ByUser) {
+			if q := ids.ByUser[other]; other != key && q.GitHubID == a.GitHubID {
+				if u.Logger != nil {
+					u.Logger.Warn("the directory gives a GitHub account pinned to another Gerrit user to this one; unpinning the other",
+						"gerrit_user", a.GerritUser, "github_id", a.GitHubID, "was_gerrit_user", other)
+				}
+				delete(ids.ByUser, other)
+				msgs = append(msgs, fmt.Sprintf("Unpin %s from GitHub id %d, which the directory gives %s", other, a.GitHubID, a.GerritUser))
+			}
+		}
+		if len(msgs) == 0 || u.DryRun {
+			return nil
+		}
+		err = u.Pins.SaveIdentities(ctx, ids, strings.Join(msgs, "; "))
+		if errors.Is(err, state.ErrConflict) {
+			continue
+		}
+		return err
+	}
+	return fmt.Errorf("pinning %s: too many conflicts", a.GerritUser)
+}
+
+func (u *Users) warnErr(msg, login string, err error) {
+	if u.Logger != nil {
+		u.Logger.Warn(msg, "github_login", login, "err", err)
+	}
+}
+
+// byMatch is GerritUserFor by Overrides and usernames.
+func (u *Users) byMatch(ctx context.Context, gh github.User) (string, bool) {
 	c := u.byLogin(ctx, gh.Login, gh.ID == 0 && u.Pins != nil)
 	if !c.ok || gh.ID == 0 || u.Pins == nil || c.id == gh.ID {
 		return c.user, c.ok
