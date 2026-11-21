@@ -8,6 +8,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/ldap"
 )
 
 // Config is the top-level configuration.
@@ -147,6 +150,28 @@ type Identity struct {
 	// see each one (Gerrit hides groups otherwise, e.g. Administrators
 	// unless "visible to all"); it will not start otherwise.
 	NeverGroups []string `yaml:"never_groups"`
+	// LDAP, if set, is a directory of GitHub accounts (design §7.1):
+	// asked first, by numeric GitHub id, and as trusted as GitHubToGerrit.
+	// Off by default.
+	LDAP *LDAP `yaml:"ldap"`
+}
+
+// LDAP is a directory saying whose GitHub account is whose: entries of
+// ObjectClass under BaseDN, each a Gerrit username (uid) with a
+// githubLogin and a githubId, written only by its administrators.
+type LDAP struct {
+	// URL is ldaps://host[:port]; binds are anonymous.
+	URL string `yaml:"url"`
+	// CAFile is the PEM certificates to trust for its certificate (the
+	// system's if empty). Verification is never turned off.
+	CAFile string `yaml:"ca_file"`
+	BaseDN string `yaml:"base_dn"`
+	// ObjectClass is the entries' auxiliary class (githubAccount).
+	ObjectClass string `yaml:"object_class"`
+	// Refresh is how often it is read whole (5m): someone removed stops
+	// being matched within it. A read that fails, or none for two
+	// intervals, matches nobody by it.
+	Refresh time.Duration `yaml:"refresh_interval"`
 }
 
 // GitHubOwned reports whether GitHub owns the target branches.
@@ -238,6 +263,12 @@ func Parse(b []byte) (*Config, error) {
 		return nil, err
 	}
 	c.Gerrit.URL = strings.TrimRight(c.Gerrit.URL, "/")
+	if l := c.Identity.LDAP; l != nil {
+		l.ObjectClass = cmp.Or(l.ObjectClass, "githubAccount")
+		if l.Refresh == 0 {
+			l.Refresh = 5 * time.Minute
+		}
+	}
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
@@ -258,6 +289,18 @@ func (c *Config) validate() error {
 		}
 	}
 	req("gerrit.project", c.Gerrit.Project)
+	if l := c.Identity.LDAP; l != nil {
+		req("identity.ldap.url", l.URL)
+		req("identity.ldap.base_dn", l.BaseDN)
+		if l.URL != "" {
+			if _, err := ldap.ParseServer(l.URL, ""); err != nil { // its CA file is read at startup
+				errs = append(errs, fmt.Errorf("identity.ldap: %w", err))
+			}
+		}
+		if l.Refresh < 10*time.Second {
+			errs = append(errs, fmt.Errorf("identity.ldap.refresh_interval %s: at least 10s", l.Refresh))
+		}
+	}
 	req("gerrit.http_user", c.Gerrit.HTTPUser)
 	req("gerrit.http_password_file", c.Gerrit.HTTPPasswordFile)
 	req("gerrit.mirror_dir", c.Gerrit.MirrorDir)

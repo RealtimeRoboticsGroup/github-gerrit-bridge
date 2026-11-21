@@ -1,11 +1,17 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -17,6 +23,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/config"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/ldap"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/usertokens"
 	"os"
 	"path/filepath"
@@ -287,6 +294,48 @@ func TestCheckCapabilities(t *testing.T) {
 		srv.Close()
 		if asked != tc.asked || (err == nil) != tc.ok {
 			t.Errorf("%s %s: asked %v, err %v", tc.owner, tc.caps, asked, err)
+		}
+	}
+}
+
+// The identity mapping is what the config says: username matching only if
+// on, the LDAP directory only if set (AOS's config: none), trusting its CA
+// file, and the bridge's own account and login never matched.
+func TestNewUsers(t *testing.T) {
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true}
+	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
+	rest := &gerrit.Client{BaseURL: "http://gerrit.invalid"}
+	off := false
+	for _, tc := range []struct {
+		name string
+		id   config.Identity
+		dir  bool
+		err  bool
+	}{
+		{"AOS", config.Identity{}, false, false},
+		{"LDAP", config.Identity{MatchUsernames: &off, LDAP: &config.LDAP{URL: "ldaps://ldap.spacecookies.dev", CAFile: ca, BaseDN: "ou=People", ObjectClass: "githubAccount", Refresh: time.Minute}}, true, false},
+		{"no CA file", config.Identity{LDAP: &config.LDAP{URL: "ldaps://ldap.spacecookies.dev", CAFile: ca + ".missing", BaseDN: "ou=People"}}, false, true},
+	} {
+		cfg := &config.Config{Identity: tc.id}
+		users, dir, err := newUsers(cfg, rest, nil, nil, "github-bridge", "bridge-bot", false, slog.Default())
+		if (err != nil) != tc.err {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		if (dir != nil) != tc.dir || (users.Directory != nil) != tc.dir || (users.Gerrit != nil) != tc.id.MatchesUsernames() || users.Active == nil {
+			t.Errorf("%s: directory %v, users %+v", tc.name, dir, users)
+		}
+		if dir != nil && (dir.BaseDN != "ou=People" || dir.Refresh != time.Minute || dir.Searcher.(*ldap.Server).RootCAs == nil) {
+			t.Errorf("%s: directory %+v", tc.name, dir)
+		}
+		if len(users.Never) != 1 || users.Never[0] != "github-bridge" || len(users.NeverLogins) != 1 || users.NeverLogins[0] != "bridge-bot" {
+			t.Errorf("%s: never %v %v", tc.name, users.Never, users.NeverLogins)
 		}
 	}
 }

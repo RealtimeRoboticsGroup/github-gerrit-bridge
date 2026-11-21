@@ -30,6 +30,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/httplog"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/ldap"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/queue"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
@@ -372,18 +373,17 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		DryRun:         dryRun,
 		Logger:         logger,
 	}
-	// Never act as the bridge itself, a service account (CI, say) or an
-	// administrator by matching usernames, even if someone registers that
-	// login on GitHub; nor as anyone for the bridge's own GitHub login.
-	users := &reconcile.Users{Overrides: cfg.Identity.GitHubToGerrit, Logger: logger,
-		Never: []string{self.Username}, NeverGroups: cfg.Identity.NeverGroups, NeverLogins: []string{login},
-		// A Gerrit account follows the GitHub account (numeric id) it was
-		// first matched to, not whoever holds the login later.
-		Pins: store, GitHub: gh, DryRun: dryRun}
-	if cfg.Identity.MatchesUsernames() {
-		users.Gerrit = rest
+	users, dir, err := newUsers(cfg, rest, store, gh, self.Username, login, dryRun, logger)
+	if err != nil {
+		return err
 	}
-	users.Active = rest
+	if dir != nil {
+		// Read now and every refresh interval; until a read succeeds, it
+		// matches nobody (design §7.1).
+		go dir.Run(ctx)
+		logger.Info("GitHub accounts come from LDAP", "url", cfg.Identity.LDAP.URL, "base_dn", dir.BaseDN,
+			"object_class", dir.ObjectClass, "refresh", dir.Refresh, "match_usernames", cfg.Identity.MatchesUsernames())
+	}
 	if err := users.CheckGroups(ctx); err != nil {
 		return err
 	}
@@ -674,6 +674,45 @@ func checkCapabilities(ctx context.Context, cfg *config.Config, rest *gerrit.Cli
 			"to show changes merged on GitHub as merged (design §3.1): grant it to the bridge's group in All-Projects", cfg.Gerrit.HTTPUser)
 	}
 	return nil
+}
+
+// newUsers is the identity mapping cfg says (design §7): overrides, the
+// LDAP directory if any (returned, for the caller to run), and username
+// matching if on. Never the bridge itself (user), a service account or an
+// administrator by matching usernames, even if someone registers that
+// login on GitHub; nor anyone for the bridge's own GitHub login. A Gerrit
+// account follows the GitHub account (numeric id) it was first matched
+// to, or the directory gives it, not whoever holds the login later.
+func newUsers(cfg *config.Config, rest *gerrit.Client, pins reconcile.Pins, gh reconcile.GitHubUsers, user, login string, dryRun bool,
+	logger *slog.Logger) (*reconcile.Users, *ldap.Directory, error) {
+	users := &reconcile.Users{Overrides: cfg.Identity.GitHubToGerrit, Logger: logger,
+		Never: []string{user}, NeverGroups: cfg.Identity.NeverGroups, NeverLogins: []string{login},
+		Pins: pins, GitHub: gh, DryRun: dryRun, Active: rest}
+	if cfg.Identity.MatchesUsernames() {
+		users.Gerrit = rest
+	}
+	dir, err := newDirectory(cfg.Identity.LDAP, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	if dir != nil {
+		users.Directory = dir
+	}
+	return users, dir, nil
+}
+
+// newDirectory is identity.ldap's directory of GitHub accounts, or nil if
+// unset: its server, trusting ca_file's certificates, read through the
+// one search the directory needs.
+func newDirectory(l *config.LDAP, logger *slog.Logger) (*ldap.Directory, error) {
+	if l == nil {
+		return nil, nil
+	}
+	srv, err := ldap.ParseServer(l.URL, l.CAFile)
+	if err != nil {
+		return nil, fmt.Errorf("identity.ldap: %w", err)
+	}
+	return &ldap.Directory{Searcher: srv, BaseDN: l.BaseDN, ObjectClass: l.ObjectClass, Refresh: l.Refresh, Logger: logger}, nil
 }
 
 // githubMerger merges PRs on GitHub as whoever asked (/submit where GitHub

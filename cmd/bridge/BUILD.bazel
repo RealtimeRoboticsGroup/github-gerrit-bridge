@@ -15,6 +15,7 @@ go_library(
         "//internal/github",
         "//internal/gitmirror",
         "//internal/httplog",
+        "//internal/ldap",
         "//internal/queue",
         "//internal/reconcile",
         "//internal/state",
@@ -35,7 +36,9 @@ go_test(
     embed = [":bridge_lib"],
     deps = [
         "//internal/config",
+        "//internal/gerrit",
         "//internal/github",
+        "//internal/ldap",
         "//internal/usertokens",
     ],
 )

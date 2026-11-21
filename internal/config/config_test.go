@@ -298,3 +298,35 @@ func TestBranchOwner(t *testing.T) {
 		}
 	}
 }
+
+// identity.ldap: off unless set (AOS's config is unchanged), defaulted
+// when set, and only an ldaps:// URL with a base DN.
+func TestIdentityLDAP(t *testing.T) {
+	c, err := Parse([]byte(full))
+	if err != nil || c.Identity.LDAP != nil {
+		t.Fatalf("unset: %+v %v", c.Identity.LDAP, err)
+	}
+	c, err = Parse([]byte(full + `identity:
+  match_usernames: false
+  ldap:
+    url: ldaps://ldap.spacecookies.dev:636
+    ca_file: /etc/github-bridge/ldap-ca.pem
+    base_dn: ou=People,dc=spacecookies,dc=dev
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := c.Identity.LDAP; l.ObjectClass != "githubAccount" || l.Refresh != 5*time.Minute || l.CAFile != "/etc/github-bridge/ldap-ca.pem" || c.Identity.MatchesUsernames() {
+		t.Errorf("%+v, match usernames %v", l, c.Identity.MatchesUsernames())
+	}
+	for _, bad := range []string{
+		"  ldap:\n    url: ldap://ldap.spacecookies.dev\n    base_dn: dc=x\n",
+		"  ldap:\n    url: ldaps://ldap.spacecookies.dev\n",
+		"  ldap:\n    base_dn: dc=x\n",
+		"  ldap:\n    url: ldaps://ldap.spacecookies.dev\n    base_dn: dc=x\n    refresh_interval: 1s\n",
+	} {
+		if _, err := Parse([]byte(full + "identity:\n" + bad)); err == nil {
+			t.Errorf("accepted:\n%s", bad)
+		}
+	}
+}
