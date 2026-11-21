@@ -606,6 +606,13 @@ func (c *Code) pushTrust() func(context.Context, int) (bool, bool) {
 	return pushTrust(c.GitHubOwned, c.Publishable, c.Trusted)
 }
 
+// PushTrust is who may have Gerrit code pushed to GitHub in this mode
+// (pushTrust), for the budgets' exemption; it reads Code's fields when
+// called, so set them first.
+func (c *Code) PushTrust() func(context.Context, int) (bool, bool) {
+	return func(ctx context.Context, account int) (bool, bool) { return c.pushTrust()(ctx, account) }
+}
+
 // unpublished reports whether Gerrit-born change ch may not reach GitHub,
 // which owns the branches (design §3.1): someone responsible for its
 // current patch set (its uploader, and whoever made its code or chose its
@@ -1119,14 +1126,18 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]strin
 	}
 	// Which merged revisions has replication brought to GitHub yet?
 	s.OnGitHubBranch = map[string]bool{}
-	if _, err := c.Mirror.GitEnv(ctx, env, nil, "-c", fsckFetch, "fetch", "--quiet", c.GitHubURL,
-		"+refs/heads/"+branch+":refs/remotes/github/heads/"+branch); err == nil {
-		for _, ch := range s.Changes {
-			if ch.Status != "MERGED" {
-				continue
-			}
-			if _, err := c.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", ch.Revision, "refs/remotes/github/heads/"+branch); err == nil {
-				s.OnGitHubBranch[ch.Revision] = true
+	// Only where Gerrit owns the branch (replication); where GitHub does,
+	// Follow has fetched it already.
+	if !c.GitHubOwned {
+		if _, err := c.Mirror.GitEnv(ctx, env, nil, "-c", fsckFetch, "fetch", "--quiet", c.GitHubURL,
+			"+refs/heads/"+branch+":refs/remotes/github/heads/"+branch); err == nil {
+			for _, ch := range s.Changes {
+				if ch.Status != "MERGED" {
+					continue
+				}
+				if _, err := c.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", ch.Revision, "refs/remotes/github/heads/"+branch); err == nil {
+					s.OnGitHubBranch[ch.Revision] = true
+				}
 			}
 		}
 	}

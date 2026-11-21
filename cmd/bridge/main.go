@@ -501,10 +501,14 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	code.Importer.ChangeIDKey = []byte("change-id\x00" + webhookSecret)
 	// Anyone can register on Gerrit; each new PR costs ~15 GitHub writes,
 	// and GitHub stalls a token past ~80 a minute or ~500 an hour.
-	code.PRBudget = &reconcile.Budget{N: 20, Per: time.Hour, Trusted: checks.IsTrusted}
-	comments.PostBudget = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: checks.IsTrusted}
-	checks.StatusBudget, checks.BridgeAccount = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: checks.IsTrusted}, self.AccountID
-	code.TextBudget = &reconcile.Budget{N: 60, Per: time.Hour, Trusted: checks.IsTrusted}
+	// Exempt from the budgets: whoever may have their code pushed to
+	// GitHub in this mode (CI's trusted group, or linked writers), the
+	// same rule as everywhere else (twelfth review).
+	exempt := code.PushTrust()
+	code.PRBudget = &reconcile.Budget{N: 20, Per: time.Hour, Trusted: exempt}
+	comments.PostBudget = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: exempt}
+	checks.StatusBudget, checks.BridgeAccount = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: exempt}, self.AccountID
+	code.TextBudget = &reconcile.Budget{N: 60, Per: time.Hour, Trusted: exempt}
 	code.LinksBudget = &reconcile.Budget{N: 12, Per: time.Hour} // per PR
 	commands := &reconcile.Commands{
 		GitHub:       gh,

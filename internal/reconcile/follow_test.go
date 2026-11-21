@@ -896,3 +896,19 @@ func TestPushTrustIsByMode(t *testing.T) {
 		}
 	}
 }
+
+// The budgets' exemption is the mode's push rule, read when it is asked
+// (Code's fields may be set after it is taken).
+func TestPushTrustExported(t *testing.T) {
+	ctx := context.Background()
+	c := &Code{GitHubOwned: true}
+	exempt := c.PushTrust()
+	c.Publishable = func(_ context.Context, a int) (bool, bool) { return a == 8, true }
+	c.Trusted = func(context.Context, int) (bool, bool) { return true, true }
+	if ok, _ := exempt(ctx, 8); !ok {
+		t.Error("a linked writer is not exempt")
+	}
+	if ok, _ := exempt(ctx, 9); ok {
+		t.Error("CI's trusted group is exempt where GitHub owns the branches")
+	}
+}
