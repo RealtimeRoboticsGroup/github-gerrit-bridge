@@ -321,6 +321,7 @@ func TestImporterForeignIsByPublishable(t *testing.T) {
 		s, im, up, m1, g, ids := gerritBornWorld(t, false)
 		ctx := context.Background()
 		im.Trusted = func(_ context.Context, account int) (bool, bool) { return account == 9, true }
+		im.GitHubOwned = true
 		im.Publishable = func(_ context.Context, account int) (bool, bool) { return publishable && account == 9, true }
 		uploader := gerrit.AccountInfo{AccountID: 9, Username: "trusted"}
 		if tc.owner {
@@ -514,6 +515,7 @@ func TestGerritWinsNeverRestoresUnpublishedCode(t *testing.T) {
 		publishable := tc.publishable
 		s, im, up, m1, g, ids := gerritBornWorld(t, false)
 		ctx := context.Background()
+		im.GitHubOwned = true
 		im.Publishable = func(_ context.Context, account int) (bool, bool) {
 			return account == 5 || (publishable && account == 9), true
 		}
@@ -870,6 +872,27 @@ func TestParentsTrustedBounds(t *testing.T) {
 		ok, _, err := parentsTrusted(ctx, chainReader{tc.n, tc.uploader, tc.merged}, "main", []string{"c0"}, nil, trusted)
 		if ok != tc.want || err != nil {
 			t.Errorf("%+v: %v %v", tc, ok, err)
+		}
+	}
+}
+
+// Who may push is chosen by the mode, not by what is set: GitHub-owned
+// with no Publishable is nobody, never CI's trusted group.
+func TestPushTrustIsByMode(t *testing.T) {
+	ctx := context.Background()
+	yes := func(context.Context, int) (bool, bool) { return true, true }
+	for _, tc := range []struct {
+		owned                bool
+		publishable, trusted func(context.Context, int) (bool, bool)
+		want                 bool
+	}{
+		{false, nil, yes, true},
+		{false, func(context.Context, int) (bool, bool) { return false, true }, yes, true}, // Gerrit-owned: the trusted group
+		{true, nil, yes, false},
+		{true, yes, nil, true},
+	} {
+		if ok, _ := pushTrust(tc.owned, tc.publishable, tc.trusted)(ctx, 9); ok != tc.want {
+			t.Errorf("%+v: %v", tc, ok)
 		}
 	}
 }

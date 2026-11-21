@@ -588,19 +588,22 @@ func ownerPass(githubOwned bool, owner int, head string) int {
 // Gerrit patch sets pushed to a GitHub-born PR's branch: CI's trusted
 // group, or, where GitHub owns the branches, publishable, which must be
 // set there (nobody, unset).
-func pushTrust(publishable, trusted func(context.Context, int) (bool, bool)) func(context.Context, int) (bool, bool) {
-	if publishable != nil {
-		return publishable
+// Chosen by the mode, never by which is set: GitHub-owned without
+// publishable is nobody (twelfth review: the importer took a missing
+// Publishable for Gerrit-owned).
+func pushTrust(githubOwned bool, publishable, trusted func(context.Context, int) (bool, bool)) func(context.Context, int) (bool, bool) {
+	if !githubOwned {
+		return trusted
 	}
-	return trusted
+	if publishable == nil {
+		return func(context.Context, int) (bool, bool) { return false, true }
+	}
+	return publishable
 }
 
 // pushTrust is Code's pushTrust.
 func (c *Code) pushTrust() func(context.Context, int) (bool, bool) {
-	if c.GitHubOwned && c.Publishable == nil {
-		return func(context.Context, int) (bool, bool) { return false, true }
-	}
-	return pushTrust(c.Publishable, c.Trusted)
+	return pushTrust(c.GitHubOwned, c.Publishable, c.Trusted)
 }
 
 // unpublished reports whether Gerrit-born change ch may not reach GitHub,
@@ -613,10 +616,7 @@ func (c *Code) unpublished(ctx context.Context, ch *GerritChange, st *state.Chan
 		if r, ok := memo[account]; ok {
 			return r[0], r[1]
 		}
-		ok, known := false, true
-		if c.Publishable != nil {
-			ok, known = c.Publishable(ctx, account)
-		}
+		ok, known := c.pushTrust()(ctx, account)
 		memo[account] = [2]bool{ok, known}
 		return ok, known
 	}
@@ -648,6 +648,13 @@ func mayPushToAuthor(ctx context.Context, trusted func(context.Context, int) (bo
 		return t && k
 	}
 	return allowed(uploader) && (real == 0 || allowed(real)), known
+}
+
+// gitHubHas is markForeign's, and the importer's, exception: where GitHub
+// owns the branches, a GitHub-born change's patch set GitHub already has
+// (onGitHub) is nobody's to keep off its branch.
+func gitHubHas(githubOwned bool, st *state.Change, revision string) bool {
+	return githubOwned && onGitHub(st, revision)
 }
 
 // onGitHub reports whether st records revision (a Gerrit commit) as one
@@ -685,7 +692,7 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 		if st := s.State[n]; st != nil {
 			head = st.State.HeadBranch
 		}
-		if c.GitHubOwned && onGitHub(s.State[n], ch.Revision) {
+		if gitHubHas(c.GitHubOwned, s.State[n], ch.Revision) {
 			// GitHub has it already (imported from the PR, or pushed
 			// there): there is nothing to keep off the branch, and the
 			// PR still gets its description, with the Change-Id its

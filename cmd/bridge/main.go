@@ -397,6 +397,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		}
 	}
 	code.Importer = &reconcile.Importer{
+		GitHubOwned:   cfg.GitHubOwned(),
 		Project:       cfg.Gerrit.Project,
 		Gerrit:        rest,
 		GitHub:        gh,
@@ -512,6 +513,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		Identity:     users,
 		BeforeSubmit: code.PrepareSubmit,
 		Merger:       merger,
+		GitHubOwned:  cfg.GitHubOwned(),
 		LinkURL:      code.LinkURL,
 		BridgeLogin:  login,
 		DryRun:       dryRun,

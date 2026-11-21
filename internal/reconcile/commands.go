@@ -111,8 +111,12 @@ type Commands struct {
 	// Merger, if set, is what /submit does instead of a Gerrit submit:
 	// GitHub owns the branches, and the PR is merged there, as whoever
 	// asked. LinkURL is where people link their GitHub accounts.
-	Merger  GitHubMerger
-	LinkURL string
+	Merger GitHubMerger
+	// GitHubOwned says GitHub owns the branches: /submit is Merger's,
+	// and without one it does nothing (never a Gerrit submit, which
+	// nobody is granted there).
+	GitHubOwned bool
+	LinkURL     string
 	// BridgeLogin is the bridge's GitHub login: only its replies mark a
 	// command handled.
 	BridgeLogin string
@@ -219,7 +223,10 @@ func (c *Commands) run(ctx context.Context, n int, alone bool, read *prRead) err
 		if editedByOther(edits, ic.ID, ic.User.Login) {
 			// Anyone with write access can edit anyone's comment.
 			reply = fmt.Sprintf("@%s: `/submit` was not run because the comment was edited. Post it as a new comment.", ic.User.Login)
-		} else if c.Merger != nil {
+		} else if c.GitHubOwned && c.Merger == nil {
+			c.Logger.Warn("/submit: GitHub owns the branches, but the bridge has no way to merge there", "change", n)
+			reply = fmt.Sprintf("@%s: `/submit` was not run: the bridge cannot merge on GitHub here (see its log). Use the merge button.", ic.User.Login)
+		} else if c.GitHubOwned {
 			reply = c.merge(ctx, n, ic, heads, read.pull)
 		} else {
 			reply = c.submit(ctx, n, ic, heads)

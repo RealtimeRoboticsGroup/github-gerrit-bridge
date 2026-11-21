@@ -393,7 +393,7 @@ func mergeCommands(t *testing.T, origin string) (*Commands, *fakeGitHub, *fakeSu
 	}
 	h.title, h.body = "Fix the arm", "It was bent.\n\n"+linksStart+"\nblock\n"+linksEnd+"\n\nChange-Id: "+cid(5)
 	m := &fakeMerger{linked: map[string]bool{"AustinSchuh": true}}
-	c.Merger, c.LinkURL = m, "https://bridge.example.com/github/link"
+	c.Merger, c.GitHubOwned, c.LinkURL = m, true, "https://bridge.example.com/github/link"
 	return c, h, sub, m
 }
 
@@ -547,5 +547,19 @@ func TestSubmitMergeKeepsSignOffs(t *testing.T) {
 	}
 	if want := "It was bent.\n\nSigned-off-by: Austin <austin@example.com>\nChange-Id: " + cid(5); len(m.calls) != 1 || m.calls[0].Message != want {
 		t.Errorf("merges %+v, want message %q", m.calls, want)
+	}
+}
+
+// Where GitHub owns the branches, /submit is a merge on GitHub or
+// nothing: never a Gerrit submit, whatever is missing (twelfth review).
+func TestSubmitWhereGitHubOwnsNeedsAMerger(t *testing.T) {
+	c, h, sub, _ := mergeCommands(t, "gerrit")
+	c.Merger = nil
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if last := h.ics[len(h.ics)-1].Body; len(sub.calls) != 0 || !strings.Contains(last, "cannot merge on GitHub here") {
+		t.Errorf("submits %v, reply %q", sub.calls, last)
 	}
 }

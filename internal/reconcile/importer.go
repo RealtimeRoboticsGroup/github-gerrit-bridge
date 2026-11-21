@@ -54,6 +54,8 @@ type Importer struct {
 	Publishable func(ctx context.Context, account int) (ok, known bool)
 	// Below is as Code's.
 	Below belowReader
+	// GitHubOwned is Code's: GitHub owns the branches (design §3.1).
+	GitHubOwned bool
 	// ChangeIDKey keys the Change-Ids derived for PRs (derivedChangeID):
 	// a secret, so they cannot be worked out in advance.
 	ChangeIDKey []byte
@@ -733,9 +735,12 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			// not restored over the push either (fifth audit: restored as
 			// the bridge's, it reached the author's branch).
 			rev, _ := cur.Current()
-			owner := ownerPass(im.Publishable != nil, cur.Owner.AccountID, st.State.HeadBranch)
-			foreign = !im.mayReach(ctx, cur, st, st.State.Branch, rev.Number, owner, pushTrust(im.Publishable, im.Trusted))
-		} else if im.Publishable != nil {
+			owner := ownerPass(im.GitHubOwned, cur.Owner.AccountID, st.State.HeadBranch)
+			// As markForeign: GitHub has it already (imported, or
+			// pushed), so nothing is kept off the branch.
+			foreign = !gitHubHas(im.GitHubOwned, st, cur.CurrentRevision) &&
+				!im.mayReach(ctx, cur, st, st.State.Branch, rev.Number, owner, pushTrust(im.GitHubOwned, im.Publishable, im.Trusted))
+		} else if im.GitHubOwned {
 			// Where GitHub owns the branches, a Gerrit-born change's patch
 			// set reaches GitHub only from those who may push there
 			// (Code.unpublished, owning the change no pass): one that may
@@ -743,7 +748,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			// as the bridge's upload, which the gate would let through
 			// (review of the GitHub-owned mode).
 			rev, _ := cur.Current()
-			foreign = !im.mayReach(ctx, cur, st, st.State.Branch, rev.Number, 0, im.Publishable)
+			foreign = !im.mayReach(ctx, cur, st, st.State.Branch, rev.Number, 0, pushTrust(true, im.Publishable, im.Trusted))
 		}
 		message = cur.Revisions[base].Commit.Message
 		if message == "" {
