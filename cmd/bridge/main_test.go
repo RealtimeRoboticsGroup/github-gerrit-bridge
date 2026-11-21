@@ -377,8 +377,8 @@ func TestSetMode(t *testing.T) {
 			Publishable: func(_ context.Context, a int) (bool, bool) { return a == 2, true }}
 		comments, commands, checks := &reconcile.Comments{}, &reconcile.Commands{}, &reconcile.Checks{}
 		setMode(owned, code, comments, commands, checks)
-		if code.GitHubOwned != owned || code.Importer.GitHubOwned != owned || commands.GitHubOwned != owned || checks.GitHubOwned != owned {
-			t.Errorf("GitHub owns %v: code %v importer %v commands %v checks %v", owned, code.GitHubOwned, code.Importer.GitHubOwned, commands.GitHubOwned, checks.GitHubOwned)
+		if code.GitHubOwned != owned || code.Importer.GitHubOwned != owned || commands.GitHubOwned != owned || checks.GitHubOwned != owned || comments.GitHubOwned != owned {
+			t.Errorf("GitHub owns %v: code %v importer %v commands %v checks %v comments %v", owned, code.GitHubOwned, code.Importer.GitHubOwned, commands.GitHubOwned, checks.GitHubOwned, comments.GitHubOwned)
 		}
 		exempt := map[bool]int{false: 1, true: 2}[owned]
 		for name, b := range map[string]*reconcile.Budget{"pr": code.PRBudget, "text": code.TextBudget, "post": comments.PostBudget, "status": checks.StatusBudget} {

@@ -701,7 +701,7 @@ func checkCapabilities(ctx context.Context, cfg *config.Config, rest *gerrit.Cli
 // Publishable and Trusted must be set before.
 func setMode(githubOwned bool, code *reconcile.Code, comments *reconcile.Comments, commands *reconcile.Commands, checks *reconcile.Checks) {
 	code.GitHubOwned, code.Importer.GitHubOwned = githubOwned, githubOwned
-	commands.GitHubOwned, checks.GitHubOwned = githubOwned, githubOwned
+	commands.GitHubOwned, checks.GitHubOwned, comments.GitHubOwned = githubOwned, githubOwned, githubOwned
 	exempt := code.PushTrust()
 	code.PRBudget = &reconcile.Budget{N: 20, Per: time.Hour, Trusted: exempt}
 	code.TextBudget = &reconcile.Budget{N: 60, Per: time.Hour, Trusted: exempt}

@@ -672,3 +672,55 @@ func commentsOnBehalf(t *testing.T, byID bool) {
 		t.Errorf("no copy as the bridge naming both: %+v", e.h.ics)
 	}
 }
+
+// Seventeenth review (bad code submitted): where GitHub owns the
+// branches, GitHub's required reviews are the gate, and GitHub never
+// counts a PR author's approval of their own code; but a Gerrit-born
+// change's PR is the bridge's, and so is every push of a Gerrit patch
+// set. A linked user's +2 on a change they own, or on code they
+// uploaded, is no GitHub approval (its words are a comment); on someone
+// else's code it is. Where Gerrit owns the branches, as on main.
+func TestLinkedVoteOnOwnCodeIsNoApproval(t *testing.T) {
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	bob := gerrit.AccountInfo{AccountID: 7, Name: "Bob", Username: "bobg"}
+	for _, tc := range []struct {
+		name         string
+		githubOwned  bool
+		owner        gerrit.AccountInfo
+		ps1, ps2     gerrit.AccountInfo
+		wantApproval bool
+	}{
+		{"her own change", true, alice, bob, bob, false},
+		{"her upload", true, bob, bob, alice, false},
+		{"bob's rework of hers", true, bob, alice, bob, false}, // she chose its parents (codeFrom)
+		{"bob's", true, bob, bob, bob, true},
+		{"her own, Gerrit-owned", false, alice, alice, alice, true},
+		{"her upload as bob", true, bob, bob, bob, false},           // ps2 uploaded by alice on bob's behalf
+		{"her message edit of bob's", true, bob, bob, alice, false}, // ps2 message-only: hers to have pushed
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _ := linkedEnv(t)
+			e.runAs()
+			e.c.GitHubOwned = tc.githubOwned
+			e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+			e.g.owner = tc.owner
+			e.g.uploaders = map[int]gerrit.AccountInfo{1: tc.ps1, 2: tc.ps2}
+			switch tc.name {
+			case "her upload as bob":
+				e.g.realUploaders = map[int]*gerrit.AccountInfo{2: &alice}
+			case "her message edit of bob's":
+				e.g.kinds = map[int]string{2: "NO_CODE_CHANGE"}
+			}
+			e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2\n\nLGTM.", RevisionNumber: 2}}
+			e.g.vote("alice", "Code-Review", 2)
+			e.sync(t)
+			approved := slices.ContainsFunc(e.h.reviews, func(rv github.Review) bool { return rv.State == "APPROVED" && rv.User == aliceGH })
+			if approved != tc.wantApproval {
+				t.Errorf("approved %v, want %v (reviews %+v)", approved, tc.wantApproval, e.h.reviews)
+			}
+			if !tc.wantApproval && !slices.ContainsFunc(e.h.ics, func(ic github.IssueComment) bool { return strings.Contains(ic.Body, "LGTM.") }) {
+				t.Errorf("her words not posted: %+v", e.h.ics)
+			}
+		})
+	}
+}

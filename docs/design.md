@@ -1905,7 +1905,13 @@ notes; nothing on GitHub advertises the link.
   stranger's), there is no review: on another commit it would be their
   approval of code they never saw there (tenth audit). Its words go as a
   comment headed with the vote and "on patch set N, which is not on
-  GitHub". A +1, or a vote of
+  GitHub". Nor is there an approval while that commit is not the PR's
+  head (sixteenth review), nor, where GitHub owns the branches, from
+  whoever owns the change or uploaded its code (seventeenth review):
+  GitHub's required reviews are the gate there, and the bridge's PR and
+  pushes would hide that it is their approval of their own code. A
+  reply posted on someone's behalf (real_author) is never their review.
+  A +1, or a vote of
   another label, stays a PR comment if it has words, and the statuses show
   it either way. Excluded: votes the bridge cast itself (a GitHub approval
   mirrored into Gerrit, tagged `github-bridge:mirror`, which would echo),

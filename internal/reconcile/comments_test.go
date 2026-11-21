@@ -56,11 +56,15 @@ type fakeGerrit struct {
 	// and owner the change's owner.
 	uploaders map[int]gerrit.AccountInfo
 	owner     gerrit.AccountInfo
-	current   string
-	files     map[string]string
-	clock     int
-	nextID    int
-	reviews   int
+	// realUploaders is who uploaded each patch set on its uploader's
+	// behalf, and kinds each one's kind (REWORK if not said).
+	realUploaders map[int]*gerrit.AccountInfo
+	kinds         map[int]string
+	current       string
+	files         map[string]string
+	clock         int
+	nextID        int
+	reviews       int
 }
 
 // vote sets user's vote on the current patch set, as Gerrit would.
@@ -207,7 +211,7 @@ func (f *fakeGerrit) GetChange(context.Context, int, ...string) (*gerrit.ChangeI
 		ci.Labels[label] = l
 	}
 	for sha, ps := range f.revs {
-		ri := gerrit.RevisionInfo{Number: ps, Created: f.created[ps], Uploader: f.uploaders[ps]}
+		ri := gerrit.RevisionInfo{Number: ps, Created: f.created[ps], Uploader: f.uploaders[ps], RealUploader: f.realUploaders[ps], Kind: cmp.Or(f.kinds[ps], "REWORK")}
 		ri.Commit.Parents = make([]struct {
 			Commit string `json:"commit"`
 		}, cmp.Or(f.parents[ps], 1))

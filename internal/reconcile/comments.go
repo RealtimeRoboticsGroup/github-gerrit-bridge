@@ -94,11 +94,14 @@ type Authors interface {
 // refs/bridge is lost or a crash interrupts a sync.
 type Comments struct {
 	// Now is the clock (time.Now if nil).
-	Now     func() time.Time
-	Project string
-	Gerrit  GerritAPI
-	GitHub  GitHubAPI
-	Store   *state.Store
+	Now func() time.Time
+	// GitHubOwned is Code's: GitHub owns the branches (design §3.1), and
+	// its required reviews are the review gate.
+	GitHubOwned bool
+	Project     string
+	Gerrit      GerritAPI
+	GitHub      GitHubAPI
+	Store       *state.Store
 	// BridgeAccount is the bridge's Gerrit account id.
 	BridgeAccount int
 	// BridgeLogin is the bridge's GitHub login: only its comments' markers
@@ -200,6 +203,10 @@ type commentSnapshot struct {
 	revision string
 	// labels are the current patch set's votes.
 	labels map[string]gerrit.LabelInfo
+	// owner is the change's owner, and revs its patch sets (who
+	// uploaded each, and its kind).
+	owner int
+	revs  map[int]gerrit.RevisionInfo
 	// wait is how long what was left out for now waits (tooFresh).
 	wait time.Duration
 	// heads are the commits the PR's branch was seen at (state.Head), up
@@ -554,6 +561,7 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 		s.parents[r.Number] = len(r.Commit.Parents)
 	}
 	s.revision = ch.CurrentRevision
+	s.owner, s.revs = ch.Owner.AccountID, revisionsByNumber(ch)
 	s.messages = ch.Messages
 	s.labels = ch.Labels
 	s.current = s.shaToPS[ch.CurrentRevision]
@@ -753,6 +761,23 @@ func (c *Comments) gerritHeader(n int, gc *gerrit.CommentInfo, s *commentSnapsho
 		who = "**" + whoMD(*real) + "**, as **" + whoMD(gc.Author) + "**,"
 	}
 	return fmt.Sprintf("%s ([Gerrit](%s))%s:", who, c.Gerrit.CommentURL(c.Project, n, gc.ID), ps)
+}
+
+// ownCode reports whether patch set ps is account's own code, or may be:
+// the change is theirs, they uploaded ps (or someone did on their
+// behalf), or whoever is responsible for its code (codeFrom) is them, or
+// cannot be told.
+func (s *commentSnapshot) ownCode(account, ps int) bool {
+	if account == 0 || account == s.owner {
+		return true
+	}
+	theirs := func(r gerrit.RevisionInfo) bool {
+		return r.Uploader.AccountID == account || (r.RealUploader != nil && r.RealUploader.AccountID == account)
+	}
+	if r, ok := s.revs[ps]; !ok || theirs(r) {
+		return true
+	}
+	return !codeFrom(s.revs, ps, func(r gerrit.RevisionInfo) bool { return !theirs(r) })
 }
 
 // onBehalfOf is who posted Gerrit comment gc on its author's behalf, if
@@ -1129,6 +1154,15 @@ func (c *Comments) postVote(ctx context.Context, n, pr int, s *commentSnapshot, 
 		// Only on the commit it was given on: on an older one, it
 		// would be their approval of code they never saw there (tenth
 		// audit). Its words go as a comment that names the patch set.
+		return false, nil
+	}
+	if event == "APPROVE" && c.GitHubOwned && s.ownCode(msg.Author.AccountID, ps) {
+		// Where GitHub owns the branches its required reviews are the
+		// gate, and GitHub counts no one's approval of their own PR; but
+		// a Gerrit-born change's PR is the bridge's, and so is every push
+		// of a Gerrit patch set: an approval by whoever owns the change,
+		// or uploaded its code, would be theirs of their own code,
+		// counted (seventeenth review). Its words go as a comment.
 		return false, nil
 	}
 	if event == "APPROVE" && (s.pull == nil || s.pull.Head.SHA != sha) {
