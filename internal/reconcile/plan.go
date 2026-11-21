@@ -65,6 +65,8 @@ type Snapshot struct {
 	// change merges in Gerrit only when GitHub's branch brings in a commit
 	// with its Change-Id, and nothing makes its PR show merged.
 	GitHubOwned bool
+	// below is parentsTrusted's reader for this look (Code.snapReader).
+	below belowReader
 	// SameTree maps a change to its GitHub head when that head has the
 	// current patch set's tree and stands on the same parent: rule 1 says
 	// they are the same revision (e.g. a commit-message edit in Gerrit), so

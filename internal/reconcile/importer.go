@@ -738,8 +738,13 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			owner := ownerPass(im.GitHubOwned, cur.Owner.AccountID, st.State.HeadBranch)
 			// As markForeign: GitHub has it already (imported, or
 			// pushed), so nothing is kept off the branch.
-			foreign = !gitHubHas(im.GitHubOwned, st, cur.CurrentRevision) &&
-				!im.mayReach(ctx, cur, st, st.State.Branch, rev.Number, owner, pushTrust(im.GitHubOwned, im.Publishable, im.Trusted))
+			if !gitHubHas(st, cur.CurrentRevision) {
+				may, err := im.mayReach(ctx, cur, st, st.State.Branch, rev.Number, owner, pushTrust(im.GitHubOwned, im.Publishable, im.Trusted))
+				if err != nil {
+					return nil, err
+				}
+				foreign = !may
+			}
 		} else if im.GitHubOwned {
 			// Where GitHub owns the branches, a Gerrit-born change's patch
 			// set reaches GitHub only from those who may push there
@@ -748,7 +753,11 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			// as the bridge's upload, which the gate would let through
 			// (review of the GitHub-owned mode).
 			rev, _ := cur.Current()
-			foreign = !im.mayReach(ctx, cur, st, st.State.Branch, rev.Number, 0, pushTrust(true, im.Publishable, im.Trusted))
+			may, err := im.mayReach(ctx, cur, st, st.State.Branch, rev.Number, 0, pushTrust(true, im.Publishable, im.Trusted))
+			if err != nil {
+				return nil, err
+			}
+			foreign = !may
 		}
 		message = cur.Revisions[base].Commit.Message
 		if message == "" {
@@ -1699,19 +1708,24 @@ func (im *Importer) belowReader() belowReader {
 	if im.Below != nil {
 		return im.Below
 	}
-	return mirrorReader{im.Gerrit, im.Mirror, im.Project}
+	return mirrorReader{im.Gerrit, im.Mirror, im.Store, im.Project}
 }
 
 // mayReach is what Code decides for a patch set's push (markForeign,
 // unpublished), here for not restoring it over a push: patch set ps of
 // cur, its code and the code below it, is trusted by trusted (owner
 // passing for its own change only). Not knowing is no.
-func (im *Importer) mayReach(ctx context.Context, cur *gerrit.ChangeInfo, st *state.Change, branch string, ps, owner int, trusted func(context.Context, int) (bool, bool)) bool {
-	ok, known, err := mayReach(ctx, im.belowReader(), trusted, im.Bridge.AccountID, owner, revisionsByNumber(cur), ps, branch, st)
+//
+// Gerrit or the mirror not answering is an error, the import retried: not
+// a no, which would let the push win over a patch set Gerrit should
+// (thirteenth review).
+func (im *Importer) mayReach(ctx context.Context, cur *gerrit.ChangeInfo, st *state.Change, branch string, ps, owner int,
+	trusted func(context.Context, int) (bool, bool)) (bool, error) {
+	ok, known, _, err := mayReach(ctx, newMemoReader(im.belowReader()), trusted, im.Bridge.AccountID, owner, revisionsByNumber(cur), ps, branch, st)
 	if err != nil {
-		im.Logger.Warn("cannot tell whose code a patch set is, or is below it; not restoring it", "change", cur.Number, "err", err)
+		return false, fmt.Errorf("whose code change %d's patch set %d is, or is below it: %w", cur.Number, ps, err)
 	}
-	return ok && known
+	return ok && known, nil
 }
 
 // revisionTrees returns tree(rev) and tree(rev^).

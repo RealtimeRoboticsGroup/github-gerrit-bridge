@@ -374,7 +374,6 @@ func (c *Client) QueryChanges(ctx context.Context, query string, opts ...string)
 	}
 }
 
-// QueryString quotes s for use as a Gerrit query operand.
 // InBranch reports whether commit sha is in project's branch (GET
 // /projects/P/commits/SHA/in, which lists the branches and tags that
 // contain it).
@@ -388,6 +387,7 @@ func (c *Client) InBranch(ctx context.Context, project, branch, sha string) (boo
 	return slices.Contains(in.Branches, strings.TrimPrefix(branch, "refs/heads/")), nil
 }
 
+// QueryString quotes s for use as a Gerrit query operand.
 func QueryString(s string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
 }

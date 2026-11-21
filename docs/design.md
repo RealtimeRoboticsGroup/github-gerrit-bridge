@@ -144,8 +144,13 @@ checklist.
   the change's own commit GitHub already has on its branch, or a patch
   set (of any change, outdated, abandoned or private ones included) whose
   code passes the same rule, owning it no pass and the bridge's own
-  uploads (an unlinked author's PR, imported) none either; at most 50
-  commits are read. So a change based on a withheld one, or on an
+  uploads (an unlinked author's PR, imported) none either; or one a
+  change's state records as on one of the repository's own branches
+  (imported from it, or pushed there: it ran there with the secrets
+  already; a fork's did not), where the walk stops. At most 50 commits
+  are read, each once per look at a branch; a commit the bridge cannot
+  see as anyone's is not known, and withholds, named in the notice, as
+  is whatever else below is not trusted. So a change based on a withheld one, or on an
   unlinked user's old patch set, is withheld too. The same rule replaces CI's trusted group for
   Gerrit patch sets pushed to GitHub-born PRs' branches, where owning the
   change is no pass either unless the branch is the author's fork. The

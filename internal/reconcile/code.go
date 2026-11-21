@@ -483,10 +483,13 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 			s.Withheld[n] = true
 			continue
 		}
+		below := "" // what below it is not trusted, if that is why
 		if !w && c.GitHubOwned && !s.githubBorn(n) {
 			var known bool
-			w, known, err = c.unpublished(ctx, ch, s.State[n], branch, linked)
-			if err != nil || !known {
+			w, known, below, err = c.unpublished(ctx, s, ch, s.State[n], branch, linked)
+			// Not known, and nothing named (GitHub could not say who may
+			// push, say): withheld, and asked again next time, unsaid.
+			if err != nil || (!known && below == "") {
 				c.Logger.Warn("cannot tell whether a change's uploaders may push to GitHub; withheld", "change", n, "err", err)
 				s.Withheld[n] = true
 				continue
@@ -518,7 +521,7 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 				"that looks like a secret, say). Review it here.", ch.PatchSet)
 		case notLinked:
 			msg = fmt.Sprintf("Patch set %d is not mirrored to GitHub: GitHub owns this repository's branches, and a change reaches it "+
-				"only when %s", ch.PatchSet, c.whoMayPush(false))
+				"only when %s", ch.PatchSet, c.whoMayPush(false, below))
 		}
 		if !c.notice(ctx, n, ch, msg) {
 			continue
@@ -625,7 +628,7 @@ func (c *Code) PushTrust() func(context.Context, int) (bool, bool) {
 // current patch set (its uploader, and whoever made its code or chose its
 // parent: codeFrom) has no linked GitHub account that may push to the
 // repository. known is false if that could not be told.
-func (c *Code) unpublished(ctx context.Context, ch *GerritChange, st *state.Change, branch string, memo map[int][2]bool) (bool, bool, error) {
+func (c *Code) unpublished(ctx context.Context, s *Snapshot, ch *GerritChange, st *state.Change, branch string, memo map[int][2]bool) (bool, bool, string, error) {
 	may := func(ctx context.Context, account int) (bool, bool) {
 		if r, ok := memo[account]; ok {
 			return r[0], r[1]
@@ -636,11 +639,11 @@ func (c *Code) unpublished(ctx context.Context, ch *GerritChange, st *state.Chan
 	}
 	// Owner 0: owning the change is no pass; every one of them must be
 	// publishable themselves.
-	ok, known, err := c.mayReach(ctx, ch, st, branch, 0, may)
+	ok, known, why, err := c.mayReach(ctx, c.snapReader(s), ch, st, branch, 0, may)
 	if err != nil {
-		return true, false, err
+		return true, false, "", err
 	}
-	return !ok, known, nil
+	return !ok, known, why, nil
 }
 
 // mayPushToAuthor reports whether a patch set uploaded in Gerrit by
@@ -664,11 +667,14 @@ func mayPushToAuthor(ctx context.Context, trusted func(context.Context, int) (bo
 	return allowed(uploader) && (real == 0 || allowed(real)), known
 }
 
-// gitHubHas is markForeign's, and the importer's, exception: where GitHub
-// owns the branches, a GitHub-born change's patch set GitHub already has
+// gitHubHas is markForeign's, and the importer's, exception: a
+// GitHub-born change's patch set GitHub already has
 // (onGitHub) is nobody's to keep off its branch.
-func gitHubHas(githubOwned bool, st *state.Change, revision string) bool {
-	return githubOwned && onGitHub(st, revision)
+//
+// In both directions (thirteenth review: where Gerrit owns the branches a
+// stacked PR's own import, or an author's after they linked, was foreign).
+func gitHubHas(st *state.Change, revision string) bool {
+	return onGitHub(st, revision)
 }
 
 // onGitHub reports whether st records revision (a Gerrit commit) as one
@@ -706,7 +712,7 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 		if st := s.State[n]; st != nil {
 			head = st.State.HeadBranch
 		}
-		if gitHubHas(c.GitHubOwned, s.State[n], ch.Revision) {
+		if gitHubHas(s.State[n], ch.Revision) {
 			// GitHub has it already (imported from the PR, or pushed
 			// there): there is nothing to keep off the branch, and the
 			// PR still gets its description, with the Change-Id its
@@ -714,7 +720,7 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 			continue
 		}
 		owner := ownerPass(c.GitHubOwned, ch.OwnerID, head)
-		ok, known, err := c.mayReach(ctx, ch, s.State[n], s.Branch, owner, c.pushTrust())
+		ok, known, below, err := c.mayReach(ctx, c.snapReader(s), ch, s.State[n], s.Branch, owner, c.pushTrust())
 		if err != nil {
 			c.Logger.Warn("cannot tell whose code a change's patch set is, or is below it; not pushing it", "change", n, "err", err)
 			s.Foreign[n] = true
@@ -724,11 +730,11 @@ func (c *Code) markForeign(ctx context.Context, s *Snapshot) error {
 			continue
 		}
 		s.Foreign[n] = true
-		if st := s.State[n]; c.DryRun || !known || (st != nil && st.State.ForeignNotice == ch.PatchSet) {
+		if st := s.State[n]; c.DryRun || (!known && below == "") || (st != nil && st.State.ForeignNotice == ch.PatchSet) {
 			continue
 		}
 		msg := fmt.Sprintf("Patch set %d is not pushed to the GitHub PR's branch, which is its author's: a patch set is pushed there "+
-			"only when %s", ch.PatchSet, c.whoMayPush(true))
+			"only when %s", ch.PatchSet, c.whoMayPush(true, below))
 		if !c.notice(ctx, n, ch, msg) {
 			continue
 		}
@@ -844,20 +850,24 @@ func authorsCode(ctx context.Context, trusted func(context.Context, int) (bool, 
 }
 
 // belowReader is what parentsTrusted reads, as gerrit-buildkite's reader
-// is: a commit's parents, whether a commit is in a branch, and the
-// changes that have a commit as a patch set.
+// is: a commit's parents, whether a commit is in a branch, the changes
+// that have a commit as a patch set; and, the bridge's own, whether a
+// change's state records a commit as on one of the repository's own
+// branches (imported from it, or pushed there).
 type belowReader interface {
 	parentsOf(ctx context.Context, rev string) ([]string, error)
 	inBranch(ctx context.Context, branch, sha string) (bool, error)
 	changesOf(ctx context.Context, sha string) ([]gerrit.ChangeInfo, error)
+	onRepoBranch(ctx context.Context, change int, sha string) (bool, error)
 }
 
-// mirrorReader is belowReader from Gerrit (as gerrit-buildkite reads it),
-// and the bridge's mirror for a commit's parents (Code's, which observe
-// has just fetched).
+// mirrorReader is belowReader from the bridge's mirror (whose
+// refs/remotes/gerrit/heads/* observe has just fetched), Gerrit for what
+// the mirror lacks, and the bridge's state.
 type mirrorReader struct {
 	g       *gerrit.Client
 	m       *gitmirror.Repo
+	store   *state.Store
 	project string
 }
 
@@ -874,11 +884,102 @@ func (r mirrorReader) parentsOf(ctx context.Context, rev string) ([]string, erro
 }
 
 func (r mirrorReader) inBranch(ctx context.Context, branch, sha string) (bool, error) {
+	_, err := r.m.Git(ctx, nil, "merge-base", "--is-ancestor", sha, "refs/remotes/gerrit/heads/"+branch)
+	var ge *gitmirror.Error
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &ge) && ge.Stderr == "":
+		return false, nil // exit 1: not an ancestor
+	}
+	// Not in the mirror (an old patch set's commit, or no copy of the
+	// branch here): Gerrit says.
 	return r.g.InBranch(ctx, r.project, branch, sha)
 }
 
 func (r mirrorReader) changesOf(ctx context.Context, sha string) ([]gerrit.ChangeInfo, error) {
 	return r.g.QueryChanges(ctx, "project:"+gerrit.QueryString(r.project)+" commit:"+sha, "ALL_REVISIONS", "ALL_COMMITS", "DETAILED_ACCOUNTS")
+}
+
+func (r mirrorReader) onRepoBranch(ctx context.Context, change int, sha string) (bool, error) {
+	if r.store == nil {
+		return false, nil
+	}
+	st, err := r.store.Load(ctx, change)
+	if err != nil {
+		return false, err
+	}
+	return recordedOnRepoBranch(st, sha), nil
+}
+
+// recordedOnRepoBranch reports whether st records Gerrit commit sha as
+// imported from, or pushed to, its PR's branch, one of the repository's
+// own (not a fork's: code there never ran with the repository's secrets):
+// GitHub has it there, and pushed again it brings nothing new. Not one
+// found there (Found: whoever put it there is not known).
+func recordedOnRepoBranch(st *state.Change, sha string) bool {
+	if st == nil || isForkHead(st.State.HeadBranch) {
+		return false
+	}
+	for _, r := range st.Revisions {
+		if r.GerritSHA == sha && r.GitHubSHA != "" && !r.Found {
+			return true
+		}
+	}
+	return false
+}
+
+// memoReader answers each question of r once: for one look at a branch
+// (or one import), never longer (thirteenth review: a chain's walks asked
+// the same commits again for every change).
+type memoReader struct {
+	r       belowReader
+	in      map[string]bool
+	changes map[string][]gerrit.ChangeInfo
+	onRepo  map[string]bool
+}
+
+func newMemoReader(r belowReader) *memoReader {
+	return &memoReader{r: r, in: map[string]bool{}, changes: map[string][]gerrit.ChangeInfo{}, onRepo: map[string]bool{}}
+}
+
+func (m *memoReader) parentsOf(ctx context.Context, rev string) ([]string, error) {
+	return m.r.parentsOf(ctx, rev)
+}
+
+func (m *memoReader) inBranch(ctx context.Context, branch, sha string) (bool, error) {
+	k := branch + " " + sha
+	if v, ok := m.in[k]; ok {
+		return v, nil
+	}
+	v, err := m.r.inBranch(ctx, branch, sha)
+	if err == nil {
+		m.in[k] = v
+	}
+	return v, err
+}
+
+func (m *memoReader) changesOf(ctx context.Context, sha string) ([]gerrit.ChangeInfo, error) {
+	if v, ok := m.changes[sha]; ok {
+		return v, nil
+	}
+	v, err := m.r.changesOf(ctx, sha)
+	if err == nil {
+		m.changes[sha] = v
+	}
+	return v, err
+}
+
+func (m *memoReader) onRepoBranch(ctx context.Context, change int, sha string) (bool, error) {
+	k := fmt.Sprint(change, " ", sha)
+	if v, ok := m.onRepo[k]; ok {
+		return v, nil
+	}
+	v, err := m.r.onRepoBranch(ctx, change, sha)
+	if err == nil {
+		m.onRepo[k] = v
+	}
+	return v, err
 }
 
 // maxBelow bounds the commits below a patch set parentsTrusted reads, as
@@ -894,14 +995,18 @@ const maxBelow = 50
 // trusts, on parents trusted the same way. Whoever chose a parent need
 // not have read it: anyone may add a patch set to the change below a
 // trusted user's, which Gerrit's Rebase then puts under theirs (twelfth
-// review: the bridge had its own, weaker rule). known is false if trusted
-// could not tell.
+// review: the bridge had its own, weaker rule). known is false if that
+// could not be told (trusted could not say, or a parent is one the bridge
+// cannot see); why names what is not trusted.
 //
-// Commits in already (this change's own, on its PR's branch: imported
-// from it, or pushed there) count as the branch does: pushed there again
-// they bring nothing new.
+// The bridge's own, besides: a commit this change already has on its
+// PR's branch (already), or that a change's state records as on one of
+// the repository's own branches (recordedOnRepoBranch), is as the branch
+// is, and the walk stops there (thirteenth review: an in-repo PR's code
+// has run with the repository's secrets already; and a chain of mirrored
+// changes is a step each, not a walk each).
 func parentsTrusted(ctx context.Context, r belowReader, branch string, parents []string, already map[string]bool,
-	trusted func(context.Context, int) (bool, bool)) (ok, known bool, err error) {
+	trusted func(context.Context, int) (bool, bool)) (ok, known bool, why string, err error) {
 	known = true
 	seen := map[string]bool{}
 	for todo := parents; len(todo) > 0; todo = todo[1:] {
@@ -910,24 +1015,26 @@ func parentsTrusted(ctx context.Context, r belowReader, branch string, parents [
 			continue
 		}
 		if seen[sha] = true; len(seen) > maxBelow {
-			return false, known, nil
+			return false, known, fmt.Sprintf("more than %d commits below it that are neither on the branch nor on GitHub", maxBelow), nil
 		}
 		if already[sha] {
 			continue
 		}
 		in, err := r.inBranch(ctx, branch, sha)
 		if err != nil {
-			return false, known, fmt.Errorf("is %s in %s? %w", short(sha), branch, err)
+			return false, known, "", fmt.Errorf("is %s in %s? %w", short(sha), branch, err)
 		}
 		if in {
 			continue
 		}
 		cs, err := r.changesOf(ctx, sha)
 		if err != nil {
-			return false, known, fmt.Errorf("finding %s's change: %w", short(sha), err)
+			return false, known, "", fmt.Errorf("finding %s's change: %w", short(sha), err)
 		}
 		if len(cs) == 0 {
-			return false, known, nil // neither in the branch nor a patch set the bridge can see
+			// Not in the branch, and no patch set the bridge can see (a
+			// private change's, say): not known to be anyone's.
+			return false, false, fmt.Sprintf("commit %s below it, which is neither on the branch nor a patch set the bridge can see", short(sha)), nil
 		}
 		for i := range cs {
 			ci := &cs[i]
@@ -936,7 +1043,14 @@ func parentsTrusted(ctx context.Context, r belowReader, branch string, parents [
 			}
 			p, found := ci.Revisions[sha]
 			if !found {
-				return false, known, nil
+				return false, false, fmt.Sprintf("commit %s below it", short(sha)), nil
+			}
+			on, err := r.onRepoBranch(ctx, ci.Number, sha)
+			if err != nil {
+				return false, known, "", fmt.Errorf("reading change %d's state: %w", ci.Number, err)
+			}
+			if on {
+				continue // GitHub has it, and all below it, on a branch of its own
 			}
 			// No pass for the bridge's own uploads below: an import of
 			// an unlinked author's PR (a fork's, say) is theirs, and
@@ -944,31 +1058,33 @@ func parentsTrusted(ctx context.Context, r belowReader, branch string, parents [
 			ok, k := authorsCode(ctx, trusted, 0, 0, revisionsByNumber(ci), p.Number)
 			known = known && k
 			if !ok {
-				return false, known, nil
+				return false, known, fmt.Sprintf("change %d's patch set %d below it (commit %s)", ci.Number, p.Number, short(sha)), nil
 			}
 			todo = append(todo, p.Commit.ParentSHAs()...)
 		}
 	}
-	return true, known, nil
+	return true, known, "", nil
 }
 
 // mayReach is the one answer to whether change ch's current patch set may
 // be pushed to GitHub (design §3.1, §6.5; twelfth review: four places
 // asked it four ways): whoever uploaded it, made its code and chose its
 // parents is trusted (authorsCode; owner, if not 0, passes for this
-// change), and so is the code below it (parentsTrusted). The callers only
-// decide what a no means: withheld, foreign, not restored. known is false
-// if that could not be told; err, if Gerrit or the mirror could not be
+// change), and so is the code below it (parentsTrusted, read through r).
+// The callers only decide what a no means: withheld, foreign, not
+// restored. known is false if that could not be told; why, when below,
+// names what is not trusted; err, if Gerrit or the mirror could not be
 // read (then not ok).
-func (c *Code) mayReach(ctx context.Context, ch *GerritChange, st *state.Change, branch string, owner int, trusted func(context.Context, int) (bool, bool)) (ok, known bool, err error) {
+func (c *Code) mayReach(ctx context.Context, r belowReader, ch *GerritChange, st *state.Change, branch string, owner int,
+	trusted func(context.Context, int) (bool, bool)) (ok, known bool, why string, err error) {
 	// A first patch set that is a REWORK is its uploader's: no need to
 	// read the rest.
 	first := gerrit.RevisionInfo{Number: 1, Kind: "REWORK", Uploader: gerrit.AccountInfo{AccountID: ch.UploaderID}}
 	if ch.PatchSet == 1 && ch.Kind == "REWORK" {
 		// Its parents from the mirror, which observe fetched it into.
-		parents, err := c.belowReader().parentsOf(ctx, ch.Revision)
+		parents, err := r.parentsOf(ctx, ch.Revision)
 		if err != nil {
-			return false, false, err
+			return false, false, "", err
 		}
 		first.Commit.Parents = make([]struct {
 			Commit string `json:"commit"`
@@ -986,20 +1102,20 @@ func (c *Code) mayReach(ctx context.Context, ch *GerritChange, st *state.Change,
 	if ch.PatchSet > 1 || ch.Kind != "REWORK" || ch.RealUploaderUnknown {
 		ci, err := c.Gerrit.GetChange(ctx, ch.Number, "ALL_REVISIONS", "ALL_COMMITS")
 		if err != nil {
-			return false, false, err
+			return false, false, "", err
 		}
 		revs = revisionsByNumber(ci)
 	}
-	return mayReach(ctx, c.belowReader(), trusted, c.BridgeAccount, owner, revs, ch.PatchSet, branch, st)
+	return mayReach(ctx, r, trusted, c.BridgeAccount, owner, revs, ch.PatchSet, branch, st)
 }
 
 // mayReach is Code.mayReach for patch set ps of revs (whose commits, and
 // so parents, are read: authorsCode refuses one whose are not).
 func mayReach(ctx context.Context, r belowReader, trusted func(context.Context, int) (bool, bool), bridge, owner int,
-	revs map[int]gerrit.RevisionInfo, ps int, branch string, st *state.Change) (ok, known bool, err error) {
+	revs map[int]gerrit.RevisionInfo, ps int, branch string, st *state.Change) (ok, known bool, why string, err error) {
 	ok, known = authorsCode(ctx, trusted, bridge, owner, revs, ps)
 	if !ok {
-		return false, known, nil
+		return false, known, "", nil
 	}
 	already := map[string]bool{}
 	if st != nil {
@@ -1009,16 +1125,24 @@ func mayReach(ctx context.Context, r belowReader, trusted func(context.Context, 
 			}
 		}
 	}
-	ok, k, err := parentsTrusted(ctx, r, branch, revs[ps].Commit.ParentSHAs(), already, trusted)
-	return ok && err == nil, known && k, err
+	ok, k, why, err := parentsTrusted(ctx, r, branch, revs[ps].Commit.ParentSHAs(), already, trusted)
+	return ok && err == nil, known && k, why, err
 }
 
-// belowReader is the Code's: Below, or its mirror and Gerrit.
+// snapReader is the reader for one look at a branch: s's, made once.
+func (c *Code) snapReader(s *Snapshot) belowReader {
+	if s.below == nil {
+		s.below = newMemoReader(c.belowReader())
+	}
+	return s.below
+}
+
+// belowReader is the Code's: Below, or its mirror, Gerrit and state.
 func (c *Code) belowReader() belowReader {
 	if c.Below != nil {
 		return c.Below
 	}
-	return mirrorReader{c.Gerrit, c.Mirror, c.Project}
+	return mirrorReader{c.Gerrit, c.Mirror, c.Store, c.Project}
 }
 
 // observe gathers a Snapshot for branch from Gerrit, the mirror, GitHub
@@ -1982,16 +2106,23 @@ const byGitHub = "github"
 // notices of withheld and foreign patch sets (twelfth review: the foreign
 // one named CI's trusted group where GitHub owns the branches), ending
 // with where to link, if linking is the way.
-func (c *Code) whoMayPush(prBranch bool) string {
+func (c *Code) whoMayPush(prBranch bool, below string) string {
+	msg := ""
 	if !c.GitHubOwned {
-		return "whoever uploaded it and wrote its code, and the code below it in Gerrit, is the change's owner or in CI's trusted group."
+		msg = "whoever uploaded it, wrote its code and chose its parents is the change's owner or in CI's trusted group, " +
+			"and so is whoever did for the code below it in Gerrit."
+	} else {
+		msg = "whoever uploaded it, wrote its code and chose its parents, and whoever did for the code below it in Gerrit, " +
+			"has linked a GitHub account that may push to the repository"
+		if prBranch {
+			msg += " (owning the change counts only on the PR author's own fork)"
+		}
+		msg += "."
 	}
-	msg := "whoever uploaded it and wrote its code, and the code below it in Gerrit, has linked a GitHub account that may push to the repository"
-	if prBranch {
-		msg += " (owning the change counts only on the PR author's own fork)"
+	if below != "" {
+		msg += " Here, not: " + below + "."
 	}
-	msg += "."
-	if c.LinkURL != "" {
+	if c.GitHubOwned && c.LinkURL != "" {
 		msg += " Link yours at " + c.LinkURL + ", then upload again."
 	}
 	return msg
