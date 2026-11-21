@@ -2762,12 +2762,20 @@ func (c *Code) maySwap(ctx context.Context, ch *gerrit.ChangeInfo, rev gerrit.Re
 		}
 	}
 	if st.State.Origin == "github" && ch.Status != "MERGED" {
-		real := 0
-		if rev.RealUploader != nil {
-			real = rev.RealUploader.AccountID
+		// The one rule (mayReach), not a fifth way of asking it
+		// (thirteenth review: this one read only the uploader). No
+		// gitHubHas exception: what is pushed is Gerrit's own commit.
+		full, err := c.Gerrit.GetChange(ctx, ch.Number, "ALL_REVISIONS", "ALL_COMMITS", "DETAILED_ACCOUNTS")
+		if err != nil {
+			return err
 		}
-		if ok, _ := mayPushToAuthor(ctx, c.pushTrust(), c.BridgeAccount, ch.Owner.AccountID, rev.Uploader.AccountID, real); !ok {
-			return fmt.Errorf("patch set %d is not the author's, nor a maintainer's", rev.Number)
+		owner := ownerPass(c.GitHubOwned, ch.Owner.AccountID, st.State.HeadBranch)
+		ok, known, why, err := mayReach(ctx, newMemoReader(c.belowReader()), c.pushTrust(), c.BridgeAccount, owner, revisionsByNumber(full), rev.Number, ch.Branch, st)
+		if err != nil {
+			return err
+		}
+		if !ok || !known {
+			return fmt.Errorf("patch set %d is not the author's, nor a maintainer's (%s)", rev.Number, cmp.Or(why, "its code, or its parents"))
 		}
 	}
 	return nil

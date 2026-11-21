@@ -4763,3 +4763,44 @@ func TestConfigNoticeWhereGitHubOwns(t *testing.T) {
 		}
 	}
 }
+
+// The swap asks the one rule: a maintainer's patch set on a stranger's
+// is not swapped onto the author's branch (thirteenth review: it read
+// only the uploader).
+func TestPrepareSubmitSwapAsksMayReach(t *testing.T) {
+	for _, strangerBelow := range []bool{false, true} {
+		s := newSites(t)
+		ctx := context.Background()
+		c, store := s.code(ctx)
+		c.Trusted = func(_ context.Context, a int) (bool, bool) { return a == 6, true }
+		m0 := s.commit("", "a.txt", "a\n", "base")
+		s.push("gerrit.git", m0, "refs/heads/main")
+		s.git("m.git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/gerrit/heads/main")
+		parent := m0
+		if strangerBelow {
+			low := s.commit(m0, "low.txt", "l\n", "Low\n\nChange-Id: "+cid(2)+"\n")
+			ci := s.change(2, cid(2), low, "Low\n\nChange-Id: "+cid(2)+"\n", "NEW")
+			r := ci.Revisions[low]
+			r.Uploader = gerrit.AccountInfo{AccountID: 7}
+			ci.Revisions[low] = r
+			parent = low
+		}
+		h2 := s.commit(parent, "f.txt", "2\n", "done")
+		sq := s.commit(parent, "f.txt", "2\n", "Feature\n\nChange-Id: "+cid(1)+"\n")
+		ci := s.change(1, cid(1), sq, "Feature\n\nChange-Id: "+cid(1)+"\n", "NEW")
+		ci.Owner = gerrit.AccountInfo{AccountID: 6}
+		r := ci.Revisions[sq]
+		r.Uploader = ci.Owner
+		ci.Revisions[sq] = r
+		s.push("github.git", h2, "refs/heads/feature")
+		s.pr(10, "feature", h2, "main", "brt")
+		s.save(ctx, store, 1, &state.Change{State: state.ChangeState{Change: 1, PR: 10, Branch: "main", Origin: "github", HeadBranch: "feature", Lifecycle: "NEW"},
+			Revisions: []state.Revision{{PatchSet: 1, GerritSHA: sq, GitHubSHA: h2}}})
+		if err := c.PrepareSubmit(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.ref("github.git", "refs/heads/feature"); (got == sq) == strangerBelow {
+			t.Errorf("a stranger's below %v: feature = %s", strangerBelow, short(got))
+		}
+	}
+}
