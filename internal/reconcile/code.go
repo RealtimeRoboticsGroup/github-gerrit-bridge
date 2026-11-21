@@ -1492,17 +1492,33 @@ func (c *Code) mergedOnGitHub(ctx context.Context, s *Snapshot, n int, ch *Gerri
 	if pr.MergedBy != nil && pr.MergedBy.Login != "" {
 		by = "@" + pr.MergedBy.Login
 	}
-	if pr.Base.Ref != s.Branch {
-		// Either way the branches are owned (twelfth review: Gerrit-owned
-		// was left planning a retarget GitHub refuses, every reconcile).
-		return c.abandonMerged(ctx, n, pr, fmt.Sprintf("Merged on GitHub by %s in PR #%d into %s, not %s, so it will not merge here as this change: "+
-			"abandoned. Whatever it merged into carries its code (a stacked PR's branch: the change below it).", by, pr.Number, pr.Base.Ref, s.Branch))
+	if pr.MergedBy != nil && c.BridgeLogin != "" && strings.EqualFold(pr.MergedBy.Login, c.BridgeLogin) {
+		// GitHub's own doing after a push of the bridge's (a chain
+		// reordered: a lower branch now holds an upper PR's head), not a
+		// merge anyone made: nothing to close (thirteenth review).
+		c.Logger.Warn("GitHub shows a PR merged by the bridge's own push; leaving its change", "change", n, "pr", pr.Number, "into", pr.Base.Ref)
+		return false, nil
 	}
 	if !s.GitHubOwned {
-		// Into the branch Gerrit owns, which only replication writes:
-		// not a merge Gerrit follows; left as it is.
-		c.Logger.Warn("a PR merged on GitHub into a branch Gerrit owns; leaving its change", "change", n, "pr", pr.Number, "branch", s.Branch)
-		return false, nil
+		// Gerrit's change is Gerrit's: a merge on GitHub (into a bridge
+		// branch, say, which any writer may press) abandons nothing, as
+		// nobody's say-so but the bridge's would (thirteenth review:
+		// closing a PR abandons only as its closer, if Gerrit lets them).
+		// Said once on the PR; the plan never edits a merged PR.
+		if st := s.State[n]; st == nil || st.State.MergedNoticePosted || c.DryRun {
+			return false, nil
+		}
+		note := fmt.Sprintf("This PR was merged on GitHub into `%s`, but Gerrit owns this repository's branches: [change %d](%s) stays open "+
+			"there, as it is. Abandon or update it in Gerrit.\n\n%s", forGitHub(pr.Base.Ref), n, ch.URL, noticeMarker)
+		if _, err := c.GitHub.CreateIssueComment(ctx, pr.Number, note); err != nil {
+			return false, err
+		}
+		c.Logger.Warn("a PR merged on GitHub where Gerrit owns the branches; its change is left", "change", n, "pr", pr.Number, "into", pr.Base.Ref)
+		return false, c.updateState(ctx, n, "merged on GitHub notice", func(st *state.Change) { st.State.MergedNoticePosted = true })
+	}
+	if pr.Base.Ref != s.Branch {
+		return c.abandonMerged(ctx, n, pr, fmt.Sprintf("Merged on GitHub by %s in PR #%d into %s, not %s, so it will not merge here as this change: "+
+			"abandoned. Whatever it merged into carries its code (a stacked PR's branch: the change below it).", by, pr.Number, pr.Base.Ref, s.Branch))
 	}
 	if _, err := c.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", sha, "refs/remotes/gerrit/heads/"+s.Branch); err != nil {
 		// Not followed yet (or not there at all): the change waits.

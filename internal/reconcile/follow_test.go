@@ -247,16 +247,38 @@ func TestMergedOnGitHubIsAbandonedIfGerritWillNot(t *testing.T) {
 
 // A PR merged into another branch (a stacked PR into the one below) does
 // not merge as its change: abandoned, saying where it went, at once.
-// So too where Gerrit owns the branches (twelfth review).
+//
+// Not where Gerrit owns the branches: anyone with write access may press
+// merge on a bridge branch's PR, and that is no say-so to abandon a
+// Gerrit change (thirteenth review). There it stays open, and a notice
+// says so, once. Nor when GitHub says the bridge merged it: its own push
+// (a reordered chain) did, not anyone.
 func TestMergedOnGitHubIntoAnotherBranchIsAbandoned(t *testing.T) {
-	for _, owned := range []bool{true, false} {
+	for _, tc := range []struct {
+		owned     bool
+		by        string
+		abandoned bool
+	}{{true, "alice", true}, {false, "alice", false}, {true, "bot", false}, {false, "bot", false}} {
 		s, c, _ := mergedSites(t, "One (#10)\n")
-		c.GitHubOwned = owned
+		c.GitHubOwned = tc.owned
 		s.maintainServer = true
 		s.pulls[10].Base.Ref = "gerrit/I2"
-		mirrorStates(t, c, false)
-		if got := s.changes[1].Status; got != "ABANDONED" || !strings.Contains(s.actionMsgs[1], "PR #10 into gerrit/I2, not main") {
-			t.Errorf("GitHub owns %v: change 1 is %s: %q", owned, got, s.actionMsgs[1])
+		s.pulls[10].MergedBy = &github.User{Login: tc.by}
+		for range 2 {
+			mirrorStates(t, c, false)
+		}
+		got := s.changes[1].Status
+		if (got == "ABANDONED") != tc.abandoned || (tc.abandoned && !strings.Contains(s.actionMsgs[1], "PR #10 into gerrit/I2, not main")) {
+			t.Errorf("%+v: change 1 is %s: %q", tc, got, s.actionMsgs[1])
+		}
+		notices := 0
+		for _, body := range s.comments[10] {
+			if strings.Contains(body, "Gerrit owns this repository's branches") {
+				notices++
+			}
+		}
+		if want := map[bool]int{true: 1}[!tc.owned && tc.by != "bot"]; notices != want {
+			t.Errorf("%+v: %d notices, want %d", tc, notices, want)
 		}
 	}
 }

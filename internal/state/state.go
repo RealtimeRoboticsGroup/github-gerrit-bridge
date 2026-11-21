@@ -74,6 +74,9 @@ type ChangeState struct {
 	// ClosedNoticePosted records that the "merged/abandoned in Gerrit"
 	// comment was posted on the PR.
 	ClosedNoticePosted bool `json:"closed_notice_posted,omitempty"`
+	// MergedNoticePosted: where Gerrit owns the branches, the PR was
+	// merged on GitHub, and a notice says its change is left open.
+	MergedNoticePosted bool `json:"merged_notice_posted,omitempty"`
 	// WithheldNotice is the patch set whose "not mirrored: changes
 	// .github/" notice was posted in Gerrit.
 	WithheldNotice int `json:"withheld_notice,omitempty"`
