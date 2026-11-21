@@ -784,8 +784,12 @@ func (s *commentSnapshot) ownCode(account gerrit.AccountInfo, ps int) bool {
 // anyone: Gerrit says so only on the change message of the reply it came
 // with (real_author), found by its id, or else by author and time
 // (seventeenth review: a reply's comments were posted with its named
-// author's token).
+// author's token). Unsure is on behalf of them, by someone unnamed
+// (eighteenth review): a message id that names no message, or one of
+// several in the same second that was posted on their behalf.
 func (s *commentSnapshot) onBehalfOf(gc *gerrit.CommentInfo) *gerrit.AccountInfo {
+	var by *gerrit.AccountInfo
+	found := 0
 	for _, m := range s.messages {
 		if gc.ChangeMessageID != "" && m.ID != gc.ChangeMessageID {
 			continue
@@ -793,13 +797,23 @@ func (s *commentSnapshot) onBehalfOf(gc *gerrit.CommentInfo) *gerrit.AccountInfo
 		if gc.ChangeMessageID == "" && (m.Author.AccountID != gc.Author.AccountID || m.Date != gc.Updated) {
 			continue
 		}
+		found++
 		if onBehalf(m) {
-			return m.RealAuthor
+			by = m.RealAuthor
 		}
-		return nil
 	}
-	return nil
+	switch {
+	case gc.ChangeMessageID != "" && found == 0:
+		return &someone
+	case by != nil && found > 1:
+		return &someone // which of them it came with, Gerrit does not say
+	}
+	return by
 }
+
+// someone is who posted a comment on its author's behalf, when Gerrit
+// does not say who.
+var someone = gerrit.AccountInfo{Name: "Someone"}
 
 // poster is the Gerrit account whose GitHub link gc is posted with: its
 // author's, or none (the bridge, naming both) if someone posted it on
@@ -1052,7 +1066,10 @@ func (c *Comments) gerritToGitHub(ctx context.Context, n, pr int, s *commentSnap
 			m.add(state.Comment{GerritID: gc.ID, GitHubID: out.ID, Kind: kindIssueComment, Origin: "gerrit", BodyHash: hashString(gc.Message), As: as})
 			posted = true
 		default:
-			k := strconv.Itoa(gc.Author.AccountID) + "|" + gc.Updated + "|" + strconv.Itoa(gc.PatchSet)
+			// Who posts it is part of the key: a reply on its author's
+			// behalf in the same second as their own is not theirs
+			// (eighteenth review).
+			k := strconv.Itoa(gc.Author.AccountID) + "|" + gc.Updated + "|" + strconv.Itoa(gc.PatchSet) + "|" + strconv.Itoa(s.poster(gc))
 			g := gkey[k]
 			if g == nil {
 				g = &group{ps: gc.PatchSet}

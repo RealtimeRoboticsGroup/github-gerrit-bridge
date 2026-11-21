@@ -872,3 +872,75 @@ func TestApprovalOnlyWhileTheVoteStands(t *testing.T) {
 		}
 	})
 }
+
+// Two replies in one second on one patch set, alice's own and carol's on
+// her behalf, are two GitHub posts: carol's comment is not grouped into
+// alice's own review, posted with her token (eighteenth review).
+func TestOnBehalfCommentNotGroupedWithOwn(t *testing.T) {
+	e, _ := linkedEnv(t)
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	carol := gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}
+	at := e.g.tick()
+	e.g.messages = append(e.g.messages,
+		gerrit.ChangeMessage{ID: "m0", Author: alice, Date: at, Message: "Patch Set 2:\n\n(1 comment)", RevisionNumber: 2},
+		gerrit.ChangeMessage{ID: "m1", Author: alice, RealAuthor: &carol, Date: at, Message: "Patch Set 2:\n\n(1 comment)", RevisionNumber: 2})
+	e.g.comments = append(e.g.comments,
+		gerrit.CommentInfo{ID: "cA", Path: "a.txt", PatchSet: 2, Line: 2, Message: "Alice's own.", Updated: at, Author: alice, ChangeMessageID: "m0"},
+		gerrit.CommentInfo{ID: "cB", Path: "a.txt", PatchSet: 2, Line: 3, Message: "Carol's words.", Updated: at, Author: alice, ChangeMessageID: "m1"})
+	e.sync(t)
+	var own, carols bool
+	for _, rc := range e.h.rcs {
+		switch {
+		case strings.Contains(rc.Body, "Carol's words."):
+			carols = rc.User != aliceGH && strings.Contains(rc.Body, "**Carol**, as **Alice Trusted (alice)**")
+		case strings.Contains(rc.Body, "Alice's own."):
+			own = rc.User == aliceGH
+		}
+	}
+	if !own || !carols {
+		t.Errorf("alice's own with her token %v, carol's as the bridge naming both %v: %+v", own, carols, e.h.rcs)
+	}
+}
+
+// Without change_message_id a comment's message is found by author and
+// time; when several match and one was posted on the author's behalf,
+// which one it came with is unsure, and so it is on their behalf, by
+// someone. So is a comment whose message id names no message.
+func TestOnBehalfUnsureIsOnBehalf(t *testing.T) {
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	carol := gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}
+	for _, tc := range []struct {
+		name, msgID, want string
+		mine              bool
+	}{
+		{"same second", "", "**Someone**, as **Alice Trusted (alice)**", false},
+		{"no such message", "m9", "**Someone**, as **Alice Trusted (alice)**", false},
+		{"her own, alone", "m0", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _ := linkedEnv(t)
+			at := e.g.tick()
+			e.g.messages = append(e.g.messages,
+				gerrit.ChangeMessage{ID: "m0", Author: alice, Date: at, Message: "Patch Set 2:\n\nLooking.", RevisionNumber: 2})
+			if tc.msgID != "m0" {
+				e.g.messages = append(e.g.messages,
+					gerrit.ChangeMessage{ID: "m1", Author: alice, RealAuthor: &carol, Date: at, Message: "Patch Set 2:\n\n(1 comment)", RevisionNumber: 2})
+			}
+			e.g.comments = append(e.g.comments,
+				gerrit.CommentInfo{ID: "cB", Path: gerrit.PatchSetLevel, PatchSet: 2, Message: "The words.", Updated: at, Author: alice, ChangeMessageID: tc.msgID})
+			e.sync(t)
+			var got *github.IssueComment
+			for i, ic := range e.h.ics {
+				if strings.Contains(ic.Body, "The words.") {
+					got = &e.h.ics[i]
+				}
+			}
+			if got == nil {
+				t.Fatalf("not posted: %+v", e.h.ics)
+			}
+			if (got.User == aliceGH) != tc.mine || (tc.want != "" && !strings.Contains(got.Body, tc.want)) {
+				t.Errorf("posted by %+v: %q", got.User, got.Body)
+			}
+		})
+	}
+}
