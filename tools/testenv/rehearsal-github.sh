@@ -238,7 +238,8 @@ withheld() { C5=$(change "${S5}"); [[ -n "${C5}" ]] && has_message "${C5}" "GitH
 wait_for "bob's change is withheld, and says why (link a GitHub account)" withheld
 # What a withheld change must not do is push: a branch runs workflows.
 # GitHub's own "no such commit" (422, or 404), not any failure.
-nowhere() { me api "repos/${R}/commits/$1" --silent 2>&1 | grep -qE 'HTTP (404|422)'; }
+# (Not a pipe: under pipefail gh's own failure would fail it.)
+nowhere() { local out; out=$(me api "repos/${R}/commits/$1" --silent 2>&1); [[ "${out}" == *"(HTTP 404)"* || "${out}" == *"(HTTP 422)"* ]]; }
 check "and has no PR" test -z "$(pr_for "${S5}")"
 check "and its commit is on no GitHub branch" nowhere "${B5}"
 # A linked writer's change on top of it is withheld too, and stays so
