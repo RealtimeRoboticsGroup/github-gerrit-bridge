@@ -363,6 +363,7 @@ func TestSubmitOnlyAsThePinnedGitHubAccount(t *testing.T) {
 type fakeMerger struct {
 	linked map[string]bool // GitHub logins with a linked token
 	merges bool            // the PR pulls in a subtree
+	heads  []string        // the heads HasSubtree was asked about
 	err    error
 	calls  []github.MergeInput
 	as     []string
@@ -379,7 +380,10 @@ func (f *fakeMerger) Merge(_ context.Context, u github.User, pr int, head string
 	return "merged1", true, nil
 }
 
-func (f *fakeMerger) HasSubtree(context.Context, int, string) (bool, error) { return f.merges, nil }
+func (f *fakeMerger) HasSubtree(_ context.Context, _ int, head string) (bool, error) {
+	f.heads = append(f.heads, head)
+	return f.merges, nil
+}
 
 // mergeCommands is newCommands where GitHub owns the branches: change 5's
 // Change-Id is known, and its PR has a title and description.
@@ -576,5 +580,19 @@ func TestSubmitWhereGitHubOwnsNeedsAMerger(t *testing.T) {
 	}
 	if last := h.ics[len(h.ics)-1].Body; len(sub.calls) != 0 || !strings.Contains(last, "cannot merge on GitHub here") {
 		t.Errorf("submits %v, reply %q", sub.calls, last)
+	}
+}
+
+// The subtree check is of the head /submit pinned, the one the commenter
+// saw (fourteenth review: nothing checked it was passed on).
+func TestSubmitChecksTheSubtreeAtTheHeadSeen(t *testing.T) {
+	c, h, _, m := mergeCommands(t, "github")
+	m.merges = true
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.heads) != 1 || m.heads[0] != "sha2" || len(m.calls) != 1 || m.calls[0].SHA != "sha2" {
+		t.Errorf("asked about %v, merged %+v", m.heads, m.calls)
 	}
 }

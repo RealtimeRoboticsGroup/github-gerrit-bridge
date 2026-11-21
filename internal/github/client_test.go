@@ -980,3 +980,14 @@ func TestMergePullStackedChanged(t *testing.T) {
 		t.Error("merged with no base to check")
 	}
 }
+
+// GetPull's commit count, which /submit's 250-commit guard reads.
+func TestGetPullCommits(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"number":7,"commits":300}`)
+	})
+	pr, err := c.GetPull(context.Background(), 7)
+	if err != nil || pr.Commits != 300 {
+		t.Errorf("%+v %v", pr, err)
+	}
+}
