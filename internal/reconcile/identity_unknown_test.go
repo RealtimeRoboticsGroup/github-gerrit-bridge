@@ -384,3 +384,25 @@ func TestPREditWaitsForWhoEditedIt(t *testing.T) {
 		t.Errorf("known: calls %v", s.calls)
 	}
 }
+
+// A lost import's change owned by its PR's author is not taken for a
+// Gerrit-born change (and given a second PR) while who the author is is
+// unknown: markUnlinked waits. Sixteenth review: untested.
+func TestUnlinkedImportWaitsForWhoTheAuthorIs(t *testing.T) {
+	ctx := context.Background()
+	sites := newSites(t)
+	c, _ := sites.code(ctx)
+	c.BridgeAccount = 1
+	on := true
+	c.Identity = downFor{&Users{Overrides: map[string]string{"austin": "austin"}}, map[string]bool{"austin": true}, &on}
+	open := map[int]*github.PullRequest{7: {Number: 7, User: github.User{Login: "austin"}}}
+	trailer := "T\n\nBody.\n\nGitHub-PR: https://github.com/o/r/pull/7\nChange-Id: I1\n"
+	s := &Snapshot{State: map[int]*state.Change{}, Changes: map[int]*GerritChange{2: {Message: trailer, OwnerID: 5, Owner: "austin", PatchSet: 1}}}
+	if err := c.markUnlinked(ctx, s, "o/r", open); !isIdentityUnknown(err) {
+		t.Fatalf("unknown: err %v", err)
+	}
+	on = false
+	if err := c.markUnlinked(ctx, s, "o/r", open); err != nil || !s.Unlinked[2] {
+		t.Errorf("known: err %v, unlinked %v", err, s.Unlinked)
+	}
+}
