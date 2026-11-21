@@ -246,7 +246,7 @@ S5b="On unlinked ${RUN}"
 (cd "${ME_CLONE}" && echo "${S5b}" > "on-unlinked-${RUN}.txt" && git add . && git commit -qs -m "${S5b}" &&
   git push -q gerrit HEAD:refs/for/main 2>/dev/null) || fail "setup: pushing ${S5b}"
 B5b=$(cd "${ME_CLONE}" && git rev-parse HEAD)
-child_withheld() { C5b=$(change "${S5b}"); [[ -n "${C5b}" ]] && has_message "${C5b}" "and the code below it in Gerrit"; }
+child_withheld() { C5b=$(change "${S5b}"); [[ -n "${C5b}" ]] && has_message "${C5b}" "Here, not: change ${C5}'s patch set 1 below it"; }
 wait_for "AustinSchuh's change on it is withheld too" child_withheld
 (cd "${ME_CLONE}" && git checkout -q HEAD^ && echo "${S5} v2" > "unlinked-${RUN}.txt" && git add . &&
   git -c user.name=Bob -c user.email=bob@example.com commit -q --amend --no-edit &&
