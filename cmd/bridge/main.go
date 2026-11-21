@@ -465,7 +465,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			merger = githubMerger{gerritUser: users.GerritUserFor, account: gerritAccount, tokenFor: tokens.For, source: tokens.Source, gh: gh}
 		}
 		// Public: people link their GitHub account here (design §7.2).
-		(&usertokens.Linker{App: app, Tokens: tokens, PublicURL: a.PublicURL, GerritURL: cfg.Gerrit.URL, Logger: logger,
+		(&usertokens.Linker{App: app, Tokens: tokens, PublicURL: a.PublicURL, GerritURL: cfg.Gerrit.URL, Logger: logger, GitHubOwned: cfg.GitHubOwned(),
 			GerritUser: users.GerritUserFor, GerritAccount: gerritAccount}).Register(mux)
 		logger.Info("people can link their GitHub accounts", "url", strings.TrimSuffix(a.PublicURL, "/")+"/github/link", "linked", len(linked.All()))
 	}

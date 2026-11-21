@@ -319,6 +319,17 @@ func TestLink(t *testing.T) {
 	if w := do("GET", "/github/link", nil); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `method="post"`) || len(w.Result().Cookies()) != 0 {
 		t.Fatalf("intro: %d %s", w.Code, w.Body)
 	}
+	// It says what the token can do: where GitHub owns the branches,
+	// push and merge as them too (thirteenth review).
+	if w := do("GET", "/github/link", nil); !strings.Contains(w.Body.String(), "can only comment on and review") {
+		t.Errorf("intro: %s", w.Body)
+	}
+	l.GitHubOwned = true
+	if w := do("GET", "/github/link", nil); !strings.Contains(w.Body.String(), "push to and merge pull requests as you") ||
+		strings.Contains(w.Body.String(), "can only") {
+		t.Errorf("intro where GitHub owns the branches: %s", w.Body)
+	}
+	l.GitHubOwned = false
 	start := func() (state string, cookie *http.Cookie) {
 		w := do("POST", "/github/link", nil)
 		if w.Code != http.StatusFound {

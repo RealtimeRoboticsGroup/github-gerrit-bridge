@@ -38,7 +38,10 @@ type Linker struct {
 	GerritAccount func(ctx context.Context, user string) (int, error)
 	// GerritURL is linked from the pages.
 	GerritURL string
-	Logger    *slog.Logger
+	// GitHubOwned says GitHub owns the branches (design §3.1): the App
+	// then has Contents write, and /submit merges with the account.
+	GitHubOwned bool
+	Logger      *slog.Logger
 
 	// A link in progress is kept by nobody but the browser: its state
 	// says when it started, signed with key (made at start-up), and its
@@ -131,12 +134,17 @@ func (l *Linker) Register(mux *http.ServeMux) {
 // anyone who authorized the App before, so following a link must not
 // link by itself.
 func (l *Linker) intro(w http.ResponseWriter, r *http.Request) {
-	l.render(w, http.StatusOK, pageData{
-		Text: "Link your GitHub account to post your Gerrit comments, replies and Code-Review votes on GitHub as yourself, " +
-			"instead of as the bridge's bot. GitHub asks you to authorize the bridge's app, which can only comment on and review " +
-			"pull requests, on repositories the app is installed on.",
-		Button: true,
-	})
+	text := "Link your GitHub account to post your Gerrit comments, replies and Code-Review votes on GitHub as yourself, " +
+		"instead of as the bridge's bot. GitHub asks you to authorize the bridge's app, which can only comment on and review " +
+		"pull requests, on repositories the app is installed on."
+	if l.GitHubOwned {
+		// What the token can do, not less (thirteenth review).
+		text = "Link your GitHub account to post your Gerrit comments, replies and Code-Review votes on GitHub as yourself, " +
+			"to have your Gerrit changes mirrored to GitHub, and to merge with /submit. GitHub asks you to authorize the bridge's " +
+			"app on repositories it is installed on. Here it can also push to and merge pull requests as you: the bridge uses that " +
+			"only to merge a PR when you post /submit on it; it pushes code with its own bot."
+	}
+	l.render(w, http.StatusOK, pageData{Text: text, Button: true})
 }
 
 func (l *Linker) start(w http.ResponseWriter, r *http.Request) {
