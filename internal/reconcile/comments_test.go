@@ -1992,6 +1992,7 @@ func TestStaleApprovalIsDismissed(t *testing.T) {
 func TestMergedPRsApprovalIsNotDismissed(t *testing.T) {
 	e := newCommentsEnv(t)
 	e.runAs()
+	e.c.GitHubOwned = true
 	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
 		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
 	e.sync(t)

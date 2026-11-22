@@ -575,10 +575,6 @@ func publishable(linked func(context.Context, int) (github.User, bool, error), c
 	}
 }
 
-// linkStands is the user tokens' Check: a link stands while the mapping
-// still gives its GitHub account the Gerrit user it was made for, not
-// once the directory gives that id to someone else, nor nobody; a lookup
-// that cannot answer is an error (seventeenth review: inline in run(),
 // newTokens is the linked users' tokens, each link checked on every use
 // against the identity mapping's lookup (eighteenth review: the check was
 // wired inline, untested).
@@ -586,6 +582,10 @@ func newTokens(linked *usertokens.Store, app *github.UserApp, logger *slog.Logge
 	return &usertokens.Tokens{Store: linked, App: app, Logger: logger, Check: linkStands(lookup)}
 }
 
+// linkStands is the user tokens' Check: a link stands while the mapping
+// still gives its GitHub account the Gerrit user it was made for, not
+// once the directory gives that id to someone else, nor nobody; a lookup
+// that cannot answer is an error (seventeenth review: inline in run(),
 // untested).
 func linkStands(lookup func(context.Context, github.User) (string, bool, error)) func(context.Context, github.User, string) (bool, error) {
 	return func(ctx context.Context, gh github.User, user string) (bool, error) {

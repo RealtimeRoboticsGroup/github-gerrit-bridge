@@ -642,3 +642,103 @@ func TestGerritOwnedChangeRequestWithoutItsVoteIsDismissed(t *testing.T) {
 		t.Errorf("dismissed %v, want bob's change request", e.h.dismissed)
 	}
 }
+
+func probeApproved(e *commentsEnv) bool {
+	for _, rv := range e.h.reviews {
+		if rv.State == "APPROVED" && rv.User == aliceGH && rv.CommitID == "sha2" {
+			return true
+		}
+	}
+	return false
+}
+
+// Nineteenth review (regression, passes on main): a vote removal names
+// accounts, and another reviewer's removal, whose name contains the
+// voter's, leaves the voter's +2 their approval.
+func TestGerritOwnedRemovedOtherReviewerWithLongerName(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alex", Username: "alice"}
+	carol := gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}
+	e.g.messages = []gerrit.ChangeMessage{
+		{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2},
+		{ID: "m2", Author: carol, Message: "Removed reviewer Alexandra Reyes.", RevisionNumber: 2},
+	}
+	e.g.vote("alice", "Code-Review", 2)
+	e.sync(t)
+	if !probeApproved(e) {
+		t.Errorf("alice's standing +2 (Gerrit label still +2) not posted as her approval after another reviewer's removal: %+v", e.h.reviews)
+	}
+}
+
+// Nineteenth review (regression, passes on main): nor does any removal
+// withdraw the +2 of a voter with no full name.
+func TestGerritOwnedRemovedReviewerVoterWithoutName(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	alice := gerrit.AccountInfo{AccountID: 1, Username: "alice"}
+	carol := gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}
+	e.g.messages = []gerrit.ChangeMessage{
+		{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2},
+		{ID: "m2", Author: carol, Message: "Removed reviewer Bob Builder.", RevisionNumber: 2},
+	}
+	e.g.vote("alice", "Code-Review", 2)
+	e.sync(t)
+	if !probeApproved(e) {
+		t.Errorf("unnamed alice's standing +2 not posted after Bob's removal: %+v", e.h.reviews)
+	}
+}
+
+// Nineteenth review (regression, passes on main): another reviewer's
+// vote removed by the owner (Gerrit: "Removed
+// Code-Review+1 by Alexander Kim <...>"), voter "Alex".
+func TestGerritOwnedRemovedOtherVoteWithLongerName(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.runAs()
+	e.c.Users = &Users{Overrides: map[string]string{"alice-gh": "alice"}}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alex", Username: "alice"}
+	carol := gerrit.AccountInfo{AccountID: 2, Name: "Carol", Username: "carol"}
+	e.g.messages = []gerrit.ChangeMessage{
+		{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2},
+		{ID: "m2", Author: carol, Message: "Removed Code-Review-1 by Alexander Kim <ak@example.com>\n", RevisionNumber: 2},
+	}
+	e.g.vote("alice", "Code-Review", 2)
+	e.sync(t)
+	if !probeApproved(e) {
+		t.Errorf("alice's standing +2 not posted after Alexander's -1 was removed: %+v", e.h.reviews)
+	}
+}
+
+// mergedGH is fakeGitHub with its PR merged.
+type mergedGH struct{ *fakeGitHub }
+
+func (m mergedGH) GetPull(ctx context.Context, n int) (*github.PullRequest, error) {
+	pr, err := m.fakeGitHub.GetPull(ctx, n)
+	if pr != nil {
+		pr.Merged, pr.State = true, "closed"
+	}
+	return pr, err
+}
+
+// Nineteenth review (regression, passes on main): a person dismissing a
+// mirrored GitHub approval after the PR merged (replication's push merged
+// it) withdraws the vote it cast; only where GitHub owns the branches is
+// a merged PR's review left alone.
+func TestGerritOwnedDismissalAfterMerge(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+	e.sync(t)
+	if e.g.labels["Code-Review"]["bobg"] != 2 {
+		t.Fatalf("votes = %v", e.g.labels)
+	}
+	e.c.GitHub = mergedGH{e.h}
+	e.h.dismiss(70, "maint", e.g.now().Add(time.Minute))
+	e.sync(t)
+	if v := e.g.labels["Code-Review"]["bobg"]; v != 0 {
+		t.Errorf("merged PR: maint's dismissal left bobg's Code-Review = %d (main withdraws it)", v)
+	}
+}
