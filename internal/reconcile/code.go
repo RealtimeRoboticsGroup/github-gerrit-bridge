@@ -94,6 +94,9 @@ type Code struct {
 	// opened as the bot, their own approval counted until the bridge
 	// next dismissed it). Unset there, no PR is opened.
 	OpenAs func(ctx context.Context, account int) (opener PullOpener, ok bool, err error)
+	// LinkedAs is the GitHub account a Gerrit account linked, if any
+	// (where GitHub owns the branches: whose PRs are the owner's).
+	LinkedAs func(ctx context.Context, account int) (github.User, bool, error)
 
 	// configCache remembers changesConfig answers by branch tip and
 	// commit.
@@ -1445,18 +1448,27 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]strin
 		}
 	}
 
-	heads := map[string]bool{}
+	heads := map[string]int{}
+	linkedPR := map[int]bool{}
 	for n, ch := range s.Changes {
-		heads[s.head(n, ch.ChangeID)] = true
+		heads[s.head(n, ch.ChangeID)] = n
+		if st := s.State[n]; st != nil && st.State.PR != 0 {
+			linkedPR[st.State.PR] = true
+		}
 	}
 	repoName := c.GitHub.Owner + "/" + c.GitHub.Repo
 	byNumber := map[int]*github.PullRequest{}
 	for i := range openPRs {
 		pr := &openPRs[i]
 		byNumber[pr.Number] = pr
-		if heads[pr.HeadKey(repoName)] {
-			s.PRs[pr.Number] = pr
+		n, ok := heads[pr.HeadKey(repoName)]
+		if !ok {
+			continue
 		}
+		if c.GitHubOwned && !linkedPR[pr.Number] && !c.adoptable(ctx, s.Changes[n], pr) {
+			continue
+		}
+		s.PRs[pr.Number] = pr
 	}
 	if err := c.markUnlinked(ctx, s, repoName, byNumber); err != nil {
 		return nil, err
@@ -2342,6 +2354,29 @@ type githubRefused struct{ changes []int }
 
 func (e *githubRefused) Error() string {
 	return fmt.Sprintf("GitHub refused the push of changes %v", e.changes)
+}
+
+// adoptable reports whether pr, open from change ch's branch but not
+// linked to it, may be taken for its PR where GitHub owns the branches:
+// opened by the bot (before PRs were opened as owners) or by the owner's
+// linked account (its link not saved). Anyone else's would make GitHub
+// take them, not the owner, for its author (twenty-first review).
+func (c *Code) adoptable(ctx context.Context, ch *GerritChange, pr *github.PullRequest) bool {
+	if c.BridgeLogin != "" && strings.EqualFold(pr.User.Login, c.BridgeLogin) {
+		return true
+	}
+	if ch == nil || c.LinkedAs == nil {
+		return false
+	}
+	u, ok, err := c.LinkedAs(ctx, ch.OwnerID)
+	if err != nil || !ok {
+		return false
+	}
+	if !sameGitHubUser(u, pr.User) {
+		c.Logger.Warn("not taking someone else's PR from a change's branch for its PR", "change", ch.Number, "pr", pr.Number, "author", pr.User.Login)
+		return false
+	}
+	return true
 }
 
 // ownerRefused is a PR that could not be opened as its change's owner

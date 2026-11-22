@@ -449,6 +449,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			code.Publishable, code.Importer.Publishable = pub, pub
 			// A Gerrit-born change's PR is its owner's (design §3.1).
 			code.OpenAs = linkedAuthors{tokens: tokens, gh: gh}.opener
+			code.LinkedAs = tokens.Linked
 			code.LinkURL = strings.TrimSuffix(a.PublicURL, "/") + "/github/link"
 			// /submit merges on GitHub, as whoever asked.
 			merger = githubMerger{gerritUser: users.Lookup, account: gerritAccount, tokenFor: tokens.For, source: tokens.Source, gh: gh}
