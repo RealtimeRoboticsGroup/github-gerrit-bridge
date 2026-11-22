@@ -5,6 +5,7 @@ import (
 	"path"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,7 +34,8 @@ type Live struct {
 	// seq counts changes: each item and commit records the one that last
 	// changed it, so a read from GitHub that started before a delivery
 	// does not undo it, and an answer built before one is not reused.
-	seq uint64
+	seq   uint64
+	bytes int // of text kept, all commits
 	// Which kinds of delivery have arrived since the bridge started.
 	sawCheckRun, sawWorkflowJob, sawStatus bool
 	now                                    func() time.Time // tests
@@ -47,6 +49,7 @@ type liveCommit struct {
 	runsAt, statusesAt time.Time
 	used               time.Time
 	seq                uint64
+	bytes              int // of text kept
 }
 
 type liveRun struct {
@@ -66,8 +69,14 @@ const (
 	// maxLiveCommits bounds the commits kept (the least recently viewed
 	// go first), and maxLiveRuns and maxLiveStatuses each one's checks.
 	maxLiveCommits  = 2000
-	maxLiveRuns     = 300
+	maxLiveRuns     = 100 // as many as a read returns
 	maxLiveStatuses = 100
+	// maxLiveBytes bounds the text kept for all commits (anyone whose
+	// workflow may create check runs writes it): past it, the least
+	// recently viewed commits go first. Each run's and status's text is
+	// clipped as the tab shows it, and URLs longer than maxURL dropped.
+	maxLiveBytes = 64 << 20
+	maxURL       = 2048
 )
 
 func (l *Live) clock() time.Time {
@@ -75,6 +84,56 @@ func (l *Live) clock() time.Time {
 		return l.now()
 	}
 	return time.Now()
+}
+
+// trimRun is run as kept: its text clipped as the tab shows it, an
+// overlong URL dropped.
+func trimRun(r github.CheckRun) github.CheckRun {
+	r.Name, r.App.Name, r.App.Slug = oneLine(r.Name), oneLine(r.App.Name), oneLine(r.App.Slug)
+	r.Status, r.Conclusion = oneLine(r.Status), oneLine(r.Conclusion)
+	r.Output.Title, r.Output.Summary = oneLine(r.Output.Title), clip(strings.TrimSpace(r.Output.Summary))
+	r.HTMLURL, r.DetailsURL = shortURL(r.HTMLURL), shortURL(r.DetailsURL)
+	return r
+}
+
+// trimStatus is s as kept (trimRun).
+func trimStatus(s github.Status) github.Status {
+	s.Context, s.State, s.Description = oneLine(s.Context), oneLine(s.State), oneLine(s.Description)
+	s.TargetURL = shortURL(s.TargetURL)
+	return s
+}
+
+func shortURL(u string) string {
+	if len(u) > maxURL {
+		return ""
+	}
+	return u
+}
+
+func runBytes(r github.CheckRun) int {
+	return 64 + len(r.Name) + len(r.App.Name) + len(r.App.Slug) + len(r.Status) + len(r.Conclusion) +
+		len(r.Output.Title) + len(r.Output.Summary) + len(r.HTMLURL) + len(r.DetailsURL)
+}
+
+func statusBytes(s github.Status) int {
+	return 64 + len(s.Context) + len(s.State) + len(s.Description) + len(s.TargetURL)
+}
+
+// resize recounts c's text, and drops the least recently viewed other
+// commits while all are more than maxLiveBytes. l.mu is held.
+func (l *Live) resize(c *liveCommit) {
+	n := 0
+	for _, r := range c.runs {
+		n += runBytes(r.run)
+	}
+	for _, s := range c.statuses {
+		n += statusBytes(s.status)
+	}
+	l.bytes += n - c.bytes
+	c.bytes = n
+	for l.bytes > maxLiveBytes && len(l.commits) > 1 {
+		l.evict(c)
+	}
 }
 
 // rank orders a check run's states: a delivery never takes one back
@@ -106,7 +165,7 @@ func (l *Live) Deliver(d *github.Delivery) {
 		l.mu.Lock()
 		defer l.mu.Unlock()
 		l.sawCheckRun = true
-		l.putRun(p.CheckRun.HeadSHA, p.CheckRun.CheckRun, false)
+		l.putRun(p.CheckRun.HeadSHA, trimRun(p.CheckRun.CheckRun), false)
 	case "workflow_job":
 		var p struct {
 			Job struct {
@@ -134,7 +193,7 @@ func (l *Live) Deliver(d *github.Delivery) {
 		run := github.CheckRun{ID: id, Name: p.Job.Name, Status: p.Job.Status, Conclusion: p.Job.Conclusion,
 			HTMLURL: p.Job.HTMLURL, StartedAt: p.Job.StartedAt, CompletedAt: p.Job.CompletedAt}
 		run.App.Name, run.App.Slug = "GitHub Actions", actionsApp
-		l.putRun(p.Job.HeadSHA, run, true)
+		l.putRun(p.Job.HeadSHA, trimRun(run), true)
 	case "status":
 		var p struct {
 			ID        int64      `json:"id"`
@@ -155,16 +214,17 @@ func (l *Live) Deliver(d *github.Delivery) {
 		if c == nil {
 			return // nobody is looking at it: the first view reads GitHub
 		}
-		st := github.Status{ID: p.ID, State: p.State, TargetURL: p.TargetURL, Description: p.Desc, Context: p.Context, UpdatedAt: p.UpdatedAt}
-		if old, ok := c.statuses[p.Context]; ok && !newer(st, old.status, true) {
+		st := trimStatus(github.Status{ID: p.ID, State: p.State, TargetURL: p.TargetURL, Description: p.Desc, Context: p.Context, UpdatedAt: p.UpdatedAt})
+		if old, ok := c.statuses[st.Context]; ok && !newer(st, old.status, true) {
 			return // an older delivery, late
 		}
-		if _, ok := c.statuses[p.Context]; !ok && len(c.statuses) >= maxLiveStatuses {
+		if _, ok := c.statuses[st.Context]; !ok && len(c.statuses) >= maxLiveStatuses {
 			return
 		}
 		l.seq++
-		c.statuses[p.Context] = liveStatus{st, l.seq}
+		c.statuses[st.Context] = liveStatus{st, l.seq}
 		c.seq = l.seq
+		l.resize(c)
 	}
 }
 
@@ -195,6 +255,7 @@ func (l *Live) putRun(sha string, run github.CheckRun, job bool) {
 	l.seq++
 	c.runs[run.ID] = liveRun{run, l.seq}
 	c.seq = l.seq
+	l.resize(c)
 }
 
 // liveView is what Live has of a commit.
@@ -291,6 +352,7 @@ func (l *Live) merge(commit string, begin uint64, runs []github.CheckRun, readRu
 			}
 		}
 		for _, r := range runs {
+			r = trimRun(r)
 			// A delivery since begin wins, unless it is older news
 			// than the read (late, out of order).
 			if d, newer := next[r.ID]; (!newer && len(next) < maxLiveRuns) || (newer && rank(r.Status) > rank(d.run.Status)) {
@@ -307,6 +369,7 @@ func (l *Live) merge(commit string, begin uint64, runs []github.CheckRun, readRu
 			}
 		}
 		for _, s := range statuses {
+			s = trimStatus(s)
 			if d, found := next[s.Context]; (!found && len(next) < maxLiveStatuses) || (found && newer(s, d.status, false)) {
 				next[s.Context] = liveStatus{s, l.seq}
 			}
@@ -314,6 +377,7 @@ func (l *Live) merge(commit string, begin uint64, runs []github.CheckRun, readRu
 		c.statuses, c.statusesAt = next, now
 	}
 	c.seq = l.seq
+	l.resize(c)
 	return c.view()
 }
 
@@ -325,7 +389,7 @@ func (l *Live) commit(commit string) *liveCommit {
 			l.commits = map[string]*liveCommit{}
 		}
 		if len(l.commits) >= maxLiveCommits {
-			l.evict()
+			l.evict(nil)
 		}
 		c = &liveCommit{runs: map[int64]liveRun{}, statuses: map[string]liveStatus{}, used: l.clock()}
 		l.commits[commit] = c
@@ -333,16 +397,19 @@ func (l *Live) commit(commit string) *liveCommit {
 	return c
 }
 
-// evict drops the least recently viewed commit. l.mu is held.
-func (l *Live) evict() {
+// evict drops the least recently viewed commit but keep. l.mu is held.
+func (l *Live) evict(keep *liveCommit) {
 	var oldest string
 	var at time.Time
 	for sha, c := range l.commits {
-		if oldest == "" || c.used.Before(at) {
+		if c != keep && (oldest == "" || c.used.Before(at)) {
 			oldest, at = sha, c.used
 		}
 	}
-	delete(l.commits, oldest)
+	if c := l.commits[oldest]; c != nil {
+		l.bytes -= c.bytes
+		delete(l.commits, oldest)
+	}
 }
 
 // changed says whether commit has changed since seq, when an answer was

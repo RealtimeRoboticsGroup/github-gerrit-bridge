@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -370,5 +371,64 @@ func TestLiveStatusesWithoutIDs(t *testing.T) {
 	}
 	if got := e.get(); got["ci#1"] != "COMPLETED success" {
 		t.Errorf("%v", got)
+	}
+}
+
+// What is kept is bounded: each check's text clipped as the tab shows
+// it, overlong URLs dropped, and all commits' text together, the least
+// recently viewed dropped first (anyone whose workflow may create check
+// runs writes it).
+func TestLiveTextIsBounded(t *testing.T) {
+	l := &Live{}
+	l.get("c1")
+	ev := checkRunEvent(1, "c1", strings.Repeat("n", 65535), "completed", "success")
+	ev["check_run"].(map[string]any)["output"] = map[string]any{"title": strings.Repeat("t", 65535), "summary": strings.Repeat("x", 65535)}
+	ev["check_run"].(map[string]any)["html_url"] = "https://github.com/" + strings.Repeat("u", 65535)
+	b, _ := json.Marshal(ev)
+	l.Deliver(&github.Delivery{Event: "check_run", Payload: b})
+	st := statusEvent("c1", strings.Repeat("c", 65535), "success", time.Now())
+	st["description"], st["target_url"] = strings.Repeat("d", 65535), "https://ci.example.com/"+strings.Repeat("u", 65535)
+	b, _ = json.Marshal(st)
+	l.Deliver(&github.Delivery{Event: "status", Payload: b})
+	v, _ := l.get("c1")
+	r, s := v.runs[0], v.statuses[0]
+	for name, n := range map[string]int{"name": len(r.Name), "title": len(r.Output.Title), "summary": len(r.Output.Summary),
+		"context": len(s.Context), "description": len(s.Description)} {
+		if n > maxMessage+len("…") {
+			t.Errorf("kept %d bytes of a %s", n, name)
+		}
+	}
+	if r.HTMLURL != "" || s.TargetURL != "" {
+		t.Errorf("overlong URLs kept")
+	}
+
+	// All commits' text: each read of 100 runs of 12 kB.
+	l = &Live{}
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var runs []github.CheckRun
+	for i := range 200 {
+		r := actions(int64(i+1), "build", "completed", "failure")
+		r.Output.Title, r.Output.Summary = strings.Repeat("t", 6000), strings.Repeat("x", 6000)
+		runs = append(runs, r)
+	}
+	for i := range 100 {
+		l.now = func() time.Time { return t0.Add(time.Duration(i) * time.Second) }
+		l.merge(fmt.Sprint("sha", i), 0, runs, true, nil, true)
+	}
+	total := 0
+	for _, c := range l.commits {
+		total += c.bytes
+		if len(c.runs) > 100 { // as many as a read returns
+			t.Errorf("%d runs kept of one commit", len(c.runs))
+		}
+		for _, r := range c.runs {
+			if n := len(r.run.Output.Summary); n > maxMessage+len("…") {
+				t.Fatalf("kept %d bytes of a summary read", n)
+			}
+		}
+	}
+	if l.bytes > maxLiveBytes || total != l.bytes || l.commits["sha99"] == nil || l.commits["sha0"] != nil {
+		t.Errorf("kept %d bytes (counted %d) of %d commits; newest kept %v, oldest %v", total, l.bytes, len(l.commits),
+			l.commits["sha99"] != nil, l.commits["sha0"] != nil)
 	}
 }

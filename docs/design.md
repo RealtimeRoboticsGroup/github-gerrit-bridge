@@ -186,7 +186,8 @@ checklist.
   whether it can merge changes. A kind of delivery not seen since the
   bridge started may not be subscribed to, so its part is read from
   GitHub on each request, as without webhooks. Only viewed commits are
-  kept (2,000, the least recently viewed dropped first).
+  kept (2,000, and 64 MB of their checks' text, each clipped as shown;
+  the least recently viewed are dropped first).
   No `gerrit/*` statuses are posted on GitHub, and Rerun is not offered
   (GitHub's CI does not take `retest`).
 - **`/submit`** (optional; the merge button is the usual way) merges the
