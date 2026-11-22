@@ -150,6 +150,8 @@ const (
 	mirrorTag  = "github-bridge:mirror"
 	// withdrawTag tags cannotWithdraw's notice: nothing mirrored has it.
 	withdrawTag = commentTag + ":withdraw"
+	// conflictTag is restoreGerrit's note.
+	conflictTag = commentTag + ":conflict"
 )
 
 // isBridgeTag reports whether a Gerrit tag marks a bridge post.
@@ -777,8 +779,32 @@ func (s *commentSnapshot) ownCode(account gerrit.AccountInfo, ps int) bool {
 	if r, ok := s.revs[ps]; !ok || theirs(r) {
 		return true
 	}
+	if from := s.restoredFrom(ps); from != 0 && from < ps && s.ownCode(account, from) {
+		// The bridge's restore of Gerrit's patch set over a GitHub push
+		// (restoreGerrit) is that patch set's code (nineteenth review).
+		return true
+	}
 	return !codeFrom(s.revs, ps, func(r gerrit.RevisionInfo) bool { return !theirs(r) })
 }
+
+// restoredFrom is the patch set that patch set ps restored, by the
+// bridge's note on it (restoreGerrit), 0 if none. A note anyone forged
+// only makes more code someone's own.
+func (s *commentSnapshot) restoredFrom(ps int) int {
+	for _, m := range s.messages {
+		if m.RevisionNumber != ps || m.Tag != conflictTag {
+			continue
+		}
+		if g := restoredNote.FindStringSubmatch(m.Message); g != nil {
+			n, _ := strconv.Atoi(g[1])
+			return n
+		}
+	}
+	return 0
+}
+
+// restoredNote finds the patch set in restoreGerrit's note.
+var restoredNote = regexp.MustCompile(`and Gerrit \(patch set (\d+)\) changed this at the same time`)
 
 // onBehalfOf is who posted Gerrit comment gc on its author's behalf, if
 // anyone: Gerrit says so only on the change message of the reply it came

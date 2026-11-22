@@ -71,3 +71,34 @@ func ownApproval(t *testing.T, githubOwned bool, owner gerrit.AccountInfo, uploa
 	e.sync(t)
 	return e
 }
+
+// The bridge's restore of Gerrit's patch set over a GitHub push
+// (restoreGerrit) is that patch set's code: an approval of it by whoever
+// uploaded the restored one is of their own code (nineteenth review).
+func TestGitHubApprovalOfRestoredOwnCodeIsDismissed(t *testing.T) {
+	bob := gerrit.AccountInfo{AccountID: 7, Name: "Bob G", Username: "bobg"}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice", Username: "alice"}
+	bridge := gerrit.AccountInfo{AccountID: bridgeID, Name: "GitHub Bridge"}
+	for _, noted := range []bool{false, true} {
+		e := newCommentsEnv(t)
+		e.runAs()
+		e.c.GitHubOwned = true
+		e.g.owner = alice
+		e.g.uploaders = map[int]gerrit.AccountInfo{1: alice, 2: bob, 3: bridge}
+		e.g.revs["sha3"] = 3
+		e.g.current = "sha3"
+		e.pushed(t, "sha3", e.g.now().Add(-time.Hour))
+		if noted {
+			e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "mc", Author: bridge, Tag: conflictTag, RevisionNumber: 3, Date: e.g.tick(),
+				Message: "Both GitHub (PR #1) and Gerrit (patch set 2) changed this at the same time. The GitHub version was uploaded as a patch set, then Gerrit's version was restored on top"})
+		}
+		e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha3", User: github.User{Login: "bob"},
+			HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+		e.sync(t)
+		e.sync(t)
+		own := len(e.h.dismissed) > 0 && strings.Contains(e.h.dismissed[0], "owns or uploaded this code")
+		if own != noted {
+			t.Errorf("restore noted %v: dismissed %v", noted, e.h.dismissed)
+		}
+	}
+}

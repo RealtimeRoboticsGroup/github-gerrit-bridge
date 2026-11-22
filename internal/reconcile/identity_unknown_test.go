@@ -588,3 +588,63 @@ func TestPushWaitsForWhetherGerritsPatchSetMayReachGitHub(t *testing.T) {
 		t.Errorf("told: bob's patch set not restored on top (uploads %v); want Gerrit to win", up.uploads)
 	}
 }
+
+// restoreGerrit re-commits Gerrit's newer patch set over a GitHub push
+// with the author it had (nineteenth review: commit-tree took the
+// mirror's identity, the bridge's, as the author of their code).
+func TestRestoredPatchSetKeepsItsAuthor(t *testing.T) {
+	s, im, up, m1, g, ids := gerritBornWorld(t, false)
+	ctx := context.Background()
+	im.GitHubOwned = true
+	st, _ := im.Store.Load(ctx, 1)
+	st.State.Origin, st.State.HeadBranch = "github", "feature"
+	if err := im.Store.Save(ctx, 1, st, "GitHub-born"); err != nil {
+		t.Fatal(err)
+	}
+	ci := s.changes[1]
+	ci.Owner = s.accounts["austin"]
+	first := ci.Revisions[g[0]]
+	first.Kind = "REWORK"
+	ci.Revisions[g[0]] = first
+	bob := s.commit(g[0], "one.txt", "bob's\n", "One\n\nChange-Id: "+ids[0]+"\n")
+	s.push("gerrit.git", bob, "refs/changes/01/1/2")
+	ci.Revisions[bob] = gerrit.RevisionInfo{Number: 2, Kind: "REWORK", Ref: "refs/changes/01/1/2", Uploader: gerrit.AccountInfo{AccountID: 9, Username: "bob"},
+		Commit: commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, bob))}
+	ci.CurrentRevision = bob
+	told := false
+	im.Publishable = func(_ context.Context, account int) (bool, bool) {
+		return account == 5 || account == 9, account != 9 || told
+	}
+	s.pulls[10].Head.Ref, s.pulls[10].User.Login = "feature", "austin"
+	h := s.commit(s.rebase(g[0], m1), "one.txt", "1 fixed\n", "Fix")
+	s.push("github.git", h, "refs/heads/feature")
+	s.pulls[10].Head.SHA = h
+	s.webhookPush(im.Pushers, 10, "austin")
+	var se *syncError
+	if err := im.Import(ctx, "main"); !errors.As(err, &se) || !se.retry || len(up.uploads) != 0 {
+		t.Fatalf("unsure: err %v, uploads %v; want it to wait", err, up.uploads)
+	}
+	if s.changes[1].CurrentRevision != bob {
+		t.Fatalf("unsure: bob's patch set no longer current")
+	}
+	told = true
+	if err := im.Import(ctx, "main"); errors.As(err, &se) && se.retry {
+		t.Errorf("told: still waiting (%v)", err)
+	}
+	// Gerrit wins: bob's code is restored on top, uploaded by the
+	// bridge. Its commit is still bob's: the author is who wrote it, not
+	// the bridge, in Gerrit and in what merges.
+	want := s.git("work", "log", "-1", "--format=%an <%ae>", bob)
+	restored := false
+	for _, u := range up.uploads {
+		if c := strings.Fields(u)[0]; strings.HasPrefix(u, " ") && s.git("m.git", "rev-parse", c+"^{tree}") == s.git("work", "rev-parse", bob+"^{tree}") {
+			restored = true
+			if got := s.git("m.git", "log", "-1", "--format=%an <%ae>", c); got != want {
+				t.Errorf("restored patch set's author is %q, want bob's commit's %q", got, want)
+			}
+		}
+	}
+	if !restored {
+		t.Fatalf("bob's patch set not restored on top (uploads %v)", up.uploads)
+	}
+}

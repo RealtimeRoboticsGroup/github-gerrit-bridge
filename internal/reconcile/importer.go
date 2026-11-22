@@ -1672,16 +1672,19 @@ func (im *Importer) restoreGerrit(ctx context.Context, n int, branch string, cur
 	if _, err := im.Mirror.Git(ctx, nil, "fetch", "--quiet", "origin", rev.Ref); err != nil {
 		return err
 	}
-	out, err := im.Mirror.Git(ctx, nil, "log", "-1", "--format=%T%x00%P%x00%B", cur.CurrentRevision)
+	out, err := im.Mirror.Git(ctx, nil, "log", "-1", "--format=%T%x00%P%x00%an%x00%ae%x00%ad%x00%B", "--date=raw", cur.CurrentRevision)
 	if err != nil {
 		return err
 	}
-	f := strings.SplitN(string(out), "\x00", 3)
-	if len(f) != 3 {
+	f := strings.SplitN(string(out), "\x00", 6)
+	if len(f) != 6 || len(strings.Fields(f[1])) == 0 {
 		return fmt.Errorf("parsing %s", cur.CurrentRevision)
 	}
-	env := []string{"GIT_COMMITTER_NAME=" + im.Bridge.Name, "GIT_COMMITTER_EMAIL=" + im.Bridge.Email}
-	c, err := im.Mirror.GitEnv(ctx, env, []byte(f[2]), "commit-tree", f[0], "-p", strings.Fields(f[1])[0], "-F", "-")
+	// Its author stays its author (nineteenth review: the mirror's
+	// identity, the bridge's, took the credit for their code).
+	env := []string{"GIT_AUTHOR_NAME=" + f[2], "GIT_AUTHOR_EMAIL=" + f[3], "GIT_AUTHOR_DATE=" + f[4],
+		"GIT_COMMITTER_NAME=" + im.Bridge.Name, "GIT_COMMITTER_EMAIL=" + im.Bridge.Email}
+	c, err := im.Mirror.GitEnv(ctx, env, []byte(f[5]), "commit-tree", f[0], "-p", strings.Fields(f[1])[0], "-F", "-")
 	if err != nil {
 		return err
 	}
@@ -1691,7 +1694,7 @@ func (im *Importer) restoreGerrit(ctx context.Context, n int, branch string, cur
 	note := fmt.Sprintf("Both GitHub (PR #%d) and Gerrit (patch set %d) changed this at the same time. "+
 		"The GitHub version was uploaded as a patch set, then Gerrit's version was restored on top; "+
 		"Gerrit wins conflicts. Compare the last two patch sets to merge the GitHub changes.", pr.Number, rev.Number)
-	if err := im.Gerrit.SetReview(ctx, n, "current", gerrit.ReviewInput{Message: note, Tag: commentTag + ":conflict"}); err != nil {
+	if err := im.Gerrit.SetReview(ctx, n, "current", gerrit.ReviewInput{Message: note, Tag: conflictTag}); err != nil {
 		return err
 	}
 	_, err = im.GitHub.CreateIssueComment(ctx, pr.Number, note+"\n\n"+noticeMarker)
