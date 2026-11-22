@@ -231,6 +231,9 @@ func (l *Live) Deliver(d *github.Delivery) {
 			return // an older delivery, late
 		}
 		if _, ok := c.statuses[st.Context]; !ok && len(c.statuses) >= maxLiveStatuses {
+			c.statusesAt = time.Time{} // as for runs (putRun)
+			l.seq++
+			c.seq = l.seq
 			return
 		}
 		l.seq++
@@ -254,6 +257,11 @@ func (l *Live) putRun(sha string, run github.CheckRun, job bool) {
 		return // an older delivery, late
 	}
 	if !ok && len(c.runs) >= maxLiveRuns {
+		// Not kept: what is kept is then not all there is, so the runs
+		// are read (GitHub answers with the newest) from now on.
+		c.runsAt = time.Time{}
+		l.seq++
+		c.seq = l.seq
 		return
 	}
 	if ok && job {

@@ -577,3 +577,30 @@ func TestLiveReadNeverSetsAStatusBack(t *testing.T) {
 		t.Errorf("%v (%d reads)", got, e.src.statusReads)
 	}
 }
+
+// Past maxLiveRuns a delivery is not kept, so what is kept is not all
+// there is: a rerun of a large matrix shows on the next poll, read from
+// GitHub (which answers with the newest), not ten minutes later.
+// Statuses likewise.
+func TestLiveDeliveryPastTheCapIsRead(t *testing.T) {
+	e := newLiveEnv(t)
+	e.subscribe()
+	var runs []github.CheckRun
+	var statuses []github.Status
+	for i := range maxLiveRuns {
+		runs = append(runs, actions(int64(i+1), fmt.Sprint("job", i), "completed", "failure"))
+		statuses = append(statuses, github.Status{ID: int64(i + 1), Context: fmt.Sprint("s", i), State: "failure"})
+	}
+	e.src.runs, e.src.statuses = runs, statuses
+	e.get()
+	e.src.runs = append([]github.CheckRun{actions(1000, "job0", "queued", "")}, runs[:maxLiveRuns-1]...)
+	e.src.statuses = append([]github.Status{{ID: 1000, Context: "new", State: "pending"}}, statuses[:maxLiveStatuses-1]...)
+	e.deliver("check_run", checkRunEvent(1000, "c1", "job0", "queued", ""))
+	if got := e.get(); got["job0#2"] != "SCHEDULED" {
+		t.Errorf("past the cap: job0#2 %q", got["job0#2"])
+	}
+	e.deliver("status", statusEvent("c1", "new", "pending", e.now))
+	if got := e.get(); got["new#1"] != "RUNNING" {
+		t.Errorf("past the cap: new#1 %q", got["new#1"])
+	}
+}
