@@ -215,8 +215,10 @@ S4="Gerrit-born ${RUN}"
   echo "${S4}" > "gerrit-born-${RUN}.txt" && git add . && git commit -qs -m "${S4}" &&
   git push -q gerrit HEAD:refs/for/main 2>/dev/null)
 C4=$(change "${S4}")
-has_pr4() { N4=$(pr_for "${S4}"); [[ -n "${N4}" ]] && [[ "$(pr "${N4}" .user.login)" == realtimeroboticsbot ]]; }
-wait_for "change ${C4} becomes a PR by the bot" has_pr4
+# Opened as its owner, with their linked account, never as the bot: GitHub
+# then counts no approval of their own PR.
+has_pr4() { N4=$(pr_for "${S4}"); [[ -n "${N4}" ]] && [[ "$(pr "${N4}" .user.login)" == AustinSchuh ]]; }
+wait_for "change ${C4} becomes a PR opened as its owner" has_pr4
 N4=$(pr_for "${S4}")
 wait_for "its description ends with the Change-Id" trailer "${N4}" "${C4}"
 OLD4=$(pr "${N4}" .head.sha)
