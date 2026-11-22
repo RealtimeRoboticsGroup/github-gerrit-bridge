@@ -233,8 +233,6 @@ func (l *Live) Deliver(d *github.Delivery) {
 		}
 		if _, ok := c.statuses[st.Context]; !ok && len(c.statuses) >= maxLiveStatuses {
 			c.statusesAt = time.Time{} // as for runs (putRun)
-			l.seq++
-			c.seq = l.seq
 			return
 		}
 		l.seq++
@@ -261,8 +259,6 @@ func (l *Live) putRun(sha string, run github.CheckRun, job bool) {
 		// Not kept: what is kept is then not all there is, so the runs
 		// are read (GitHub answers with the newest) from now on.
 		c.runsAt = time.Time{}
-		l.seq++
-		c.seq = l.seq
 		return
 	}
 	if ok && job {
@@ -299,6 +295,7 @@ type liveView struct {
 	// deliveries, and read from GitHub within liveMaxAge.
 	haveRuns, haveStatuses bool
 	seq                    uint64
+	born                   uint64 // the change count the commit was kept from
 }
 
 // get is what l has of commit, and the change count to read GitHub from
@@ -340,7 +337,7 @@ func (c *liveCommit) followed() bool {
 }
 
 func (c *liveCommit) view() liveView {
-	v := liveView{seq: c.seq}
+	v := liveView{seq: c.seq, born: c.born}
 	for _, r := range c.runs {
 		v.runs = append(v.runs, r.run)
 	}

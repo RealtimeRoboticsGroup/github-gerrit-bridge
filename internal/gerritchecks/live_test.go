@@ -111,6 +111,16 @@ func (e *liveEnv) get() map[string]string {
 	return got
 }
 
+// age makes the handler's cached answers d older.
+func (e *liveEnv) age(d time.Duration) {
+	e.h.mu.Lock()
+	for k, v := range e.h.cache {
+		v.at = v.at.Add(-d)
+		e.h.cache[k] = v
+	}
+	e.h.mu.Unlock()
+}
+
 // expire drops the handler's cached answers, as cacheTTL passing would.
 func (e *liveEnv) expire() {
 	e.h.mu.Lock()
@@ -186,14 +196,42 @@ func TestLiveChecksFollowDeliveries(t *testing.T) {
 	if e.src.runReads != 1 || e.src.statusReads != 1 {
 		t.Errorf("GitHub read %d times for check runs and %d for statuses, want once each", e.src.runReads, e.src.statusReads)
 	}
-	if e.src.pullReads < 5 {
-		t.Errorf("the PR read %d times: whether it can merge is not delivered", e.src.pullReads)
+	// Each answer a delivery changed is built again from what was
+	// kept, the PR as read (deliveries are not reads of GitHub: the
+	// cache's time bounds those). Past it, the PR is read again:
+	// nothing is delivered when whether it can merge changes.
+	if e.src.pullReads != 1 {
+		t.Errorf("the PR read %d times within cacheTTL", e.src.pullReads)
 	}
-	// Unchanged, a cached answer is reused.
-	before := e.src.pullReads
+	e.expire()
 	e.get()
-	if e.src.pullReads != before {
-		t.Errorf("an unchanged answer was not reused")
+	if e.src.pullReads != 2 || e.src.runReads != 1 {
+		t.Errorf("past cacheTTL: PR read %d times, runs %d", e.src.pullReads, e.src.runReads)
+	}
+}
+
+// However many deliveries, one change's answer reads GitHub at most
+// once a cacheTTL, as without Live, for any number of viewers.
+func TestLiveDeliveriesAreNotReads(t *testing.T) {
+	e := newLiveEnv(t)
+	e.subscribe()
+	e.src.runs = []github.CheckRun{actions(1, "build", "queued", "")}
+	e.src.statuses = []github.Status{}
+	e.get()
+	e.deliver("workflow_job", jobEvent(1, "c1", "build", "queued"))
+	for i := 1; i <= 20; i++ {
+		e.deliver("workflow_job", jobEvent(int64(100+i), "c1", fmt.Sprint("job", i), "queued"))
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/checks/5/1", nil)
+		r.Header.Set("Cookie", gerrit.SessionCookie+"=alice")
+		r.RemoteAddr = fmt.Sprintf("192.0.2.%d:1", i)
+		e.mux.ServeHTTP(w, r)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), fmt.Sprintf(`"job%d"`, i)) {
+			t.Fatalf("poll %d: %d, without its job: %s", i, w.Code, w.Body)
+		}
+	}
+	if e.src.pullReads != 1 || e.src.runReads != 1 || e.src.statusReads != 1 {
+		t.Errorf("GitHub read %d/%d/%d times (PR/runs/statuses)", e.src.pullReads, e.src.runReads, e.src.statusReads)
 	}
 }
 
@@ -596,10 +634,12 @@ func TestLiveDeliveryPastTheCapIsRead(t *testing.T) {
 	e.src.runs = append([]github.CheckRun{actions(1000, "job0", "queued", "")}, runs[:maxLiveRuns-1]...)
 	e.src.statuses = append([]github.Status{{ID: 1000, Context: "new", State: "pending"}}, statuses[:maxLiveStatuses-1]...)
 	e.deliver("check_run", checkRunEvent(1000, "c1", "job0", "queued", ""))
+	e.expire()
 	if got := e.get(); got["job0#2"] != "SCHEDULED" {
 		t.Errorf("past the cap: job0#2 %q", got["job0#2"])
 	}
 	e.deliver("status", statusEvent("c1", "new", "pending", e.now))
+	e.expire()
 	if got := e.get(); got["new#1"] != "RUNNING" {
 		t.Errorf("past the cap: new#1 %q", got["new#1"])
 	}
@@ -632,5 +672,45 @@ func TestLiveByteBoundSparesCommitsWithoutText(t *testing.T) {
 	}
 	if small != 1000 || l.bytes > maxLiveBytes {
 		t.Errorf("%d of 1000 small commits kept, %d bytes", small, l.bytes)
+	}
+}
+
+// An answer built again for a delivery keeps its time: the PR is read
+// again cacheTTL after it was, however many deliveries come.
+func TestLiveRebuiltAnswerKeepsItsTime(t *testing.T) {
+	e := newLiveEnv(t)
+	e.subscribe()
+	e.src.runs = []github.CheckRun{actions(1, "build", "queued", "")}
+	e.src.statuses = []github.Status{}
+	e.get()
+	e.age(cacheTTL - 5*time.Second)
+	e.deliver("workflow_job", jobEvent(1, "c1", "build", "in_progress"))
+	e.get()
+	if e.src.pullReads != 1 {
+		t.Fatalf("setup: the PR read %d times", e.src.pullReads)
+	}
+	e.age(6 * time.Second)
+	e.get()
+	if e.src.pullReads != 2 {
+		t.Errorf("the PR read %d times", e.src.pullReads)
+	}
+}
+
+// A commit Live dropped (others viewed) is not built again from nothing:
+// the cached answer stands until it expires.
+func TestLiveRebuildOfADroppedCommit(t *testing.T) {
+	e := newLiveEnv(t)
+	e.subscribe()
+	e.src.runs = []github.CheckRun{actions(1, "build", "queued", "")}
+	e.get()
+	for i := range maxLiveCommits {
+		e.now = e.now.Add(time.Second)
+		e.live.get(fmt.Sprint("o", i))
+	}
+	if e.live.commits["c1"] != nil {
+		t.Fatal("setup: c1 not dropped")
+	}
+	if got := e.get(); got["build#1"] != "SCHEDULED" {
+		t.Errorf("after the commit was dropped: %v", got)
 	}
 }

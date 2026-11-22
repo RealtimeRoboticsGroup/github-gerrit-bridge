@@ -23,6 +23,7 @@ import (
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/buildkite"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 )
 
 // Builds lists CI builds of a commit.
@@ -242,6 +243,10 @@ type entry struct {
 	// the answer stale.
 	commit  string
 	liveSeq uint64
+	// change, ps and pr are what it was built of, to build it again
+	// from Live when a delivery changes it (Handler.rebuilt).
+	change, ps int
+	pr         *github.PullRequest
 }
 
 const (
@@ -495,7 +500,15 @@ func (h *Handler) serveViewer(w http.ResponseWriter, r *http.Request, change, ps
 	h.mu.Lock()
 	cached, ok := h.cache[key]
 	h.mu.Unlock()
-	if !ok || time.Since(cached.at) > cacheTTL || h.Live.changed(cached.commit, cached.liveSeq) {
+	if ok && time.Since(cached.at) <= cacheTTL && h.Live.changed(cached.commit, cached.liveSeq) {
+		cached = h.rebuilt(cached)
+		h.mu.Lock()
+		if cur, ok := h.cache[key]; ok && cur.at.Equal(cached.at) {
+			h.cache[key] = cached
+		}
+		h.mu.Unlock()
+	}
+	if !ok || time.Since(cached.at) > cacheTTL {
 		if !h.missUpTo("fill "+client, maxViewerFillsPerClient) {
 			http.Error(w, "busy", http.StatusTooManyRequests)
 			return

@@ -276,6 +276,12 @@ func (h *Handler) githubEntry(ctx context.Context, change, ps int, sha string) e
 	if !have.haveRuns || !have.haveStatuses {
 		view = h.Live.merge(commit, begin, checks, !have.haveRuns, statuses, !have.haveStatuses)
 	}
+	return h.answer(time.Now(), change, ps, commit, view, pr)
+}
+
+// answer is the answer for change's patch set ps, GitHub commit, from
+// view and pr, as of at.
+func (h *Handler) answer(at time.Time, change, ps int, commit string, view liveView, pr *github.PullRequest) entry {
 	resp := Response{}
 	if pr != nil {
 		if link := webURL(pr.HTMLURL); link != "" {
@@ -284,9 +290,23 @@ func (h *Handler) githubEntry(ctx context.Context, change, ps int, sha string) e
 	}
 	resp.Runs = GitHubRuns(view.runs, view.statuses, pr, commit, change, ps)
 	b, _ := json.Marshal(resp)
-	e := entry{at: time.Now(), status: http.StatusOK, body: b}
+	e := entry{at: at, status: http.StatusOK, body: b}
 	if h.Live != nil {
-		e.commit, e.liveSeq = commit, view.seq
+		e.commit, e.liveSeq, e.change, e.ps, e.pr = commit, view.seq, change, ps, pr
 	}
 	return e
+}
+
+// rebuilt is e, a cached answer that deliveries have changed since,
+// built again from what Live has and e's PR, reading nothing (each
+// delivery is not another read of GitHub: cacheTTL bounds those, and e
+// keeps its time). What Live has is what e was built of and the
+// deliveries since; unless Live dropped the commit meanwhile, then it
+// is e itself.
+func (h *Handler) rebuilt(e entry) entry {
+	v, _ := h.Live.get(e.commit)
+	if v.born > e.liveSeq {
+		return e
+	}
+	return h.answer(e.at, e.change, e.ps, e.commit, v, e.pr)
 }

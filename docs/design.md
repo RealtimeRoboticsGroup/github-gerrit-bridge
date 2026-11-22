@@ -186,8 +186,11 @@ checklist.
   runs are read on each request. A read never sets a status back, nor,
   within a minute of a delivery, a check run (GitHub's API can lag its
   webhooks).
-  The PR is read on each request, since nothing is delivered when
-  whether it can merge changes. A kind of delivery not seen since the
+  An answer a delivery changes is built again from what is kept and
+  the PR as last read, reading nothing: GitHub is read for a patch set
+  at most once in 15 seconds, as without webhooks, however many
+  deliveries and viewers. The PR is read each time, since nothing is
+  delivered when whether it can merge changes. A kind of delivery not seen since the
   bridge started may not be subscribed to, so its part is read from
   GitHub on each request, as without webhooks. Only viewed commits are
   kept (2,000, and 64 MB of their checks' text, each clipped as shown;
