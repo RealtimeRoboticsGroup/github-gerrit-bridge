@@ -167,13 +167,22 @@ type readCounter struct {
 	in bool // the session is someone's
 }
 
-func (r readCounter) SignedIn(context.Context) (bool, error) {
+// readsMu guards the read counters: viewers' requests run at once.
+var readsMu sync.Mutex
+
+func (r readCounter) count() {
+	readsMu.Lock()
 	*r.n++
+	readsMu.Unlock()
+}
+
+func (r readCounter) SignedIn(context.Context) (bool, error) {
+	r.count()
 	return r.in, nil
 }
 
 func (r readCounter) GetChange(ctx context.Context, n int, o ...string) (*gerrit.ChangeInfo, error) {
-	*r.n++
+	r.count()
 	if r.fakeChanges == nil {
 		return nil, &gerrit.Error{Status: http.StatusNotFound}
 	}
