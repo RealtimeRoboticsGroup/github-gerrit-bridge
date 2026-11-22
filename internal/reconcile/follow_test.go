@@ -260,12 +260,13 @@ func TestMergedOnGitHubIntoAnotherBranchIsAbandoned(t *testing.T) {
 		owned     bool
 		by        string
 		abandoned bool
-	}{{true, "alice", true}, {false, "alice", false}, {true, "bot", false}, {false, "bot", false}} {
+	}{{true, "austin", true}, {false, "austin", false}, {true, "bot", false}, {false, "bot", false}} {
 		s, c, _ := mergedSites(t, "One (#10)\n")
 		c.GitHubOwned = tc.owned
 		s.maintainServer = true
 		s.pulls[10].Base.Ref = "gerrit/I2"
 		s.pulls[10].MergedBy = &github.User{Login: tc.by}
+		s.may[1] = append(s.may[1], "austin") // Gerrit lets the merger abandon it
 		for range 2 {
 			mirrorStates(t, c, false)
 		}
@@ -1621,5 +1622,67 @@ func TestWithheldPatchSetDoesNotRewritePRText(t *testing.T) {
 	}
 	if !retitled {
 		t.Error("Gerrit-owned: a withheld patch set's subject no longer retitles its PR")
+	}
+}
+
+// Where GitHub owns the branches, a merge into another branch abandons
+// its change only as whoever merged it (Run-As), as a close does: one by
+// someone with no Gerrit account (or whom Gerrit refuses) leaves it
+// open, said once (twentieth review: abandoned as the bridge, whoever
+// merged).
+func TestMergeElsewhereAbandonsOnlyAsTheMerger(t *testing.T) {
+	s, c, _ := mergedSites(t, "One (#10)\n")
+	c.GitHubOwned = true
+	s.pulls[10].Base.Ref = "scratch"
+	s.pulls[10].MergedBy = &github.User{Login: "stranger"}
+	for range 2 {
+		mirrorStates(t, c, false)
+	}
+	if got := s.changes[1].Status; got == "ABANDONED" {
+		t.Errorf("a stranger's merge into another branch abandoned change 1: %q", s.actionMsgs[1])
+	}
+	notices := 0
+	for _, body := range s.comments[10] {
+		if strings.Contains(body, "@stranger may not abandon [change 1]") {
+			notices++
+		}
+	}
+	if notices != 1 {
+		t.Errorf("%d notices, want 1: %q", notices, s.comments[10])
+	}
+}
+
+// One whom Gerrit refuses (here austin, who may not abandon change 1,
+// though the bridge may) leaves it open too; only where the bridge owns
+// the change for the PR's own author does it abandon as the bridge.
+func TestMergeElsewhereAsAMergerGerritRefuses(t *testing.T) {
+	s, c, _ := mergedSites(t, "One (#10)\n")
+	c.GitHubOwned = true
+	s.pulls[10].Base.Ref = "scratch"
+	s.pulls[10].MergedBy = &github.User{Login: "austin"}
+	mirrorStates(t, c, false)
+	if got := s.changes[1].Status; got == "ABANDONED" {
+		t.Errorf("austin's merge abandoned change 1, which Gerrit does not let him: %q", s.actionMsgs[1])
+	}
+
+	s, c, _ = mergedSites(t, "One (#10)\n")
+	c.GitHubOwned, c.BridgeUser = true, "bridge"
+	s.changes[1].Owner = gerrit.AccountInfo{AccountID: 99, Username: "bridge"}
+	s.pulls[10].Base.Ref = "scratch"
+	s.pulls[10].User = github.User{Login: "stranger"}
+	s.pulls[10].MergedBy = &github.User{Login: "stranger"}
+	mirrorStates(t, c, false)
+	if got := s.changes[1].Status; got != "ABANDONED" {
+		t.Errorf("the PR author's merge of their own bridge-owned change left it %s", got)
+	}
+	s, c, _ = mergedSites(t, "One (#10)\n")
+	c.GitHubOwned, c.BridgeUser = true, "bridge"
+	s.changes[1].Owner = gerrit.AccountInfo{AccountID: 99, Username: "bridge"}
+	s.pulls[10].Base.Ref = "scratch"
+	s.pulls[10].User = github.User{Login: "stranger"}
+	s.pulls[10].MergedBy = &github.User{Login: "other"}
+	mirrorStates(t, c, false)
+	if got := s.changes[1].Status; got == "ABANDONED" {
+		t.Error("someone else's merge of a stranger's bridge-owned change abandoned it")
 	}
 }

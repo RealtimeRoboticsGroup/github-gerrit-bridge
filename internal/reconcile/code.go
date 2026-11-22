@@ -1824,7 +1824,7 @@ func (c *Code) mergedOnGitHub(ctx context.Context, s *Snapshot, n int, ch *Gerri
 		return false, c.updateState(ctx, n, "merged on GitHub notice", func(st *state.Change) { st.State.MergedNoticePosted = true })
 	}
 	if pr.Base.Ref != s.Branch {
-		return c.abandonMerged(ctx, n, pr, fmt.Sprintf("Merged on GitHub by %s in PR #%d into %s, not %s, so it will not merge here as this change: "+
+		return c.abandonMergedElsewhere(ctx, s, n, ch, pr, fmt.Sprintf("Merged on GitHub by %s in PR #%d into %s, not %s, so it will not merge here as this change: "+
 			"abandoned. Whatever it merged into carries its code (a stacked PR's branch: the change below it).", by, pr.Number, pr.Base.Ref, s.Branch))
 	}
 	if _, err := c.Mirror.Git(ctx, nil, "merge-base", "--is-ancestor", sha, "refs/remotes/gerrit/heads/"+s.Branch); err != nil {
@@ -1850,6 +1850,60 @@ func (c *Code) mergedOnGitHub(ctx context.Context, s *Snapshot, n int, ch *Gerri
 	}
 	return c.abandonMerged(ctx, n, pr, fmt.Sprintf("Merged on GitHub by %s in PR #%d, as %s on %s, but Gerrit could not show it merged. Abandoned, since it is merged.",
 		by, pr.Number, sha, s.Branch))
+}
+
+// abandonMergedElsewhere abandons change n, whose PR pr merged on GitHub
+// into another branch, as whoever merged it (Run-As), so that Gerrit's
+// Abandon permission decides, as for a close (twentieth review: anyone
+// who may merge on GitHub abandoned anyone's change, as the bridge). As
+// the bridge only where it owns the change for the merger, the PR's
+// author. Otherwise it stays open, said once.
+func (c *Code) abandonMergedElsewhere(ctx context.Context, s *Snapshot, n int, ch *GerritChange, pr *github.PullRequest, msg string) (bool, error) {
+	if c.DryRun {
+		c.Logger.Info("dry run: would abandon a change merged on GitHub elsewhere", "change", n, "pr", pr.Number)
+		return false, nil
+	}
+	var merger github.User
+	if pr.MergedBy != nil {
+		merger = *pr.MergedBy
+	}
+	user, ok := "", false
+	if c.Identity != nil && merger.Login != "" {
+		var err error
+		if user, ok, err = c.Identity.Lookup(ctx, merger); err != nil {
+			return false, err
+		}
+	}
+	if !ok && merger.Login != "" && sameGitHubUser(merger, pr.User) && c.BridgeUser != "" && strings.EqualFold(ch.Owner, c.BridgeUser) {
+		return c.abandonMerged(ctx, n, pr, msg) // their own PR, which the bridge owns for them
+	}
+	if ok {
+		err := c.Gerrit.As(user).Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/abandon", n), map[string]string{"message": forGerrit(msg)}, nil)
+		var ge *gerrit.Error
+		switch {
+		case err == nil:
+			c.Logger.Info("abandoned a change merged on GitHub elsewhere, as its merger", "change", n, "pr", pr.Number, "as", user)
+			return true, nil
+		case !errors.As(err, &ge) || ge.Status >= 500:
+			return false, fmt.Errorf("abandoning change %d as %s: %w", n, user, err)
+		}
+		c.Logger.Info("Gerrit refused to abandon a change as its GitHub merger", "change", n, "pr", pr.Number, "as", user, "err", err)
+	}
+	if st := s.State[n]; st == nil || st.State.MergedNoticePosted {
+		return false, nil
+	}
+	who := "@" + merger.Login
+	if merger.Login == "" {
+		who = "Whoever merged it"
+	}
+	note := fmt.Sprintf("This PR was merged on GitHub into `%s`, not `%s`. %s may not abandon [change %d](%s) in Gerrit, so it stays "+
+		"open there, and this PR no longer follows it. Abandon it in Gerrit if it is not to be merged.\n\n%s",
+		forGitHub(pr.Base.Ref), forGitHub(s.Branch), who, n, ch.URL, noticeMarker)
+	if _, err := c.GitHub.CreateIssueComment(ctx, pr.Number, note); err != nil {
+		return false, err
+	}
+	c.Logger.Warn("a PR merged on GitHub into another branch by someone who may not abandon its change; left open", "change", n, "pr", pr.Number, "merger", merger.Login)
+	return false, c.updateState(ctx, n, "merged elsewhere notice", func(st *state.Change) { st.State.MergedNoticePosted = true })
 }
 
 // abandonMerged abandons change n, whose PR pr merged on GitHub, saying
