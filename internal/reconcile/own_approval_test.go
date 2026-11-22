@@ -118,4 +118,13 @@ func TestRefusedOwnApprovalDismissalDoesNotStall(t *testing.T) {
 		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
 	e.sync(t) // fails the test on an error
 	e.sync(t)
+	said := 0
+	for _, ic := range e.h.ics {
+		if strings.Contains(ic.Body, "GitHub would not let the bridge dismiss it") {
+			said++
+		}
+	}
+	if said != 1 {
+		t.Errorf("said %d times on the PR, want once: %+v", said, e.h.ics)
+	}
 }

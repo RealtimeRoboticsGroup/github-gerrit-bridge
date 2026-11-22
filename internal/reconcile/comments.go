@@ -2506,18 +2506,6 @@ func (s *commentSnapshot) votedSince(reviewer gerrit.AccountInfo, t time.Time, r
 	return false
 }
 
-// mirroredVoteSince reports whether the bridge cast a positive
-// Code-Review as reviewer since t: a GitHub approval's vote.
-func (s *commentSnapshot) mirroredVoteSince(reviewer gerrit.AccountInfo, t time.Time) bool {
-	for _, m := range s.messages {
-		at, err := time.Parse("2006-01-02 15:04:05.999999999", m.Date)
-		if err == nil && !at.Before(t) && sameAccount(m.Author, reviewer) && m.Tag == mirrorTag && positiveCodeReview.MatchString(m.Message) {
-			return true
-		}
-	}
-	return false
-}
-
 // liftedSince reports whether reviewer, themselves, voted Code-Review 0
 // or more in Gerrit after t: not through the bridge, nor posted on their
 // behalf (twentieth review: carol's on_behalf_of vote as bob lifted his
@@ -2526,6 +2514,18 @@ func (s *commentSnapshot) liftedSince(reviewer gerrit.AccountInfo, t time.Time) 
 	for _, m := range s.messages {
 		at, err := time.Parse("2006-01-02 15:04:05.999999999", m.Date)
 		if err == nil && at.After(t) && sameAccount(m.Author, reviewer) && !onBehalf(m) && !isBridgeTag(m.Tag) && liftsCodeReview.MatchString(m.Message) {
+			return true
+		}
+	}
+	return false
+}
+
+// mirroredVoteSince reports whether the bridge cast a positive
+// Code-Review as reviewer since t: a GitHub approval's vote.
+func (s *commentSnapshot) mirroredVoteSince(reviewer gerrit.AccountInfo, t time.Time) bool {
+	for _, m := range s.messages {
+		at, err := time.Parse("2006-01-02 15:04:05.999999999", m.Date)
+		if err == nil && !at.Before(t) && sameAccount(m.Author, reviewer) && m.Tag == mirrorTag && positiveCodeReview.MatchString(m.Message) {
 			return true
 		}
 	}

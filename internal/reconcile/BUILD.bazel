@@ -46,6 +46,7 @@ go_test(
         "change_request_test.go",
         "own_approval_more_test.go",
         "own_approval_test.go",
+        "votes_restores_test.go",
         "budget_test.go",
         "checks_test.go",
         "code_test.go",
