@@ -4994,8 +4994,9 @@ func TestGerritBornPROpenedAsItsOwner(t *testing.T) {
 	t.Run("link gone at open", func(t *testing.T) {
 		s, c := setup(t, true, 8)
 		c.OpenAs = func(context.Context, int) (PullOpener, bool, error) { return nil, false, nil }
-		if err := c.Reconcile(ctx, Key{Branch: "main"}); err == nil || len(s.pulls) != 0 {
-			t.Errorf("err %v, PRs %d; want it to wait, as no one", err, len(s.pulls))
+		// It waits, alone (twenty-first review): the reconcile goes on.
+		if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil || len(s.pulls) != 0 {
+			t.Errorf("err %v, PRs %d; want it to wait, as no one, and nothing else to", err, len(s.pulls))
 		}
 	})
 	t.Run("no way to open as anyone", func(t *testing.T) {

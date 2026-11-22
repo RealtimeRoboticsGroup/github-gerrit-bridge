@@ -2289,7 +2289,12 @@ func (c *Code) apply(ctx context.Context, s *Snapshot, p *Plan, skip *skips) err
 		}
 		if err := c.applyOne(ctx, s, a); err != nil {
 			var fr *forkRefused
+			var or *ownerRefused
 			switch {
+			case errors.As(err, &or) && a.Change != 0:
+				c.Logger.Warn("cannot open a change's PR as its owner; leaving that change out", "change", a.Change, "err", err)
+				skip.changes[a.Change] = true
+				continue
 			case errors.As(err, &fr):
 				for _, n := range fr.changes {
 					skip.changes[n] = true
@@ -2338,6 +2343,13 @@ type githubRefused struct{ changes []int }
 func (e *githubRefused) Error() string {
 	return fmt.Sprintf("GitHub refused the push of changes %v", e.changes)
 }
+
+// ownerRefused is a PR that could not be opened as its change's owner
+// (Code.OpenAs): only that change waits.
+type ownerRefused struct{ err error }
+
+func (e *ownerRefused) Error() string { return "opening a PR as its owner: " + e.err.Error() }
+func (e *ownerRefused) Unwrap() error { return e.err }
 
 // byGitHub marks a change GitHub refused in the export's refused set.
 const byGitHub = "github"
@@ -2579,14 +2591,20 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			}
 			as, ok, err := c.OpenAs(ctx, ch.OwnerID)
 			if err != nil {
-				return err
+				return &ownerRefused{err}
 			}
 			if !ok {
-				return fmt.Errorf("change %d's owner has no linked GitHub account to open its PR with", a.Change)
+				return &ownerRefused{fmt.Errorf("change %d's owner has no linked GitHub account to open its PR with", a.Change)}
 			}
 			opener = as
 		}
 		pr, err := opener.CreatePull(ctx, *a.New)
+		if err != nil && c.GitHubOwned {
+			// Their token's answer is theirs: one owner's refused,
+			// lapsed or rate-limited token stops only their change
+			// (twenty-first review: it stopped the branch's every PR).
+			return &ownerRefused{err}
+		}
 		if err != nil {
 			return err
 		}
