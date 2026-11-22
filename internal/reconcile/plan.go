@@ -536,6 +536,14 @@ func MakePlan(s *Snapshot) *Plan {
 		d.Body, d.BodyHash = body, hash
 		p.Desired[n] = d
 
+		// Where GitHub owns the branches, a withheld patch set's text is
+		// as withheld as its code: the PR's title and description are the
+		// merge commit's message, and whoever uploaded it may not write
+		// that on GitHub (twentieth review).
+		textHeld := s.GitHubOwned && s.Withheld[n]
+		if pr == nil && textHeld {
+			continue
+		}
 		if pr == nil {
 			p.Actions = append(p.Actions, Action{Kind: CreatePR, Change: n, New: &github.NewPull{
 				Title: c.Subject, Head: d.Head, Base: d.Base, Body: body, Draft: c.WIP,
@@ -559,11 +567,11 @@ func MakePlan(s *Snapshot) *Plan {
 			u.Base = ptr(d.Base)
 			changed = true
 		}
-		if strings.TrimSpace(pr.Title) != c.Subject && !s.Foreign[n] && !s.Hold[n] {
+		if strings.TrimSpace(pr.Title) != c.Subject && !s.Foreign[n] && !s.Hold[n] && !textHeld {
 			u.Title = ptr(c.Subject)
 			changed = true
 		}
-		if pr.Body != body && !s.Foreign[n] && !s.Hold[n] {
+		if pr.Body != body && !s.Foreign[n] && !s.Hold[n] && !textHeld {
 			u.Body = ptr(body)
 			changed = true
 		}

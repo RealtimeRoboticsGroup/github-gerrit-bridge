@@ -1550,3 +1550,76 @@ func TestPRFromABranchWhoseProtectionIsUnknownIsNotImported(t *testing.T) {
 		t.Errorf("uploads %v, want none", up.uploads)
 	}
 }
+
+// Where GitHub owns the branches, a Gerrit-born
+// change's patch set uploaded by someone who may not publish to GitHub is
+// withheld: its code stays off the PR. Its words must too: the PR's title
+// and description are what GitHub's squash merge (and /submit) make the
+// merged commit's message, sign-offs included, and the bridge writes them
+// with its own token. A GitHub-born change's foreign patch set keeps the
+// PR's text (plan: !s.Foreign); so does a withheld one (twentieth review).
+func TestWithheldPatchSetDoesNotRewritePRText(t *testing.T) {
+	ctx := context.Background()
+	s, c, base := followSites(t)
+	c.Publishable = func(_ context.Context, a int) (bool, bool) { return a == 8, true }
+	msg1 := "One\n\nChange-Id: " + cid(1) + "\n"
+	rev := s.commit(base, "one.txt", "1\n", msg1)
+	ci := s.change(1, cid(1), rev, msg1, "NEW")
+	r := ci.Revisions[rev]
+	r.Uploader = gerrit.AccountInfo{AccountID: 8, Username: "eight"}
+	ci.Revisions[rev], ci.Owner = r, r.Uploader
+	head := "gerrit/" + cid(1)
+	s.push("github.git", rev, "refs/heads/"+head)
+	s.save(ctx, c.Store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "gerrit",
+		HeadBranch: head, Lifecycle: "NEW"}, Revisions: []state.Revision{{PatchSet: 1, GerritSHA: rev, GitHubSHA: rev}}})
+	pr := s.pr(10, head, rev, "main", "bot")
+	pr.Title = "One"
+
+	// Patch set 2, by someone who may not publish (7): same code, their
+	// words.
+	msg2 := "Evil\n\nSays the code does something else.\n\nSigned-off-by: Someone Else <else@example.com>\nChange-Id: " + cid(1) + "\n"
+	rev2 := s.commit(base, "one.txt", "1\n", msg2)
+	s.push("gerrit.git", rev2, "refs/changes/01/1/2")
+	commit := commitInfo(s.gitOut("work", "log", "-1", "--format="+commitInfoFormat, rev2))
+	ci.Revisions[rev2] = gerrit.RevisionInfo{Number: 2, Kind: "NO_CODE_CHANGE", Ref: "refs/changes/01/1/2",
+		Uploader: gerrit.AccountInfo{AccountID: 7, Username: "seven"}, Commit: commit}
+	ci.CurrentRevision = rev2
+
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Withheld[1] {
+		t.Fatal("setup: patch set 2 is not withheld")
+	}
+	plan := MakePlan(snap)
+	for _, a := range plan.Actions {
+		if a.Kind == UpdatePR && a.PR == 10 && a.Update != nil {
+			if a.Update.Title != nil {
+				t.Errorf("a withheld patch set retitles the PR: %q", *a.Update.Title)
+			}
+			if a.Update.Body != nil && strings.Contains(*a.Update.Body, "something else") {
+				t.Errorf("a withheld patch set rewrites the PR's description: %q", *a.Update.Body)
+			}
+		}
+	}
+	// No PR (closed and gone, say): none is opened with its text either.
+	pr10 := snap.PRs[10]
+	delete(snap.PRs, 10)
+	for _, a := range MakePlan(snap).Actions {
+		if a.Kind == CreatePR {
+			t.Errorf("a PR opened for a withheld patch set: %+v", a.New)
+		}
+	}
+	snap.PRs[10] = pr10
+	// Where Gerrit owns the branches, the PR's text is the change's, as
+	// on main: there its description gates nothing.
+	snap.GitHubOwned = false
+	retitled := false
+	for _, a := range MakePlan(snap).Actions {
+		retitled = retitled || (a.Kind == UpdatePR && a.PR == 10 && a.Update != nil && a.Update.Title != nil)
+	}
+	if !retitled {
+		t.Error("Gerrit-owned: a withheld patch set's subject no longer retitles its PR")
+	}
+}
