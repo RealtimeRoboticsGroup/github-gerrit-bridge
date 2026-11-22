@@ -626,3 +626,19 @@ func TestGerritOwnedLateVoteCommentNamesItsPatchSet(t *testing.T) {
 		t.Errorf("her words were not posted: %+v", e.h.ics)
 	}
 }
+
+// Nineteenth review (regression guard, as on main): where Gerrit owns
+// the branches Gerrit is the gate, and a GitHub change request whose -1
+// Gerrit no longer has (not copied to a new patch set) is dismissed.
+func TestGerritOwnedChangeRequestWithoutItsVoteIsDismissed(t *testing.T) {
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice", Username: "alice"}
+	e := changeRequested(t, false, alice)
+	e.g.revs["sha3"] = 3
+	e.g.current = "sha3"
+	e.g.vote("bobg", "Code-Review", 0)
+	e.pushed(t, "sha3", e.g.now().Add(-time.Hour))
+	e.sync(t)
+	if len(e.h.dismissed) != 1 {
+		t.Errorf("dismissed %v, want bob's change request", e.h.dismissed)
+	}
+}

@@ -2224,6 +2224,14 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 		if (rv.State == "APPROVED" && v >= approves) || (rv.State == "CHANGES_REQUESTED" && v < 0) {
 			continue
 		}
+		if rv.State == "CHANGES_REQUESTED" && c.GitHubOwned && !s.votedSince(gerrit.AccountInfo{Username: user}, rv.SubmittedAt, liftsCodeReview) {
+			// Where GitHub owns the branches a change request is the
+			// gate, and only its reviewer (or whoever may dismiss
+			// reviews) lifts it: Gerrit not copying a -1 to a new patch
+			// set, anyone's, is not theirs (nineteenth review). Only
+			// their own later vote of 0 or more in Gerrit is.
+			continue
+		}
 		now := "has no Code-Review vote"
 		if voted {
 			now = "is now Code-Review " + voteString(v)
@@ -2394,6 +2402,7 @@ const notCounted = "Not counted as a vote:"
 // ("-Code-Review") or remove it.
 var (
 	positiveCodeReview = regexp.MustCompile(`\APatch Set \d+:(?: [^ \n]+)*? Code-Review\+[1-9]`)
+	liftsCodeReview    = regexp.MustCompile(`\APatch Set \d+:(?: [^ \n]+)*? (?:Code-Review\+[1-9]|-Code-Review)`)
 	anyCodeReview      = regexp.MustCompile(`\A(?:Patch Set \d+:(?: [^ \n]+)*? (?:Code-Review[+-]\d|-Code-Review)|Removed Code-Review[+-]?\d)`)
 )
 

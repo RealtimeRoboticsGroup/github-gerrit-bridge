@@ -43,6 +43,7 @@ go_test(
     name = "reconcile_test",
     srcs = [
         "authors_test.go",
+        "change_request_test.go",
         "own_approval_test.go",
         "budget_test.go",
         "checks_test.go",
