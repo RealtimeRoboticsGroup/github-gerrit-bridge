@@ -6,9 +6,9 @@
 #
 # Deploy it by that digest: the tag only says which was pushed last.
 #
-# It runs as 65532 (no account in /etc/passwd), so set HOME to somewhere
-# writable for git, and mount the mirror's directory writable: the root
-# filesystem may be read-only.
+# It runs as 65532, the account "bridge" (home /tmp), and needs only /tmp
+# and the mirror's directory writable: the root filesystem may be
+# read-only.
 
 load("@rules_go//go:def.bzl", "go_cross_binary")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
@@ -29,12 +29,29 @@ pkg_tar(
     remap_paths = {"/bridge_linux_amd64": "/github-gerrit-bridge"},
 )
 
+# The base's /etc/passwd and /etc/group (copied from it at the digest in
+# MODULE.bazel: update them with it), plus the bridge's account.  ssh,
+# which uploads as people with a peer key, will not run as a uid without
+# one ("No user exists for uid 65532").
+pkg_tar(
+    name = "accounts",
+    srcs = [
+        "group",
+        "passwd",
+    ],
+    mode = "0644",
+    package_dir = "/etc",
+)
+
 oci_image(
     name = "image",
     base = "@buildpack_deps_scm",
     entrypoint = ["/usr/local/bin/github-gerrit-bridge"],
     env = {"HOME": "/tmp"},
-    tars = [":layer"],
+    tars = [
+        ":accounts",
+        ":layer",
+    ],
     user = "65532:65532",
     workdir = "/tmp",
 )
