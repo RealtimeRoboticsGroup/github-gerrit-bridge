@@ -1911,14 +1911,15 @@ notes; nothing on GitHub advertises the link.
   comment headed with the vote and "on patch set N, which is not on
   GitHub". Nor is there an approval while that commit is not the PR's
   head (sixteenth review), nor, where GitHub owns the branches, from
-  whoever owns the change or uploaded its code (seventeenth review):
-  GitHub's required reviews are the gate there, and the bridge's PR and
-  pushes would hide that it is their approval of their own code. A
+  the change's owner (seventeenth review): GitHub's required reviews are
+  the gate there, and a PR opened as the bridge would hide that it is
+  their approval of their own change. Who uploaded its patch sets since
+  is ignored, as Gerrit's rule against self-approval reads it (the
+  owner's call, 2026-11-21: bob may push a fix to alice's change and
+  approve it). A
   reply posted on someone's behalf (real_author) is never their review.
   The other way too (eighteenth review): an approval made on GitHub by
-  whoever owns the change or uploaded the head's code casts no Gerrit
-  vote and is dismissed, on whichever sync finds it so (a later upload of
-  theirs makes an older approval their own).
+  the change's owner casts no Gerrit vote and is dismissed.
   A +1, or a vote of
   another label, stays a PR comment if it has words, and the statuses show
   it either way. Excluded: votes the bridge cast itself (a GitHub approval

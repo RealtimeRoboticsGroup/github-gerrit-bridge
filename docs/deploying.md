@@ -103,8 +103,9 @@ nobody. Before the bridge reads it:
    With "require conversation resolution", a thread resolved in Gerrit
    is resolved on GitHub only with its resolver's linked token, if GitHub
    lets them; otherwise the bridge reopens it in Gerrit, saying why, and
-   never resolves it for them. A GitHub approval by whoever owns the
-   change or uploaded the head's code is dismissed and casts no vote.
+   never resolves it for them. A GitHub approval by the change's owner is
+   dismissed and casts no vote; who uploaded its patch sets since is
+   ignored, as Gerrit's rule against self-approval reads it.
    A Gerrit-born change's PR is opened as its owner, with their linked
    GitHub account, so GitHub itself counts no approval of their own PR:
    until its owner has linked an account that may push, the change is

@@ -773,12 +773,14 @@ func TestLinkedVoteOnOwnCodeIsNoApproval(t *testing.T) {
 		wantApproval bool
 	}{
 		{"her own change", true, alice, bob, bob, false},
-		{"her upload", true, bob, bob, alice, false},
-		{"bob's rework of hers", true, bob, alice, bob, false}, // she chose its parents (codeFrom)
+		// As Gerrit's rule against self-approval reads it, the owner's
+		// call: who uploaded a patch set since is ignored.
+		{"her upload", true, bob, bob, alice, true},
+		{"bob's rework of hers", true, bob, alice, bob, true},
 		{"bob's", true, bob, bob, bob, true},
 		{"her own, Gerrit-owned", false, alice, alice, alice, true},
-		{"her upload as bob", true, bob, bob, bob, false},           // ps2 uploaded by alice on bob's behalf
-		{"her message edit of bob's", true, bob, bob, alice, false}, // ps2 message-only: hers to have pushed
+		{"her upload as bob", true, bob, bob, bob, true},
+		{"her message edit of bob's", true, bob, bob, alice, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, _ := linkedEnv(t)
