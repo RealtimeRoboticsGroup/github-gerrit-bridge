@@ -432,3 +432,26 @@ func TestLiveTextIsBounded(t *testing.T) {
 			l.commits["sha99"] != nil, l.commits["sha0"] != nil)
 	}
 }
+
+// A commit dropped while GitHub is read (others viewed meanwhile) misses
+// the deliveries until it is kept again: the read is not taken as
+// current, and the next request reads GitHub again.
+func TestLiveDroppedDuringARead(t *testing.T) {
+	l := &Live{sawCheckRun: true, sawWorkflowJob: true, sawStatus: true}
+	_, begin := l.get("c1")
+	for i := range maxLiveCommits {
+		l.get(fmt.Sprint("o", i))
+	}
+	b, _ := json.Marshal(checkRunEvent(1, "c1", "build", "completed", "success"))
+	l.Deliver(&github.Delivery{Event: "check_run", Payload: b})
+	l.merge("c1", begin, []github.CheckRun{actions(1, "build", "queued", "")}, true, nil, true)
+	if v, _ := l.get("c1"); v.haveRuns || v.haveStatuses {
+		t.Errorf("a read that missed a delivery taken as current: %+v", v)
+	}
+	// Read again, it is.
+	_, begin = l.get("c1")
+	l.merge("c1", begin, []github.CheckRun{actions(1, "build", "completed", "success")}, true, nil, true)
+	if v, _ := l.get("c1"); !v.haveRuns || !v.haveStatuses || v.runs[0].Status != "completed" {
+		t.Errorf("read again: %+v", v)
+	}
+}

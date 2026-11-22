@@ -50,6 +50,9 @@ type liveCommit struct {
 	used               time.Time
 	seq                uint64
 	bytes              int // of text kept
+	// born is the change count it was kept from: a read that began
+	// before then may have missed a delivery (dropped, nobody viewing).
+	born uint64
 }
 
 type liveRun struct {
@@ -343,6 +346,10 @@ func (l *Live) merge(commit string, begin uint64, runs []github.CheckRun, readRu
 	now := l.clock()
 	c := l.commit(commit)
 	c.used = now
+	// A commit dropped and kept again since the read began may have
+	// missed deliveries in between: what was read is kept, but it is
+	// read again next time.
+	confirm := c.born <= begin
 	l.seq++
 	if readRuns {
 		next := map[int64]liveRun{}
@@ -359,7 +366,10 @@ func (l *Live) merge(commit string, begin uint64, runs []github.CheckRun, readRu
 				next[r.ID] = liveRun{r, l.seq}
 			}
 		}
-		c.runs, c.runsAt = next, now
+		c.runs = next
+		if confirm {
+			c.runsAt = now
+		}
 	}
 	if readStatuses {
 		next := map[string]liveStatus{}
@@ -374,7 +384,10 @@ func (l *Live) merge(commit string, begin uint64, runs []github.CheckRun, readRu
 				next[s.Context] = liveStatus{s, l.seq}
 			}
 		}
-		c.statuses, c.statusesAt = next, now
+		c.statuses = next
+		if confirm {
+			c.statusesAt = now
+		}
 	}
 	c.seq = l.seq
 	l.resize(c)
@@ -391,7 +404,8 @@ func (l *Live) commit(commit string) *liveCommit {
 		if len(l.commits) >= maxLiveCommits {
 			l.evict(nil)
 		}
-		c = &liveCommit{runs: map[int64]liveRun{}, statuses: map[string]liveStatus{}, used: l.clock()}
+		l.seq++
+		c = &liveCommit{runs: map[int64]liveRun{}, statuses: map[string]liveStatus{}, used: l.clock(), born: l.seq, seq: l.seq}
 		l.commits[commit] = c
 	}
 	return c
