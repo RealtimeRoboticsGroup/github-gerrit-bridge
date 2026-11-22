@@ -15,6 +15,13 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 )
 
+// actions is a GitHub Actions check run.
+func actions(id int64, name, status, conclusion string) github.CheckRun {
+	r := github.CheckRun{ID: id, Name: name, Status: status, Conclusion: conclusion}
+	r.App.Name, r.App.Slug = "GitHub Actions", actionsApp
+	return r
+}
+
 // liveSource is GitHub for Live's tests: what it says of commit c1, and
 // how often each part was read.
 type liveSource struct {
@@ -116,7 +123,7 @@ func (e *liveEnv) deliver(event string, payload any) {
 
 func checkRunEvent(id int64, sha, name, status, conclusion string) map[string]any {
 	return map[string]any{"action": "x", "check_run": map[string]any{"id": id, "head_sha": sha, "name": name, "status": status,
-		"conclusion": conclusion, "app": map[string]any{"name": "GitHub Actions"}}}
+		"conclusion": conclusion, "app": map[string]any{"name": "GitHub Actions", "slug": "github-actions"}}}
 }
 
 func jobEvent(id int64, sha, name, status string) map[string]any {
@@ -144,7 +151,7 @@ func (e *liveEnv) subscribe() {
 func TestLiveChecksFollowDeliveries(t *testing.T) {
 	e := newLiveEnv(t)
 	e.subscribe()
-	e.src.runs = []github.CheckRun{{ID: 1, Name: "build", Status: "queued"}}
+	e.src.runs = []github.CheckRun{actions(1, "build", "queued", "")}
 	e.src.statuses = []github.Status{{Context: "ci/legacy", State: "pending"}}
 	if got := e.get(); got["build#1"] != "SCHEDULED" || got["ci/legacy#1"] != "RUNNING" {
 		t.Fatalf("first view: %v", got)
@@ -163,10 +170,15 @@ func TestLiveChecksFollowDeliveries(t *testing.T) {
 	if got := e.get(); got["build#2"] != "SCHEDULED" {
 		t.Errorf("after a rerun: %v", got)
 	}
+	// A job first heard of by its own delivery is Actions', so followed.
+	e.deliver("workflow_job", jobEvent(3, "c1", "test", "queued"))
+	if got := e.get(); got["test#1"] != "SCHEDULED" {
+		t.Errorf("after a new job: %v", got)
+	}
 	if e.src.runReads != 1 || e.src.statusReads != 1 {
 		t.Errorf("GitHub read %d times for check runs and %d for statuses, want once each", e.src.runReads, e.src.statusReads)
 	}
-	if e.src.pullReads < 4 {
+	if e.src.pullReads < 5 {
 		t.Errorf("the PR read %d times: whether it can merge is not delivered", e.src.pullReads)
 	}
 	// Unchanged, a cached answer is reused.
@@ -184,10 +196,10 @@ func TestLiveChecksFollowDeliveries(t *testing.T) {
 func TestLiveChecksNeedTheirDeliveries(t *testing.T) {
 	e := newLiveEnv(t)
 	e.deliver("check_run", checkRunEvent(1000, "other", "x", "completed", "success"))
-	e.src.runs = []github.CheckRun{{ID: 1, Name: "build", Status: "queued"}}
+	e.src.runs = []github.CheckRun{actions(1, "build", "queued", "")}
 	e.get()
 	e.expire()
-	e.src.runs = []github.CheckRun{{ID: 1, Name: "build", Status: "in_progress"}}
+	e.src.runs = []github.CheckRun{actions(1, "build", "in_progress", "")}
 	if got := e.get(); got["build#1"] != "RUNNING" {
 		t.Errorf("without workflow_job deliveries: %v", got)
 	}
@@ -201,9 +213,9 @@ func TestLiveChecksNeedTheirDeliveries(t *testing.T) {
 func TestLiveChecksAreReadAgain(t *testing.T) {
 	e := newLiveEnv(t)
 	e.subscribe()
-	e.src.runs = []github.CheckRun{{ID: 1, Name: "build", Status: "queued"}}
+	e.src.runs = []github.CheckRun{actions(1, "build", "queued", "")}
 	e.get()
-	e.src.runs = []github.CheckRun{{ID: 1, Name: "build", Status: "completed", Conclusion: "success"}}
+	e.src.runs = []github.CheckRun{actions(1, "build", "completed", "success")}
 	e.now = e.now.Add(liveMaxAge - time.Second)
 	e.expire()
 	if got := e.get(); got["build#1"] != "SCHEDULED" || e.src.runReads != 1 {
@@ -221,7 +233,7 @@ func TestLiveChecksAreReadAgain(t *testing.T) {
 func TestLiveChecksOutOfOrder(t *testing.T) {
 	e := newLiveEnv(t)
 	e.subscribe()
-	e.src.runs = []github.CheckRun{{ID: 1, Name: "build", Status: "queued"}}
+	e.src.runs = []github.CheckRun{actions(1, "build", "queued", "")}
 	e.src.statuses = []github.Status{}
 	e.get()
 	e.deliver("check_run", checkRunEvent(1, "c1", "build", "completed", "success"))
@@ -239,7 +251,7 @@ func TestLiveChecksOutOfOrder(t *testing.T) {
 func TestLiveDeliveryDuringARead(t *testing.T) {
 	e := newLiveEnv(t)
 	e.subscribe()
-	e.src.runs = []github.CheckRun{{ID: 1, Name: "build", Status: "in_progress"}, {ID: 2, Name: "lint", Status: "completed", Conclusion: "success"}}
+	e.src.runs = []github.CheckRun{actions(1, "build", "in_progress", ""), actions(2, "lint", "completed", "success")}
 	e.src.during = func() {
 		e.deliver("check_run", checkRunEvent(1, "c1", "build", "completed", "failure"))
 		// Late news of lint's start, which the read already has as done.
@@ -285,5 +297,34 @@ func TestLiveJobKeepsTheCheckRunsDetails(t *testing.T) {
 	v, _ := e.live.get("c1")
 	if len(v.runs) != 1 || v.runs[0].App.Name != "Some CI" || v.runs[0].DetailsURL != "https://ci.example.com/1" || v.runs[0].Status != "in_progress" {
 		t.Errorf("runs %+v", v.runs)
+	}
+}
+
+// Another app's check run starting is delivered to nobody (check_run has
+// no such event for a repository webhook; workflow_job is Actions'
+// alone): while one has not finished, the runs are read each time.
+func TestLiveOtherAppsRunsAreRead(t *testing.T) {
+	e := newLiveEnv(t)
+	e.subscribe()
+	run := github.CheckRun{ID: 1, Name: "buildkite", Status: "queued"}
+	run.App.Name, run.App.Slug = "Buildkite", "buildkite"
+	e.src.runs = []github.CheckRun{run, actions(2, "build", "queued", "")}
+	e.get()
+	run.Status = "in_progress"
+	e.src.runs = []github.CheckRun{run, actions(2, "build", "queued", "")}
+	e.now = e.now.Add(5 * time.Minute)
+	e.expire()
+	if got := e.get(); got["buildkite#1"] != "RUNNING" {
+		t.Errorf("5 minutes after another app's check started: %v", got)
+	}
+	// Finished, it changes only by a delivery: no more reads.
+	run.Status, run.Conclusion = "completed", "success"
+	e.src.runs = []github.CheckRun{run, actions(2, "build", "queued", "")}
+	e.expire()
+	e.get()
+	reads := e.src.runReads
+	e.expire()
+	if e.get(); e.src.runReads != reads {
+		t.Errorf("runs read again with only Actions' unfinished")
 	}
 }

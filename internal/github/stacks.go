@@ -110,6 +110,7 @@ type CheckRun struct {
 	} `json:"output"`
 	App struct {
 		Name string `json:"name"`
+		Slug string `json:"slug"` // github-actions for GitHub Actions' jobs
 	} `json:"app"`
 }
 

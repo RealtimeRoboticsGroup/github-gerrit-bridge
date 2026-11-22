@@ -133,7 +133,7 @@ func (l *Live) Deliver(d *github.Delivery) {
 		}
 		run := github.CheckRun{ID: id, Name: p.Job.Name, Status: p.Job.Status, Conclusion: p.Job.Conclusion,
 			HTMLURL: p.Job.HTMLURL, StartedAt: p.Job.StartedAt, CompletedAt: p.Job.CompletedAt}
-		run.App.Name = "GitHub Actions"
+		run.App.Name, run.App.Slug = "GitHub Actions", actionsApp
 		l.putRun(p.Job.HeadSHA, run, true)
 	case "status":
 		var p struct {
@@ -220,9 +220,26 @@ func (l *Live) get(commit string) (v liveView, begin uint64) {
 	now := l.clock()
 	c.used = now
 	v = c.view()
-	v.haveRuns = l.sawCheckRun && l.sawWorkflowJob && !c.runsAt.IsZero() && now.Sub(c.runsAt) < liveMaxAge
+	v.haveRuns = l.sawCheckRun && l.sawWorkflowJob && !c.runsAt.IsZero() && now.Sub(c.runsAt) < liveMaxAge && c.followed()
 	v.haveStatuses = l.sawStatus && !c.statusesAt.IsZero() && now.Sub(c.statusesAt) < liveMaxAge
 	return v, l.seq
+}
+
+// actionsApp is GitHub Actions' app: its jobs' starts are delivered
+// (workflow_job).
+const actionsApp = "github-actions"
+
+// followed says deliveries tell every change of c's check runs still to
+// come: each is finished or GitHub Actions'. Another app's run starting
+// is delivered to nobody (check_run has no such event for a repository
+// webhook), so while one has not finished, the runs are read.
+func (c *liveCommit) followed() bool {
+	for _, r := range c.runs {
+		if r.run.Status != "completed" && r.run.App.Slug != actionsApp {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *liveCommit) view() liveView {

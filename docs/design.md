@@ -180,6 +180,8 @@ checklist.
   viewed, then updated by `check_run`, `workflow_job` (GitHub sends no
   `check_run` event when a check starts running) and `status`
   deliveries, and read again after ten minutes in case one was missed.
+  Another app's check run starting is delivered to nobody, so while one
+  has not finished, the check runs are read on each request.
   The PR is read on each request, since nothing is delivered when
   whether it can merge changes. A kind of delivery not seen since the
   bridge started may not be subscribed to, so its part is read from
