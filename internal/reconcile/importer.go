@@ -695,6 +695,12 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 			// Uploaded for this PR, but the link was never saved (a
 			// crash, a refused state push): link it, and import next
 			// time.
+			if im.DryRun {
+				// Linking pushes state and posts on the change.
+				// (A status, which a dry run only logs, not posts.)
+				im.Logger.Info(fmt.Sprintf("dry run: would adopt change %d for PR #%d", cur.Number, pr.Number), "pr", pr.Number, "change", cur.Number)
+				return nil, &syncError{state: "pending", msg: fmt.Sprintf("Dry run: would link to Gerrit change %d", cur.Number)}
+			}
 			if err := im.link(ctx, cur.Number, "github", branch, changeID, pr); err != nil {
 				return nil, err
 			}

@@ -3343,6 +3343,49 @@ func TestExportDespiteAnImportRetry(t *testing.T) {
 // A change uploaded for a PR whose link was never saved (a refused state
 // push, a crash) is adopted and its upload recorded, not refused forever
 // as another PR's; one uploaded by someone else, or for another PR, is not.
+// In a dry run, a change uploaded for a PR whose link was lost is not
+// adopted: linking pushes the bridge's state and posts on the change, and
+// a dry run writes nothing to Gerrit.
+func TestDryRunDoesNotAdoptALostLink(t *testing.T) {
+	s, im, up, m1, _, _ := gerritBornWorld(t, false)
+	ctx := context.Background()
+	up.create = true
+	h := s.commit(m1, "new.txt", "n\n", "New")
+	s.push("github.git", h, "refs/heads/topic")
+	s.pr(60, "topic", h, "main", "austin")
+	s.pushed("o/r", "refs/heads/topic", h, "austin")
+	im.link = func(context.Context, int, string, string, string, *github.PullRequest) error {
+		return errors.New("state push refused") // the upload's link is lost
+	}
+	im.Import(ctx, "main")
+	if len(up.uploads) != 1 || im.Store.ChangeForPR(60) != 0 {
+		t.Fatalf("setup: uploads %v, linked change %d; want one upload, unlinked", up.uploads, im.Store.ChangeForPR(60))
+	}
+	n := 0
+	for k, ci := range s.changes {
+		if strings.Contains(ci.Revisions[ci.CurrentRevision].Commit.Message, "GitHub-PR: ") && k > n {
+			n = k
+		}
+	}
+	// The real link: a state push and a "GitHub: <url>" message.
+	c, _ := s.code(ctx)
+	c.Store, c.Mirror = im.Store, im.Mirror
+	im.link = c.linkPR
+	stateBefore := s.git("m.git", "for-each-ref", "refs/bridge")
+	msgsBefore := len(s.reviewMsgs[n])
+	im.DryRun = true
+	for range 2 {
+		im.Import(ctx, "main") // what it would do waits, not an error to act on
+	}
+	if len(up.uploads) != 1 || len(s.reviewMsgs[n]) != msgsBefore || im.Store.ChangeForPR(60) != 0 {
+		t.Errorf("dry run: uploads %v, change %d's messages %q (had %d), PR linked to %d; want nothing done",
+			up.uploads, n, s.reviewMsgs[n], msgsBefore, im.Store.ChangeForPR(60))
+	}
+	if got := s.git("m.git", "for-each-ref", "refs/bridge"); got != stateBefore {
+		t.Errorf("dry run pushed the bridge's state: %q, was %q", got, stateBefore)
+	}
+}
+
 func TestLostLinkIsAdopted(t *testing.T) {
 	s, im, up, m1, _, _ := gerritBornWorld(t, false)
 	ctx := context.Background()
