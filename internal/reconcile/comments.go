@@ -787,6 +787,14 @@ func (s *commentSnapshot) ownCode(account gerrit.AccountInfo, ps int) bool {
 	return !codeFrom(s.revs, ps, func(r gerrit.RevisionInfo) bool { return !theirs(r) })
 }
 
+// headSHA is the PR's head commit, "" if the PR was not read.
+func (s *commentSnapshot) headSHA() string {
+	if s.pull == nil {
+		return ""
+	}
+	return s.pull.Head.SHA
+}
+
 // restoredFrom is the patch set that patch set ps restored, by the
 // bridge's note on it (restoreGerrit), 0 if none. A note anyone forged
 // only makes more code someone's own.
@@ -2292,7 +2300,20 @@ func (c *Comments) dismissOwn(ctx context.Context, n, pr int, rv github.Review, 
 	if err != nil {
 		return false, err
 	}
-	if !ok || !s.ownCode(gerrit.AccountInfo{Username: user}, s.current) {
+	if !ok {
+		return false, nil
+	}
+	// Whichever code GitHub counts it for: Gerrit's current patch set,
+	// the PR's head (behind Gerrit while a patch set is withheld), the
+	// commit it was given on (nineteenth review).
+	who := gerrit.AccountInfo{Username: user}
+	own := s.ownCode(who, s.current)
+	for _, sha := range []string{rv.CommitID, s.headSHA()} {
+		if ps, known := s.shaToPS[sha]; known && !own {
+			own = s.ownCode(who, ps)
+		}
+	}
+	if !own {
 		return false, nil
 	}
 	msg := fmt.Sprintf("@%s owns or uploaded this code in [Gerrit](%s): an approval of one's own code is not a review.",

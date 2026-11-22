@@ -555,11 +555,10 @@ func TestGerritOwnedOwnChangeApprovalPosted(t *testing.T) {
 	}
 }
 
-// Eighteenth review (regression guard, passes on main): a vote the bridge cast as a linked user
-// (Run-As: real_author is the bridge, as when a GitHub approval is
-// mirrored) is the bridge's: never mirrored back as a GitHub review or
-// comment, and not taken for a later vote of theirs that withdraws
-// their own earlier +2.
+// Eighteenth review (regression guard, passes on main): a vote the bridge
+// cast as a linked user (Run-As: real_author is the bridge, as when a
+// GitHub approval is mirrored) is the bridge's: never mirrored back as a
+// GitHub review or comment.
 func TestGerritOwnedBridgeRunAsVoteNotMirrored(t *testing.T) {
 	e, _ := linkedEnv(t)
 	e.runAs()
