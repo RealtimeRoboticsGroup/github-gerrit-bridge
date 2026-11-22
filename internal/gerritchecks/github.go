@@ -217,30 +217,32 @@ func itoa(n int64) string {
 // from GitHub.
 func (h *Handler) githubEntry(ctx context.Context, change, ps int, sha string) entry {
 	fail := failure
-	ok := func(resp Response) entry {
-		b, _ := json.Marshal(resp)
-		return entry{at: time.Now(), status: http.StatusOK, body: b}
-	}
 	commit, prNum, err := h.GitHub.Commit(ctx, change, sha)
 	if err != nil {
 		h.Logger.Warn("checks: finding the patch set's GitHub commit", "change", change, "patchset", ps, "err", err)
 		return fail(http.StatusBadGateway, "cannot tell which GitHub commit this patch set is")
 	}
 	if commit == "" {
-		return ok(Response{Runs: []Run{notOnGitHub(change, ps)}})
+		b, _ := json.Marshal(Response{Runs: []Run{notOnGitHub(change, ps)}})
+		return entry{at: time.Now(), status: http.StatusOK, body: b}
 	}
-	// Its check runs, statuses and PR are read at once, not one after
-	// another: each is a round trip to GitHub, and the Checks tab waits
-	// for all of them.
-	reads := 2
-	if prNum != 0 {
-		reads++
+	// What Live keeps current from deliveries is not read again. The PR
+	// always is: GitHub sends nothing when whether it can merge changes
+	// (its base moving, say).
+	have, begin := h.Live.get(commit)
+	reads := 0
+	for _, need := range []bool{!have.haveRuns, !have.haveStatuses, prNum != 0} {
+		if need {
+			reads++
+		}
 	}
 	for range reads {
 		if !h.spend() {
 			return fail(http.StatusServiceUnavailable, "busy")
 		}
 	}
+	// What is read is read at once, not one after another: each is a
+	// round trip to GitHub, and the Checks tab waits for all of them.
 	var (
 		wg                          sync.WaitGroup
 		checks                      []github.CheckRun
@@ -248,8 +250,12 @@ func (h *Handler) githubEntry(ctx context.Context, change, ps int, sha string) e
 		pr                          *github.PullRequest
 		checksErr, statusErr, prErr error
 	)
-	wg.Go(func() { checks, checksErr = h.GitHub.CheckRuns(ctx, commit) })
-	wg.Go(func() { statuses, statusErr = h.GitHub.Statuses(ctx, commit) })
+	if !have.haveRuns {
+		wg.Go(func() { checks, checksErr = h.GitHub.CheckRuns(ctx, commit) })
+	}
+	if !have.haveStatuses {
+		wg.Go(func() { statuses, statusErr = h.GitHub.Statuses(ctx, commit) })
+	}
 	if prNum != 0 {
 		wg.Go(func() { pr, prErr = h.GitHub.GetPull(ctx, prNum) })
 	}
@@ -266,12 +272,21 @@ func (h *Handler) githubEntry(ctx context.Context, change, ps int, sha string) e
 		h.Logger.Warn("checks: reading the PR", "change", change, "pr", prNum, "err", prErr)
 		return fail(http.StatusBadGateway, "cannot read the PR from GitHub")
 	}
+	view := have
+	if !have.haveRuns || !have.haveStatuses {
+		view = h.Live.merge(commit, begin, checks, !have.haveRuns, statuses, !have.haveStatuses)
+	}
 	resp := Response{}
 	if pr != nil {
 		if link := webURL(pr.HTMLURL); link != "" {
 			resp.Links = []Link{{URL: link, Tooltip: "The PR on GitHub", Icon: "external"}}
 		}
 	}
-	resp.Runs = GitHubRuns(checks, statuses, pr, commit, change, ps)
-	return ok(resp)
+	resp.Runs = GitHubRuns(view.runs, view.statuses, pr, commit, change, ps)
+	b, _ := json.Marshal(resp)
+	e := entry{at: time.Now(), status: http.StatusOK, body: b}
+	if h.Live != nil {
+		e.commit, e.liveSeq = commit, view.seq
+	}
+	return e
 }

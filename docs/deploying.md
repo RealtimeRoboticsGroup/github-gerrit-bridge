@@ -123,7 +123,10 @@ nobody. Before the bridge reads it:
    events: `pull_request`, `pull_request_review`,
    `pull_request_review_comment`, `pull_request_review_thread`,
    `issue_comment`, `push`. `push` matters here: without it Gerrit follows
-   GitHub's merges only at the next resync.
+   GitHub's merges only at the next resync. With the Checks tab
+   (`ci.checks_url`), also `check_run`, `workflow_job` and `status`: the
+   tab then answers from what they deliver rather than reading GitHub on
+   every poll. Without them it still works, reading GitHub each time.
 
 ### The proxy
 

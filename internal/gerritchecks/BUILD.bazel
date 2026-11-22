@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "gerritchecks.go",
         "github.go",
+        "live.go",
         "plugin.go",
     ],
     embedsrcs = ["bridge-checks.js"],
@@ -22,6 +23,7 @@ go_test(
     srcs = [
         "gerritchecks_test.go",
         "github_test.go",
+        "live_test.go",
     ],
     embed = [":gerritchecks"],
     deps = [

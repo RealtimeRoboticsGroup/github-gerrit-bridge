@@ -223,10 +223,11 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		}
 		return out
 	}
+	live := liveChecks(cfg)
 	mux.Handle("POST /webhook", &github.WebhookHandler{
 		Secret:         []byte(webhookSecret),
 		Repo:           repo,
-		Deliver:        router.Delivery,
+		Deliver:        deliverTo(live, router.Delivery),
 		Logger:         logger,
 		Allowed:        cidrs(cfg.GitHub.WebhookAllowedNetworks),
 		TrustedProxies: cidrs(cfg.GitHub.WebhookTrustedProxies),
@@ -255,7 +256,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		// sends its Gerrit session, the bridge being on Gerrit's origin
 		// (config checks it), and Gerrit is asked as them each time.
 		mux.Handle("GET /checks/{change}/{patchset}", &gerritchecks.Handler{
-			Project: cfg.Gerrit.Project, GitHub: reconcile.GitHubChecks{Store: store, Client: gh},
+			Project: cfg.Gerrit.Project, GitHub: reconcile.GitHubChecks{Store: store, Client: gh}, Live: live,
 			Viewer:     func(session string) gerritchecks.ViewerChanges { return rest.Viewer(session) },
 			Logger:     logger,
 			ClientAddr: func(r *http.Request) string { return github.ClientAddr(r, cidrs(cfg.GitHub.WebhookTrustedProxies)) },
@@ -934,4 +935,25 @@ func gerritEvents(counts map[string]int, last, now time.Time) string {
 		events += ", the last " + now.Sub(last).Round(time.Second).String() + " ago"
 	}
 	return events
+}
+
+// liveChecks is what keeps GitHub's checks current for the Checks tab,
+// where it shows them (GitHub owns the branches), or nil.
+func liveChecks(cfg *config.Config) *gerritchecks.Live {
+	if cfg.CI.ChecksURL == "" || !cfg.GitHubOwned() {
+		return nil
+	}
+	return &gerritchecks.Live{}
+}
+
+// deliverTo hands each webhook delivery to live (if any) and then to
+// deliver.
+func deliverTo(live *gerritchecks.Live, deliver func(*github.Delivery)) func(*github.Delivery) {
+	if live == nil {
+		return deliver
+	}
+	return func(d *github.Delivery) {
+		live.Deliver(d)
+		deliver(d)
+	}
 }

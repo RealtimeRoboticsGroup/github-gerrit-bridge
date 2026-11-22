@@ -194,6 +194,9 @@ type Handler struct {
 	// change, asked each time. For a repository that is not public, whose
 	// checks are not the bridge's to publish.
 	Viewer func(session string) ViewerChanges
+	// Live, if set (with GitHub), keeps the viewed commits' checks
+	// current from webhooks, so they are not read from GitHub each time.
+	Live *Live
 	// Label is the label CI votes, shown next to the runs.
 	Label string
 	// AllowOrigin is the Gerrit web origin, for CORS when the bridge is
@@ -234,6 +237,11 @@ type entry struct {
 	at     time.Time
 	status int
 	body   []byte
+	// commit and liveSeq, with Live, are the GitHub commit the answer is
+	// of and Live's change count for it then: a delivery since makes
+	// the answer stale.
+	commit  string
+	liveSeq uint64
 }
 
 const (
@@ -487,7 +495,7 @@ func (h *Handler) serveViewer(w http.ResponseWriter, r *http.Request, change, ps
 	h.mu.Lock()
 	cached, ok := h.cache[key]
 	h.mu.Unlock()
-	if !ok || time.Since(cached.at) > cacheTTL {
+	if !ok || time.Since(cached.at) > cacheTTL || h.Live.changed(cached.commit, cached.liveSeq) {
 		if !h.missUpTo("fill "+client, maxViewerFillsPerClient) {
 			http.Error(w, "busy", http.StatusTooManyRequests)
 			return

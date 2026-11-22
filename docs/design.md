@@ -175,6 +175,16 @@ checklist.
   cached, the answer is `private, no-store` with no CORS header, and
   `ci.checks_url` must be a path under `gerrit.url` so browsers send the
   session (Gerrit's cookie is for its own path).
+  GitHub's part is kept current from webhooks (`gerritchecks.Live`):
+  a commit's check runs and statuses are read once when it is first
+  viewed, then updated by `check_run`, `workflow_job` (GitHub sends no
+  `check_run` event when a check starts running) and `status`
+  deliveries, and read again after ten minutes in case one was missed.
+  The PR is read on each request, since nothing is delivered when
+  whether it can merge changes. A kind of delivery not seen since the
+  bridge started may not be subscribed to, so its part is read from
+  GitHub on each request, as without webhooks. Only viewed commits are
+  kept (2,000, the least recently viewed dropped first).
   No `gerrit/*` statuses are posted on GitHub, and Rerun is not offered
   (GitHub's CI does not take `retest`).
 - **`/submit`** (optional; the merge button is the usual way) merges the

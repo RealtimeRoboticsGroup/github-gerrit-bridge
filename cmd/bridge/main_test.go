@@ -552,3 +552,27 @@ func TestStatusResyncOnlyIfConfigured(t *testing.T) {
 		}
 	}
 }
+
+// Where the Checks tab shows GitHub's checks, webhook deliveries keep
+// them current (and still reach the router); elsewhere nothing is kept.
+func TestLiveChecksGetDeliveries(t *testing.T) {
+	gh := &config.Config{BranchOwner: config.OwnerGitHub}
+	gh.CI.ChecksURL = "https://gerrit.example.com/bridge"
+	gerritOwned := &config.Config{BranchOwner: config.OwnerGerrit}
+	gerritOwned.CI.ChecksURL = gh.CI.ChecksURL
+	if liveChecks(gerritOwned) != nil || liveChecks(&config.Config{BranchOwner: config.OwnerGitHub}) != nil {
+		t.Error("live checks without GitHub's checks in the Checks tab")
+	}
+	live := liveChecks(gh)
+	if live == nil {
+		t.Fatal("no live checks where the Checks tab shows GitHub's")
+	}
+	routed := 0
+	deliver := deliverTo(live, func(*github.Delivery) { routed++ })
+	// A status for a commit nobody has viewed: kept by nothing, but it
+	// says the webhook sends statuses.
+	deliver(&github.Delivery{Event: "status", Payload: json.RawMessage(`{"sha":"c1","context":"ci","state":"success"}`)})
+	if routed != 1 || !live.SawStatus() {
+		t.Errorf("routed %d, live saw it %v", routed, live.SawStatus())
+	}
+}
