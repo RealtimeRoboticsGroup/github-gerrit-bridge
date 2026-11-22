@@ -102,3 +102,20 @@ func TestGitHubApprovalOfRestoredOwnCodeIsDismissed(t *testing.T) {
 		}
 	}
 }
+
+// GitHub refusing to dismiss one (who may dismiss reviews is the
+// repository's rule) is logged, not a failure that stops the change's
+// sync on every pass (nineteenth review).
+func TestRefusedOwnApprovalDismissalDoesNotStall(t *testing.T) {
+	bob := gerrit.AccountInfo{AccountID: 7, Name: "Bob G", Username: "bobg"}
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.c.GitHubOwned = true
+	e.g.owner = bob
+	e.g.uploaders = map[int]gerrit.AccountInfo{1: bob, 2: bob}
+	e.h.refuseDismiss = &github.APIError{Status: 403}
+	e.h.reviews = append(e.h.reviews, github.Review{ID: 70, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-70"})
+	e.sync(t) // fails the test on an error
+	e.sync(t)
+}

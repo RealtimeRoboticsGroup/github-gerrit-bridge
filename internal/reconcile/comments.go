@@ -2294,7 +2294,16 @@ func (c *Comments) dismissOwn(ctx context.Context, n, pr int, rv github.Review, 
 		c.Logger.Info("dry run: would dismiss an approval of its author's own code", "change", n, "pr", pr, "review", rv.ID, "user", rv.User.Login)
 		return true, nil
 	}
-	if err := c.GitHub.DismissReview(ctx, pr, rv.ID, msg); err != nil {
+	err = c.GitHub.DismissReview(ctx, pr, rv.ID, msg)
+	var ae *github.APIError
+	if errors.As(err, &ae) && ae.Status >= 400 && ae.Status < 500 {
+		// Refused (who may dismiss reviews is the repository's rule):
+		// said, not a failure that stops the change's sync every pass
+		// (nineteenth review).
+		c.Logger.Warn("GitHub refused to dismiss an approval of its author's own code; it stands", "change", n, "pr", pr, "review", rv.ID, "user", rv.User.Login, "err", err)
+		return true, nil
+	}
+	if err != nil {
 		return false, fmt.Errorf("dismissing review %d on #%d: %w", rv.ID, pr, err)
 	}
 	c.Logger.Info("dismissed a GitHub approval of its author's own code", "change", n, "pr", pr, "review", rv.ID, "user", rv.User.Login)

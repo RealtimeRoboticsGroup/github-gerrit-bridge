@@ -265,6 +265,8 @@ type fakeGitHub struct {
 	onDismissals func()
 	// dismissed records DismissReview calls, as "id: message".
 	dismissed []string
+	// refuseDismiss, if set, is DismissReview's answer.
+	refuseDismiss error
 	// afterReview runs once, when the bridge reads back a review it posted.
 	afterReview func()
 	rcs         []github.ReviewComment
@@ -1870,6 +1872,9 @@ func TestMessageVotes(t *testing.T) {
 }
 
 func (h *fakeGitHub) DismissReview(_ context.Context, _ int, id int64, message string) error {
+	if h.refuseDismiss != nil {
+		return h.refuseDismiss
+	}
 	h.dismiss(id, "bridge", time.Now())
 	h.dismissed = append(h.dismissed, fmt.Sprintf("%d: %s", id, message))
 	return nil
