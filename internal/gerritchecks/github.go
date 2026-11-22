@@ -251,6 +251,7 @@ func (h *Handler) githubEntry(ctx context.Context, change, ps int, sha string) e
 		checksErr, statusErr, prErr error
 	)
 	if !have.haveRuns {
+		h.runReads.Add(1)
 		wg.Go(func() { checks, checksErr = h.GitHub.CheckRuns(ctx, commit) })
 	}
 	if !have.haveStatuses {

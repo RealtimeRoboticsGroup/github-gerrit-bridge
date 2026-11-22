@@ -250,17 +250,19 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			ClientAddr: func(r *http.Request) string { return github.ClientAddr(r, cidrs(cfg.GitHub.WebhookTrustedProxies)) },
 		})
 	}
+	var githubChecks *gerritchecks.Handler
 	if cfg.CI.ChecksURL != "" && cfg.GitHubOwned() {
 		// GitHub's checks, for the bridge-checks plugin, shown only to
 		// those signed in to Gerrit who may see the change: the browser
 		// sends its Gerrit session, the bridge being on Gerrit's origin
 		// (config checks it), and Gerrit is asked as them each time.
-		mux.Handle("GET /checks/{change}/{patchset}", &gerritchecks.Handler{
+		githubChecks = &gerritchecks.Handler{
 			Project: cfg.Gerrit.Project, GitHub: reconcile.GitHubChecks{Store: store, Client: gh}, Live: live,
 			Viewer:     func(session string) gerritchecks.ViewerChanges { return rest.Viewer(session) },
 			Logger:     logger,
 			ClientAddr: func(r *http.Request) string { return github.ClientAddr(r, cidrs(cfg.GitHub.WebhookTrustedProxies)) },
-		})
+		}
+		mux.Handle("GET /checks/{change}/{patchset}", githubChecks)
 	}
 	// Internal: the deployment exposes only /webhook, /checks/ and
 	// /github/link (the rate budget and queue depth would tell an
@@ -272,6 +274,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		}
 		rl := gh.RateLimit()
 		fmt.Fprintf(w, "ok\nlast_gerrit_event %s\nqueue_depth %d\ngithub_rate_remaining %d\n", last, q.Len(), rl.Remaining)
+		if githubChecks != nil {
+			fmt.Fprintf(w, "checks_run_reads %d\n", githubChecks.RunReads())
+		}
 	})
 	// Timeouts so slow senders cannot hold connections (and buffers) open.
 	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second,

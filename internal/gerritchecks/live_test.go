@@ -193,8 +193,8 @@ func TestLiveChecksFollowDeliveries(t *testing.T) {
 	if got := e.get(); got["test#1"] != "SCHEDULED" {
 		t.Errorf("after a new job: %v", got)
 	}
-	if e.src.runReads != 1 || e.src.statusReads != 1 {
-		t.Errorf("GitHub read %d times for check runs and %d for statuses, want once each", e.src.runReads, e.src.statusReads)
+	if e.src.runReads != 1 || e.src.statusReads != 1 || e.h.RunReads() != 1 {
+		t.Errorf("GitHub read %d times for check runs (counted %d) and %d for statuses, want once each", e.src.runReads, e.h.RunReads(), e.src.statusReads)
 	}
 	// Each answer a delivery changed is built again from what was
 	// kept, the PR as read (deliveries are not reads of GitHub: the

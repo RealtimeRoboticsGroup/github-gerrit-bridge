@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/buildkite"
@@ -207,6 +208,9 @@ type Handler struct {
 	// ClientAddr, if set, says who sent a request (behind a proxy, from
 	// X-Forwarded-For), so one client cannot use up everyone's budget.
 	ClientAddr func(*http.Request) string
+
+	// runReads counts the check-run reads of GitHub (RunReads).
+	runReads atomic.Int64
 
 	mu    sync.Mutex
 	cache map[[2]int]entry
@@ -610,3 +614,7 @@ func (h *Handler) runs(ctx context.Context, change, ps int, sha string) entry {
 	b, _ := json.Marshal(resp)
 	return entry{at: time.Now(), status: http.StatusOK, body: b}
 }
+
+// RunReads is how many times GitHub's check runs have been read for the
+// tab (the rest were answered from Live).
+func (h *Handler) RunReads() int64 { return h.runReads.Load() }

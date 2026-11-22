@@ -360,12 +360,25 @@ gh_pr "${BRT_CLONE}" brt "gh-${RUN}-8" main "closed-${RUN}.txt" "${S8}" "CI-MUST
 N8=$(pr_for "${S8}")
 wait_for "PR #${N8} becomes a change" has_change "${S8}"
 C8=$(change "${S8}")
-# Viewed before the build ends, the tab is then kept current by GitHub's
-# deliveries: it shows the failure within seconds, sooner than an answer
-# cached without them (15 s) would.
-curl -sf -o /dev/null -b "${JAR}" "${FRONT}/bridge-${P}/checks/${C8}/1"
 wait_for "its build fails on GitHub (check run build: failure)" check_run "$(pr "${N8}" .head.sha)" build failure
-TIMEOUT=8 wait_for "the Checks tab shows the failure within seconds" tab "${C8}" 1 build ERROR
+wait_for "the Checks tab shows the failure" tab "${C8}" 1 build ERROR
+# Its checks all finished, the tab is answered from what GitHub's
+# deliveries keep: polled past the bridge's 15 s cache, it reads no
+# check runs from GitHub (it would, every 15 s, without them).
+run_reads() { curl -sf http://127.0.0.1:18083/healthz | awk '$1 == "checks_run_reads" {print $2}'; }
+idle_checks() {
+  local before
+  before=$(run_reads)
+  [[ -n "${before}" ]] || return 1
+  for _ in 1 2 3 4 5 6 7; do
+    tab "${C8}" 1 build ERROR >/dev/null || return 1
+    sleep 3
+  done
+  [[ "$(run_reads)" == "${before}" ]]
+}
+all_done() { [[ "$(me api "repos/${R}/commits/$1/check-runs" --jq '[.check_runs[] | select(.status != "completed")] | length')" == 0 ]]; }
+wait_for "all its check runs finish" all_done "$(pr "${N8}" .head.sha)"
+check "polled for 20 s, the tab reads no check runs from GitHub" idle_checks
 blocked() { [[ "$(GH_TOKEN="$("${GH}" auth token --user AustinSchuhBRT)" "${GH}" api "repos/${R}/pulls/${N8}" --jq .mergeable_state)" == blocked ]]; }
 wait_for "GitHub blocks its merge (no approval, build failed)" blocked
 brt pr close -R "${R}" "${N8}" >/dev/null
