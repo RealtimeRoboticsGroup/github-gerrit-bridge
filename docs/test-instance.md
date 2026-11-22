@@ -174,8 +174,12 @@ with a merge commit by `/submit`; a stack the bridge makes, its top
 refused by `/submit` and its bottom merged by it alone (GitHub's
 asynchronous merge), then the top; a failing build, GitHub blocking the
 merge, closing and reopening; a force-push of `main` followed; and another branch followed
-only forward. The signed-in Checks tab needs a browser: open a change of
-`bridge-scratch-gh2` through `18079` and look.
+only forward. The signed-in Checks tab needs a browser (Gerrit's sign-in
+is GitHub's OAuth): open a change of `bridge-scratch-gh2` through `18079`
+and look. Its webhook forwarder also takes `check_run`, `workflow_job`
+and `status`, so the tab is answered from what they deliver: once a
+change's checks have finished, `checks_run_reads` on
+`127.0.0.1:18083/healthz` stays put however long the tab is open.
 
 ## Project rules (like AOS)
 

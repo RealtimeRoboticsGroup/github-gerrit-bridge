@@ -77,15 +77,6 @@ has_message() { change_field "$1" '.messages[].message' | grep -qF "$2"; }
 check_run() {  # check_run <sha> <name> <conclusion>
   [[ "$(me api "repos/${R}/commits/$1/check-runs" --jq ".check_runs[] | select(.name==\"$2\") | .conclusion" | head -1)" == "$3" ]]
 }
-# The Checks tab signed in, as AustinSchuh: the test Gerrit's development
-# login lets anyone become anyone, so no password is involved.
-JAR=$(mktemp -p "${HOME}/tmp" rehearsal-cookies.XXXXXX)
-trap 'rm -f "${JAR}"' EXIT
-curl -s -o /dev/null -c "${JAR}" "${G}/login/?user_name=AustinSchuh"
-tab() {  # tab <change> <patch set> <check> <category>: what the Checks tab shows
-  curl -sf -b "${JAR}" "${FRONT}/bridge-${P}/checks/$1/$2" |
-    jq -e --arg n "$3" --arg c "$4" '.runs[] | select(.checkName == $n and .status == "COMPLETED" and .results[0].category == $c)'
-}
 merge() {  # merge <pr> <method> [commit message]: the merge button, as AustinSchuh
   local args=(-X PUT "repos/${R}/pulls/$1/merge" -f merge_method="$2")
   [[ $# -gt 2 ]] && args+=(-f commit_message="$3")
@@ -160,7 +151,6 @@ anonymous() {
     [[ "$(curl -s -o /dev/null -w '%{http_code}' -b GerritAccount=aMadeUpSessionValue "${FRONT}/bridge-${P}/checks/${C1}/1")" == 401 ]]
 }
 check "the Checks tab, through Gerrit's path, answers nobody signed out or with a made-up session" anonymous
-wait_for "signed in, the Checks tab shows GitHub's build passed" tab "${C1}" 1 build SUCCESS
 gerrit_as AustinSchuh POST "changes/${C1}/revisions/current/review" \
   "{\"comments\":{\"squash-${RUN}.txt\":[{\"line\":1,\"message\":\"Rehearsal ${RUN}: why this line?\",\"unresolved\":true}]}}" >/dev/null
 ghc() { me api "repos/${R}/pulls/${N1}/comments" --jq ".[] | select(.body | contains(\"Rehearsal ${RUN}: why this line\")) | $1" | head -1; }
@@ -361,24 +351,6 @@ N8=$(pr_for "${S8}")
 wait_for "PR #${N8} becomes a change" has_change "${S8}"
 C8=$(change "${S8}")
 wait_for "its build fails on GitHub (check run build: failure)" check_run "$(pr "${N8}" .head.sha)" build failure
-wait_for "the Checks tab shows the failure" tab "${C8}" 1 build ERROR
-# Its checks all finished, the tab is answered from what GitHub's
-# deliveries keep: polled past the bridge's 15 s cache, it reads no
-# check runs from GitHub (it would, every 15 s, without them).
-run_reads() { curl -sf http://127.0.0.1:18083/healthz | awk '$1 == "checks_run_reads" {print $2}'; }
-idle_checks() {
-  local before
-  before=$(run_reads)
-  [[ -n "${before}" ]] || return 1
-  for _ in 1 2 3 4 5 6 7; do
-    tab "${C8}" 1 build ERROR >/dev/null || return 1
-    sleep 3
-  done
-  [[ "$(run_reads)" == "${before}" ]]
-}
-all_done() { [[ "$(me api "repos/${R}/commits/$1/check-runs" --jq '[.check_runs[] | select(.status != "completed")] | length')" == 0 ]]; }
-wait_for "all its check runs finish" all_done "$(pr "${N8}" .head.sha)"
-check "polled for 20 s, the tab reads no check runs from GitHub" idle_checks
 blocked() { [[ "$(GH_TOKEN="$("${GH}" auth token --user AustinSchuhBRT)" "${GH}" api "repos/${R}/pulls/${N8}" --jq .mergeable_state)" == blocked ]]; }
 wait_for "GitHub blocks its merge (no approval, build failed)" blocked
 brt pr close -R "${R}" "${N8}" >/dev/null
