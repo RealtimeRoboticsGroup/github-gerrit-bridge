@@ -1280,19 +1280,13 @@ func (s *commentSnapshot) stillApproves(msg gerrit.ChangeMessage) bool {
 // header (eighteenth review: a vote deleted on an older patch set, which
 // no label shows, became an approval). Gerrit names the voter as an
 // account template, <GERRIT_ACCOUNT_id> (nineteenth review: 3.14 leaves
-// it unexpanded in the REST message); older text named them by full
-// name. Unsure (who has neither) is theirs.
+// it unexpanded in the REST message), never by a name, which another
+// name can contain. Unsure (no account id) is theirs.
 func removesVote(message string, who gerrit.AccountInfo) bool {
 	if !strings.HasPrefix(message, "Removed ") {
 		return false
 	}
-	if who.AccountID != 0 && strings.Contains(message, fmt.Sprintf("<GERRIT_ACCOUNT_%d>", who.AccountID)) {
-		return true
-	}
-	if who.Name != "" && strings.Contains(message, who.Name) {
-		return true
-	}
-	return who.AccountID == 0 && who.Name == ""
+	return who.AccountID == 0 || strings.Contains(message, fmt.Sprintf("<GERRIT_ACCOUNT_%d>", who.AccountID))
 }
 
 // votesCodeReview reports whether a change message's "Patch Set N: ..."
@@ -2149,7 +2143,7 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 	if c.Users == nil || c.GerritAs == nil {
 		return nil // no votes are cast from GitHub
 	}
-	if s.pull != nil && s.pull.Merged {
+	if c.GitHubOwned && s.pull != nil && s.pull.Merged {
 		// Decided: where GitHub owns the branch, the merge's commit is
 		// Gerrit's last patch set, with no votes, and dismissing what
 		// merged it says only that. A PR closed unmerged is not: its

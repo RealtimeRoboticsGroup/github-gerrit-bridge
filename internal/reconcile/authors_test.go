@@ -980,9 +980,8 @@ func TestDeletedVoteIsNoApproval(t *testing.T) {
 		{"Removed reviewer <GERRIT_ACCOUNT_1> with the following votes:\n\n* Code-Review+2 by <GERRIT_ACCOUNT_1>\n", false},
 		{"Removed Code-Review+2 by <GERRIT_ACCOUNT_7>\n", true},
 		{"Removed Code-Review+2 by <GERRIT_ACCOUNT_11>\n", true},
-		// Older servers' text, with names.
-		{"Removed Code-Review+2 by Alice Trusted <alice@example.com>\n", false},
-		{"Removed Code-Review+2 by Carol <carol@example.com>\n", true},
+		// A name is not the account: another name can contain it.
+		{"Removed reviewer <GERRIT_ACCOUNT_12> (Alice Trusted-Reyes) with the following votes:\n\n* Code-Review-1 by <GERRIT_ACCOUNT_12>\n", true},
 	} {
 		e, _ := linkedEnv(t)
 		e.runAs()
