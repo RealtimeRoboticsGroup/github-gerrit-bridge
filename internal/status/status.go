@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +38,9 @@ type Handler[K comparable] struct {
 	// Resyncs, if set, says what resyncs caught: runs only a resync
 	// asked for, and those that changed something.
 	Resyncs func() Resyncs[K]
+	// Resync, if set, queues a resync of every key, as the periodic one
+	// does: the page's "Force resync" button (POST /resync).
+	Resync func(reason string)
 }
 
 // Resyncs is what resyncs caught since Since.
@@ -71,6 +75,7 @@ type row struct {
 
 type page struct {
 	Now                               string
+	CanResync, Resynced               bool
 	Facts                             []Fact
 	Running, Waiting, Failing, Recent []row
 }
@@ -94,11 +99,15 @@ type caughtRow struct {
 
 func (h *Handler[K]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
 	// Only a page asked for by a loopback name: a site that rebinds its
 	// own name to 127.0.0.1 sends that name (ninth audit).
 	if !loopbackHost(r.Host) {
 		http.Error(w, "the status page answers only to 127.0.0.1, [::1] or localhost", http.StatusMisdirectedRequest)
+		return
+	}
+	if r.URL.Path == "/resync" && h.Resync != nil {
+		h.serveResync(w, r)
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -159,7 +168,7 @@ func (h *Handler[K]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Held keys wait too, for their run or the throttle: after those a
 	// worker may take now, since none will until then.
-	p := page{Now: now.Format(time.RFC3339), Running: rows(s.Running), Waiting: rows(append(s.Waiting, s.Held...)),
+	p := page{Now: now.Format(time.RFC3339), CanResync: h.Resync != nil, Resynced: r.URL.Query().Has("resynced"), Running: rows(s.Running), Waiting: rows(append(s.Waiting, s.Held...)),
 		Failing: rows(s.Failing), Recent: rows(s.Recent)}
 	if h.Facts != nil {
 		p.Facts = h.Facts()
@@ -171,6 +180,33 @@ func (h *Handler[K]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := tmpl.Execute(w, p); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// serveResync queues a resync for the page's button, then goes back to
+// the page. Only a POST from the page itself: any site the operator's
+// browser visits could post a form to 127.0.0.1, and a browser says
+// where a request comes from (Sec-Fetch-Site, Origin); one that says
+// another site is refused. A client that says nothing (curl) is not a
+// web page, and reaches only a loopback listener.
+func (h *Handler[K]) serveResync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "POST to resync", http.StatusMethodNotAllowed)
+		return
+	}
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
+		http.Error(w, "only the status page itself may ask for a resync", http.StatusForbidden)
+		return
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil || !strings.EqualFold(u.Host, r.Host) {
+			http.Error(w, "only the status page itself may ask for a resync", http.StatusForbidden)
+			return
+		}
+	}
+	h.Resync("status page")
+	http.Redirect(w, r, "./?resynced", http.StatusSeeOther)
 }
 
 // resyncFacts sums up what resyncs caught, for the top of the page.
@@ -348,7 +384,7 @@ func dur(d time.Duration) string {
 }
 
 var tmpl = template.Must(template.New("status").Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><meta http-equiv="refresh" content="5">
+<html><head><meta charset="utf-8"><meta http-equiv="refresh" content="5; url=./">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bridge status</title>
 <style>
@@ -361,6 +397,7 @@ th { font-weight: 600; } td.n { font-variant-numeric: tabular-nums; white-space:
 </style></head><body>
 <h1>Bridge status</h1>
 <div class="dim">{{.Now}} · refreshes every 5s</div>
+{{if .CanResync}}<form method="post" action="resync" style="margin-top:8px"><button type="submit">Force resync</button>{{if .Resynced}} <span class="dim">Resync queued: every key, behind what events queue.</span>{{end}}</form>{{end}}
 {{with .Facts}}<table style="width:auto;margin-top:10px">{{range .}}<tr><th>{{.Name}}</th><td>{{if .Link}}<a href="{{.Link}}">{{.Value}}</a>{{else}}{{.Value}}{{end}}</td></tr>{{end}}</table>{{end}}
 {{define "run"}}{{if .Run}}<a href="{{.Run}}">timeline</a>{{end}}{{end}}
 {{define "key"}}{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Key}}</a>{{else}}{{.Key}}{{end}}{{end}}

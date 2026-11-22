@@ -213,3 +213,67 @@ func TestResyncs(t *testing.T) {
 		t.Errorf("details with no tally: %d", w.Code)
 	}
 }
+
+// The page's "Force resync" button posts to /resync, which queues a
+// resync and goes back to the page saying so. Only a POST, and only from
+// the page itself: a browser on another site (Sec-Fetch-Site, Origin)
+// is refused, as is a GET. Without Resync there is no button.
+func TestForceResync(t *testing.T) {
+	var asked []string
+	h := &Handler[string]{Queue: fixed{}, Name: func(k string) string { return k }, Resync: func(reason string) { asked = append(asked, reason) }}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, get("/"))
+	if body := w.Body.String(); !strings.Contains(body, `<form method="post" action="resync"`) || !strings.Contains(body, "Force resync") {
+		t.Errorf("no button: %s", body)
+	}
+	post := func(headers map[string]string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8081/resync", nil)
+		for k, v := range headers {
+			r.Header.Set(k, v)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+		ok      bool
+	}{
+		{"the page", map[string]string{"Sec-Fetch-Site": "same-origin", "Origin": "http://127.0.0.1:8081"}, true},
+		{"curl", nil, true},
+		{"another site", map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"}, false},
+		{"another origin, no fetch metadata", map[string]string{"Origin": "https://evil.example"}, false},
+		{"another port", map[string]string{"Sec-Fetch-Site": "same-site", "Origin": "http://127.0.0.1:9999"}, false},
+	} {
+		asked = nil
+		w := post(tc.headers)
+		if got := len(asked) == 1; got != tc.ok {
+			t.Errorf("%s: resynced %v (code %d), want %v", tc.name, asked, w.Code, tc.ok)
+		}
+		if tc.ok && (w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/?resynced") {
+			t.Errorf("%s: %d to %q, want back to the page", tc.name, w.Code, w.Header().Get("Location"))
+		}
+	}
+	asked = nil
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, get("/resync"))
+	if w.Code != http.StatusMethodNotAllowed || len(asked) != 0 {
+		t.Errorf("GET /resync: %d, resynced %v", w.Code, asked)
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, get("/?resynced"))
+	if !strings.Contains(w.Body.String(), "Resync queued") {
+		t.Error("back on the page, no word that it was queued")
+	}
+	// Unset (a Gerrit-owned bridge): no button, and no /resync at all.
+	h.Resync = nil
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, get("/"))
+	if strings.Contains(w.Body.String(), "Force resync") {
+		t.Error("a button with nothing to press it for")
+	}
+	if w := post(map[string]string{"Sec-Fetch-Site": "same-origin"}); w.Code == http.StatusSeeOther {
+		t.Errorf("POST /resync without Resync: %d", w.Code)
+	}
+}

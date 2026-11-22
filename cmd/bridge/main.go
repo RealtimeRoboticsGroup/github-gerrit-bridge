@@ -283,8 +283,9 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		started := time.Now()
 		statusSrv = &http.Server{Addr: cfg.StatusListen, ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second,
 			Handler: &status.Handler[reconcile.Key]{
-				Queue: q,
-				Name:  reconcile.Key.String,
+				Queue:  q,
+				Resync: statusResync(cfg, router),
+				Name:   reconcile.Key.String,
 				Link: func(k reconcile.Key) string {
 					switch {
 					case k.Comments != 0:
@@ -576,6 +577,16 @@ func publishable(linked func(context.Context, int) (github.User, bool, error), c
 		}
 		return may, true
 	}
+}
+
+// statusResync is the status page's "Force resync", only if the
+// deployment turns it on (status_resync); nil otherwise, and the page has
+// no button and no /resync.
+func statusResync(cfg *config.Config, router *reconcile.Router) func(string) {
+	if !cfg.StatusResync {
+		return nil
+	}
+	return router.Resync
 }
 
 // newTokens is the linked users' tokens, each link checked on every use

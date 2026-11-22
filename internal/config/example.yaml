@@ -5,6 +5,10 @@
 # and /checks/ through it. The default is 127.0.0.1:8080.
 listen: "127.0.0.1:8080"
 workers: 4
+# A status page for operators, on a loopback address only (off unless
+# set), and its "Force resync" button (off unless true).
+# status_listen: "127.0.0.1:8081"
+# status_resync: false
 # Full resync this often, in case events or webhooks were missed.
 resync_interval: 30m
 # Which side owns the target branches (main, releases): "gerrit" (the

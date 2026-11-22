@@ -35,7 +35,11 @@ type Config struct {
 	// which must be a loopback address: it is for operators, never the
 	// internet. Default off.
 	StatusListen string `yaml:"status_listen"`
-	Workers      int    `yaml:"workers"`
+	// StatusResync adds a "Force resync" button to the status page: a
+	// POST from the page itself queues a full resync. Default off;
+	// needs status_listen.
+	StatusResync bool `yaml:"status_resync"`
+	Workers      int  `yaml:"workers"`
 	// ResyncInterval queues a full resync periodically, so missed events
 	// (or webhooks that cannot reach the bridge, or were refused while it
 	// was busy) heal. Default 30m; zero disables.
@@ -307,6 +311,9 @@ func (c *Config) validate() error {
 		if host, _, err := net.SplitHostPort(c.StatusListen); err != nil || !loopback(host) {
 			errs = append(errs, fmt.Errorf("status_listen %q must be a loopback address and port, e.g. 127.0.0.1:8081: the status page is not for the internet", c.StatusListen))
 		}
+	}
+	if c.StatusResync && c.StatusListen == "" {
+		errs = append(errs, fmt.Errorf("status_resync needs status_listen: the button is on the status page"))
 	}
 	req("gerrit.project", c.Gerrit.Project)
 	if l := c.Identity.LDAP; l != nil {

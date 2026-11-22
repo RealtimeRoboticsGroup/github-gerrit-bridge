@@ -215,6 +215,22 @@ func TestStatusListenIsLoopbackOnly(t *testing.T) {
 	}
 }
 
+// status_resync is off unless set, and needs the status page.
+func TestStatusResync(t *testing.T) {
+	c, err := Parse([]byte(full))
+	if err != nil || c.StatusResync {
+		t.Errorf("default: %v %v", c.StatusResync, err)
+	}
+	with := strings.Replace(full, "listen: \":9000\"\n", "listen: \":9000\"\nstatus_listen: \"127.0.0.1:8081\"\nstatus_resync: true\n", 1)
+	if c, err := Parse([]byte(with)); err != nil || !c.StatusResync {
+		t.Errorf("status_resync: true: %v %v", c, err)
+	}
+	without := strings.Replace(full, "listen: \":9000\"\n", "listen: \":9000\"\nstatus_resync: true\n", 1)
+	if _, err := Parse([]byte(without)); err == nil || !strings.Contains(err.Error(), "status_resync needs status_listen") {
+		t.Errorf("status_resync without status_listen: %v", err)
+	}
+}
+
 func TestUserApp(t *testing.T) {
 	app := full + `  user_app:
     client_id: Iv1.abc

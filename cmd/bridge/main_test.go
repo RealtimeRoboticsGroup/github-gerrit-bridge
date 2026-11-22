@@ -25,6 +25,7 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/ldap"
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/queue"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/reconcile"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/usertokens"
@@ -534,5 +535,20 @@ func TestNewTokensChecksLinks(t *testing.T) {
 	user = "bob"
 	if _, ok, err := tokens.Linked(context.Background(), 1); ok || err != nil {
 		t.Errorf("alice-gh, now bob's, still alice's link: %v %v", ok, err)
+	}
+}
+
+// The status page's "Force resync" exists only if the deployment turns it
+// on (status_resync), whichever side owns the branches: off by default,
+// no button and no /resync.
+func TestStatusResyncOnlyIfConfigured(t *testing.T) {
+	router := reconcile.NewRouter("p", queue.New[reconcile.Key](), slog.Default())
+	for _, owner := range []string{config.OwnerGerrit, config.OwnerGitHub} {
+		if statusResync(&config.Config{BranchOwner: owner}, router) != nil {
+			t.Errorf("branch_owner %q, not configured: a resync button", owner)
+		}
+		if statusResync(&config.Config{BranchOwner: owner, StatusResync: true}, router) == nil {
+			t.Errorf("branch_owner %q, status_resync: no resync button", owner)
+		}
 	}
 }

@@ -2006,7 +2006,9 @@ notes; nothing on GitHub advertises the link.
   the status page shows most of that now.)
 - A status page (`status_listen`, off by default; loopback addresses
   only, since it tells when the bridge is starved; it answers only GET
-  and HEAD, and only to a loopback Host, so a page that rebinds its own
+  and HEAD, but for its optional "Force resync" button (`status_resync`,
+  off by default: a POST to /resync queues a full resync, refused when
+  the browser says it came from another site), and only to a loopback Host, so a page that rebinds its own
   name to 127.0.0.1 can't read it from the operator's browser): what each worker is
   running and for how long, what waits in the order workers take it
   (resync keys marked), then what waits for its own run to finish or for
