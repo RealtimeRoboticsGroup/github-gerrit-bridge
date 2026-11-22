@@ -1203,13 +1203,17 @@ func (c *Comments) postVote(ctx context.Context, n, pr int, s *commentSnapshot, 
 	case errors.As(err, &ae) && (ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden || ae.Status == http.StatusNotFound):
 		c.Logger.Warn("GitHub refused a linked user's token; posting as the bridge", "change", n, "github_login", p.as.Login, "err", err)
 		p.api = nil
-		if text == "" && event == "APPROVE" && ae.Status != http.StatusUnauthorized && ae.RetryAfter == 0 {
+		if c.GitHubOwned && text == "" && event == "APPROVE" && ae.Status != http.StatusUnauthorized && ae.RetryAfter == 0 &&
+			!strings.Contains(strings.ToLower(ae.Message), "rate limit") {
 			// Only an approval, refused for good (not an expired token,
 			// which is renewed, nor a rate limit: twentieth review): not
 			// asked for again with that token on every sync (nineteenth
 			// review: nothing else bounds it since a vote not posted
 			// spends no budget). Losing one only holds the PR back; a
-			// veto is asked for again, as GitHub may take it yet.
+			// veto is asked for again, as GitHub may take it yet. Where
+			// Gerrit owns the branches, everything is asked for again, as
+			// on main (twenty-first review: a secondary rate limit can be
+			// a 403 with no Retry-After).
 			m.add(state.Comment{GerritID: msg.ID, Kind: kindRefused, Origin: "gerrit"})
 			c.PostBudget.Refund(ctx, msg.Author.AccountID) // nothing posted (twentieth review)
 			return true, nil

@@ -10,6 +10,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -835,5 +836,63 @@ func TestGerritOwnedRestoreAuthor(t *testing.T) {
 	t.Logf("uploads %q", up.uploads)
 	if !restored {
 		t.Errorf("not restored (uploads %v)", up.uploads)
+	}
+}
+
+// Twenty-first review (regression, passes on main): Gerrit-owned, a
+// linked user's vote-only +2 that GitHub refuses
+// once with a 403 that carries neither Retry-After nor
+// X-RateLimit-Remaining: 0 (GitHub's secondary rate limit may: "otherwise
+// wait at least one minute"; or an app permission fixed later). Main asks
+// again next sync and posts it.
+func TestGerritOwnedVoteRefusedWithoutRateHeadersIsPostedLater(t *testing.T) {
+	for _, refuse := range []*github.APIError{
+		{Status: http.StatusForbidden, Message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."},
+		{Status: http.StatusForbidden, Message: "Resource not accessible by integration"},
+		{Status: http.StatusNotFound, Message: "Not Found"},
+	} {
+		t.Run(refuse.Message[:min(len(refuse.Message), 12)], func(t *testing.T) {
+			e, a := linkedEnv(t)
+			alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+			e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2}}
+			e.g.vote("alice", "Code-Review", 2)
+			a.refuse = refuse
+			e.sync(t)
+			a.refuse = nil
+			e.sync(t)
+			e.sync(t)
+			if !probeApproved(e) {
+				t.Errorf("alice's +2 never became her GitHub approval after one %d %q (reviews %+v, calls %d)", refuse.Status, refuse.Message, e.h.reviews, a.calls)
+			}
+		})
+	}
+}
+
+// Twenty-first review (regression guard, as on main): where Gerrit owns
+// the branches a Gerrit-born change's PR is opened by the bot, never as
+// its owner: OpenAs is not asked, even when it would answer.
+func TestGerritOwnedPROpenedByTheBot(t *testing.T) {
+	s := newSites(t)
+	ctx := context.Background()
+	c, _ := s.code(ctx)
+	asked := false
+	c.OpenAs = func(context.Context, int) (PullOpener, bool, error) {
+		asked = true
+		return nil, false, errors.New("not asked")
+	}
+	m0 := s.commit("", "a.txt", "a\n", "base")
+	s.push("gerrit.git", m0, "refs/heads/main")
+	s.push("github.git", m0, "refs/heads/main")
+	msg := "Feature\n\nChange-Id: " + cid(1) + "\n"
+	rev := s.commit(m0, "f.txt", "f\n", msg)
+	ci := s.change(1, cid(1), rev, msg, "NEW")
+	r := ci.Revisions[rev]
+	r.Uploader = gerrit.AccountInfo{AccountID: 8}
+	ci.Revisions[rev], ci.Owner = r, gerrit.AccountInfo{AccountID: 9}
+	if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.pulls) != 1 || len(s.openedBy) != 0 || asked {
+		t.Errorf("PRs %d, opened as %v, OpenAs asked %v; want one, by the bot", len(s.pulls), s.openedBy, asked)
 	}
 }

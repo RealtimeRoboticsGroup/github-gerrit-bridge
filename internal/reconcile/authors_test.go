@@ -1075,6 +1075,7 @@ func TestGitHubOwnedResolutionAfterAnEditIsTheResolvers(t *testing.T) {
 // spends no budget, nothing else bounds the retries (nineteenth review).
 func TestVoteRefusedWithTheirTokenIsAskedOnce(t *testing.T) {
 	e, a := linkedEnv(t)
+	e.c.GitHubOwned = true
 	a.refuse = &github.APIError{Status: http.StatusForbidden, Message: "Resource not accessible by integration"}
 	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
 	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2}}
@@ -1084,5 +1085,23 @@ func TestVoteRefusedWithTheirTokenIsAskedOnce(t *testing.T) {
 	}
 	if a.calls != 1 {
 		t.Errorf("asked GitHub %d times with alice's token, want once", a.calls)
+	}
+}
+
+// Where GitHub owns the branches, a secondary rate limit, which GitHub
+// may answer with a 403 and no Retry-After, is not a refusal for good:
+// the approval is asked for again (twenty-first review).
+func TestVoteRateLimitedWithoutRetryAfterIsAskedAgain(t *testing.T) {
+	e, a := linkedEnv(t)
+	e.c.GitHubOwned = true
+	a.refuse = &github.APIError{Status: http.StatusForbidden, Message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2}}
+	e.g.vote("alice", "Code-Review", 2)
+	e.sync(t)
+	a.refuse = nil
+	e.sync(t)
+	if !slices.ContainsFunc(e.h.reviews, func(rv github.Review) bool { return rv.State == "APPROVED" && rv.User == aliceGH }) {
+		t.Errorf("rate limited once, never approved: reviews %+v, calls %d", e.h.reviews, a.calls)
 	}
 }
