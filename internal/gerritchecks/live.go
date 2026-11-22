@@ -137,6 +137,7 @@ func (l *Live) Deliver(d *github.Delivery) {
 		l.putRun(p.Job.HeadSHA, run, true)
 	case "status":
 		var p struct {
+			ID        int64      `json:"id"`
 			SHA       string     `json:"sha"`
 			Context   string     `json:"context"`
 			State     string     `json:"state"`
@@ -154,15 +155,15 @@ func (l *Live) Deliver(d *github.Delivery) {
 		if c == nil {
 			return // nobody is looking at it: the first view reads GitHub
 		}
-		if old, ok := c.statuses[p.Context]; ok && after(old.status.UpdatedAt, p.UpdatedAt) {
+		st := github.Status{ID: p.ID, State: p.State, TargetURL: p.TargetURL, Description: p.Desc, Context: p.Context, UpdatedAt: p.UpdatedAt}
+		if old, ok := c.statuses[p.Context]; ok && !newer(st, old.status, true) {
 			return // an older delivery, late
 		}
 		if _, ok := c.statuses[p.Context]; !ok && len(c.statuses) >= maxLiveStatuses {
 			return
 		}
 		l.seq++
-		c.statuses[p.Context] = liveStatus{github.Status{State: p.State, TargetURL: p.TargetURL, Description: p.Desc,
-			Context: p.Context, UpdatedAt: p.UpdatedAt}, l.seq}
+		c.statuses[p.Context] = liveStatus{st, l.seq}
 		c.seq = l.seq
 	}
 }
@@ -254,8 +255,19 @@ func (c *liveCommit) view() liveView {
 	return v
 }
 
-// after says a is a later time than b (neither unknown).
-func after(a, b *time.Time) bool { return a != nil && b != nil && a.After(*b) }
+// newer says status a was set after b, for the same context: by
+// GitHub's ID, which grows (updated_at is to the second: a quick
+// check's pending and success share one); without IDs, by time; if
+// neither tells, unknown.
+func newer(a, b github.Status, unknown bool) bool {
+	if a.ID != 0 && b.ID != 0 {
+		return a.ID > b.ID
+	}
+	if a.UpdatedAt != nil && b.UpdatedAt != nil && !a.UpdatedAt.Equal(*b.UpdatedAt) {
+		return a.UpdatedAt.After(*b.UpdatedAt)
+	}
+	return unknown
+}
 
 // merge records what GitHub said of commit (runs and statuses, each nil
 // if not read) in a read that began at change count begin, and returns
@@ -295,7 +307,7 @@ func (l *Live) merge(commit string, begin uint64, runs []github.CheckRun, readRu
 			}
 		}
 		for _, s := range statuses {
-			if d, newer := next[s.Context]; (!newer && len(next) < maxLiveStatuses) || (newer && after(s.UpdatedAt, d.status.UpdatedAt)) {
+			if d, found := next[s.Context]; (!found && len(next) < maxLiveStatuses) || (found && newer(s, d.status, false)) {
 				next[s.Context] = liveStatus{s, l.seq}
 			}
 		}

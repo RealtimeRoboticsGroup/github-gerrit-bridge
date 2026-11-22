@@ -131,8 +131,13 @@ func jobEvent(id int64, sha, name, status string) map[string]any {
 		"check_run_url": fmt.Sprintf("https://api.github.com/repos/o/r/check-runs/%d", id)}}
 }
 
+var statusIDs int64
+
+// statusEvent is a status delivery; each new one has a larger ID, as
+// GitHub's do.
 func statusEvent(sha, context, state string, at time.Time) map[string]any {
-	return map[string]any{"sha": sha, "context": context, "state": state, "description": state, "updated_at": at}
+	statusIDs++
+	return map[string]any{"id": statusIDs, "sha": sha, "context": context, "state": state, "description": state, "updated_at": at}
 }
 
 // subscribe delivers one of each kind for another commit: the deployment's
@@ -239,8 +244,9 @@ func TestLiveChecksOutOfOrder(t *testing.T) {
 	e.deliver("check_run", checkRunEvent(1, "c1", "build", "completed", "success"))
 	e.deliver("workflow_job", jobEvent(1, "c1", "build", "in_progress"))
 	e.deliver("check_run", checkRunEvent(1, "c1", "build", "queued", ""))
+	pending := statusEvent("c1", "ci", "pending", e.now.Add(-time.Minute))
 	e.deliver("status", statusEvent("c1", "ci", "success", e.now))
-	e.deliver("status", statusEvent("c1", "ci", "pending", e.now.Add(-time.Minute)))
+	e.deliver("status", pending)
 	if got := e.get(); got["build#1"] != "COMPLETED Passed" || got["ci#1"] != "COMPLETED success" {
 		t.Errorf("after late deliveries: %v", got)
 	}
@@ -252,14 +258,18 @@ func TestLiveDeliveryDuringARead(t *testing.T) {
 	e := newLiveEnv(t)
 	e.subscribe()
 	e.src.runs = []github.CheckRun{actions(1, "build", "in_progress", ""), actions(2, "lint", "completed", "success")}
+	// Read without IDs or times: which is newer cannot be told, and
+	// the delivery, which came after the read began, is kept.
+	e.src.statuses = []github.Status{{Context: "ci", State: "pending"}}
 	e.src.during = func() {
+		e.deliver("status", statusEvent("c1", "ci", "success", e.now))
 		e.deliver("check_run", checkRunEvent(1, "c1", "build", "completed", "failure"))
 		// Late news of lint's start, which the read already has as done.
 		e.deliver("check_run", checkRunEvent(2, "c1", "lint", "queued", ""))
 	}
 	e.get()
 	e.src.during = nil
-	if got := e.get(); got["build#1"] != "COMPLETED Failed" || got["lint#1"] != "COMPLETED Passed" {
+	if got := e.get(); got["build#1"] != "COMPLETED Failed" || got["lint#1"] != "COMPLETED Passed" || got["ci#1"] != "COMPLETED success" {
 		t.Errorf("the read undid a delivery: %v", got)
 	}
 }
@@ -326,5 +336,39 @@ func TestLiveOtherAppsRunsAreRead(t *testing.T) {
 	e.expire()
 	if e.get(); e.src.runReads != reads {
 		t.Errorf("runs read again with only Actions' unfinished")
+	}
+}
+
+// A quick check's pending and success share a second (updated_at is to
+// the second): delivered out of order, the late pending does not take
+// the success back. GitHub's status IDs grow.
+func TestLiveStatusesSameSecondOutOfOrder(t *testing.T) {
+	e := newLiveEnv(t)
+	e.subscribe()
+	e.src.statuses = []github.Status{}
+	e.get()
+	pending := statusEvent("c1", "ci/quick", "pending", e.now)
+	success := statusEvent("c1", "ci/quick", "success", e.now)
+	e.deliver("status", success)
+	e.deliver("status", pending) // late
+	if got := e.get(); got["ci/quick#1"] != "COMPLETED success" {
+		t.Errorf("a late pending of the same second took the status back: %v", got)
+	}
+}
+
+// Without IDs, deliveries of the same second cannot be told apart: the
+// one that came last is taken.
+func TestLiveStatusesWithoutIDs(t *testing.T) {
+	e := newLiveEnv(t)
+	e.subscribe()
+	e.src.statuses = []github.Status{}
+	e.get()
+	for _, state := range []string{"pending", "success"} {
+		ev := statusEvent("c1", "ci", state, e.now)
+		delete(ev, "id")
+		e.deliver("status", ev)
+	}
+	if got := e.get(); got["ci#1"] != "COMPLETED success" {
+		t.Errorf("%v", got)
 	}
 }

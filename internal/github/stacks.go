@@ -83,7 +83,9 @@ type Status struct {
 	TargetURL   string `json:"target_url,omitempty"`
 	Description string `json:"description,omitempty"`
 	Context     string `json:"context"`
-	// UpdatedAt is when GitHub took it (read only).
+	// ID and UpdatedAt are GitHub's (read only): a later status has a
+	// larger ID.
+	ID        int64      `json:"id,omitempty"`
 	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
 
