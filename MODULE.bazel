@@ -38,3 +38,22 @@ exports_files(["bin/java"])
     strip_prefix = "jdk-21.0.12.1+1",
     urls = ["https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz"],
 )
+
+# The container image (//image), for running the bridge in Kubernetes.
+
+bazel_dep(name = "rules_oci", version = "2.3.5")
+bazel_dep(name = "rules_pkg", version = "1.3.0")
+
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+
+# The base: Debian trixie with git, which the bridge runs for its mirror
+# (and ssh, for git with a peer key), and CA certificates.  Pinned by
+# digest; mirror.gcr.io is Google's mirror of Docker Hub.
+oci.pull(
+    name = "buildpack_deps_scm",
+    # buildpack-deps:trixie-scm, 2026-11-22
+    digest = "sha256:4f34e1d673fdb65371de9f88bdd32c4e30152fe692b35604aef5c0b3c0e6da10",
+    image = "mirror.gcr.io/library/buildpack-deps",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "buildpack_deps_scm", "buildpack_deps_scm_linux_amd64")

@@ -1,0 +1,53 @@
+# The bridge's container image.
+#
+#   bazel run //image:push -- --repository=<registry>/<name>
+#                              builds it, pushes it, and prints its digest
+#   bazel run //image:load     loads it into a local Docker or Podman
+#
+# Deploy it by that digest: the tag only says which was pushed last.
+#
+# It runs as 65532 (no account in /etc/passwd), so set HOME to somewhere
+# writable for git, and mount the mirror's directory writable: the root
+# filesystem may be read-only.
+
+load("@rules_go//go:def.bzl", "go_cross_binary")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+
+# Static, for linux/amd64 whatever builds it.
+go_cross_binary(
+    name = "bridge_linux_amd64",
+    platform = "@rules_go//go/toolchain:linux_amd64",
+    target = "//cmd/bridge",
+)
+
+pkg_tar(
+    name = "layer",
+    srcs = [":bridge_linux_amd64"],
+    mode = "0755",
+    package_dir = "/usr/local/bin",
+    remap_paths = {"/bridge_linux_amd64": "/github-gerrit-bridge"},
+)
+
+oci_image(
+    name = "image",
+    base = "@buildpack_deps_scm",
+    entrypoint = ["/usr/local/bin/github-gerrit-bridge"],
+    env = {"HOME": "/tmp"},
+    tars = [":layer"],
+    user = "65532:65532",
+    workdir = "/tmp",
+)
+
+oci_load(
+    name = "load",
+    image = ":image",
+    repo_tags = ["github-gerrit-bridge:latest"],
+)
+
+oci_push(
+    name = "push",
+    image = ":image",
+    # No repository: each deployment names its own registry when pushing.
+    remote_tags = ["latest"],
+)
