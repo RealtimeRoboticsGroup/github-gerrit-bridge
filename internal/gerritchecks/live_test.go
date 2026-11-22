@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -171,8 +172,9 @@ func TestLiveChecksFollowDeliveries(t *testing.T) {
 	if got := e.get(); got["build#1"] != "COMPLETED Failed" || got["ci/legacy#1"] != "COMPLETED success" {
 		t.Errorf("after it finished: %v", got)
 	}
-	// A rerun is a new check run.
+	// A rerun is a new check run, and a new job.
 	e.deliver("check_run", checkRunEvent(2, "c1", "build", "queued", ""))
+	e.deliver("workflow_job", jobEvent(2, "c1", "build", "queued"))
 	if got := e.get(); got["build#2"] != "SCHEDULED" {
 		t.Errorf("after a rerun: %v", got)
 	}
@@ -221,6 +223,7 @@ func TestLiveChecksAreReadAgain(t *testing.T) {
 	e.subscribe()
 	e.src.runs = []github.CheckRun{actions(1, "build", "queued", "")}
 	e.get()
+	e.deliver("workflow_job", jobEvent(1, "c1", "build", "queued"))
 	e.src.runs = []github.CheckRun{actions(1, "build", "completed", "success")}
 	e.now = e.now.Add(liveMaxAge - time.Second)
 	e.expire()
@@ -321,6 +324,7 @@ func TestLiveOtherAppsRunsAreRead(t *testing.T) {
 	run.App.Name, run.App.Slug = "Buildkite", "buildkite"
 	e.src.runs = []github.CheckRun{run, actions(2, "build", "queued", "")}
 	e.get()
+	e.deliver("workflow_job", jobEvent(2, "c1", "build", "queued"))
 	run.Status = "in_progress"
 	e.src.runs = []github.CheckRun{run, actions(2, "build", "queued", "")}
 	e.now = e.now.Add(5 * time.Minute)
@@ -453,5 +457,123 @@ func TestLiveDroppedDuringARead(t *testing.T) {
 	l.merge("c1", begin, []github.CheckRun{actions(1, "build", "completed", "success")}, true, nil, true)
 	if v, _ := l.get("c1"); !v.haveRuns || !v.haveStatuses || v.runs[0].Status != "completed" {
 		t.Errorf("read again: %+v", v)
+	}
+}
+
+// Runs a workflow makes itself (a test reporter, with the workflow's
+// token) are GitHub Actions' too, but no workflow_job is about them, so
+// their start is delivered to nobody: while one is unfinished, the runs
+// are read. An Actions job is followed once a delivery is about it.
+func TestLiveWorkflowsOwnRunsAreRead(t *testing.T) {
+	e := newLiveEnv(t)
+	e.subscribe()
+	e.src.runs = []github.CheckRun{actions(1, "report", "queued", "")}
+	e.get()
+	e.src.runs = []github.CheckRun{actions(1, "report", "in_progress", "")}
+	e.expire()
+	if got := e.get(); got["report#1"] != "RUNNING" || e.src.runReads != 2 {
+		t.Errorf("a workflow's own run, started: %v (%d reads)", got, e.src.runReads)
+	}
+	e.deliver("workflow_job", jobEvent(1, "c1", "report", "in_progress"))
+	e.expire()
+	e.get()
+	if e.src.runReads != 2 {
+		t.Errorf("a job a delivery is about read again: %d reads", e.src.runReads)
+	}
+	// Still followed after its check run's own deliveries.
+	e.deliver("workflow_job", jobEvent(2, "c1", "lint", "queued"))
+	e.deliver("check_run", checkRunEvent(2, "c1", "lint", "queued", ""))
+	e.expire()
+	e.get()
+	if e.src.runReads != 2 {
+		t.Errorf("a job read again after its check run's delivery: %d reads", e.src.runReads)
+	}
+}
+
+// GitHub's API can lag its webhooks: a read just after a delivery that
+// still says less (in progress, not done) does not take the run back,
+// though the runs are read on each request (another app's is unfinished)
+// and would then be trusted once that one finishes. Statuses are never
+// set back by a read.
+func TestLiveLaggingReadDoesNotUndoADelivery(t *testing.T) {
+	e := newLiveEnv(t)
+	e.subscribe()
+	other := github.CheckRun{ID: 9, Name: "ext", Status: "in_progress"}
+	other.App.Name, other.App.Slug = "Ext", "ext"
+	e.src.runs = []github.CheckRun{other, actions(1, "build", "in_progress", "")}
+	e.src.statuses = []github.Status{{ID: 1, Context: "ci", State: "pending"}}
+	e.get()
+	e.deliver("check_run", checkRunEvent(1, "c1", "build", "completed", "success"))
+	ev := statusEvent("c1", "ci", "success", e.now)
+	ev["id"] = 2
+	e.deliver("status", ev)
+	e.expire()
+	if got := e.get(); got["build#1"] != "COMPLETED Passed" || got["ci#1"] != "COMPLETED success" {
+		t.Errorf("a lagging read took them back: %v", got)
+	}
+	// Past liveLag a read is believed: an app may set its run back.
+	e.now = e.now.Add(liveLag + time.Second)
+	e.expire()
+	if got := e.get(); got["build#1"] != "RUNNING" {
+		t.Errorf("past liveLag: %v", got)
+	}
+}
+
+// A job's delivery says less than its check run: a read meeting it
+// keeps what only the read says.
+func TestLiveReadKeepsDetailsOfASparseDelivery(t *testing.T) {
+	e := newLiveEnv(t)
+	e.subscribe()
+	ext := github.CheckRun{ID: 9, Name: "ext", Status: "queued"} // keeps the runs read
+	ext.App.Slug = "ext"
+	run := actions(1, "build", "in_progress", "")
+	run.DetailsURL, run.Output.Title = "https://ci.example.com/1", "Building"
+	e.src.runs = []github.CheckRun{ext}
+	e.get()
+	e.deliver("workflow_job", jobEvent(1, "c1", "build", "in_progress"))
+	// A lagging read, still queued: the delivery's state, the read's
+	// details.
+	lagging := run
+	lagging.Status = "queued"
+	e.src.runs = []github.CheckRun{ext, lagging}
+	e.expire()
+	e.get()
+	if v, _ := e.live.get("c1"); !slices.ContainsFunc(v.runs, func(r github.CheckRun) bool {
+		return r.ID == 1 && r.Status == "in_progress" && r.DetailsURL == run.DetailsURL && r.Output.Title == "Building"
+	}) {
+		t.Errorf("a lagging read: %+v", v.runs)
+	}
+	// A read the job's delivery comes in the middle of.
+	run2 := actions(2, "test", "in_progress", "")
+	run2.DetailsURL = "https://ci.example.com/2"
+	e.src.runs = []github.CheckRun{ext, run, run2}
+	e.src.during = func() { e.deliver("workflow_job", jobEvent(2, "c1", "test", "in_progress")) }
+	e.expire()
+	e.get()
+	v, _ := e.live.get("c1")
+	for _, r := range v.runs {
+		if r.ID == 1 && (r.Status != "in_progress" || r.DetailsURL != run.DetailsURL || r.Output.Title != "Building") {
+			t.Errorf("a lagging read: %+v", r)
+		}
+		if r.ID == 2 && r.DetailsURL != run2.DetailsURL {
+			t.Errorf("a delivery during a read: %+v", r)
+		}
+	}
+}
+
+// Status IDs grow: a read never sets one back, however old the
+// delivery it lags.
+func TestLiveReadNeverSetsAStatusBack(t *testing.T) {
+	e := newLiveEnv(t)
+	e.subscribe()
+	e.src.statuses = []github.Status{{ID: 1, Context: "ci", State: "pending"}}
+	e.get()
+	ev := statusEvent("c1", "ci", "success", e.now)
+	ev["id"] = 2
+	e.deliver("status", ev)
+	e.now = e.now.Add(liveMaxAge + time.Second)
+	e.expire()
+	if got := e.get(); got["ci#1"] != "COMPLETED success" || e.src.statusReads != 2 {
+		t.Errorf("%v (%d reads)", got, e.src.statusReads)
 	}
 }

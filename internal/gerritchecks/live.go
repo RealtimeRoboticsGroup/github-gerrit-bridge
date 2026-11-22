@@ -58,6 +58,11 @@ type liveCommit struct {
 type liveRun struct {
 	run github.CheckRun
 	seq uint64
+	// delivered is when a delivery last set it (zero: a read did).
+	delivered time.Time
+	// job says a workflow_job delivery is about it: its start will be
+	// delivered too.
+	job bool
 }
 
 type liveStatus struct {
@@ -80,6 +85,10 @@ const (
 	// clipped as the tab shows it, and URLs longer than maxURL dropped.
 	maxLiveBytes = 64 << 20
 	maxURL       = 2048
+	// liveLag is how long a delivery's news is kept over a read saying
+	// less (GitHub's API can lag its webhooks): longer, the read is
+	// believed (an app may set its run back, as on a rerequest).
+	liveLag = time.Minute
 )
 
 func (l *Live) clock() time.Time {
@@ -256,9 +265,21 @@ func (l *Live) putRun(sha string, run github.CheckRun, job bool) {
 		run = merged
 	}
 	l.seq++
-	c.runs[run.ID] = liveRun{run, l.seq}
+	c.runs[run.ID] = liveRun{run: run, seq: l.seq, delivered: l.clock(), job: job || old.job}
 	c.seq = l.seq
 	l.resize(c)
+}
+
+// details is kept with what read says that it does not (a job's
+// delivery says less than its check run).
+func details(kept, read github.CheckRun) github.CheckRun {
+	if kept.DetailsURL == "" {
+		kept.DetailsURL = read.DetailsURL
+	}
+	if kept.Output.Title == "" && kept.Output.Summary == "" {
+		kept.Output = read.Output
+	}
+	return kept
 }
 
 // liveView is what Live has of a commit.
@@ -295,12 +316,14 @@ func (l *Live) get(commit string) (v liveView, begin uint64) {
 const actionsApp = "github-actions"
 
 // followed says deliveries tell every change of c's check runs still to
-// come: each is finished or GitHub Actions'. Another app's run starting
-// is delivered to nobody (check_run has no such event for a repository
-// webhook), so while one has not finished, the runs are read.
+// come: each is finished or a GitHub Actions job a workflow_job delivery
+// is about. A check run starting is delivered to nobody (check_run has
+// no such event for a repository webhook), so while another is
+// unfinished (another app's; or one a workflow made itself, which no
+// workflow_job is about), the runs are read.
 func (c *liveCommit) followed() bool {
 	for _, r := range c.runs {
-		if r.run.Status != "completed" && r.run.App.Slug != actionsApp {
+		if r.run.Status != "completed" && !(r.run.App.Slug == actionsApp && r.job) {
 			return false
 		}
 	}
@@ -360,10 +383,19 @@ func (l *Live) merge(commit string, begin uint64, runs []github.CheckRun, readRu
 		}
 		for _, r := range runs {
 			r = trimRun(r)
-			// A delivery since begin wins, unless it is older news
-			// than the read (late, out of order).
-			if d, newer := next[r.ID]; (!newer && len(next) < maxLiveRuns) || (newer && rank(r.Status) > rank(d.run.Status)) {
-				next[r.ID] = liveRun{r, l.seq}
+			old, had := c.runs[r.ID]
+			d, newer := next[r.ID]
+			switch {
+			case newer && rank(r.Status) <= rank(d.run.Status):
+				// A delivery since begin wins, unless it is older news
+				// than the read (late, out of order); what only the
+				// read says (a job's delivery says little) is kept.
+				next[r.ID] = liveRun{run: details(d.run, r), seq: d.seq, delivered: d.delivered, job: d.job}
+			case !newer && had && !old.delivered.IsZero() && now.Sub(old.delivered) < liveLag && rank(r.Status) < rank(old.run.Status):
+				// The read lags a delivery from just before it began.
+				next[r.ID] = liveRun{run: details(old.run, r), seq: l.seq, delivered: old.delivered, job: old.job}
+			case newer || len(next) < maxLiveRuns:
+				next[r.ID] = liveRun{run: r, seq: l.seq, job: old.job || d.job}
 			}
 		}
 		c.runs = next
@@ -380,6 +412,11 @@ func (l *Live) merge(commit string, begin uint64, runs []github.CheckRun, readRu
 		}
 		for _, s := range statuses {
 			s = trimStatus(s)
+			if old, had := c.statuses[s.Context]; had && newer(old.status, s, false) {
+				// The read lags a delivery: a status is never set back.
+				next[s.Context] = liveStatus{old.status, l.seq}
+				continue
+			}
 			if d, found := next[s.Context]; (!found && len(next) < maxLiveStatuses) || (found && newer(s, d.status, false)) {
 				next[s.Context] = liveStatus{s, l.seq}
 			}
