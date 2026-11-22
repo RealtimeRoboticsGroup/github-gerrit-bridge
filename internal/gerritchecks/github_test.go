@@ -427,3 +427,58 @@ func TestViewerReadsHaveTheirOwnBudget(t *testing.T) {
 		t.Errorf("%d viewers turned away", busy)
 	}
 }
+
+// barrierSource answers each GitHub read only once all three have
+// started: read one after another, the first waits out its timeout.
+type barrierSource struct {
+	fakeSource
+	started sync.WaitGroup
+}
+
+func (b *barrierSource) wait() error {
+	b.started.Done()
+	done := make(chan struct{})
+	go func() { b.started.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(2 * time.Second):
+		return fmt.Errorf("the other GitHub reads did not start")
+	}
+}
+
+func (b *barrierSource) CheckRuns(ctx context.Context, c string) ([]github.CheckRun, error) {
+	if err := b.wait(); err != nil {
+		return nil, err
+	}
+	return b.fakeSource.CheckRuns(ctx, c)
+}
+
+func (b *barrierSource) Statuses(ctx context.Context, c string) ([]github.Status, error) {
+	if err := b.wait(); err != nil {
+		return nil, err
+	}
+	return b.fakeSource.Statuses(ctx, c)
+}
+
+func (b *barrierSource) GetPull(ctx context.Context, n int) (*github.PullRequest, error) {
+	if err := b.wait(); err != nil {
+		return nil, err
+	}
+	return b.fakeSource.GetPull(ctx, n)
+}
+
+// A patch set's check runs, statuses and PR are read from GitHub at
+// once: the Checks tab waits for all three, and one after another is
+// three round trips.
+func TestGitHubReadsAtOnce(t *testing.T) {
+	src := &barrierSource{fakeSource: fakeSource{commits: map[string]string{"g2": "c2"}}}
+	src.started.Add(3)
+	h := &Handler{Project: "p", GitHub: src, Logger: slog.Default()}
+	e := h.githubEntry(context.Background(), 5, 2, "g2")
+	var resp Response
+	json.Unmarshal(e.body, &resp)
+	if e.status != http.StatusOK || len(resp.Runs) != 2 || resp.Runs[1].CheckName != "GitHub merge" {
+		t.Errorf("%d %s", e.status, e.body)
+	}
+}

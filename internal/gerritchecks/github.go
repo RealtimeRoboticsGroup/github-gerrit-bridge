@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
@@ -228,32 +229,45 @@ func (h *Handler) githubEntry(ctx context.Context, change, ps int, sha string) e
 	if commit == "" {
 		return ok(Response{Runs: []Run{notOnGitHub(change, ps)}})
 	}
-	if !h.spend() {
-		return fail(http.StatusServiceUnavailable, "busy")
-	}
-	checks, err := h.GitHub.CheckRuns(ctx, commit)
-	if err != nil {
-		h.Logger.Warn("checks: listing GitHub check runs", "change", change, "patchset", ps, "err", err)
-		return fail(http.StatusBadGateway, "cannot read checks from GitHub")
-	}
-	if !h.spend() {
-		return fail(http.StatusServiceUnavailable, "busy")
-	}
-	statuses, err := h.GitHub.Statuses(ctx, commit)
-	if err != nil {
-		h.Logger.Warn("checks: reading GitHub statuses", "change", change, "patchset", ps, "err", err)
-		return fail(http.StatusBadGateway, "cannot read statuses from GitHub")
-	}
-	var pr *github.PullRequest
-	resp := Response{}
+	// Its check runs, statuses and PR are read at once, not one after
+	// another: each is a round trip to GitHub, and the Checks tab waits
+	// for all of them.
+	reads := 2
 	if prNum != 0 {
+		reads++
+	}
+	for range reads {
 		if !h.spend() {
 			return fail(http.StatusServiceUnavailable, "busy")
 		}
-		if pr, err = h.GitHub.GetPull(ctx, prNum); err != nil {
-			h.Logger.Warn("checks: reading the PR", "change", change, "pr", prNum, "err", err)
-			return fail(http.StatusBadGateway, "cannot read the PR from GitHub")
-		}
+	}
+	var (
+		wg                          sync.WaitGroup
+		checks                      []github.CheckRun
+		statuses                    []github.Status
+		pr                          *github.PullRequest
+		checksErr, statusErr, prErr error
+	)
+	wg.Go(func() { checks, checksErr = h.GitHub.CheckRuns(ctx, commit) })
+	wg.Go(func() { statuses, statusErr = h.GitHub.Statuses(ctx, commit) })
+	if prNum != 0 {
+		wg.Go(func() { pr, prErr = h.GitHub.GetPull(ctx, prNum) })
+	}
+	wg.Wait()
+	if checksErr != nil {
+		h.Logger.Warn("checks: listing GitHub check runs", "change", change, "patchset", ps, "err", checksErr)
+		return fail(http.StatusBadGateway, "cannot read checks from GitHub")
+	}
+	if statusErr != nil {
+		h.Logger.Warn("checks: reading GitHub statuses", "change", change, "patchset", ps, "err", statusErr)
+		return fail(http.StatusBadGateway, "cannot read statuses from GitHub")
+	}
+	if prErr != nil {
+		h.Logger.Warn("checks: reading the PR", "change", change, "pr", prNum, "err", prErr)
+		return fail(http.StatusBadGateway, "cannot read the PR from GitHub")
+	}
+	resp := Response{}
+	if pr != nil {
 		if link := webURL(pr.HTMLURL); link != "" {
 			resp.Links = []Link{{URL: link, Tooltip: "The PR on GitHub", Icon: "external"}}
 		}
