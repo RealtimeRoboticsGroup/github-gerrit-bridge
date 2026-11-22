@@ -604,3 +604,33 @@ func TestLiveDeliveryPastTheCapIsRead(t *testing.T) {
 		t.Errorf("past the cap: new#1 %q", got["new#1"])
 	}
 }
+
+// Past maxLiveBytes only commits holding text are dropped: others'
+// large ones do not push out the many that hold little.
+func TestLiveByteBoundSparesCommitsWithoutText(t *testing.T) {
+	l := &Live{}
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	tick := 0
+	l.now = func() time.Time { tick++; return t0.Add(time.Duration(tick) * time.Second) }
+	for i := range 1000 {
+		l.get(fmt.Sprint("small", i))
+	}
+	var runs []github.CheckRun
+	for i := range 100 {
+		r := actions(int64(i+1), strings.Repeat("n", 3990), "completed", "failure")
+		r.Output.Title, r.Output.Summary = strings.Repeat("t", 3990), strings.Repeat("x", 3990)
+		runs = append(runs, r)
+	}
+	for i := range 80 {
+		l.merge(fmt.Sprint("big", i), 0, runs, true, nil, true)
+	}
+	small := 0
+	for sha := range l.commits {
+		if strings.HasPrefix(sha, "small") {
+			small++
+		}
+	}
+	if small != 1000 || l.bytes > maxLiveBytes {
+		t.Errorf("%d of 1000 small commits kept, %d bytes", small, l.bytes)
+	}
+}

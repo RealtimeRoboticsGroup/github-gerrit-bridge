@@ -143,8 +143,9 @@ func (l *Live) resize(c *liveCommit) {
 	}
 	l.bytes += n - c.bytes
 	c.bytes = n
-	for l.bytes > maxLiveBytes && len(l.commits) > 1 {
-		l.evict(c)
+	// Only commits that hold text free any: those that hold none (most,
+	// and cheap) are not dropped for others' large ones.
+	for l.bytes > maxLiveBytes && l.evict(c, true) {
 	}
 }
 
@@ -447,7 +448,7 @@ func (l *Live) commit(commit string) *liveCommit {
 			l.commits = map[string]*liveCommit{}
 		}
 		if len(l.commits) >= maxLiveCommits {
-			l.evict(nil)
+			l.evict(nil, false)
 		}
 		l.seq++
 		c = &liveCommit{runs: map[int64]liveRun{}, statuses: map[string]liveStatus{}, used: l.clock(), born: l.seq, seq: l.seq}
@@ -456,19 +457,23 @@ func (l *Live) commit(commit string) *liveCommit {
 	return c
 }
 
-// evict drops the least recently viewed commit but keep. l.mu is held.
-func (l *Live) evict(keep *liveCommit) {
+// evict drops the least recently viewed commit but keep (holding text,
+// if text), and says whether it dropped one. l.mu is held.
+func (l *Live) evict(keep *liveCommit, text bool) bool {
 	var oldest string
 	var at time.Time
 	for sha, c := range l.commits {
-		if c != keep && (oldest == "" || c.used.Before(at)) {
+		if c != keep && (!text || c.bytes > 0) && (oldest == "" || c.used.Before(at)) {
 			oldest, at = sha, c.used
 		}
 	}
-	if c := l.commits[oldest]; c != nil {
-		l.bytes -= c.bytes
-		delete(l.commits, oldest)
+	c := l.commits[oldest]
+	if c == nil {
+		return false
 	}
+	l.bytes -= c.bytes
+	delete(l.commits, oldest)
+	return true
 }
 
 // changed says whether commit has changed since seq, when an answer was
