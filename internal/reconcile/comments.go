@@ -1324,11 +1324,17 @@ func (s *commentSnapshot) stillApproves(msg gerrit.ChangeMessage) bool {
 // it unexpanded in the REST message), never by a name, which another
 // name can contain. Unsure (no account id) is theirs.
 func removesVote(message string, who gerrit.AccountInfo) bool {
-	if !strings.HasPrefix(message, "Removed ") {
-		return false
+	g := removedCodeReview.FindStringSubmatch(message)
+	if g == nil {
+		return false // another label's vote, or a CC (twentieth review)
 	}
-	return who.AccountID == 0 || strings.Contains(message, fmt.Sprintf("<GERRIT_ACCOUNT_%d>", who.AccountID))
+	return who.AccountID == 0 || g[1] == strconv.Itoa(who.AccountID)
 }
+
+// removedCodeReview matches Gerrit's text for deleting a Code-Review vote
+// (DeleteVoteOp) or removing a reviewer (DeleteReviewerOp), naming the
+// account it was for.
+var removedCodeReview = regexp.MustCompile(`\ARemoved (?:Code-Review[+-]?\d+ by|reviewer) <GERRIT_ACCOUNT_(\d+)>`)
 
 // votesCodeReview reports whether a change message's "Patch Set N: ..."
 // header sets or removes a Code-Review vote.
