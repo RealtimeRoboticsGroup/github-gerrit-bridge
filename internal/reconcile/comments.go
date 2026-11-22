@@ -2341,6 +2341,18 @@ func (c *Comments) dismissOwn(ctx context.Context, n, pr int, rv github.Review, 
 		// said, not a failure that stops the change's sync every pass
 		// (nineteenth review).
 		c.Logger.Warn("GitHub refused to dismiss an approval of its author's own code; it stands", "change", n, "pr", pr, "review", rv.ID, "user", rv.User.Login, "err", err)
+		// Said once on the PR, not only in the log (twentieth review).
+		marker := fmt.Sprintf("<!-- bridge:own-approval/%d -->", rv.ID)
+		if slices.ContainsFunc(s.ics, func(ic github.IssueComment) bool {
+			return c.byBridge(ic.User.Login) && strings.Contains(ic.Body, marker)
+		}) {
+			return true, nil
+		}
+		note := fmt.Sprintf("@%s owns or uploaded this code in [Gerrit](%s), so their approval is not a review, but GitHub would not let the "+
+			"bridge dismiss it. Someone who may dismiss reviews should.\n\n%s\n%s", rv.User.Login, c.Gerrit.ChangeURL(c.Project, n), noticeMarker, marker)
+		if _, err := c.GitHub.CreateIssueComment(ctx, pr, note); err != nil {
+			return false, err
+		}
 		return true, nil
 	}
 	if err != nil {
