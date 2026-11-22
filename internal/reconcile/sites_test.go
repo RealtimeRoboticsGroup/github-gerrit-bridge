@@ -35,6 +35,8 @@ type sites struct {
 	t   *testing.T
 	srv *httptest.Server
 	dir string
+	// openedBy is the Gerrit account each PR was opened as (OpenAs).
+	openedBy map[int]int
 
 	mu sync.Mutex
 	// Gerrit
@@ -715,7 +717,29 @@ func (s *sites) code(ctx context.Context) (*Code, *state.Store) {
 	store := &state.Store{Repo: m}
 	return &Code{Project: "p", Gerrit: s.gerritClient(), GitHub: s.githubClient(), GitHubURL: filepath.Join(s.dir, "github.git"),
 		Mirror: m, Store: store, DefaultBranch: "main", Logger: slog.Default(), BridgeLogin: "bot",
-		Identity: &Users{Overrides: map[string]string{"austin": "austin", "brt": "brt"}}}, store
+		Identity: &Users{Overrides: map[string]string{"austin": "austin", "brt": "brt"}},
+		// PRs opened as a change's owner: here, on the same fake GitHub,
+		// noting whose (s.openedAs).
+		OpenAs: func(_ context.Context, account int) (PullOpener, bool, error) {
+			return openedAs{s, account}, true, nil
+		}}, store
+}
+
+// openedAs opens PRs on the sites' GitHub as Gerrit account account.
+type openedAs struct {
+	s       *sites
+	account int
+}
+
+func (o openedAs) CreatePull(ctx context.Context, p github.NewPull) (*github.PullRequest, error) {
+	pr, err := o.s.githubClient().CreatePull(ctx, p)
+	if err == nil {
+		if o.s.openedBy == nil {
+			o.s.openedBy = map[int]int{}
+		}
+		o.s.openedBy[pr.Number] = o.account
+	}
+	return pr, err
 }
 
 func (s *sites) save(ctx context.Context, store *state.Store, n int, st *state.Change) {

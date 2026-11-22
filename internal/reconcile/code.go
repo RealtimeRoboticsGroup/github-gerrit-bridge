@@ -86,6 +86,14 @@ type Code struct {
 	Below belowReader
 	// LinkURL is where people link their GitHub accounts, for notices.
 	LinkURL string
+	// OpenAs, where GitHub owns the branches, is the GitHub client a
+	// Gerrit account's linked GitHub account opens PRs with (ok false:
+	// not linked, or no longer). A Gerrit-born change's PR is its
+	// owner's, so that GitHub knows whose it is: it counts no one's
+	// approval of their own PR (nineteenth review, the owner's call:
+	// opened as the bot, their own approval counted until the bridge
+	// next dismissed it). Unset there, no PR is opened.
+	OpenAs func(ctx context.Context, account int) (opener PullOpener, ok bool, err error)
 
 	// configCache remembers changesConfig answers by branch tip and
 	// commit.
@@ -498,6 +506,22 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 				why = notLinked
 			}
 		}
+		if !w && c.GitHubOwned && !s.githubBorn(n) && (s.State[n] == nil || s.State[n].State.PR == 0) {
+			// Its PR is opened as its owner (OpenAs): until they may,
+			// nothing of it reaches GitHub.
+			ok, known := false, true
+			if c.Publishable != nil && c.OpenAs != nil {
+				ok, known = c.Publishable(ctx, ch.OwnerID)
+			}
+			if !known {
+				c.Logger.Warn("cannot tell whether a change's owner may push to GitHub; withheld", "change", n)
+				s.Withheld[n] = true
+				continue
+			}
+			if !ok {
+				w, why = true, ownerNotLinked
+			}
+		}
 		if !w {
 			continue
 		}
@@ -522,6 +546,13 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 		case notLinked:
 			msg = fmt.Sprintf("Patch set %d is not mirrored to GitHub: GitHub owns this repository's branches, and a change reaches it "+
 				"only when %s", ch.PatchSet, c.whoMayPush(false, below))
+		case ownerNotLinked:
+			msg = fmt.Sprintf("Patch set %d is not mirrored to GitHub: GitHub owns this repository's branches, and a change's PR is "+
+				"opened as its owner, so that GitHub knows whose it is. It gets one once its owner has linked a GitHub account that "+
+				"may push to the repository.", ch.PatchSet)
+			if c.LinkURL != "" {
+				msg += " Link yours at " + c.LinkURL + "."
+			}
 		}
 		if !c.notice(ctx, n, ch, msg) {
 			continue
@@ -2283,6 +2314,16 @@ func (c *Code) whoMayPush(prBranch bool, below string) string {
 	return msg
 }
 
+// PullOpener opens PRs, as a linked user.
+type PullOpener interface {
+	CreatePull(ctx context.Context, p github.NewPull) (*github.PullRequest, error)
+}
+
+// ownerNotLinked is the reason withhold gives a Gerrit-born change with
+// no PR yet whose owner has no linked GitHub account that may push, where
+// GitHub owns the branches: its PR would be opened as them.
+const ownerNotLinked = "owner not linked"
+
 // notLinked is the reason withhold gives a change from someone without a
 // linked GitHub account that may push, where GitHub owns the branches.
 const notLinked = "not linked"
@@ -2474,7 +2515,24 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 		}
 		return nil
 	case CreatePR:
-		pr, err := gh.CreatePull(ctx, *a.New)
+		var opener PullOpener = gh
+		if c.GitHubOwned {
+			// As its owner (OpenAs), never the bot: withhold kept it
+			// back until they could; if they cannot now, it waits.
+			ch := s.Changes[a.Change]
+			if ch == nil || c.OpenAs == nil {
+				return fmt.Errorf("no owner to open change %d's PR as", a.Change)
+			}
+			as, ok, err := c.OpenAs(ctx, ch.OwnerID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("change %d's owner has no linked GitHub account to open its PR with", a.Change)
+			}
+			opener = as
+		}
+		pr, err := opener.CreatePull(ctx, *a.New)
 		if err != nil {
 			return err
 		}

@@ -105,6 +105,10 @@ nobody. Before the bridge reads it:
    lets them; otherwise the bridge reopens it in Gerrit, saying why, and
    never resolves it for them. A GitHub approval by whoever owns the
    change or uploaded the head's code is dismissed and casts no vote.
+   A Gerrit-born change's PR is opened as its owner, with their linked
+   GitHub account, so GitHub itself counts no approval of their own PR:
+   until its owner has linked an account that may push, the change is
+   withheld from GitHub, with a notice saying where to link.
 2. **The bot's token**: Contents read & write (its branches), Pull
    requests and Issues read & write, Checks read (the Checks tab),
    Administration read (else the merge-settings check at startup only

@@ -447,6 +447,8 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			// §3.1).
 			pub := publishable(tokens.Linked, gh.CanPush, logger)
 			code.Publishable, code.Importer.Publishable = pub, pub
+			// A Gerrit-born change's PR is its owner's (design §3.1).
+			code.OpenAs = linkedAuthors{tokens: tokens, gh: gh}.opener
 			code.LinkURL = strings.TrimSuffix(a.PublicURL, "/") + "/github/link"
 			// /submit merges on GitHub, as whoever asked.
 			merger = githubMerger{gerritUser: users.Lookup, account: gerritAccount, tokenFor: tokens.For, source: tokens.Source, gh: gh}
@@ -877,6 +879,23 @@ func (a linkedAuthors) Linked(ctx context.Context, account int) (github.User, bo
 }
 
 func (a linkedAuthors) Client(ctx context.Context, account int) (reconcile.UserGitHub, github.User, bool, error) {
+	c, gh, ok, err := a.client(ctx, account)
+	if !ok || err != nil {
+		return nil, github.User{}, false, err
+	}
+	return c, gh, true, nil
+}
+
+// opener is account's linked GitHub account, to open PRs as (Code.OpenAs).
+func (a linkedAuthors) opener(ctx context.Context, account int) (reconcile.PullOpener, bool, error) {
+	c, _, ok, err := a.client(ctx, account)
+	if !ok || err != nil {
+		return nil, false, err
+	}
+	return c, true, nil
+}
+
+func (a linkedAuthors) client(ctx context.Context, account int) (*github.Client, github.User, bool, error) {
 	tok, gh, ok, err := a.tokens.For(ctx, account)
 	if !ok || err != nil {
 		return nil, github.User{}, false, err

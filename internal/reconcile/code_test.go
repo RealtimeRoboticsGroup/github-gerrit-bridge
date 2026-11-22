@@ -4935,3 +4935,85 @@ func TestApplyRefusesBranchesWhoseProtectionIsUnknown(t *testing.T) {
 		t.Error("pushed to production")
 	}
 }
+
+// Where GitHub owns the branches, a Gerrit-born change's PR is opened as
+// its owner, with their linked GitHub account, so that GitHub knows whose
+// it is and counts no approval of their own PR (nineteenth review, the
+// owner's call). Until its owner has linked an account that may push,
+// the change is withheld, saying why; one that cannot be opened as them
+// now waits. Where Gerrit owns the branches the bot opens it, as before.
+func TestGerritBornPROpenedAsItsOwner(t *testing.T) {
+	ctx := context.Background()
+	var setupBy func(t *testing.T, owned bool, owner, uploader int) (*sites, *Code)
+	setup := func(t *testing.T, owned bool, owner int) (*sites, *Code) {
+		return setupBy(t, owned, owner, 8)
+	}
+	setupBy = func(t *testing.T, owned bool, owner, uploader int) (*sites, *Code) {
+		s := newSites(t)
+		c, _ := s.code(ctx)
+		c.GitHubOwned, c.LinkURL = owned, "https://bridge.example.com/github/link"
+		c.Publishable = func(_ context.Context, a int) (bool, bool) { return a == 8 || a == 7, true }
+		m0 := s.commit("", "a.txt", "a\n", "base")
+		s.push("gerrit.git", m0, "refs/heads/main")
+		s.push("github.git", m0, "refs/heads/main")
+		msg := "Feature\n\nChange-Id: " + cid(1) + "\n"
+		rev := s.commit(m0, "f.txt", "f\n", msg)
+		ci := s.change(1, cid(1), rev, msg, "NEW")
+		r := ci.Revisions[rev]
+		r.Uploader = gerrit.AccountInfo{AccountID: uploader}
+		ci.Revisions[rev], ci.Owner = r, gerrit.AccountInfo{AccountID: owner}
+		return s, c
+	}
+	t.Run("linked owner", func(t *testing.T) {
+		s, c := setupBy(t, true, 8, 7) // uploaded by 7, owned by 8
+		if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+			t.Fatal(err)
+		}
+		if len(s.pulls) != 1 || len(s.openedBy) != 1 {
+			t.Fatalf("PRs %d, opened as %v", len(s.pulls), s.openedBy)
+		}
+		for _, who := range s.openedBy {
+			if who != 8 {
+				t.Errorf("opened as account %d, want its owner's, 8", who)
+			}
+		}
+	})
+	t.Run("unlinked owner", func(t *testing.T) {
+		s, c := setup(t, true, 9) // uploaded by linked 8, owned by 9
+		if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+			t.Fatal(err)
+		}
+		if len(s.pulls) != 0 {
+			t.Errorf("a PR for a change whose owner has no linked account: %d", len(s.pulls))
+		}
+		if msgs := s.reviewMsgs[1]; len(msgs) != 1 || !strings.Contains(msgs[0], "a change's PR is opened as its owner") ||
+			!strings.Contains(msgs[0], "Link yours at https://bridge.example.com/github/link.") {
+			t.Errorf("notices %q", msgs)
+		}
+	})
+	t.Run("link gone at open", func(t *testing.T) {
+		s, c := setup(t, true, 8)
+		c.OpenAs = func(context.Context, int) (PullOpener, bool, error) { return nil, false, nil }
+		if err := c.Reconcile(ctx, Key{Branch: "main"}); err == nil || len(s.pulls) != 0 {
+			t.Errorf("err %v, PRs %d; want it to wait, as no one", err, len(s.pulls))
+		}
+	})
+	t.Run("no way to open as anyone", func(t *testing.T) {
+		s, c := setup(t, true, 8)
+		c.OpenAs = nil
+		_ = c.Reconcile(ctx, Key{Branch: "main"})
+		if len(s.pulls) != 0 || len(s.reviewMsgs[1]) != 1 {
+			t.Errorf("opened %d PRs as the bot; notices %q, want it withheld", len(s.pulls), s.reviewMsgs[1])
+		}
+	})
+	t.Run("Gerrit-owned", func(t *testing.T) {
+		s, c := setup(t, false, 9)
+		c.OpenAs = func(context.Context, int) (PullOpener, bool, error) { return nil, false, errors.New("not asked") }
+		if err := c.Reconcile(ctx, Key{Branch: "main"}); err != nil {
+			t.Fatal(err)
+		}
+		if len(s.pulls) != 1 || len(s.openedBy) != 0 {
+			t.Errorf("PRs %d, opened as %v; want one, by the bot", len(s.pulls), s.openedBy)
+		}
+	})
+}

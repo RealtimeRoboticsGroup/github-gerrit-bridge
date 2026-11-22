@@ -137,7 +137,11 @@ checklist.
   GitHub account (§7.2) that may push to the repository (the collaborator
   permission API, checked against the linked account's id); owning the
   change is no pass. Others are withheld with a notice saying where to
-  link. The code below it counts too, as CI's `parentsTrusted` counts it
+  link. Its PR is opened as its owner, with their linked account
+  (`Code.OpenAs`), never as the bot: GitHub then counts no approval of
+  their own PR, which an approval of the bot's PR, dismissed only at the
+  next sync, would be (nineteenth review). So a change with no PR yet is
+  withheld until its owner, too, has linked an account that may push. The code below it counts too, as CI's `parentsTrusted` counts it
   (gerrit-buildkite's, ported: one rule, `Code.mayReach`, for every push
   of Gerrit code to GitHub, in both directions): every parent, merges'
   others included, must be in the branch, the commit a change merged as,
