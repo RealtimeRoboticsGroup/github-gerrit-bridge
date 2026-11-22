@@ -11,6 +11,7 @@ package reconcile
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -738,6 +739,33 @@ func TestGerritOwnedDismissalAfterMerge(t *testing.T) {
 	e.sync(t)
 	if v := e.g.labels["Code-Review"]["bobg"]; v != 0 {
 		t.Errorf("merged PR: maint's dismissal left bobg's Code-Review = %d (main withdraws it)", v)
+	}
+}
+
+// Twentieth review (regression, passes on main): a linked user's vote-only +2 that GitHub
+// refuses once with a transient 403 (a secondary rate limit, which the
+// client reports as a 403 with Retry-After) or a 401 (an expired token
+// the client invalidates and renews) is her approval once GitHub takes
+// it, as on main: main retries each sync.
+func TestGerritOwnedVoteRefusedOnceIsPostedLater(t *testing.T) {
+	for _, refuse := range []*github.APIError{
+		{Status: http.StatusForbidden, Message: "You have exceeded a secondary rate limit", RetryAfter: time.Minute},
+		{Status: http.StatusUnauthorized, Message: "Bad credentials"},
+	} {
+		t.Run(http.StatusText(refuse.Status), func(t *testing.T) {
+			e, a := linkedEnv(t)
+			alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+			e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2}}
+			e.g.vote("alice", "Code-Review", 2)
+			a.refuse = refuse
+			e.sync(t)
+			a.refuse = nil
+			e.sync(t)
+			e.sync(t)
+			if !probeApproved(e) {
+				t.Errorf("alice's +2 never became her GitHub approval after one %d (reviews %+v, calls %d)", refuse.Status, e.h.reviews, a.calls)
+			}
+		})
 	}
 }
 
