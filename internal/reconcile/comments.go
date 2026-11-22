@@ -1236,6 +1236,13 @@ func (c *Comments) postVote(ctx context.Context, n, pr int, s *commentSnapshot, 
 	case errors.As(err, &ae) && (ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden || ae.Status == http.StatusNotFound):
 		c.Logger.Warn("GitHub refused a linked user's token; posting as the bridge", "change", n, "github_login", p.as.Login, "err", err)
 		p.api = nil
+		if text == "" {
+			// Only a vote: not asked for again with that token on every
+			// sync (nineteenth review: nothing else bounds it since a
+			// vote not posted spends no budget).
+			m.add(state.Comment{GerritID: msg.ID, Kind: kindRefused, Origin: "gerrit"})
+			return true, nil
+		}
 		return false, nil
 	case isUnprocessable(err) && text == "":
 		// Only a vote, which the statuses show: once is enough to ask.

@@ -1067,3 +1067,20 @@ func TestGitHubOwnedResolutionAfterAnEditIsTheResolvers(t *testing.T) {
 		t.Errorf("resolved %v by %+v, want alice's", e.h.resolved[id], e.h.resolvedBy[id])
 	}
 }
+
+// A vote-only message GitHub refuses with its voter's token is recorded,
+// not asked for again with it on every sync: since a vote not posted
+// spends no budget, nothing else bounds the retries (nineteenth review).
+func TestVoteRefusedWithTheirTokenIsAskedOnce(t *testing.T) {
+	e, a := linkedEnv(t)
+	a.refuse = &github.APIError{Status: http.StatusForbidden, Message: "Resource not accessible by integration"}
+	alice := gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"}
+	e.g.messages = []gerrit.ChangeMessage{{ID: "m1", Author: alice, Message: "Patch Set 2: Code-Review+2", RevisionNumber: 2}}
+	e.g.vote("alice", "Code-Review", 2)
+	for i := 0; i < 3; i++ {
+		e.sync(t)
+	}
+	if a.calls != 1 {
+		t.Errorf("asked GitHub %d times with alice's token, want once", a.calls)
+	}
+}
