@@ -2278,7 +2278,7 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 		if (rv.State == "APPROVED" && v >= approves) || (rv.State == "CHANGES_REQUESTED" && v < 0) {
 			continue
 		}
-		if rv.State == "CHANGES_REQUESTED" && c.GitHubOwned && !s.votedSince(gerrit.AccountInfo{Username: user}, rv.SubmittedAt, liftsCodeReview) {
+		if rv.State == "CHANGES_REQUESTED" && c.GitHubOwned && !s.liftedSince(gerrit.AccountInfo{Username: user}, rv.SubmittedAt) {
 			// Where GitHub owns the branches a change request is the
 			// gate, and only its reviewer (or whoever may dismiss
 			// reviews) lifts it: Gerrit not copying a -1 to a new patch
@@ -2500,6 +2500,20 @@ func (s *commentSnapshot) mirroredVoteSince(reviewer gerrit.AccountInfo, t time.
 	for _, m := range s.messages {
 		at, err := time.Parse("2006-01-02 15:04:05.999999999", m.Date)
 		if err == nil && !at.Before(t) && sameAccount(m.Author, reviewer) && m.Tag == mirrorTag && positiveCodeReview.MatchString(m.Message) {
+			return true
+		}
+	}
+	return false
+}
+
+// liftedSince reports whether reviewer, themselves, voted Code-Review 0
+// or more in Gerrit after t: not through the bridge, nor posted on their
+// behalf (twentieth review: carol's on_behalf_of vote as bob lifted his
+// GitHub change request).
+func (s *commentSnapshot) liftedSince(reviewer gerrit.AccountInfo, t time.Time) bool {
+	for _, m := range s.messages {
+		at, err := time.Parse("2006-01-02 15:04:05.999999999", m.Date)
+		if err == nil && at.After(t) && sameAccount(m.Author, reviewer) && !onBehalf(m) && !isBridgeTag(m.Tag) && liftsCodeReview.MatchString(m.Message) {
 			return true
 		}
 	}
