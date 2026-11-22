@@ -509,7 +509,11 @@ func (c *Code) withhold(ctx context.Context, s *Snapshot, branch string, refused
 				why = notLinked
 			}
 		}
-		if !w && c.GitHubOwned && !s.githubBorn(n) && (s.State[n] == nil || s.State[n].State.PR == 0) {
+		if !w && c.GitHubOwned && !s.githubBorn(n) && (s.State[n] == nil || s.State[n].State.PR == 0) &&
+			(ch.OwnerID == 0 || ch.OwnerID != c.BridgeAccount) {
+			// (Not a change the bridge owns: an import whose link is not
+			// saved yet, adopted by the importer, whose owner can never
+			// link; twenty-first review.)
 			// Its PR is opened as its owner (OpenAs): until they may,
 			// nothing of it reaches GitHub.
 			ok, known := false, true
