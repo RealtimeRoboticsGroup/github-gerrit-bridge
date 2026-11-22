@@ -1275,17 +1275,24 @@ func (s *commentSnapshot) stillApproves(msg gerrit.ChangeMessage) bool {
 }
 
 // removesVote reports whether a change message is Gerrit's for deleting
-// someone's Code-Review vote, or removing a reviewer, that may be who's:
-// one naming their full name (any, if they have none: Gerrit then
-// names them otherwise). Its author is
-// whoever deleted it, often not the voter, and it has no "Patch Set N:"
-// header (eighteenth review: a vote deleted on an older patch set,
-// which no label shows, became an approval).
+// someone's vote, or removing a reviewer, that may be who's. Its author is
+// whoever did it, often not the voter, and it has no "Patch Set N:"
+// header (eighteenth review: a vote deleted on an older patch set, which
+// no label shows, became an approval). Gerrit names the voter as an
+// account template, <GERRIT_ACCOUNT_id> (nineteenth review: 3.14 leaves
+// it unexpanded in the REST message); older text named them by full
+// name. Unsure (who has neither) is theirs.
 func removesVote(message string, who gerrit.AccountInfo) bool {
-	if !strings.HasPrefix(message, "Removed Code-Review") && !strings.HasPrefix(message, "Removed reviewer") && !strings.HasPrefix(message, "Removed vote") {
+	if !strings.HasPrefix(message, "Removed ") {
 		return false
 	}
-	return who.Name == "" || strings.Contains(message, who.Name)
+	if who.AccountID != 0 && strings.Contains(message, fmt.Sprintf("<GERRIT_ACCOUNT_%d>", who.AccountID)) {
+		return true
+	}
+	if who.Name != "" && strings.Contains(message, who.Name) {
+		return true
+	}
+	return who.AccountID == 0 && who.Name == ""
 }
 
 // votesCodeReview reports whether a change message's "Patch Set N: ..."

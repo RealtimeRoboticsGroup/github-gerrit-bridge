@@ -975,8 +975,13 @@ func TestDeletedVoteIsNoApproval(t *testing.T) {
 		approved bool
 	}{
 		{"", true},
+		// Gerrit 3.14's own text: account templates, left unexpanded.
+		{"Removed Code-Review+2 by <GERRIT_ACCOUNT_1>\n", false},
+		{"Removed reviewer <GERRIT_ACCOUNT_1> with the following votes:\n\n* Code-Review+2 by <GERRIT_ACCOUNT_1>\n", false},
+		{"Removed Code-Review+2 by <GERRIT_ACCOUNT_7>\n", true},
+		{"Removed Code-Review+2 by <GERRIT_ACCOUNT_11>\n", true},
+		// Older servers' text, with names.
 		{"Removed Code-Review+2 by Alice Trusted <alice@example.com>\n", false},
-		{"Removed reviewer Alice Trusted <alice@example.com> with the following votes:\n\n* Code-Review+2 by Alice Trusted <alice@example.com>\n", false},
 		{"Removed Code-Review+2 by Carol <carol@example.com>\n", true},
 	} {
 		e, _ := linkedEnv(t)
