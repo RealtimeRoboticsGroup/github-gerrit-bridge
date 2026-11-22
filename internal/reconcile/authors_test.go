@@ -1002,3 +1002,69 @@ func TestDeletedVoteIsNoApproval(t *testing.T) {
 		}
 	}
 }
+
+// Where GitHub owns the branches, a Gerrit resolution is made on GitHub
+// only with the resolver's own token (eighteenth review). resolveAs
+// resolves with the bridge's token, unchecked, when the thread's last
+// Gerrit comment is the bridge's own post, and mirrorEdits posts one,
+// carrying the thread's Gerrit resolution, whenever a GitHub comment in
+// it is edited. So alice, with no linked GitHub account (or one GitHub
+// will not let resolve), resolves in Gerrit, bob fixes a typo in his
+// GitHub comment in the same thread, and the bridge resolves the GitHub
+// conversation for her.
+func TestGitHubOwnedResolutionNotByTheBridgeAfterAnEdit(t *testing.T) {
+	e, a := linkedEnv(t)
+	e.c.GitHubOwned = true
+	delete(a.linked, 1) // alice has no linked GitHub account
+	id := e.h.human("a.txt", 3, "sha2", "Is three right?", 0)
+	e.sync(t)
+	var bobs string
+	for _, gc := range e.g.comments {
+		if strings.Contains(gc.Message, "Is three right?") {
+			bobs = gc.ID
+		}
+	}
+	if bobs == "" {
+		t.Fatal("bob's comment not mirrored")
+	}
+	e.g.user("c2", "a.txt", 2, 3, "Yes, done.", bobs, false) // alice resolves in Gerrit
+	for i := range e.h.rcs {
+		if e.h.rcs[i].ID == id {
+			e.h.rcs[i].Body = "Is three right? (typo fixed)"
+		}
+	}
+	e.h.edited(id, "bob")
+	e.sync(t)
+	e.sync(t)
+	if e.h.resolved[id] {
+		t.Errorf("GitHub thread resolved by %+v for alice, who has no linked account", e.h.resolvedBy[id])
+	}
+	e.settled(t)
+}
+
+// With a linked alice GitHub lets resolve, the edit's note does not stop
+// her resolution: it is hers, made with her token.
+func TestGitHubOwnedResolutionAfterAnEditIsTheResolvers(t *testing.T) {
+	e, _ := linkedEnv(t)
+	e.c.GitHubOwned = true
+	id := e.h.human("a.txt", 3, "sha2", "Is three right?", 0)
+	e.sync(t)
+	var bobs string
+	for _, gc := range e.g.comments {
+		if strings.Contains(gc.Message, "Is three right?") {
+			bobs = gc.ID
+		}
+	}
+	e.g.user("c2", "a.txt", 2, 3, "Yes, done.", bobs, false)
+	for i := range e.h.rcs {
+		if e.h.rcs[i].ID == id {
+			e.h.rcs[i].Body = "Is three right? (typo fixed)"
+		}
+	}
+	e.h.edited(id, "bob")
+	e.sync(t)
+	e.sync(t)
+	if !e.h.resolved[id] || e.h.resolvedBy[id] != aliceGH {
+		t.Errorf("resolved %v by %+v, want alice's", e.h.resolved[id], e.h.resolvedBy[id])
+	}
+}

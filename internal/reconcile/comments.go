@@ -2586,9 +2586,19 @@ func (c *Comments) syncResolution(ctx context.Context, n, pr int, s *commentSnap
 // returns the GitHub login it did it as, "" for the bridge.
 func (c *Comments) resolveAs(ctx context.Context, n int, s *commentSnapshot, last *gerrit.CommentInfo, thread string, resolved bool) (string, error) {
 	if c.bridgePost(last) {
-		// The bridge's own copy of a GitHub comment, posted as its
-		// author: they resolved nothing in Gerrit (tenth audit).
-		return "", c.GitHub.SetThreadResolved(ctx, thread, resolved)
+		if !c.GitHubOwned || !resolved {
+			// The bridge's own copy of a GitHub comment, posted as its
+			// author: they resolved nothing in Gerrit (tenth audit).
+			return "", c.GitHub.SetThreadResolved(ctx, thread, resolved)
+		}
+		// Where GitHub owns the branches the bridge's own post (a
+		// copy, an edit's note, which carries Gerrit's state) resolves
+		// nothing for anyone (nineteenth review): the resolver is whoever
+		// last wrote in the thread themselves, if they resolved it.
+		last = lastOwnInThread(c, s, threadRoot(s, last.ID))
+		if last == nil || last.Unresolved {
+			return "", &notResolvable{"nobody resolved it in Gerrit but the bridge"}
+		}
 	}
 	// One posted on their behalf resolves as the bridge (seventeenth
 	// review).
@@ -2663,6 +2673,26 @@ func (c *Comments) keptOpen(ctx context.Context, n int, last *gerrit.CommentInfo
 		return nil
 	}
 	return err
+}
+
+// lastOwnInThread is the last comment in root's thread that is not the
+// bridge's own post, if any.
+func lastOwnInThread(c *Comments, s *commentSnapshot, root string) *gerrit.CommentInfo {
+	var last *gerrit.CommentInfo
+	if gc := s.byID[root]; gc != nil && !c.bridgePost(gc) {
+		last = gc
+	}
+	inThread := map[string]bool{root: true}
+	for i := range s.gerrit { // sorted by time, so parents come first
+		gc := &s.gerrit[i]
+		if inThread[gc.InReplyTo] {
+			inThread[gc.ID] = true
+			if !c.bridgePost(gc) {
+				last = gc
+			}
+		}
+	}
+	return last
 }
 
 func lastInThread(s *commentSnapshot, root string) *gerrit.CommentInfo {
