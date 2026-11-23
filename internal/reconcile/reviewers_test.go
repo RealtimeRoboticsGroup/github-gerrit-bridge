@@ -571,6 +571,20 @@ func TestDraftsAndClosedPRs(t *testing.T) {
 	e.sync(t)
 	e.wantAsks(t, "+mike-gh")
 
+	// Asked on GitHub while a draft: a Gerrit reviewer once ready.
+	e, _ = reviewersEnv(t)
+	e.h.draft = true
+	e.h.requested = []github.User{janeGH}
+	e.sync(t)
+	if len(e.g.reviewers["REVIEWER"]) != 0 {
+		t.Errorf("a Gerrit reviewer while a draft: %+v", e.g.reviewers)
+	}
+	e.h.draft = false
+	e.sync(t)
+	if got := e.g.reviewers["REVIEWER"]; len(got) != 1 || got[0].Username != "jane" {
+		t.Errorf("not a Gerrit reviewer once ready: %+v", e.g.reviewers)
+	}
+
 	e, _ = reviewersEnv(t)
 	e.sync(t)
 	e.h.closed = true

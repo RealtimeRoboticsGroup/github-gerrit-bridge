@@ -314,11 +314,18 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 	}
 
-	// GitHub → Gerrit.
+	// GitHub → Gerrit. Not while a draft (a WIP change in Gerrit, where
+	// it is nobody's turn): once ready (third review).
 	for _, id := range slices.Sorted(maps.Keys(requested)) {
 		u := requested[id]
 		_, was := wasRequested[id]
 		if was && !noted[id] {
+			continue
+		}
+		if s.pull.Draft {
+			if !was {
+				notRequested[id] = true
+			}
 			continue
 		}
 		user, ok, err := askOnly(ctx, c.Users, u)
