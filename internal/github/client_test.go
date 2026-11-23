@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -345,9 +346,12 @@ type fakeLists struct {
 	noETag  bool
 	queries map[string]int
 	rest    int // REST requests
+	mu      sync.Mutex
 }
 
 func (f *fakeLists) handler(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if r.URL.Path == "/graphql" {
 		b, _ := io.ReadAll(r.Body)
 		kind := "edits"
@@ -487,6 +491,50 @@ func TestVouchedTakesTheSyncsOwnReads(t *testing.T) {
 	}
 	if f.queries["edits"] == before {
 		t.Error("edits reused after the comments changed")
+	}
+}
+
+// Comment sync reads the lists alongside each other, then the answers
+// they vouch for alongside each other: those take the pages the lists
+// read, and ask REST only for their reads after.
+func TestVouchedAlongsideEachOther(t *testing.T) {
+	f := &fakeLists{version: map[string]int{}, items: map[string]int{"pulls/1/comments": 1}, queries: map[string]int{}}
+	srv := httptest.NewServer(http.HandlerFunc(f.handler))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: StaticToken("t"), Owner: "o", Repo: "r"}
+	for range 2 {
+		ctx := WithReads(context.Background())
+		var wg sync.WaitGroup
+		errs := make(chan error, 3)
+		wg.Go(func() { _, err := c.ListIssueComments(ctx, 1); errs <- err })
+		wg.Go(func() { _, err := c.ListReviewComments(ctx, 1); errs <- err })
+		wg.Go(func() { _, err := c.ListReviews(ctx, 1); errs <- err })
+		wg.Wait()
+		f.mu.Lock()
+		f.rest = 0
+		f.mu.Unlock()
+		errs2 := make(chan error, 3)
+		wg.Go(func() { _, err := c.Edits(ctx, 1); errs2 <- err })
+		wg.Go(func() { _, err := c.ReviewEdits(ctx, 1); errs2 <- err })
+		wg.Go(func() { _, err := c.ReviewThreads(ctx, 1); errs2 <- err })
+		wg.Wait()
+		close(errs)
+		close(errs2)
+		for err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		for err := range errs2 {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Edits reads both comment lists after its query, ReviewEdits
+		// the reviews; ReviewThreads reads none.
+		if f.rest != 3 {
+			t.Errorf("%d REST reads after the lists: want the 3 after the queries", f.rest)
+		}
 	}
 }
 
