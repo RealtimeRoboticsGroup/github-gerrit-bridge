@@ -50,7 +50,7 @@ func reviewersEnv(t *testing.T) (*commentsEnv, *fakeGitHubAccounts) {
 	e.c.GitHubOwned = true
 	a := &fakeGitHubAccounts{m: map[string]github.User{"mikebauer": mikeGH, "jane": janeGH, "owen": ownerGH}}
 	e.c.Reviewers = a
-	e.c.Trusted = func(_ context.Context, id int) bool { return id == austin.AccountID || id == ownerGA.AccountID }
+	e.c.Trusted = func(_ context.Context, id int) (bool, bool) { return id == austin.AccountID || id == ownerGA.AccountID, true }
 	e.c.Users = &Users{Overrides: map[string]string{"mike-gh": "mikebauer", "jane-gh": "jane", "owen-gh": "owen"}}
 	e.g.owner = ownerGA
 	e.g.accounts = map[string]gerrit.AccountInfo{"mikebauer": mike, "jane": jane, "owen": ownerGA}
@@ -340,6 +340,41 @@ func TestGitHubRequestsReachGerrit(t *testing.T) {
 // never has the bridge write to GitHub for its reviewers: what Gerrit
 // shows of it is the bridge's (imports, mirrored reviews, reviewers it
 // added), though done as the PR's trusted author.
+// When the trusted group cannot be read, what was done waits for a sync
+// that can tell (third review): not taken as an untrusted person's.
+func TestTrustThatCannotBeReadWaits(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	down := false
+	e.c.Trusted = func(_ context.Context, id int) (bool, bool) {
+		return id == austin.AccountID || id == ownerGA.AccountID, !down
+	}
+	down = true
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.wantAsks(t)
+	down = false
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+	// Taken out by austin: withdrawn once known.
+	down = true
+	e.g.reply(austin, "Patch Set 2: done", nil, []gerrit.AccountInfo{mike})
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+	down = false
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "-mike-gh")
+	// A new patch set by austin: asked again once known.
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	down = true
+	e.exported(t, austin, 3, "sha3")
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "-mike-gh")
+	down = false
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "-mike-gh", "+mike-gh")
+}
+
 // A patch set is someone's upload only once the bridge has recorded
 // exporting it: until then it may be an import whose state the bridge
 // has yet to save (third review).

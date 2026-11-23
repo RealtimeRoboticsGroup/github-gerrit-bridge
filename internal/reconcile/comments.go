@@ -118,10 +118,11 @@ type Comments struct {
 	GerritAs func(user string) GerritAPI
 	// Reviewers, if set, carries reviewers over (syncReviewers), finding
 	// Gerrit reviewers' GitHub accounts. Only what Trusted people do in
-	// Gerrit is carried to GitHub; PRs created before Since are taken as
-	// they are the first time.
+	// Gerrit is carried to GitHub (known false: the group could not be
+	// read, and it waits for the next sync); PRs created before Since are
+	// taken as they are the first time.
 	Reviewers GitHubAccounts
-	Trusted   func(ctx context.Context, account int) bool
+	Trusted   func(ctx context.Context, account int) (trusted, known bool)
 	Since     time.Time
 	// Authors, if set, posts the Gerrit content of users who linked their
 	// GitHub account as them, without the attribution header; the rest,

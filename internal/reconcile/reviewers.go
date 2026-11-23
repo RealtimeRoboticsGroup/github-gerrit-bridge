@@ -190,7 +190,15 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	// whom the bridge took out of the attention set is out.
 	notSeen, stillSeen := map[string]bool{}, map[string]bool{}
 	notRequested, stillRequested := map[int64]bool{}, map[int64]github.User{}
-	trusted := func(a gerrit.AccountInfo) bool { return c.Trusted != nil && c.Trusted(ctx, a.AccountID) }
+	// Whether a is trusted; known false: the group could not be read, and
+	// what a did waits for the next sync, unseen.
+	trusted := func(a gerrit.AccountInfo) (bool, bool) {
+		if c.Trusted == nil {
+			return false, true
+		}
+		return c.Trusted(ctx, a.AccountID)
+	}
+	holdPatchSet := false
 	githubFor := func(a gerrit.AccountInfo) (github.User, bool, error) {
 		gh, ok, err := c.Reviewers.GitHubFor(ctx, a)
 		if err != nil {
@@ -218,7 +226,13 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		who, ok := c.actorAt(s, a)
-		if !ok || !trusted(who) {
+		if !ok {
+			continue
+		}
+		if t, known := trusted(who); !known {
+			notSeen[key] = true
+			continue
+		} else if !t {
 			continue
 		}
 		gh, ok, err := githubFor(a.Account)
@@ -239,8 +253,16 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		who, ok := c.actorAt(s, r)
-		if !ok || !(sameAccount(who, r.Account) || trusted(who)) {
+		if !ok {
 			continue
+		}
+		if !sameAccount(who, r.Account) {
+			if t, known := trusted(who); !known {
+				stillSeen[key] = true
+				continue
+			} else if !t {
+				continue
+			}
 		}
 		gh, ok, err := githubFor(r.Account)
 		if err != nil {
@@ -261,7 +283,13 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		delete(requested, gh.ID)
 	}
 	if s.current > prev.PatchSet && !s.pull.Draft {
-		if who, ok := c.uploaderOf(s); ok && trusted(who) {
+		who, ok := c.uploaderOf(s)
+		t, known := false, true
+		if ok {
+			t, known = trusted(who)
+		}
+		holdPatchSet = !known
+		if t && known {
 			for _, rv := range latestReviews(s.allReviews) {
 				u := rv.User
 				if _, asked := requested[u.ID]; rv.State != "CHANGES_REQUESTED" || asked || u.Type == "Bot" {
@@ -346,7 +374,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	}
 
 	next := &state.Reviewers{At: s.at, PatchSet: s.current}
-	if s.pull.Draft || !s.recorded(s.revision) {
+	if s.pull.Draft || !s.recorded(s.revision) || holdPatchSet {
 		// Asked again once ready, or once the bridge has recorded where
 		// the patch set came from.
 		next.PatchSet = prev.PatchSet
