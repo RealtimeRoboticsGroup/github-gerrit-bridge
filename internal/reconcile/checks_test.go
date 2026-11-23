@@ -440,3 +440,24 @@ func TestGitHubChecksCommit(t *testing.T) {
 	}
 }
 
+
+// IsTrustedNow reads the group each time: someone just added is trusted
+// at once, someone just removed no longer (fourth review).
+func TestIsTrustedNow(t *testing.T) {
+	ctx := context.Background()
+	f := &checksFakes{group: []gerrit.AccountInfo{{AccountID: 5}}}
+	c := &Checks{Gerrit: f, TrustedGroup: "Verified Users", Logger: slog.Default()}
+	if ok, known := c.IsTrustedNow(ctx, 5); !ok || !known {
+		t.Fatal("5 is not trusted")
+	}
+	f.group = []gerrit.AccountInfo{{AccountID: 9}}
+	if ok, _ := c.IsTrustedNow(ctx, 5); ok {
+		t.Error("5 still trusted once removed")
+	}
+	if ok, _ := c.IsTrustedNow(ctx, 9); !ok {
+		t.Error("9 not trusted once added")
+	}
+	if ok, known := (&Checks{Gerrit: failingGroups{f}, TrustedGroup: "Verified Users", Logger: slog.Default()}).IsTrustedNow(ctx, 9); ok || known {
+		t.Error("an answer though the group cannot be read")
+	}
+}

@@ -503,7 +503,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	}
 	code.Trusted, code.Importer.Trusted = checks.IsTrusted, checks.IsTrusted
 	// Only what trusted people do in Gerrit asks for reviews on GitHub.
-	comments.Trusted = checks.IsTrusted
+	comments.Trusted = checks.IsTrustedNow
 	code.Importer.ChangeIDKey = []byte("change-id\x00" + webhookSecret)
 	// Anyone can register on Gerrit; each new PR costs ~15 GitHub writes,
 	// and GitHub stalls a token past ~80 a minute or ~500 an hour.

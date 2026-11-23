@@ -195,11 +195,19 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	notRequested, stillRequested := map[int64]bool{}, map[int64]github.User{}
 	// Whether a is trusted; known false: the group could not be read, and
 	// what a did waits for the next sync, unseen.
+	// Asked once a sync for each (the group is read afresh each time).
+	type trust struct{ trusted, known bool }
+	trustOf := map[int]trust{}
 	trusted := func(a gerrit.AccountInfo) (bool, bool) {
 		if c.Trusted == nil {
 			return false, true
 		}
-		return c.Trusted(ctx, a.AccountID)
+		t, ok := trustOf[a.AccountID]
+		if !ok {
+			t.trusted, t.known = c.Trusted(ctx, a.AccountID)
+			trustOf[a.AccountID] = t
+		}
+		return t.trusted, t.known
 	}
 	holdPatchSet := false
 	githubFor := func(a gerrit.AccountInfo) (github.User, bool, error) {

@@ -977,3 +977,21 @@ func TestATurnWithAnUnrecordedPatchSetWaits(t *testing.T) {
 	e.sync(t)
 	e.wantAsks(t, "+mike-gh", "-mike-gh")
 }
+
+// Who is trusted is asked once a sync for each person (fourth review:
+// the group is read afresh each time it is asked).
+func TestTrustIsAskedOnceASync(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	asked := map[int]int{}
+	e.c.Trusted = func(_ context.Context, id int) (bool, bool) {
+		asked[id]++
+		return id == austin.AccountID, true
+	}
+	e.g.addReviewer(austin, mike)
+	e.g.addReviewer(austin, jane)
+	e.sync(t)
+	if asked[austin.AccountID] != 1 {
+		t.Errorf("asked about austin %d times in one sync", asked[austin.AccountID])
+	}
+	e.wantAsks(t, "+jane-gh", "+mike-gh")
+}

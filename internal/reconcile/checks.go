@@ -301,6 +301,13 @@ func (c *Checks) IsTrusted(ctx context.Context, account int) (trusted, known boo
 	return c.isTrusted(ctx, account, false)
 }
 
+// IsTrustedNow is IsTrusted, the group read now: for the reviewer sync,
+// which carries a trusted person's doing to GitHub once and for all (no
+// "recent enough" for who is trusted: fourth review).
+func (c *Checks) IsTrustedNow(ctx context.Context, account int) (trusted, known bool) {
+	return c.isTrusted(ctx, account, true)
+}
+
 // isTrusted is IsTrusted, reading the group afresh if fresh.
 func (c *Checks) isTrusted(ctx context.Context, account int, fresh bool) (trusted, known bool) {
 	if c.TrustedGroup == "" {
