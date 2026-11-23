@@ -386,7 +386,7 @@ refused() { (($(grep 'only the default branch follows a force-push' "${LOG}" | g
 wait_for "a force-push of it is not followed (logged)" refused
 check "Gerrit's stable stays where it was" test "$(gerrit_branch stable)" == "${FWD}"
 
-step "11. Reviewers, both ways"
+step "11. Reviewers and whose turn it is, both ways"
 S11="Reviewers ${RUN}"
 (cd "${ME_CLONE}" && git fetch -q gerrit && git checkout -q -B "rv-${RUN}" gerrit/main &&
   echo "${S11}" > "reviewers-${RUN}.txt" && git add . && git commit -qs -m "${S11}" &&
@@ -397,25 +397,48 @@ wait_for "change ${C11} becomes a PR" has_pr11
 N11=$(pr_for "${S11}")
 asked() { pr "${N11}" '.requested_reviewers[].login' | grep -qx "$1"; }
 not_asked() { ! asked "$1"; }
+turn() { gerrit "changes/${C11}?o=DETAILED_ACCOUNTS" | jq -e ".attention_set // {} | .[] | select(.account.username == \"$1\")"; }
+not_turn() { ! turn "$1"; }
+reviewer() { gerrit "changes/${C11}/reviewers/" | jq -e ".[] | select(.username == \"$1\")"; }
 wait_for "%r=AustinSchuhBRT asks AustinSchuhBRT to review PR #${N11}" asked AustinSchuhBRT
-# A review ends GitHub's request; the bridge does not make it again.
+# Their review ends the request, and their turn in Gerrit; nobody asks again.
 brt api "repos/${R}/pulls/${N11}/reviews" -f event=COMMENT -f body="Rehearsal ${RUN}: looked." --silent
 # A review's body is a patch-set-level comment in Gerrit.
 looked() { gerrit "changes/${C11}/comments" | jq -e "[.[][] | select(.message | contains(\"Rehearsal ${RUN}: looked.\"))] | length > 0"; }
 wait_for "AustinSchuhBRT's review reaches Gerrit" looked
+wait_for "and it is no longer their turn in Gerrit" not_turn AustinSchuhBRT
 read_it
-check "and they are not asked again" not_asked AustinSchuhBRT
-# Removed in Gerrit: no longer asked. Asked on GitHub: a Gerrit reviewer.
-me api -X POST "repos/${R}/pulls/${N11}/requested_reviewers" -f 'reviewers[]=AustinSchuhBRT' --silent
-wait_for "asked again on GitHub, by AustinSchuh" asked AustinSchuhBRT
+check "nor are they asked again on GitHub" not_asked AustinSchuhBRT
+# AustinSchuh replies in Gerrit, handing them the turn: asked again.
+gerrit_as AustinSchuh POST "changes/${C11}/revisions/current/review" \
+  '{"message":"PTAL","add_to_attention_set":[{"user":"AustinSchuhBRT","reason":"PTAL"}]}' >/dev/null
+wait_for "AustinSchuh handing them the turn in Gerrit asks them again" asked AustinSchuhBRT
+# Removed as a reviewer in Gerrit: the request is withdrawn.
 BRT_ID=$(gerrit 'accounts/AustinSchuhBRT' | jq ._account_id)
 # A body: with gerrit_as's JSON content type, Gerrit refuses an empty one.
 gerrit_as AustinSchuh DELETE "changes/${C11}/reviewers/${BRT_ID}" '{}' >/dev/null
 wait_for "removing them as a Gerrit reviewer withdraws it" not_asked AustinSchuhBRT
-in_gerrit() { gerrit "changes/${C11}/reviewers/" | jq -e '.[] | select(.username == "AustinSchuhBRT")'; }
-check "and they are no longer a Gerrit reviewer" eval '! in_gerrit'
+check "and they are no longer a Gerrit reviewer" eval '! reviewer AustinSchuhBRT'
+# Asked on GitHub: a Gerrit reviewer, whose turn it is; withdrawn: not.
 me api -X POST "repos/${R}/pulls/${N11}/requested_reviewers" -f 'reviewers[]=AustinSchuhBRT' --silent
-wait_for "asking them on GitHub makes them a Gerrit reviewer" in_gerrit
+wait_for "asking them on GitHub makes them a Gerrit reviewer" reviewer AustinSchuhBRT
+wait_for "whose turn it is" turn AustinSchuhBRT
+me api -X DELETE "repos/${R}/pulls/${N11}/requested_reviewers" -f 'reviewers[]=AustinSchuhBRT' --silent
+wait_for "withdrawing it on GitHub ends their turn in Gerrit" not_turn AustinSchuhBRT
+check "and leaves them a reviewer" reviewer AustinSchuhBRT
+# Changes requested on GitHub; a new patch set in Gerrit asks them again.
+brt api "repos/${R}/pulls/${N11}/reviews" -f event=REQUEST_CHANGES -f body="Rehearsal ${RUN}: fix it." --silent
+fixit() { gerrit "changes/${C11}/comments" | jq -e "[.[][] | select(.message | contains(\"Rehearsal ${RUN}: fix it.\"))] | length > 0"; }
+wait_for "AustinSchuhBRT's change request reaches Gerrit" fixit
+read_it
+check "and they are not asked meanwhile" not_asked AustinSchuhBRT
+(cd "${ME_CLONE}" && echo "fixed" >> "reviewers-${RUN}.txt" && git commit -qa --amend --no-edit &&
+  git push -q gerrit HEAD:refs/for/main 2>/dev/null)
+wait_for "AustinSchuh's new patch set asks them again" asked AustinSchuhBRT
+# A PR worked on GitHub alone (step 1's) never had the bridge ask or
+# withdraw anyone's review.
+bot_asked() { me api "repos/${R}/issues/$1/timeline" --paginate --jq '.[] | select(.event == "review_requested" or .event == "review_request_removed") | .actor.login' | grep -qx realtimeroboticsbot; }
+check "the bridge asked nobody to review PR #${N1}, worked on GitHub alone" eval "! bot_asked ${N1}"
 
 echo
 echo "Rehearsal (GitHub owns ${R}) ${RUN}: ${PASSED} passed, ${FAILED} failed"
