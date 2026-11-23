@@ -386,6 +386,35 @@ refused() { (($(grep 'only the default branch follows a force-push' "${LOG}" | g
 wait_for "a force-push of it is not followed (logged)" refused
 check "Gerrit's stable stays where it was" test "$(gerrit_branch stable)" == "${FWD}"
 
+step "11. Reviewers, both ways"
+S11="Reviewers ${RUN}"
+(cd "${ME_CLONE}" && git fetch -q gerrit && git checkout -q -B "rv-${RUN}" gerrit/main &&
+  echo "${S11}" > "reviewers-${RUN}.txt" && git add . && git commit -qs -m "${S11}" &&
+  git push -q gerrit "HEAD:refs/for/main%r=AustinSchuhBRT" 2>/dev/null)
+C11=$(change "${S11}")
+has_pr11() { [[ -n "$(pr_for "${S11}")" ]]; }
+wait_for "change ${C11} becomes a PR" has_pr11
+N11=$(pr_for "${S11}")
+asked() { pr "${N11}" '.requested_reviewers[].login' | grep -qx "$1"; }
+not_asked() { ! asked "$1"; }
+wait_for "%r=AustinSchuhBRT asks AustinSchuhBRT to review PR #${N11}" asked AustinSchuhBRT
+# A review ends GitHub's request; the bridge does not make it again.
+brt api "repos/${R}/pulls/${N11}/reviews" -f event=COMMENT -f body="Rehearsal ${RUN}: looked." --silent
+looked() { has_message "${C11}" "Rehearsal ${RUN}: looked."; }
+wait_for "AustinSchuhBRT's review reaches Gerrit" looked
+read_it
+check "and they are not asked again" not_asked AustinSchuhBRT
+# Removed in Gerrit: no longer asked. Asked on GitHub: a Gerrit reviewer.
+me api -X POST "repos/${R}/pulls/${N11}/requested_reviewers" -f 'reviewers[]=AustinSchuhBRT' --silent
+wait_for "asked again on GitHub, by AustinSchuh" asked AustinSchuhBRT
+BRT_ID=$(gerrit 'accounts/AustinSchuhBRT' | jq ._account_id)
+gerrit_as AustinSchuh DELETE "changes/${C11}/reviewers/${BRT_ID}" >/dev/null
+wait_for "removing them as a Gerrit reviewer withdraws it" not_asked AustinSchuhBRT
+in_gerrit() { gerrit "changes/${C11}/reviewers/" | jq -e '.[] | select(.username == "AustinSchuhBRT")'; }
+check "and they are no longer a Gerrit reviewer" eval '! in_gerrit'
+me api -X POST "repos/${R}/pulls/${N11}/requested_reviewers" -f 'reviewers[]=AustinSchuhBRT' --silent
+wait_for "asking them on GitHub makes them a Gerrit reviewer" in_gerrit
+
 echo
 echo "Rehearsal (GitHub owns ${R}) ${RUN}: ${PASSED} passed, ${FAILED} failed"
 ((FAILED == 0))
