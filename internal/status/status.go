@@ -6,11 +6,13 @@
 package status
 
 import (
+	"cmp"
 	"fmt"
 	"html/template"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -266,6 +268,26 @@ type total struct {
 	What, Took string
 	Count      int
 	d          time.Duration
+	spans      [][2]time.Duration // start and end
+}
+
+// covered is how long spans cover: overlapping ones (reads made alongside
+// each other) count once, as the time they took together.
+func covered(spans [][2]time.Duration) time.Duration {
+	spans = slices.Clone(spans)
+	slices.SortFunc(spans, func(a, b [2]time.Duration) int { return cmp.Compare(a[0], b[0]) })
+	var d, end time.Duration
+	for i, sp := range spans {
+		switch {
+		case i == 0 || sp[0] >= end:
+			d += sp[1] - sp[0]
+			end = sp[1]
+		case sp[1] > end:
+			d += sp[1] - end
+			end = sp[1]
+		}
+	}
+	return d
 }
 
 type runPage struct {
@@ -320,12 +342,12 @@ func (h *Handler[K]) serveRun(w http.ResponseWriter, id string) {
 	spans, dropped := t.Spans()
 	p.Dropped = dropped
 	totals := map[string]*total{}
-	add := func(what string, d time.Duration) {
+	add := func(what string, start, d time.Duration) {
 		if totals[what] == nil {
 			totals[what] = &total{What: what}
 		}
 		totals[what].Count++
-		totals[what].d += d
+		totals[what].spans = append(totals[what].spans, [2]time.Duration{start, start + d})
 	}
 	pct := func(d time.Duration) float64 {
 		if length <= 0 {
@@ -342,15 +364,15 @@ func (h *Handler[K]) serveRun(w http.ResponseWriter, id string) {
 		leaf := i+1 >= len(spans) || spans[i+1].Depth <= sp.Depth
 		switch {
 		case strings.HasPrefix(sp.What, "wait for "):
-			add("waiting for locks", took)
+			add("waiting for locks", sp.Start, took)
 		case leaf && strings.HasPrefix(sp.What, "github GET"), leaf && strings.HasPrefix(sp.What, "github HEAD"):
-			add("GitHub reads", took)
+			add("GitHub reads", sp.Start, took)
 		case leaf && strings.HasPrefix(sp.What, "github "):
-			add("GitHub writes", took)
+			add("GitHub writes", sp.Start, took)
 		case leaf && strings.HasPrefix(sp.What, "gerrit "):
-			add("Gerrit requests", took)
+			add("Gerrit requests", sp.Start, took)
 		case leaf && strings.HasPrefix(sp.What, "git "):
-			add("git commands", took)
+			add("git commands", sp.Start, took)
 		}
 		r := spanRow{At: "+" + dur(sp.Start), Took: dur(took), What: sp.What, Err: sp.Err, Indent: 14 * sp.Depth, Open: open,
 			Left: pct(sp.Start), Width: max(pct(took), 0.3), Wait: strings.HasPrefix(sp.What, "wait for ")}
@@ -360,6 +382,7 @@ func (h *Handler[K]) serveRun(w http.ResponseWriter, id string) {
 		p.Spans = append(p.Spans, r)
 	}
 	for _, t := range totals {
+		t.d = covered(t.spans)
 		t.Took = dur(t.d)
 		p.Totals = append(p.Totals, *t)
 	}
@@ -460,7 +483,7 @@ td.t { width: 28%; min-width: 120px; } .track { position: relative; height: 10px
 {{with .Err}}<div class="err">{{.}}</div>{{end}}
 {{with .Totals}}<h2>Where the time went</h2>
 <table style="width:auto">{{range .}}<tr><th>{{.What}}</th><td class="n">{{.Took}}</td><td class="n dim">{{.Count}}×</td></tr>{{end}}</table>
-<div class="dim">Lock waits overlap what holds them; calls inside a phase count once.</div>{{end}}
+<div class="dim">Lock waits overlap what holds them; calls inside a phase count once, and calls made together as the time they took together.</div>{{end}}
 <h2>Timeline ({{len .Spans}})</h2>
 {{with .Dropped}}<div class="dim">{{.}} more not kept.</div>{{end}}
 <table><tr><th>At</th><th>Took</th><th></th><th>What</th></tr>

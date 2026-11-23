@@ -121,6 +121,24 @@ func TestRunTimeline(t *testing.T) {
 	}
 }
 
+// Reads made alongside each other count once in where the time went: as
+// the time they took together.
+func TestTotalsCountOverlapsOnce(t *testing.T) {
+	tr := trace.New()
+	at := tr.Started()
+	tr.Add(at, 300*time.Millisecond, "github GET /repos/o/r/pulls/7/comments → 304", nil)
+	tr.Add(at.Add(10*time.Millisecond), 300*time.Millisecond, "github GET /repos/o/r/issues/7/comments → 304", nil)
+	tr.Add(at.Add(20*time.Millisecond), 100*time.Millisecond, "github GET /repos/o/r/pulls/7/reviews → 304", nil)
+	tr.Add(at.Add(time.Second), 100*time.Millisecond, "github GET /repos/o/r/pulls/7 → 200", nil)
+	h := &Handler[string]{Queue: fixed{Recent: []queue.Entry[string]{{Key: "comments/7", ID: 42, At: time.Now(), Took: 2 * time.Second, Detail: tr}}},
+		Name: func(k string) string { return k }}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, get("/run/42"))
+	if want := `<tr><th>GitHub reads</th><td class="n">410ms</td><td class="n dim">4×</td></tr>`; !strings.Contains(w.Body.String(), want) {
+		t.Errorf("totals lack %s:\n%s", want, w.Body.String())
+	}
+}
+
 // get asks for path as the operator's browser does, through a tunnel.
 func get(path string) *http.Request {
 	r := httptest.NewRequest("GET", path, nil)
