@@ -456,6 +456,35 @@ func TestUnrecordedPatchSetsWait(t *testing.T) {
 	e.wantAsks(t, "+mike-gh")
 }
 
+// A patch set never recorded (withheld from GitHub: it changes .github/)
+// holds back only itself: the one before it, which asked, is not looked
+// at again after each review (fifth review); one after it asks.
+func TestAWithheldPatchSetHoldsBackOnlyItself(t *testing.T) {
+	for _, by := range []gerrit.AccountInfo{austin, stranger} {
+		e, _ := reviewersEnv(t)
+		e.g.addReviewer(austin, mike)
+		e.sync(t)
+		e.reviewed(mikeGH, "CHANGES_REQUESTED")
+		e.sync(t)
+		e.exported(t, austin, 3, "sha3")
+		e.g.upload(by, 4, "sha4") // withheld: never recorded
+		e.sync(t)
+		e.wantAsks(t, "+mike-gh", "+mike-gh")
+		for _, state := range []string{"COMMENTED", "CHANGES_REQUESTED"} {
+			e.reviewed(mikeGH, state) // still asking for changes
+			e.sync(t)
+		}
+		e.wantAsks(t, "+mike-gh", "+mike-gh")
+		if got := e.seen(t).PatchSet; got != 3 {
+			t.Errorf("seen patch set %d, want 3", got)
+		}
+		e.exported(t, austin, 5, "sha5")
+		e.sync(t)
+		e.sync(t)
+		e.wantAsks(t, "+mike-gh", "+mike-gh", "+mike-gh")
+	}
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // gets to either: austin's still asks again (third review).
 func TestAnyNewPatchSetByATrustedPersonAsks(t *testing.T) {

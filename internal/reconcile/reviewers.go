@@ -212,7 +212,14 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		return t.trusted, t.known
 	}
-	holdPatchSet := false
+	// waitFrom is the first patch set not yet known to be a trusted
+	// person's or not (0: none): seen only up to the one before it.
+	waitFrom := 0
+	waitAt := func(ps int) {
+		if waitFrom == 0 || ps < waitFrom {
+			waitFrom = ps
+		}
+	}
 	githubFor := func(a gerrit.AccountInfo) (github.User, bool, error) {
 		gh, ok, err := c.Reviewers.GitHubFor(ctx, a)
 		if err != nil {
@@ -319,7 +326,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 				continue
 			}
 			t, known := trusted(uploader(r))
-			holdPatchSet = holdPatchSet || !known
+			if !known {
+				waitAt(r.Number)
+			}
 			byTrusted = byTrusted || t && known
 		}
 		if byTrusted {
@@ -420,10 +429,20 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	}
 
 	next := &state.Reviewers{At: s.at, PR: pr, PatchSet: s.current}
-	if s.pull.Draft || !s.recorded(s.revision) || holdPatchSet {
-		// Asked again once ready, or once the bridge has recorded where
-		// the patch set came from.
-		next.PatchSet = prev.PatchSet
+	if !s.recorded(s.revision) {
+		// Asked once the bridge has recorded where it came from. One
+		// before it never recorded (withheld from GitHub) waits for
+		// nothing: a later one was.
+		waitAt(s.current)
+	}
+	switch {
+	case s.pull.Draft:
+		next.PatchSet = prev.PatchSet // asked once ready
+	case waitFrom != 0:
+		// Only those waited for are looked at again: the rest were acted
+		// on (fifth review: a withheld patch set held back the one
+		// before it, asking for it after every review).
+		next.PatchSet = max(prev.PatchSet, waitFrom-1)
 	}
 	for _, key := range attentionNow {
 		if !notSeen[key] {
