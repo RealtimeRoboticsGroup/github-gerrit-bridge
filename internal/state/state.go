@@ -38,7 +38,9 @@ type Change struct {
 }
 
 // Reviewer is a reviewer of a change on both sides: Gerrit username
-// GerritUser (which never changes) is GitHub account GitHubID.
+// GerritUser (which never changes) is GitHub account GitHubID. With no
+// GerritUser, GitHubID was asked on GitHub with no Gerrit account, and
+// Gerrit was told so.
 type Reviewer struct {
 	GerritUser string `json:"gerrit_user"`
 	GitHubID   int64  `json:"github_id"`

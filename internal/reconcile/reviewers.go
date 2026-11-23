@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -86,6 +87,10 @@ func (r *ReviewerAccounts) GitHubFor(ctx context.Context, a gerrit.AccountInfo) 
 // removing a reviewer removes their votes. Reviewers who have voted, the
 // change's owner, the PR's author and the bridge are not asked.
 //
+// Someone asked on GitHub with no Gerrit account is said so in Gerrit,
+// once while asked (kept as a pair with no Gerrit user), and made a
+// reviewer once they have one.
+//
 // What fails is logged and tried again by the next sync; it never holds
 // up the comments.
 func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnapshot, pairs []state.Reviewer) []state.Reviewer {
@@ -112,7 +117,12 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		out = append(out, p)
 		pairedUser[strings.ToLower(p.GerritUser)], pairedID[p.GitHubID] = true, true
 	}
+	noted := map[int64]bool{} // asked on GitHub, with no Gerrit account: said so in Gerrit
 	for _, p := range pairs {
+		if p.GerritUser == "" {
+			noted[p.GitHubID] = true
+			continue
+		}
 		if _, ok := asked[strings.ToLower(p.GerritUser)]; ok {
 			keep(p)
 			continue
@@ -173,6 +183,20 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		if !ok {
+			// No Gerrit account (yet): said once in Gerrit, while the
+			// request stands; added once they have one.
+			if u.Type == "Bot" {
+				continue
+			}
+			if !noted[id] {
+				msg := fmt.Sprintf("@%s was asked to review on GitHub (%s), but has no Gerrit account the bridge knows, so is not a reviewer here. "+
+					"They are added once they have one (by signing in to Gerrit).", u.Login, s.pull.HTMLURL)
+				if err := c.Gerrit.SetReview(ctx, n, s.revision, gerrit.ReviewInput{Message: msg, Tag: commentTag, Notify: "OWNER"}); err != nil {
+					c.Logger.Warn("saying in Gerrit that someone asked to review on GitHub has no Gerrit account", "change", n, "github_login", u.Login, "err", err)
+					continue
+				}
+			}
+			keep(state.Reviewer{GitHubID: id})
 			continue
 		}
 		if _, ok := asked[strings.ToLower(user)]; !ok {

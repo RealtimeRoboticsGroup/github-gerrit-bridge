@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
@@ -241,7 +242,7 @@ func TestGitHubRequestMakesAGerritReviewer(t *testing.T) {
 	// Nobody the mapping knows is not added.
 	e.h.requested = []github.User{mikeGH, {Login: "stranger", ID: 99}}
 	e.sync(t)
-	if e.g.reviews != reviews {
+	if len(e.g.reviewers["REVIEWER"]) != 3 {
 		t.Errorf("a stranger was added: %+v", e.g.reviewers)
 	}
 }
@@ -368,15 +369,56 @@ func TestReviewerAccounts(t *testing.T) {
 // Gerrit), the next sync makes them a Gerrit reviewer, if still asked.
 func TestGitHubReviewerWithoutAGerritAccount(t *testing.T) {
 	e, _ := reviewersEnv(t)
-	newcomer := github.User{Login: "new-gh", ID: 81}
-	e.h.requested = []github.User{newcomer}
+	newcomer := github.User{Login: "new-gh", ID: 81, Type: "User"}
+	e.h.requested = []github.User{newcomer, {Login: "Copilot", ID: 82, Type: "Bot"}}
 	e.sync(t)
-	if e.g.reviews != 0 || len(e.pairs(t)) != 0 || len(e.h.requested) != 1 {
-		t.Fatalf("reviews %d, pairs %+v, requested %v", e.g.reviews, e.pairs(t), e.h.requested)
+	// Said once in Gerrit (not for a bot), and still asked on GitHub.
+	notes := func() (got []string) {
+		for _, m := range e.g.messages {
+			if strings.Contains(m.Message, "asked to review on GitHub") {
+				got = append(got, m.Message)
+			}
+		}
+		return got
 	}
+	if got := notes(); len(got) != 1 || !strings.Contains(got[0], "@new-gh") || len(e.g.reviewers["REVIEWER"]) != 0 || len(e.h.requested) != 2 {
+		t.Fatalf("notes %q, reviewers %+v, requested %v", got, e.g.reviewers, e.h.requested)
+	}
+	e.sync(t)
+	if got := notes(); len(got) != 1 || len(e.h.asks) != 0 {
+		t.Fatalf("said again, or the request was withdrawn: %q %v", got, e.h.asks)
+	}
+	// Gerrit refusing the note: said next time.
+	e2, _ := reviewersEnv(t)
+	e2.h.requested = []github.User{newcomer}
+	e2.g.refuseNotes = true
+	e2.sync(t)
+	e2.g.refuseNotes = false
+	e2.sync(t)
+	if e2.g.reviews != 1 {
+		t.Errorf("not said after Gerrit refused it: %d", e2.g.reviews)
+	}
+	// They sign in to Gerrit: made a reviewer.
 	e.c.Users = &Users{Overrides: map[string]string{"new-gh": "newcomer"}}
 	e.sync(t)
 	if got := e.g.reviewers["REVIEWER"]; len(got) != 1 || got[0].Username != "newcomer" {
 		t.Errorf("Gerrit reviewers = %+v", e.g.reviewers)
+	}
+	if got := e.pairs(t); !slices.Equal(got, []state.Reviewer{{GerritUser: "newcomer", GitHubID: 81}}) {
+		t.Errorf("pairs = %+v", got)
+	}
+	// Asked again later with no account: said again.
+	e.c.Users = &Users{}
+	e.h.requested = []github.User{{Login: "other-gh", ID: 83, Type: "User"}}
+	e.sync(t)
+	e.h.requested = nil
+	e.sync(t)
+	if len(e.pairs(t)) != 1 {
+		t.Errorf("a request that ended is still kept: %+v", e.pairs(t))
+	}
+	e.h.requested = []github.User{{Login: "other-gh", ID: 83, Type: "User"}}
+	e.sync(t)
+	if got := notes(); len(got) != 3 {
+		t.Errorf("notes = %q", got)
 	}
 }

@@ -69,8 +69,9 @@ type fakeGerrit struct {
 	// (NEW if unset).
 	reviewers map[string][]gerrit.AccountInfo
 	status    string
-	// refuseReviewers makes adding reviewers fail.
-	refuseReviewers bool
+	// refuseReviewers makes adding reviewers fail, and refuseNotes
+	// posting a message (of the bridge's, with no votes or comments).
+	refuseReviewers, refuseNotes bool
 }
 
 // vote sets user's vote on the current patch set, as Gerrit would.
@@ -165,6 +166,9 @@ func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ i
 	}
 	if f.closed && len(in.Labels) > 0 {
 		return &gerrit.Error{Status: 409, Body: "change is closed"}
+	}
+	if f.refuseNotes && in.Message != "" && len(in.Labels) == 0 && len(in.Comments) == 0 {
+		return &gerrit.Error{Status: 500, Body: "Internal server error"}
 	}
 	if f.refuseReviewers && len(in.Reviewers) > 0 {
 		return &gerrit.Error{Status: 500, Body: "Internal server error"}
