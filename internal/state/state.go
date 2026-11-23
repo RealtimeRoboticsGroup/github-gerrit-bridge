@@ -138,6 +138,12 @@ type Revision struct {
 	// Imported is set for a patch set the bridge uploaded from GitHub:
 	// Gerrit says its author uploaded it, and no real uploader.
 	Imported bool `json:"imported,omitempty"`
+	// Exported is set for a patch set the bridge pushed to GitHub from
+	// Gerrit: Gerrit's own commit, or its export appended to the PR. Only
+	// such a patch set is its uploader's doing to the reviewer sync; one
+	// recorded otherwise (a GitHub push with its tree, say) may be an
+	// import whose own record was lost (fourth review).
+	Exported bool `json:"exported,omitempty"`
 }
 
 // Head is a commit the PR's branch was seen at (heads.json): from At,

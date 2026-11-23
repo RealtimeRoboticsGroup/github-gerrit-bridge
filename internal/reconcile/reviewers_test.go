@@ -80,7 +80,7 @@ func (e *commentsEnv) exported(t *testing.T, by gerrit.AccountInfo, ps int, sha 
 	t.Helper()
 	ts := e.g.upload(by, ps, sha)
 	if err := updateStateFn(context.Background(), e.st, 5, "export", func(st *state.Change) {
-		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: sha, GitHubSHA: sha})
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: sha, GitHubSHA: sha, Exported: true})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestUnrecordedPatchSetsWait(t *testing.T) {
 		t.Errorf("seen patch set %d before it is recorded, want 3", got)
 	}
 	if err := updateStateFn(context.Background(), e.st, 5, "export", func(st *state.Change) {
-		st.Revisions = append(st.Revisions, state.Revision{PatchSet: 4, GerritSHA: "sha4", GitHubSHA: "sha4"})
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: 4, GerritSHA: "sha4", GitHubSHA: "sha4", Exported: true})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -886,4 +886,58 @@ func TestReviewerAccounts(t *testing.T) {
 	if got, ok, err := r.GitHubFor(ctx, brt); ok || err != nil {
 		t.Errorf("with a directory, by username: %+v %v", got, err)
 	}
+}
+
+// A GitHub push with the tree of an imported patch set (a commit-message
+// fix the importer did not take, say) is recorded as on GitHub, but not
+// as exported: the import stays nobody's upload, whether or not its own
+// record was kept (fourth review).
+func TestAGitHubPushWithAnImportsTreeIsNotAnExport(t *testing.T) {
+	for _, kept := range []bool{true, false} {
+		s := newSites(t)
+		ctx := context.Background()
+		c, store := s.code(ctx)
+		m0 := s.commit("", "a.txt", "a\n", "base")
+		h1 := s.commit(m0, "b.txt", "b\n", "Mine")
+		ps1 := s.commit(m0, "b.txt", "b\n", "Mine\n\nChange-Id: "+cid(1)+"\n")
+		h2 := s.commit(m0, "b.txt", "b\n", "Mine, typo fixed")
+		st := &state.Change{State: state.ChangeState{Change: 1, PR: 10, Branch: "main", Origin: "github", HeadBranch: "feature", Lifecycle: "NEW"}}
+		if kept {
+			st.Revisions = []state.Revision{{PatchSet: 1, GerritSHA: ps1, GitHubSHA: h1, Imported: true}}
+		}
+		s.save(ctx, store, 1, st)
+		st, _ = store.Load(ctx, 1)
+		snap := &Snapshot{Branch: "main", Changes: map[int]*GerritChange{1: {Number: 1, Status: "NEW", PatchSet: 1, Revision: ps1, Subject: "Mine"}},
+			State: map[int]*state.Change{1: st}, PRs: map[int]*github.PullRequest{10: s.pr(10, "feature", h2, "main", "brt")},
+			GitHubBranches: map[string]string{"feature": h2}, SameTree: map[int]string{1: h2}}
+		p := &Plan{Desired: map[int]*Desired{1: {Change: 1, Head: "feature", PR: 10, Base: "main"}}}
+		if err := c.record(ctx, snap, p, newSkips()); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := store.Load(ctx, 1)
+		if !slices.ContainsFunc(got.Revisions, func(r state.Revision) bool { return r.GerritSHA == ps1 && r.GitHubSHA == h2 }) {
+			t.Errorf("import record kept %v: GitHub's head not recorded: %+v", kept, got.Revisions)
+		}
+		if (&commentSnapshot{revisions: got.Revisions}).exported(ps1) {
+			t.Errorf("import record kept %v: the import counts as exported: %+v", kept, got.Revisions)
+		}
+	}
+}
+
+// Recorded as imported, the patch set is nobody's upload, even with an
+// export of it recorded too (fourth review).
+func TestAnImportIsNeverAnExport(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(bridgeGA, mike)
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.imported(t, ownerGA, 3, "sha3")
+	if err := updateStateFn(context.Background(), e.st, 5, "record", func(st *state.Change) {
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: 3, GerritSHA: "sha3", GitHubSHA: "gh3b", Exported: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.sync(t)
+	e.wantAsks(t)
 }

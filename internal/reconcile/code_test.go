@@ -4911,7 +4911,7 @@ func TestGerritBornPushIsRecordedVettedOnlyWhereGitHubOwns(t *testing.T) {
 			t.Fatal(err)
 		}
 		st, _ := store.Load(ctx, 1)
-		if len(st.Revisions) != 1 || st.Revisions[0].Vetted != owned {
+		if len(st.Revisions) != 1 || st.Revisions[0].Vetted != owned || !st.Revisions[0].Exported {
 			t.Errorf("GitHub owns %v: recorded %+v", owned, st.Revisions)
 		}
 		// Patch set 2, appended to the PR's history: the same.
@@ -4924,7 +4924,7 @@ func TestGerritBornPushIsRecordedVettedOnlyWhereGitHubOwns(t *testing.T) {
 			t.Fatal(err)
 		}
 		st, _ = store.Load(ctx, 1)
-		if len(st.Revisions) != 2 || st.Revisions[1].Vetted != owned {
+		if len(st.Revisions) != 2 || st.Revisions[1].Vetted != owned || !st.Revisions[1].Exported {
 			t.Errorf("GitHub owns %v: patch set 2 recorded %+v", owned, st.Revisions)
 		}
 	}

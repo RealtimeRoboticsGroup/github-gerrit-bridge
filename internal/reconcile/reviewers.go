@@ -475,13 +475,14 @@ func (c *Comments) actorAt(s *commentSnapshot, a gerrit.AttentionSetInfo) (gerri
 }
 
 // exported reports whether the bridge recorded Gerrit commit sha as
-// exported from Gerrit: recorded, and not imported. Only then is a patch
+// exported from Gerrit (state.Revision.Exported), and never as imported. Only then is a patch
 // set its uploader's: an import, which Gerrit says its author uploaded,
 // is not theirs, nor is one not yet recorded either way (an import whose
 // state the bridge has yet to save). Each export queues a comment sync
 // once recorded (Code.OnExported).
 func (s *commentSnapshot) exported(sha string) bool {
-	return slices.ContainsFunc(s.revisions, func(r state.Revision) bool { return r.GerritSHA == sha && !r.Imported })
+	return slices.ContainsFunc(s.revisions, func(r state.Revision) bool { return r.GerritSHA == sha && r.Exported }) &&
+		!slices.ContainsFunc(s.revisions, func(r state.Revision) bool { return r.GerritSHA == sha && r.Imported })
 }
 
 // recorded reports whether the bridge recorded Gerrit commit sha, as

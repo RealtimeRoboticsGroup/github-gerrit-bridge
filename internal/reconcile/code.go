@@ -2596,7 +2596,8 @@ func (c *Code) applyOne(ctx context.Context, s *Snapshot, a Action) error {
 			tree, parentTree := c.trees(ctx, ap.Revision)
 			err := c.updateState(ctx, ap.Change, fmt.Sprintf("Export patch set %d to %s", ap.PatchSet, name), func(st *state.Change) {
 				st.Revisions = append(st.Revisions, state.Revision{PatchSet: ap.PatchSet, GerritSHA: ap.Revision,
-					GitHubSHA: commit, Tree: tree, ParentTree: parentTree, At: time.Now(), Vetted: st.State.Origin == "github" || c.GitHubOwned})
+					GitHubSHA: commit, Tree: tree, ParentTree: parentTree, At: time.Now(), Vetted: st.State.Origin == "github" || c.GitHubOwned,
+					Exported: true})
 				if st.State.PR != 0 {
 					// The PR's head from the push on: a review a minute
 					// on is about it, however long before a sync reads the
@@ -2972,6 +2973,9 @@ func (c *Code) record(ctx context.Context, s *Snapshot, p *Plan, skip *skips) er
 				st.Revisions = append(st.Revisions, state.Revision{
 					PatchSet: ch.PatchSet, GerritSHA: ch.Revision, GitHubSHA: gh,
 					Tree: tree, ParentTree: parentTree, At: time.Now(), Vetted: st.State.Origin == "github" || c.GitHubOwned,
+					// Exported only as Gerrit's own commit: a head with its
+					// tree may be the push an import was made of.
+					Exported: gh == ch.Revision,
 				})
 			}
 		}})
