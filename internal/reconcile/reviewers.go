@@ -346,8 +346,10 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	}
 
 	next := &state.Reviewers{At: s.at, PatchSet: s.current}
-	if s.pull.Draft {
-		next.PatchSet = prev.PatchSet // asked again once ready
+	if s.pull.Draft || !s.recorded(s.revision) {
+		// Asked again once ready, or once the bridge has recorded where
+		// the patch set came from.
+		next.PatchSet = prev.PatchSet
 	}
 	for _, key := range attentionNow {
 		if !notSeen[key] {
@@ -385,7 +387,10 @@ func (c *Comments) actorAt(s *commentSnapshot, a gerrit.AttentionSetInfo) (gerri
 	var who []gerrit.AccountInfo
 	mirrored := false
 	for sha, r := range s.revInfos {
-		if r.Created == a.LastUpdate && s.imported(sha) {
+		// Imported, or not yet recorded either way: an import whose state
+		// the bridge has yet to save (or failed to) looks like its
+		// author's own upload.
+		if r.Created == a.LastUpdate && !s.exported(sha) {
 			mirrored = true
 		}
 	}
@@ -414,16 +419,26 @@ func (c *Comments) actorAt(s *commentSnapshot, a gerrit.AttentionSetInfo) (gerri
 	return who[0], true
 }
 
-// uploaderOf is who uploaded the current patch set, unless the bridge
-// imported it (which Gerrit says its author uploaded).
+// uploaderOf is who uploaded the current patch set, once the bridge has
+// recorded exporting it: an import, which Gerrit says its author uploaded,
+// is not theirs, nor is one not yet recorded either way (an import whose
+// state the bridge has yet to save). Each export queues a comment sync
+// once recorded (Code.OnExported).
 func (c *Comments) uploaderOf(s *commentSnapshot) (gerrit.AccountInfo, bool) {
 	r, ok := s.revInfos[s.revision]
-	return uploader(r), ok && !s.imported(s.revision)
+	return uploader(r), ok && s.exported(s.revision)
 }
 
-// imported reports whether the bridge imported Gerrit commit sha.
-func (s *commentSnapshot) imported(sha string) bool {
-	return slices.ContainsFunc(s.revisions, func(r state.Revision) bool { return r.GerritSHA == sha && r.Imported })
+// exported reports whether the bridge recorded Gerrit commit sha as
+// exported from Gerrit: recorded, and not imported.
+func (s *commentSnapshot) exported(sha string) bool {
+	return slices.ContainsFunc(s.revisions, func(r state.Revision) bool { return r.GerritSHA == sha && !r.Imported })
+}
+
+// recorded reports whether the bridge recorded Gerrit commit sha, as
+// imported or exported.
+func (s *commentSnapshot) recorded(sha string) bool {
+	return slices.ContainsFunc(s.revisions, func(r state.Revision) bool { return r.GerritSHA == sha })
 }
 
 // uploader is who really uploaded r: for an import, the bridge.

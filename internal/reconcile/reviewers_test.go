@@ -74,6 +74,19 @@ func (e *commentsEnv) reviewed(u github.User, state string) {
 	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: state, User: u, CommitID: "sha2", SubmittedAt: time.Now()})
 }
 
+// exported is ps, uploaded to Gerrit by by, which the bridge records once
+// it has pushed it to the PR.
+func (e *commentsEnv) exported(t *testing.T, by gerrit.AccountInfo, ps int, sha string) string {
+	t.Helper()
+	ts := e.g.upload(by, ps, sha)
+	if err := updateStateFn(context.Background(), e.st, 5, "export", func(st *state.Change) {
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: sha, GitHubSHA: sha})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return ts
+}
+
 // imported is the bridge importing patch set ps as sha from a GitHub push
 // by by: Gerrit says by uploaded it, with no real uploader.
 func (e *commentsEnv) imported(t *testing.T, by gerrit.AccountInfo, ps int, sha string) string {
@@ -236,13 +249,13 @@ func TestNewPatchSetAsksChangeRequestersAgain(t *testing.T) {
 	e.sync(t)
 	e.g.upload(bridgeGA, 3, "sha3")
 	e.sync(t)
-	e.g.upload(stranger, 4, "sha4")
+	e.exported(t, stranger, 4, "sha4")
 	e.sync(t)
 	e.wantAsks(t, "+jane-gh", "+mike-gh")
-	e.g.upload(austin, 5, "sha5")
+	e.exported(t, austin, 5, "sha5")
 	e.sync(t)
 	e.wantAsks(t, "+jane-gh", "+mike-gh", "+mike-gh")
-	e.g.upload(austin, 6, "sha6") // asked already: not again
+	e.exported(t, austin, 6, "sha6") // asked already: not again
 	e.sync(t)
 	e.wantAsks(t, "+jane-gh", "+mike-gh", "+mike-gh")
 	// Changes requested again: asked again by the next patch set, not
@@ -252,7 +265,7 @@ func TestNewPatchSetAsksChangeRequestersAgain(t *testing.T) {
 	e.wantAsks(t, "+jane-gh", "+mike-gh", "+mike-gh")
 	// Nor while a draft; once it is ready.
 	e.h.draft = true
-	e.g.upload(austin, 7, "sha7")
+	e.exported(t, austin, 7, "sha7")
 	e.sync(t)
 	e.wantAsks(t, "+jane-gh", "+mike-gh", "+mike-gh")
 	e.h.draft = false
@@ -327,6 +340,48 @@ func TestGitHubRequestsReachGerrit(t *testing.T) {
 // never has the bridge write to GitHub for its reviewers: what Gerrit
 // shows of it is the bridge's (imports, mirrored reviews, reviewers it
 // added), though done as the PR's trusted author.
+// A patch set is someone's upload only once the bridge has recorded
+// exporting it: until then it may be an import whose state the bridge
+// has yet to save (third review).
+func TestUnrecordedPatchSetsWait(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(bridgeGA, mike)
+	e.g.addReviewer(bridgeGA, jane)
+	e.g.setAttention(jane, e.g.tick(), "x", false)
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	// owen pushes to his PR; the bridge imports it, and its state is not
+	// saved. Gerrit says owen uploaded it, and hands jane the turn with it.
+	ts := e.g.upload(ownerGA, 3, "sha3")
+	e.g.setAttention(jane, ts, "Someone replied", true)
+	e.sync(t)
+	e.wantAsks(t)
+	// Recorded later as the import it was: still nobody asked.
+	if err := updateStateFn(context.Background(), e.st, 5, "import", func(st *state.Change) {
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: 3, GerritSHA: "sha3", GitHubSHA: "sha3", Imported: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.sync(t)
+	e.wantAsks(t)
+	// austin's Gerrit upload waits for its export to be recorded, then
+	// asks.
+	e.g.upload(austin, 4, "sha4")
+	e.sync(t)
+	e.wantAsks(t)
+	if got := e.seen(t).PatchSet; got != 3 {
+		t.Errorf("seen patch set %d before it is recorded, want 3", got)
+	}
+	if err := updateStateFn(context.Background(), e.st, 5, "export", func(st *state.Change) {
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: 4, GerritSHA: "sha4", GitHubSHA: "sha4"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+}
+
 func TestGitHubOnlyPRNeverAsksOnGitHub(t *testing.T) {
 	e, _ := reviewersEnv(t)
 	e.g.addReviewer(bridgeGA, mike)
