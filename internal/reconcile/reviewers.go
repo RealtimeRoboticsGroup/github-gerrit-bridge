@@ -221,7 +221,13 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	// Gerrit → GitHub. Not while a draft: it is their turn once ready.
 	for _, key := range attentionNow {
 		a := attention[key]
-		if wasAttention[key] || !reviewer[key] || sameAccount(a.Account, s.owner) {
+		if wasAttention[key] || sameAccount(a.Account, s.owner) {
+			continue
+		}
+		if !reviewer[key] {
+			// A CC's turn is not seen: made a reviewer while it is still
+			// theirs, they are asked then (third review).
+			notSeen[key] = true
 			continue
 		}
 		if s.pull.Draft {

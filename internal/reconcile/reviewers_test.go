@@ -301,6 +301,21 @@ func TestTheBridgesOwnTurnsAreSeen(t *testing.T) {
 	}
 }
 
+// A CC whose turn it is is asked once made a reviewer, though it was
+// their turn already (third review).
+func TestCCMadeReviewerIsAsked(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.reviewers = map[string][]gerrit.AccountInfo{"CC": {jane}}
+	e.g.reply(austin, "Patch Set 2:\n\nover to jane", []gerrit.AccountInfo{jane}, nil)
+	e.sync(t)
+	e.wantAsks(t)
+	ts := e.g.tick()
+	e.g.reviewers = map[string][]gerrit.AccountInfo{"REVIEWER": {jane}}
+	e.g.updates = append(e.g.updates, gerrit.ReviewerUpdate{Updated: ts, UpdatedBy: austin, Reviewer: jane, State: "REVIEWER"})
+	e.sync(t)
+	e.wantAsks(t, "+jane-gh")
+}
+
 func TestGitHubRequestsReachGerrit(t *testing.T) {
 	e, _ := reviewersEnv(t)
 	e.h.requested = []github.User{janeGH}
