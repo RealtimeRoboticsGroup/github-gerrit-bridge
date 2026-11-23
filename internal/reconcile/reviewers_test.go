@@ -539,15 +539,30 @@ func TestRefusedRequests(t *testing.T) {
 	e.sync(t)
 	e.wantAsks(t, "+mike-gh")
 
-	e, a = reviewersEnv(t)
-	e.g.addReviewer(austin, mike)
-	e.h.refuseAsk = &github.APIError{Status: 422, Message: "Reviews may only be requested from collaborators."}
-	e.sync(t)
-	asked := a.asked
-	e.h.refuseAsk = nil
-	e.sync(t)
-	if len(e.h.asks) != 0 || a.asked != asked {
-		t.Errorf("a refused request was made again: %v", e.h.asks)
+	// Refused for good: not made again. Rate limited, or a conflict: for
+	// now.
+	for _, tc := range []struct {
+		err   *github.APIError
+		again bool
+	}{
+		{&github.APIError{Status: 422, Message: "Reviews may only be requested from collaborators."}, false},
+		{&github.APIError{Status: 403, Message: "Resource not accessible by integration"}, false},
+		{&github.APIError{Status: 404, Message: "Not Found"}, false},
+		{&github.APIError{Status: 403, Message: "secondary rate limit", RetryAfter: time.Minute}, true},
+		{&github.APIError{Status: 429, Message: "rate limited"}, true},
+		{&github.APIError{Status: 409, Message: "conflict"}, true},
+		{&github.APIError{Status: 502, Message: "Bad Gateway"}, true},
+	} {
+		e, a = reviewersEnv(t)
+		e.g.addReviewer(austin, mike)
+		e.h.refuseAsk = tc.err
+		e.sync(t)
+		asked := a.asked
+		e.h.refuseAsk = nil
+		e.sync(t)
+		if again := len(e.h.asks) != 0; again != tc.again || !tc.again && a.asked != asked {
+			t.Errorf("%d %s: asked again %v, want %v", tc.err.Status, tc.err.Message, e.h.asks, tc.again)
+		}
 	}
 
 	// Withdrawing, refused for now: tried again.
@@ -560,6 +575,16 @@ func TestRefusedRequests(t *testing.T) {
 	e.h.refuseAsk = nil
 	e.sync(t)
 	e.wantAsks(t, "+mike-gh", "-mike-gh")
+	// Refused for good: not tried again.
+	e, _ = reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.g.removeReviewer(austin, mike)
+	e.h.refuseAsk = &github.APIError{Status: 403, Message: "Resource not accessible by integration"}
+	e.sync(t)
+	e.h.refuseAsk = nil
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
 
 	// Gerrit refusing for good (an inactive account, say): not again; a
 	// conflict is for now.

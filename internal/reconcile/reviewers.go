@@ -243,7 +243,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		if _, asked := requested[gh.ID]; !ok || asked || gh.ID == s.pull.User.ID {
 			continue
 		}
-		if err := ask(gh); err != nil && !isUnprocessable(err) {
+		if err := ask(gh); err != nil && !githubRefusedForGood(err) {
 			notSeen[key] = true
 		}
 	}
@@ -275,7 +275,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		if err := c.GitHub.RemoveRequestedReviewers(ctx, pr, []string{u.Login}); err != nil {
 			c.Logger.Warn("withdrawing a review request on GitHub", "change", n, "pr", pr, "github_login", u.Login, "err", err)
-			if !isUnprocessable(err) {
+			if !githubRefusedForGood(err) {
 				stillSeen[key] = true
 			}
 			continue
@@ -477,6 +477,16 @@ func uploader(r gerrit.RevisionInfo) gerrit.AccountInfo {
 		return *r.RealUploader
 	}
 	return r.Uploader
+}
+
+// githubRefusedForGood reports whether GitHub refused err's request for good (a
+// 4xx other than a conflict or a rate limit: a 422 for someone who may not
+// review, a 403 or 404 for a token that may not): not made again every
+// sync, each a GitHub write (third review).
+func githubRefusedForGood(err error) bool {
+	var ae *github.APIError
+	return errors.As(err, &ae) && ae.Status >= 400 && ae.Status < 500 &&
+		ae.Status != http.StatusConflict && ae.Status != http.StatusTooManyRequests && ae.RetryAfter == 0
 }
 
 // refused reports whether Gerrit refused err's request for good (a 4xx
