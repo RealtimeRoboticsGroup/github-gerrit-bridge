@@ -400,7 +400,8 @@ not_asked() { ! asked "$1"; }
 wait_for "%r=AustinSchuhBRT asks AustinSchuhBRT to review PR #${N11}" asked AustinSchuhBRT
 # A review ends GitHub's request; the bridge does not make it again.
 brt api "repos/${R}/pulls/${N11}/reviews" -f event=COMMENT -f body="Rehearsal ${RUN}: looked." --silent
-looked() { has_message "${C11}" "Rehearsal ${RUN}: looked."; }
+# A review's body is a patch-set-level comment in Gerrit.
+looked() { gerrit "changes/${C11}/comments" | jq -e "[.[][] | select(.message | contains(\"Rehearsal ${RUN}: looked.\"))] | length > 0"; }
 wait_for "AustinSchuhBRT's review reaches Gerrit" looked
 read_it
 check "and they are not asked again" not_asked AustinSchuhBRT
@@ -408,7 +409,8 @@ check "and they are not asked again" not_asked AustinSchuhBRT
 me api -X POST "repos/${R}/pulls/${N11}/requested_reviewers" -f 'reviewers[]=AustinSchuhBRT' --silent
 wait_for "asked again on GitHub, by AustinSchuh" asked AustinSchuhBRT
 BRT_ID=$(gerrit 'accounts/AustinSchuhBRT' | jq ._account_id)
-gerrit_as AustinSchuh DELETE "changes/${C11}/reviewers/${BRT_ID}" >/dev/null
+# A body: with gerrit_as's JSON content type, Gerrit refuses an empty one.
+gerrit_as AustinSchuh DELETE "changes/${C11}/reviewers/${BRT_ID}" '{}' >/dev/null
 wait_for "removing them as a Gerrit reviewer withdraws it" not_asked AustinSchuhBRT
 in_gerrit() { gerrit "changes/${C11}/reviewers/" | jq -e '.[] | select(.username == "AustinSchuhBRT")'; }
 check "and they are no longer a Gerrit reviewer" eval '! in_gerrit'
