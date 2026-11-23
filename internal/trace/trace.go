@@ -6,7 +6,9 @@
 package trace
 
 import (
+	"cmp"
 	"context"
+	"slices"
 	"sync"
 	"time"
 )
@@ -135,7 +137,11 @@ func (t *Trace) Spans() ([]Span, int) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return append([]Span(nil), t.spans...), t.dropped
+	// A call is added once it returns: calls made alongside each other
+	// may return in another order than they began.
+	spans := slices.Clone(t.spans)
+	slices.SortStableFunc(spans, func(a, b Span) int { return cmp.Compare(a.Start, b.Start) })
+	return spans, t.dropped
 }
 
 // Started is when the run began.

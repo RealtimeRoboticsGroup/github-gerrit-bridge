@@ -39,6 +39,22 @@ func TestTrace(t *testing.T) {
 }
 
 // A run's writes are named up to MaxWrites and all counted; with no
+// Calls made alongside each other are listed in the order they began,
+// though added as they returned.
+func TestSpansInTheOrderBegun(t *testing.T) {
+	tr := New()
+	ctx := With(context.Background(), tr)
+	end := Region(ctx, "read")
+	at := time.Now()
+	tr.Add(at.Add(2*time.Millisecond), time.Millisecond, "second", nil)
+	tr.Add(at.Add(time.Millisecond), 10*time.Millisecond, "first", nil)
+	end()
+	spans, _ := tr.Spans()
+	if len(spans) != 3 || spans[0].What != "read" || spans[1].What != "first" || spans[2].What != "second" {
+		t.Errorf("spans %+v", spans)
+	}
+}
+
 // Trace, Wrote records nothing.
 func TestWrites(t *testing.T) {
 	tr := New()
