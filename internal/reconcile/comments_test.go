@@ -316,9 +316,13 @@ func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ i
 		f.nextID++
 		f.messages = append(f.messages, gerrit.ChangeMessage{ID: fmt.Sprintf("bm%d", f.nextID), Author: author, Tag: in.Tag, Date: ts,
 			RevisionNumber: ps, Message: strings.TrimSpace(head + "\n\n" + in.Message)})
-		// Gerrit: a reply by someone else hands the owner the turn.
+		// Gerrit: a reply by someone else hands the owner the turn, and
+		// whoever replied has had theirs.
 		if f.owner.AccountID != 0 && author.AccountID != f.owner.AccountID && !in.IgnoreAutomaticAttentionSetRules {
 			f.setAttention(f.owner, ts, "Someone else replied", true)
+		}
+		if !in.IgnoreAutomaticAttentionSetRules {
+			f.setAttention(author, ts, "removed on reply", false)
 		}
 	}
 	for path, cs := range in.Comments {
