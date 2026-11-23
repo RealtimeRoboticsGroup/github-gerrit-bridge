@@ -259,17 +259,32 @@ func checkGroup(ctx context.Context, gl groupLister, group string, seen map[stri
 	return nil
 }
 
-type noNewPinsKey struct{}
-
-// withoutNewPins is ctx for a lookup that only asks: it takes pins as
-// they are and writes none (nor keeps its answer for others). The
-// reviewer sync's reverse lookups are made for whoever a stranger names a
-// reviewer, not for anyone who acted (review of the reviewer sync).
-func withoutNewPins(ctx context.Context) context.Context {
-	return context.WithValue(ctx, noNewPinsKey{}, true)
+// askOnly is a lookup that only asks, for the reviewer sync: it checks
+// all a lookup checks, but writes no pin (as a dry run), nor keeps its
+// answer for others: it is made for whoever a reviewer or request names,
+// not for anyone who acted (review of the reviewer sync). And it says
+// when it could not answer, which Lookup without a directory takes for
+// nobody.
+func askOnly(ctx context.Context, id Identity, gh github.User) (string, bool, error) {
+	p := &lookupProbe{}
+	user, ok, err := id.Lookup(context.WithValue(ctx, lookupProbeKey{}, p), gh)
+	if err == nil && p.err != nil {
+		return "", false, &IdentityUnknown{p.err}
+	}
+	return user, ok, err
 }
 
-func mayPin(ctx context.Context) bool { return ctx.Value(noNewPinsKey{}) == nil }
+type lookupProbeKey struct{}
+
+// lookupProbe marks an askOnly lookup, and keeps the error it met.
+type lookupProbe struct{ err error }
+
+func probeOf(ctx context.Context) *lookupProbe {
+	p, _ := ctx.Value(lookupProbeKey{}).(*lookupProbe)
+	return p
+}
+
+func mayPin(ctx context.Context) bool { return probeOf(ctx) == nil }
 
 // byLogin is login's Gerrit account as a lookup finds it (and, with
 // pins, the GitHub id it was checked against), reused for userCacheTTL
@@ -305,6 +320,9 @@ func (u *Users) byLogin(ctx context.Context, login string, fresh bool) cachedUse
 		// Don't cache errors; fall back to the bridge this time.
 		if u.Logger != nil {
 			u.Logger.Warn("looking up Gerrit account", "github_login", login, "err", err)
+		}
+		if p := probeOf(ctx); p != nil && !github.IsNotFound(err) {
+			p.err = err // GitHub having no such login is nobody
 		}
 		return cachedUser{}
 	}
@@ -639,11 +657,8 @@ func (u *Users) pin(ctx context.Context, login, user string, account int, id int
 			if err != nil {
 				return false, err
 			}
-			if !mayPin(ctx) {
-				return false, nil
-			}
 			p, ok = state.Identity{GitHubID: oid, GitHubLogin: over, Pinned: time.Now().UTC()}, true
-			if !u.DryRun {
+			if !u.DryRun && mayPin(ctx) {
 				ids.ByUser[key] = p
 				err := u.Pins.SaveIdentities(ctx, ids, fmt.Sprintf("Pin %s to GitHub @%s (id %d), its override", user, over, oid))
 				if errors.Is(err, state.ErrConflict) {
@@ -690,10 +705,7 @@ func (u *Users) pin(ctx context.Context, login, user string, account int, id int
 				return false, nil
 			}
 		}
-		if !mayPin(ctx) {
-			return false, nil
-		}
-		if u.DryRun {
+		if u.DryRun || !mayPin(ctx) {
 			return true, nil
 		}
 		ids.ByUser[key] = state.Identity{GitHubID: id, GitHubLogin: login, Pinned: time.Now().UTC()}

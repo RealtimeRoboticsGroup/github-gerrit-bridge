@@ -3,8 +3,10 @@ package reconcile
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -107,7 +109,7 @@ func (r *ReviewerAccounts) GitHubFor(ctx context.Context, a gerrit.AccountInfo) 
 
 // check is gh if the mapping maps it to a.
 func (r *ReviewerAccounts) check(ctx context.Context, a gerrit.AccountInfo, gh github.User) (github.User, bool, error) {
-	user, ok, err := r.Users.Lookup(withoutNewPins(ctx), gh)
+	user, ok, err := askOnly(ctx, r.Users, gh)
 	if err != nil || !ok || !strings.EqualFold(user, a.Username) {
 		return github.User{}, false, err
 	}
@@ -277,7 +279,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		if was && !noted[id] {
 			continue
 		}
-		user, ok, err := c.Users.Lookup(withoutNewPins(ctx), u)
+		user, ok, err := askOnly(ctx, c.Users, u)
 		if err != nil {
 			c.Logger.Warn("finding the Gerrit account of someone asked to review on GitHub", "change", n, "github_login", u.Login, "err", err)
 			if !was {
@@ -293,7 +295,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 				"They are added once they have one (by signing in to Gerrit).", u.Login, s.pull.HTMLURL)
 			if err := c.Gerrit.SetReview(ctx, n, s.revision, gerrit.ReviewInput{Message: msg, Tag: commentTag, Notify: "OWNER"}); err != nil {
 				c.Logger.Warn("saying in Gerrit that someone asked to review on GitHub has no Gerrit account", "change", n, "github_login", u.Login, "err", err)
-				notRequested[id] = true
+				if !refused(err) {
+					notRequested[id] = true
+				}
 				continue
 			}
 			noted[id] = true
@@ -309,9 +313,11 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		} else if _, in := attention[key]; !in {
 			err = c.Gerrit.AddToAttentionSet(ctx, n, user, reviewerReason+"asked to review on GitHub")
 		}
-		if err != nil {
+		if err != nil && !refused(err) {
 			c.Logger.Warn("making someone asked to review on GitHub a Gerrit reviewer", "change", n, "gerrit_user", user, "github_login", u.Login, "err", err)
 			notRequested[id] = true
+		} else if err != nil {
+			c.Logger.Info("Gerrit will not make someone asked to review on GitHub a reviewer", "change", n, "gerrit_user", user, "github_login", u.Login, "err", err)
 		}
 	}
 	for _, id := range slices.Sorted(maps.Keys(wasRequested)) {
@@ -319,7 +325,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		u := wasRequested[id]
-		user, _, err := c.Users.Lookup(withoutNewPins(ctx), u)
+		user, _, err := askOnly(ctx, c.Users, u)
 		if err != nil {
 			stillRequested[id] = u
 			continue
@@ -331,7 +337,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		// Their review ends it too (mirrored as them, it usually has).
 		if err := c.Gerrit.RemoveFromAttentionSet(ctx, n, a.Account.AccountID, reviewerReason+"review request ended"); err != nil {
 			c.Logger.Warn("taking someone no longer asked on GitHub out of the attention set", "change", n, "gerrit_user", user, "err", err)
-			stillRequested[id] = u
+			if !refused(err) {
+				stillRequested[id] = u
+			}
 			continue
 		}
 		notSeen[strings.ToLower(user)] = true
@@ -372,32 +380,50 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 // trusted (Checks.CheckUntrusted), so what it does as itself is not
 // carried either.
 func (c *Comments) actorAt(s *commentSnapshot, a gerrit.AttentionSetInfo) (gerrit.AccountInfo, bool) {
-	var who *gerrit.AccountInfo
+	// Gerrit's times are to the second: two people's doings in one second
+	// cannot be told apart, so neither is taken (review of the redesign).
+	var who []gerrit.AccountInfo
 	mirrored := false
+	for sha, r := range s.revInfos {
+		if r.Created == a.LastUpdate && s.imported(sha) {
+			mirrored = true
+		}
+	}
 	for _, m := range s.allMessages {
 		if m.Date == a.LastUpdate {
 			if m.RealAuthor != nil || isBridgeTag(m.Tag) {
 				mirrored = true
 			} else {
-				who = &m.Author
+				who = append(who, m.Author)
 			}
 		}
 	}
 	for _, u := range s.reviewerUpdates {
-		if u.Updated == a.LastUpdate {
-			who = &u.UpdatedBy
+		if u.Updated == a.LastUpdate && sameAccount(u.Reviewer, a.Account) {
+			who = append(who, u.UpdatedBy)
 		}
 	}
-	if mirrored || who == nil {
+	if mirrored || len(who) == 0 {
 		return gerrit.AccountInfo{}, false
 	}
-	return *who, true
+	for _, w := range who[1:] {
+		if !sameAccount(w, who[0]) {
+			return gerrit.AccountInfo{}, false
+		}
+	}
+	return who[0], true
 }
 
-// uploaderOf is who uploaded the current patch set.
+// uploaderOf is who uploaded the current patch set, unless the bridge
+// imported it (which Gerrit says its author uploaded).
 func (c *Comments) uploaderOf(s *commentSnapshot) (gerrit.AccountInfo, bool) {
 	r, ok := s.revInfos[s.revision]
-	return uploader(r), ok
+	return uploader(r), ok && !s.imported(s.revision)
+}
+
+// imported reports whether the bridge imported Gerrit commit sha.
+func (s *commentSnapshot) imported(sha string) bool {
+	return slices.ContainsFunc(s.revisions, func(r state.Revision) bool { return r.GerritSHA == sha && r.Imported })
 }
 
 // uploader is who really uploaded r: for an import, the bridge.
@@ -406,6 +432,13 @@ func uploader(r gerrit.RevisionInfo) gerrit.AccountInfo {
 		return *r.RealUploader
 	}
 	return r.Uploader
+}
+
+// refused reports whether Gerrit refused err's request for good (a 4xx
+// other than a conflict or a limit): not tried again every sync.
+func refused(err error) bool {
+	var ge *gerrit.Error
+	return errors.As(err, &ge) && ge.Status >= 400 && ge.Status < 500 && ge.Status != http.StatusConflict && ge.Status != http.StatusTooManyRequests
 }
 
 // latestReviews is each reviewer's review that GitHub counts: their

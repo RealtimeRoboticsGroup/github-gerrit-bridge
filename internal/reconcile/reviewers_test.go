@@ -74,6 +74,19 @@ func (e *commentsEnv) reviewed(u github.User, state string) {
 	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: state, User: u, CommitID: "sha2", SubmittedAt: time.Now()})
 }
 
+// imported is the bridge importing patch set ps as sha from a GitHub push
+// by by: Gerrit says by uploaded it, with no real uploader.
+func (e *commentsEnv) imported(t *testing.T, by gerrit.AccountInfo, ps int, sha string) string {
+	t.Helper()
+	ts := e.g.upload(by, ps, sha)
+	if err := updateStateFn(context.Background(), e.st, 5, "import", func(st *state.Change) {
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: sha, GitHubSHA: sha, Imported: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return ts
+}
+
 func (e *commentsEnv) wantAsks(t *testing.T, want ...string) {
 	t.Helper()
 	if !slices.Equal(e.h.asks, want) {
@@ -101,6 +114,28 @@ func TestGerritReviewerIsAskedOnGitHub(t *testing.T) {
 	if _, in := e.g.attention[mike.AccountID]; in || len(e.g.reviewers["REVIEWER"]) != 1 {
 		t.Errorf("after mike's review: attention %+v, reviewers %+v", e.g.attention, e.g.reviewers)
 	}
+}
+
+// Gerrit's times are to the second: a trusted person and a stranger in
+// the same second cannot be told apart, so neither is taken; and a
+// reviewer update is about whom it names.
+func TestOneSecondTwoPeople(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.reviewers = map[string][]gerrit.AccountInfo{"REVIEWER": {mike, jane}}
+	ts := e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "a", Author: austin, Date: ts, Message: "PTAL"})
+	e.g.updates = append(e.g.updates, gerrit.ReviewerUpdate{Updated: ts, UpdatedBy: stranger, Reviewer: mike, State: "REVIEWER"})
+	e.g.setAttention(mike, ts, "Reviewer was added", true)
+	e.sync(t)
+	e.wantAsks(t)
+	// austin's reply in the same second as a stranger adding someone
+	// else: jane's turn is austin's doing.
+	ts = e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "b", Author: austin, Date: ts, Message: "PTAL"})
+	e.g.updates = append(e.g.updates, gerrit.ReviewerUpdate{Updated: ts, UpdatedBy: stranger, Reviewer: gerrit.AccountInfo{AccountID: 31, Username: "y"}, State: "REVIEWER"})
+	e.g.setAttention(jane, ts, "Someone replied", true)
+	e.sync(t)
+	e.wantAsks(t, "+jane-gh")
 }
 
 // Only a trusted person, in Gerrit, asks: not a stranger, not the bridge,
@@ -299,10 +334,18 @@ func TestGitHubOnlyPRNeverAsksOnGitHub(t *testing.T) {
 	e.sync(t)
 	e.reviewed(mikeGH, "CHANGES_REQUESTED")
 	e.sync(t)
-	// owen pushes to the PR: imported as him, which (were Gerrit to)
-	// hands jane the turn.
-	ts := e.g.uploadAs(ownerGA, &bridgeGA, 3, "sha3")
+	// owen pushes to the PR: imported as him, which Gerrit says he
+	// uploaded (were Gerrit to hand jane the turn with it, too).
+	e.g.setAttention(jane, e.g.tick(), "x", false)
+	e.sync(t)
+	ts := e.imported(t, ownerGA, 3, "sha3")
 	e.g.setAttention(jane, ts, "Someone replied", true)
+	e.sync(t)
+	// A commit-message edit the bridge made as him (Run-As).
+	ts = e.g.uploadAs(ownerGA, &bridgeGA, 4, "sha4")
+	e.g.setAttention(jane, ts, "Someone replied", false)
+	e.sync(t)
+	e.g.setAttention(jane, e.g.tick(), "x", true) // by nobody named
 	e.sync(t)
 	// owen comments on GitHub: mirrored as him (Run-As), handing mike
 	// the turn; once tagged as the bridge's, once only said to be
@@ -428,7 +471,39 @@ func TestRefusedRequests(t *testing.T) {
 	e.sync(t)
 	e.wantAsks(t, "+mike-gh", "-mike-gh")
 
-	// Gerrit refusing: tried again.
+	// Gerrit refusing for good (an inactive account, say): not again; a
+	// conflict is for now.
+	for _, refuse := range []func(*fakeGerrit){
+		func(f *fakeGerrit) { f.refuseReviewers = true },
+		func(f *fakeGerrit) { f.refuseNotes = true },
+	} {
+		for _, status := range []int{400, 409} {
+			e, _ = reviewersEnv(t)
+			e.c.Users = &Users{Overrides: map[string]string{"jane-gh": "jane"}}
+			e.h.requested = []github.User{janeGH, {Login: "new-gh", ID: 81, Type: "User"}}
+			refuse(e.g)
+			e.g.refuseStatus = status
+			e.sync(t)
+			attempts := e.g.attempts
+			e.sync(t)
+			if again := e.g.attempts != attempts; again != (status == 409) {
+				t.Errorf("refused %d: tried again %v", status, again)
+			}
+		}
+	}
+	e, _ = reviewersEnv(t)
+	e.h.requested = []github.User{janeGH}
+	e.sync(t)
+	e.h.requested = nil
+	e.g.refuseAttention, e.g.refuseStatus = true, 403
+	e.sync(t)
+	attempts := e.g.attempts
+	e.sync(t)
+	if e.g.attempts != attempts {
+		t.Errorf("a refusal for good was tried again: %d -> %d", attempts, e.g.attempts)
+	}
+
+	// Gerrit refusing for now: tried again.
 	e, _ = reviewersEnv(t)
 	e.h.requested = []github.User{janeGH}
 	e.g.refuseReviewers = true

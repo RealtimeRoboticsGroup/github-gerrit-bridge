@@ -843,7 +843,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 		if !im.DryRun && st != nil && knownHeads(st)[h] == "" {
 			tree, parentTree := revisionTrees(ctx, im.Mirror, s)
 			if err := updateStateFn(ctx, im.Store, cur.Number, fmt.Sprintf("Import PR #%d head %s as patch set %d", pr.Number, short(h), ps), func(st *state.Change) {
-				st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: s, GitHubSHA: h, Tree: tree, ParentTree: parentTree, At: time.Now(), Vetted: true})
+				st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: s, GitHubSHA: h, Tree: tree, ParentTree: parentTree, At: time.Now(), Vetted: true, Imported: true})
 			}); err != nil {
 				return nil, err
 			}
@@ -896,7 +896,7 @@ func (im *Importer) importLayer(ctx context.Context, branch string, l *layer, do
 	tree, parentTree := revisionTrees(ctx, im.Mirror, s)
 	err = updateStateFn(ctx, im.Store, ch.Number, fmt.Sprintf("Import PR #%d head %s as patch set %d", pr.Number, short(h), ps), func(st *state.Change) {
 		st.State.HeadBranch = pr.HeadKey(im.GitHub.Owner + "/" + im.GitHub.Repo)
-		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: s, GitHubSHA: h, Tree: tree, ParentTree: parentTree, At: time.Now(), Vetted: true})
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: s, GitHubSHA: h, Tree: tree, ParentTree: parentTree, At: time.Now(), Vetted: true, Imported: true})
 		st.Heads = withHead(st.Heads, h, l.listed)
 	})
 	if err != nil {

@@ -133,6 +133,9 @@ type Revision struct {
 	// branches, a Gerrit-born push (withhold). Not a Gerrit-born push
 	// where Gerrit owns them, which any registered user's change gets.
 	Vetted bool `json:"vetted,omitempty"`
+	// Imported is set for a patch set the bridge uploaded from GitHub:
+	// Gerrit says its author uploaded it, and no real uploader.
+	Imported bool `json:"imported,omitempty"`
 }
 
 // Head is a commit the PR's branch was seen at (heads.json): from At,

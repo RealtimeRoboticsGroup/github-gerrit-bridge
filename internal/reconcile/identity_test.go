@@ -344,34 +344,55 @@ func TestOneGitHubAccountIsNotPinnedToTwoGerritAccounts(t *testing.T) {
 }
 
 // A lookup that only asks (the reviewer sync's, for whoever a stranger
-// names) takes pins as they are: it writes none, finds nobody yet
-// unpinned, and keeps no answer that a later lookup would reuse.
+// names) checks all a lookup does but writes no pin, and keeps no answer
+// that a later lookup would reuse; it says when it could not answer.
 func TestLookupsWithoutNewPins(t *testing.T) {
 	ids := fakeIDs{"alice": 1, "bob": 2, "carol-gh": 3, "carol": 4}
 	pins := &memPins{ids: &state.Identities{ByUser: map[string]state.Identity{"alice": {GitHubID: 1, GitHubLogin: "alice"}}}}
 	u := &Users{Gerrit: fakeAccounts{users: []string{"alice", "bob", "carol"}}, Overrides: map[string]string{"carol-gh": "carol"},
 		Pins: pins, GitHub: ids}
-	ctx := withoutNewPins(context.Background())
-	if user, ok, err := u.Lookup(ctx, github.User{Login: "alice", ID: 1}); err != nil || !ok || user != "alice" {
-		t.Errorf("pinned alice: %q %v %v", user, ok, err)
-	}
-	// carol: by her override's login, and by her username (which the
-	// override says is not hers).
-	for _, gh := range []github.User{{Login: "bob", ID: 2}, {Login: "carol-gh", ID: 3}, {Login: "carol", ID: 4}} {
-		if user, ok, err := u.Lookup(ctx, gh); err != nil || ok {
-			t.Errorf("unpinned %s: %q %v %v", gh.Login, user, ok, err)
+	ctx := context.Background()
+	// alice pinned; bob not yet; carol by her override's login; not by
+	// her username, which the override says is not hers.
+	for _, c := range []struct {
+		gh   github.User
+		want string
+	}{{github.User{Login: "alice", ID: 1}, "alice"}, {github.User{Login: "bob", ID: 2}, "bob"},
+		{github.User{Login: "carol-gh", ID: 3}, "carol"}, {github.User{Login: "carol", ID: 4}, ""}} {
+		if user, ok, err := askOnly(ctx, u, c.gh); err != nil || ok != (c.want != "") || user != c.want {
+			t.Errorf("%s: %q %v %v, want %q", c.gh.Login, user, ok, err, c.want)
 		}
-	}
-	if len(pins.ids.ByUser) != 1 {
-		t.Errorf("pinned: %+v", pins.ids.ByUser)
 	}
 	// The reviewer sync's reverse lookup is such a lookup.
 	r := &ReviewerAccounts{Users: u, GitHub: fakeUsersByID{2: {Login: "bob", ID: 2}}, MatchUsernames: true}
-	if gh, ok, err := r.GitHubFor(context.Background(), gerrit.AccountInfo{AccountID: 2, Username: "bob"}); ok || err != nil || len(pins.ids.ByUser) != 1 {
-		t.Errorf("reverse lookup of bob: %+v %v %v, pins %+v", gh, ok, err, pins.ids.ByUser)
+	if gh, ok, err := r.GitHubFor(ctx, gerrit.AccountInfo{AccountID: 2, Username: "bob"}); !ok || err != nil || gh.ID != 2 {
+		t.Errorf("reverse lookup of bob: %+v %v %v", gh, ok, err)
 	}
-	// Asked for real, bob is found (and pinned): nothing was kept.
-	if user, ok, err := u.Lookup(context.Background(), github.User{Login: "bob", ID: 2}); err != nil || !ok || user != "bob" {
-		t.Errorf("bob for real: %q %v %v", user, ok, err)
+	if len(pins.ids.ByUser) != 1 || len(u.cache) != 0 {
+		t.Errorf("pinned %+v, kept %+v", pins.ids.ByUser, u.cache)
 	}
+	// Asked for real, bob is found and pinned.
+	if user, ok, err := u.Lookup(ctx, github.User{Login: "bob", ID: 2}); err != nil || !ok || user != "bob" || pins.ids.ByUser["bob"].GitHubID != 2 {
+		t.Errorf("bob for real: %q %v %v, pins %+v", user, ok, err, pins.ids.ByUser)
+	}
+	// Gerrit or GitHub not answering: unknown, not nobody (Lookup takes
+	// it for nobody without a directory).
+	u = &Users{Gerrit: fakeAccounts{users: []string{"dave"}}, Pins: pins, GitHub: fakeIDs{}}
+	if _, ok, err := u.Lookup(ctx, github.User{Login: "dave", ID: 5}); ok || err != nil {
+		t.Fatalf("precondition: Lookup says nobody (%v %v)", ok, err)
+	}
+	if _, _, err := askOnly(ctx, u, github.User{Login: "dave", ID: 5}); !isIdentityUnknown(err) {
+		t.Errorf("askOnly: %v", err)
+	}
+	u.GitHub = goneIDs{}
+	if _, ok, err := askOnly(ctx, u, github.User{Login: "dave", ID: 5}); ok || err != nil {
+		t.Errorf("askOnly, no such GitHub login: %v %v", ok, err)
+	}
+}
+
+// goneIDs is GitHub having no such login.
+type goneIDs struct{}
+
+func (goneIDs) UserID(context.Context, string) (int64, time.Time, error) {
+	return 0, time.Time{}, &github.APIError{Status: 404}
 }
