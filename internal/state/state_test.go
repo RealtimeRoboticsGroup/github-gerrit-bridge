@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -536,5 +537,24 @@ func TestLeaseConflictsOfAnAtomicPush(t *testing.T) {
 		if (err != nil) != tc.err || !slices.Equal(got, tc.want) {
 			t.Errorf("%+v: %v, %v", tc.res, got, err)
 		}
+	}
+}
+
+// An earlier build kept a list of reviewers under "reviewers"; a state.json
+// it wrote still loads, and what the reviewer sync saw has its own key.
+func TestOldReviewersListStillLoads(t *testing.T) {
+	var cs ChangeState
+	old := `{"reviewers":[{"gerrit":"bob","github":"bob"}]}`
+	if err := json.Unmarshal([]byte(old), &cs); err != nil || cs.Reviewers != nil {
+		t.Fatalf("old state: %+v, %v", cs.Reviewers, err)
+	}
+	cs.Reviewers = &Reviewers{PatchSet: 2, Attention: []string{"bob"}}
+	b, err := json.Marshal(cs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back ChangeState
+	if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back.Reviewers, cs.Reviewers) {
+		t.Errorf("round trip of %s: %+v, %v", b, back.Reviewers, err)
 	}
 }

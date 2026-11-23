@@ -93,7 +93,9 @@ type ChangeState struct {
 	SyncedText string `json:"synced_text,omitempty"`
 	SyncedWIP  string `json:"synced_wip,omitempty"`
 	// Reviewers is what the reviewer sync last saw (nil: nothing yet).
-	Reviewers *Reviewers `json:"reviewers,omitempty"`
+	// Its key is not "reviewers": an earlier build kept a list there, and
+	// a state.json it wrote must still load.
+	Reviewers *Reviewers `json:"reviewers_seen,omitempty"`
 	// ClosedNoticePosted records that the "merged/abandoned in Gerrit"
 	// comment was posted on the PR.
 	ClosedNoticePosted bool `json:"closed_notice_posted,omitempty"`
