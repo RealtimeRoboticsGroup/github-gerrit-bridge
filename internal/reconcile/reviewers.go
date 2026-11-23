@@ -292,13 +292,18 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		delete(requested, gh.ID)
 	}
 	if s.current > prev.PatchSet && !s.pull.Draft {
-		who, ok := c.uploaderOf(s)
-		t, known := false, true
-		if ok {
-			t, known = trusted(who)
+		// Any of the new patch sets a trusted person uploaded (one may be
+		// followed by an import before the sync: third review).
+		byTrusted := false
+		for sha, r := range s.revInfos {
+			if r.Number <= prev.PatchSet || !s.exported(sha) {
+				continue
+			}
+			t, known := trusted(uploader(r))
+			holdPatchSet = holdPatchSet || !known
+			byTrusted = byTrusted || t && known
 		}
-		holdPatchSet = !known
-		if t && known {
+		if byTrusted {
 			for _, rv := range latestReviews(s.allReviews) {
 				u := rv.User
 				if _, asked := requested[u.ID]; rv.State != "CHANGES_REQUESTED" || asked || u.Type == "Bot" {
@@ -462,18 +467,12 @@ func (c *Comments) actorAt(s *commentSnapshot, a gerrit.AttentionSetInfo) (gerri
 	return who[0], true
 }
 
-// uploaderOf is who uploaded the current patch set, once the bridge has
-// recorded exporting it: an import, which Gerrit says its author uploaded,
+// exported reports whether the bridge recorded Gerrit commit sha as
+// exported from Gerrit: recorded, and not imported. Only then is a patch
+// set its uploader's: an import, which Gerrit says its author uploaded,
 // is not theirs, nor is one not yet recorded either way (an import whose
 // state the bridge has yet to save). Each export queues a comment sync
 // once recorded (Code.OnExported).
-func (c *Comments) uploaderOf(s *commentSnapshot) (gerrit.AccountInfo, bool) {
-	r, ok := s.revInfos[s.revision]
-	return uploader(r), ok && s.exported(s.revision)
-}
-
-// exported reports whether the bridge recorded Gerrit commit sha as
-// exported from Gerrit: recorded, and not imported.
 func (s *commentSnapshot) exported(sha string) bool {
 	return slices.ContainsFunc(s.revisions, func(r state.Revision) bool { return r.GerritSHA == sha && !r.Imported })
 }

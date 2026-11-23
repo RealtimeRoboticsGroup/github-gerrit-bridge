@@ -456,6 +456,25 @@ func TestUnrecordedPatchSetsWait(t *testing.T) {
 	e.wantAsks(t, "+mike-gh")
 }
 
+// austin's Gerrit upload, then a push on GitHub imported before the sync
+// gets to either: austin's still asks again (third review).
+func TestAnyNewPatchSetByATrustedPersonAsks(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.exported(t, austin, 3, "sha3")
+	e.imported(t, ownerGA, 4, "sha4")
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh")
+	// A patch set from before is not new.
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.imported(t, ownerGA, 5, "sha5")
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh")
+}
+
 func TestGitHubOnlyPRNeverAsksOnGitHub(t *testing.T) {
 	e, _ := reviewersEnv(t)
 	e.g.addReviewer(bridgeGA, mike)
