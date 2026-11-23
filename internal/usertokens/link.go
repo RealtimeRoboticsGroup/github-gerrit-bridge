@@ -280,8 +280,8 @@ func (l *Linker) finish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	l.logger().Info("linked a GitHub account", "github_login", gh.Login, "github_id", gh.ID, "gerrit_user", user, "gerrit_account", account)
-	l.page(w, http.StatusOK, "Linked: your comments and votes in Gerrit as "+user+" are now posted on GitHub as @"+gh.Login+
-		". To stop, revoke the app under GitHub's Settings, Applications, Authorized GitHub Apps.", "")
+	l.render(w, http.StatusOK, pageData{Heading: "GitHub account linked", Text: "Your comments and votes in Gerrit as " + user + " are now posted on GitHub as @" + gh.Login +
+		". To stop, revoke the app under GitHub's Settings, Applications, Authorized GitHub Apps."})
 }
 
 // use marks state used, reporting whether it was not already.
@@ -305,6 +305,7 @@ func (l *Linker) use(state string) bool {
 }
 
 type pageData struct {
+	Heading    string // the page's title; "Link GitHub" if empty
 	Text, Next string
 	Button     bool   // a form to start linking
 	Action     string // where it posts (linkPath)
@@ -312,10 +313,10 @@ type pageData struct {
 
 var pageTmpl = template.Must(template.New("link").Parse(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Link GitHub</title>
+<title>{{.Heading}}</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:40em;margin:3em auto;padding:0 16px;color:#1f2328;background:#fff}
 @media (prefers-color-scheme: dark){body{color:#e6edf3;background:#0d1117}a{color:#4493f8}}</style></head>
-<body><h1>Link GitHub</h1><p>{{.Text}}</p>{{if .Button}}<form method="post" action="{{.Action}}"><button type="submit">Link GitHub</button></form>{{end}}{{if .Next}}<p><a href="{{.Next}}">Continue</a></p>{{end}}</body></html>
+<body><h1>{{.Heading}}</h1><p>{{.Text}}</p>{{if .Button}}<form method="post" action="{{.Action}}"><button type="submit">Link GitHub</button></form>{{end}}{{if .Next}}<p><a href="{{.Next}}">Continue</a></p>{{end}}</body></html>
 `))
 
 func (l *Linker) page(w http.ResponseWriter, status int, text, next string) {
@@ -324,6 +325,9 @@ func (l *Linker) page(w http.ResponseWriter, status int, text, next string) {
 
 func (l *Linker) render(w http.ResponseWriter, status int, d pageData) {
 	d.Action = l.linkPath()
+	if d.Heading == "" {
+		d.Heading = "Link GitHub"
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://github.com; frame-ancestors 'none'")

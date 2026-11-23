@@ -451,11 +451,18 @@ func TestLink(t *testing.T) {
 		strings.Contains(w.Body.String(), "is not in the directory") || len(s.All()) != 0 {
 		t.Errorf("in the directory, no Gerrit account yet: %d %s", w.Code, w.Body)
 	}
+	// A page that links nobody keeps its call to link.
+	state, cookie = start()
+	if w := do("GET", "/github/link/callback?code=c3&state="+state, cookie); !strings.Contains(w.Body.String(), "<h1>Link GitHub</h1>") {
+		t.Errorf("not linked: %d %s", w.Code, w.Body)
+	}
 	l.InDirectory = nil
 
 	state, cookie = start()
 	w := do("GET", "/github/link/callback?code=c1&state="+state, cookie)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Linked") {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<h1>GitHub account linked</h1>") ||
+		!strings.Contains(w.Body.String(), "<title>GitHub account linked</title>") || strings.Contains(w.Body.String(), "Link GitHub") {
+		// A result, not "Link GitHub", which reads as asking for it.
 		t.Fatalf("callback: %d %s", w.Code, w.Body)
 	}
 	r, ok := s.Get(42)
@@ -513,12 +520,12 @@ func TestLink(t *testing.T) {
 	l.mu.Lock()
 	n := len(l.used)
 	l.mu.Unlock()
-	if n != 5 { // alice's (and while unknown), the stranger's, the newcomer's and bob's, which GitHub authorized
+	if n != 6 { // alice's (and while unknown), the stranger's, the newcomer's (twice) and bob's, which GitHub authorized
 		t.Errorf("%d states kept", n)
 	}
 	s.Delete(42)
 	state, cookie = start()
-	if w := do("GET", "/github/link/callback?code=c1&state="+state, cookie); !strings.Contains(w.Body.String(), "Linked") {
+	if w := do("GET", "/github/link/callback?code=c1&state="+state, cookie); !strings.Contains(w.Body.String(), "GitHub account linked") {
 		t.Errorf("after many starts: %d %s", w.Code, w.Body)
 	}
 }
@@ -572,7 +579,7 @@ func TestLinkDuringRenewalStands(t *testing.T) {
 	time.Sleep(200 * time.Millisecond) // the link saves now, unless it waits
 	gate <- struct{}{}
 	<-renewed
-	if w := <-linked; !strings.Contains(w.Body.String(), "Linked") {
+	if w := <-linked; !strings.Contains(w.Body.String(), "GitHub account linked") {
 		t.Fatalf("link: %d %s", w.Code, w.Body)
 	}
 	if r, ok := s.Get(7); !ok || r.GerritAccount != 1000 {
