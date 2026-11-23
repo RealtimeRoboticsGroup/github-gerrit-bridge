@@ -119,6 +119,9 @@ type ChangeInfo struct {
 
 	// With DETAILED_LABELS.
 	Labels map[string]LabelInfo `json:"labels"`
+	// Reviewers maps a reviewer state (REVIEWER, CC, REMOVED) to its
+	// accounts; with DETAILED_LABELS.
+	Reviewers map[string][]AccountInfo `json:"reviewers"`
 	// With SUBMITTABLE.
 	Submittable bool `json:"submittable"`
 	// With SUBMIT_REQUIREMENTS.
@@ -403,6 +406,13 @@ type ReviewInput struct {
 	// OmitDuplicateComments drops comments identical to existing ones,
 	// which makes a retried post idempotent.
 	OmitDuplicateComments bool `json:"omit_duplicate_comments,omitempty"`
+	// Reviewers are added to the change.
+	Reviewers []ReviewerInput `json:"reviewers,omitempty"`
+}
+
+// ReviewerInput adds a reviewer (a username, account id or email).
+type ReviewerInput struct {
+	Reviewer string `json:"reviewer"`
 }
 
 // Range is a character range in a file. Lines are 1-based, characters

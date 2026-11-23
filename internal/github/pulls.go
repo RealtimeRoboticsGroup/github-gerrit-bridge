@@ -79,9 +79,11 @@ type PullRequest struct {
 	// MaintainerCanModify is set when a fork PR's author lets people with
 	// write access to the base repository push to the head branch. Only
 	// GetPull returns it; listed PRs always say false.
-	MaintainerCanModify bool      `json:"maintainer_can_modify"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	MaintainerCanModify bool `json:"maintainer_can_modify"`
+	// RequestedReviewers are the users asked to review who have not yet.
+	RequestedReviewers []User    `json:"requested_reviewers"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 	// Stack is set when the PR is in a native stack.
 	Stack *PRStack `json:"stack"`
 	// Commits (GetPull only) is how many commits the PR has; its commits

@@ -432,6 +432,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		return acct.AccountID, err
 	}
 	var merger reconcile.GitHubMerger
+	var linkedAs func(context.Context, int) (github.User, bool, error)
 	if a := cfg.GitHub.UserApp; a != nil {
 		secret, err := config.ReadSecret(a.ClientSecretFile)
 		if err != nil {
@@ -449,6 +450,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			HTTP: &http.Client{Timeout: time.Minute, Transport: &httplog.Transport{Name: "github-app", Logger: logger}, CheckRedirect: noRedirects}}
 		tokens := newTokens(linked, app, logger, users.Lookup)
 		comments.Authors = linkedAuthors{tokens: tokens, gh: gh}
+		linkedAs = tokens.Linked
 		if cfg.GitHubOwned() {
 			// Only they have Gerrit patch sets pushed to GitHub (design
 			// §3.1).
@@ -466,6 +468,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			GerritUser: users.Lookup, GerritAccount: gerritAccount, Directory: users.Directory != nil}).Register(mux)
 		logger.Info("people can link their GitHub accounts", "url", strings.TrimSuffix(a.PublicURL, "/")+"/github/link", "linked", len(linked.All()))
 	}
+	comments.Reviewers = reviewerAccounts(cfg.GitHubOwned(), users, dir, linkedAs, gh)
 	checks := &reconcile.Checks{
 		Project:      cfg.Gerrit.Project,
 		Gerrit:       rest,
@@ -745,6 +748,21 @@ func setMode(githubOwned bool, code *reconcile.Code, comments *reconcile.Comment
 	code.TextBudget = &reconcile.Budget{N: 60, Per: time.Hour, Trusted: exempt}
 	comments.PostBudget = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: exempt}
 	checks.StatusBudget = &reconcile.Budget{N: 120, Per: time.Hour, Trusted: exempt}
+}
+
+// reviewerAccounts finds Gerrit reviewers' GitHub accounts, to carry
+// reviewers over (design §6.6): only where GitHub owns the branches (nil
+// otherwise). By linked accounts, and the directory if there is one.
+func reviewerAccounts(githubOwned bool, users *reconcile.Users, dir *ldap.Directory,
+	linked func(context.Context, int) (github.User, bool, error), gh *github.Client) reconcile.GitHubAccounts {
+	if !githubOwned {
+		return nil
+	}
+	r := &reconcile.ReviewerAccounts{Linked: linked, Users: users, GitHub: gh}
+	if dir != nil {
+		r.Directory = dir
+	}
+	return r
 }
 
 // newUsers is the identity mapping cfg says (design §7): the LDAP

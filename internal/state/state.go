@@ -37,6 +37,13 @@ type Change struct {
 	Version string
 }
 
+// Reviewer is a reviewer of a change on both sides: Gerrit username
+// GerritUser (which never changes) is GitHub account GitHubID.
+type Reviewer struct {
+	GerritUser string `json:"gerrit_user"`
+	GitHubID   int64  `json:"github_id"`
+}
+
 // ChangeState links a change to its pull request (state.json).
 type ChangeState struct {
 	Change   int    `json:"change"`
@@ -71,6 +78,11 @@ type ChangeState struct {
 	// matched: whichever side has changed since is newer (design §6.0).
 	SyncedText string `json:"synced_text,omitempty"`
 	SyncedWIP  string `json:"synced_wip,omitempty"`
+	// Reviewers are the reviewers the bridge has matched up on both sides:
+	// a Gerrit reviewer asked to review on GitHub, or a GitHub request
+	// made a Gerrit reviewer. Each is carried over once, so a review
+	// (which ends GitHub's request) does not ask again.
+	Reviewers []Reviewer `json:"reviewers,omitempty"`
 	// ClosedNoticePosted records that the "merged/abandoned in Gerrit"
 	// comment was posted on the PR.
 	ClosedNoticePosted bool `json:"closed_notice_posted,omitempty"`

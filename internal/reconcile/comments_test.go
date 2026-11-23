@@ -65,6 +65,12 @@ type fakeGerrit struct {
 	clock         int
 	nextID        int
 	reviews       int
+	// reviewers are the change's reviewers by state; status its status
+	// (NEW if unset).
+	reviewers map[string][]gerrit.AccountInfo
+	status    string
+	// refuseReviewers makes adding reviewers fail.
+	refuseReviewers bool
 }
 
 // vote sets user's vote on the current patch set, as Gerrit would.
@@ -160,7 +166,16 @@ func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ i
 	if f.closed && len(in.Labels) > 0 {
 		return &gerrit.Error{Status: 409, Body: "change is closed"}
 	}
+	if f.refuseReviewers && len(in.Reviewers) > 0 {
+		return &gerrit.Error{Status: 500, Body: "Internal server error"}
+	}
 	f.reviews++
+	for _, r := range in.Reviewers {
+		if f.reviewers == nil {
+			f.reviewers = map[string][]gerrit.AccountInfo{}
+		}
+		f.reviewers["REVIEWER"] = append(f.reviewers["REVIEWER"], gerrit.AccountInfo{Username: r.Reviewer})
+	}
 	for l, v := range in.Labels {
 		f.votes = append(f.votes, fmt.Sprintf("%s:%s=%d", author.Username, l, v))
 		f.vote(author.Username, l, v)
@@ -202,7 +217,7 @@ func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ i
 
 func (f *fakeGerrit) GetChange(context.Context, int, ...string) (*gerrit.ChangeInfo, error) {
 	ci := &gerrit.ChangeInfo{CurrentRevision: f.current, Revisions: map[string]gerrit.RevisionInfo{}, Messages: f.messages,
-		Labels: map[string]gerrit.LabelInfo{}, Owner: f.owner}
+		Labels: map[string]gerrit.LabelInfo{}, Owner: f.owner, Status: cmp.Or(f.status, "NEW"), Reviewers: f.reviewers}
 	for label, byUser := range f.labels {
 		var l gerrit.LabelInfo
 		for _, u := range slices.Sorted(maps.Keys(byUser)) {
@@ -300,6 +315,36 @@ type fakeGitHub struct {
 	// refuseUserResolve, if set, is GitHub's answer to a linked user
 	// resolving a thread.
 	refuseUserResolve error
+	// author is the PR's; requested who it asks to review. asks records
+	// requests made ("+login") and withdrawn ("-login"); ids gives logins'
+	// ids; refuseAsk, if set, is GitHub's answer to a request.
+	author    github.User
+	requested []github.User
+	asks      []string
+	ids       map[string]int64
+	refuseAsk error
+}
+
+func (f *fakeGitHub) RequestReviewers(_ context.Context, _ int, logins []string) error {
+	if f.refuseAsk != nil {
+		return f.refuseAsk
+	}
+	for _, l := range logins {
+		f.asks = append(f.asks, "+"+l)
+		f.requested = append(f.requested, github.User{Login: l, ID: f.ids[l]})
+	}
+	return nil
+}
+
+func (f *fakeGitHub) RemoveRequestedReviewers(_ context.Context, _ int, logins []string) error {
+	if f.refuseAsk != nil {
+		return f.refuseAsk
+	}
+	for _, l := range logins {
+		f.asks = append(f.asks, "-"+l)
+		f.requested = slices.DeleteFunc(f.requested, func(u github.User) bool { return u.Login == l })
+	}
+	return nil
 }
 
 func (f *fakeGitHub) id() int64 { f.nextID++; return 1000 + f.nextID }
@@ -501,7 +546,8 @@ func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error)
 }
 func (f *fakeGitHub) GetPull(_ context.Context, n int) (*github.PullRequest, error) {
 	pr := &github.PullRequest{Number: n, HTMLURL: "https://github.com/o/r/pull/1", Head: github.Ref{Ref: "topic", SHA: cmp.Or(f.head, "sha2")},
-		Title: f.title, Body: f.body, Base: github.Ref{Ref: cmp.Or(f.base, "main")}, Stack: f.stack, Merged: f.merged, Commits: f.commits}
+		Title: f.title, Body: f.body, Base: github.Ref{Ref: cmp.Or(f.base, "main")}, Stack: f.stack, Merged: f.merged, Commits: f.commits,
+		User: f.author, RequestedReviewers: slices.Clone(f.requested), State: "open"}
 	if f.merged || f.closed {
 		pr.State = "closed"
 	}

@@ -896,3 +896,16 @@ func TestGerritOwnedPROpenedByTheBot(t *testing.T) {
 		t.Errorf("PRs %d, opened as %v, OpenAs asked %v; want one, by the bot", len(s.pulls), s.openedBy, asked)
 	}
 }
+
+// Where Gerrit owns the branches (AOS), reviewers are not carried over:
+// no review requests on GitHub, and nobody added in Gerrit from one.
+func TestGerritOwnedReviewersAreNotCarriedOver(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.c.Users = &Users{Overrides: map[string]string{"mike-gh": "mikebauer", "jane-gh": "jane"}}
+	e.g.reviewers = map[string][]gerrit.AccountInfo{"REVIEWER": {{AccountID: 20, Username: "mikebauer"}}}
+	e.h.requested = []github.User{{Login: "jane-gh", ID: 78}}
+	e.sync(t)
+	if len(e.h.asks) != 0 || e.g.reviews != 0 || len(e.g.reviewers["REVIEWER"]) != 1 {
+		t.Errorf("asks %v, Gerrit reviews %d, reviewers %+v", e.h.asks, e.g.reviews, e.g.reviewers)
+	}
+}

@@ -57,6 +57,8 @@ type GitHubAPI interface {
 	FileAt(ctx context.Context, ref, path string) ([]byte, error)
 	IsAncestor(ctx context.Context, a, b string) (bool, error)
 	GetPull(ctx context.Context, n int) (*github.PullRequest, error)
+	RequestReviewers(ctx context.Context, n int, logins []string) error
+	RemoveRequestedReviewers(ctx context.Context, n int, logins []string) error
 	Pushes(ctx context.Context, repo, ref string) ([]github.Push, error)
 }
 
@@ -112,6 +114,9 @@ type Comments struct {
 	// Gerrit and its CI see the real author; otherwise as the bridge.
 	Users    Identity
 	GerritAs func(user string) GerritAPI
+	// Reviewers, if set, carries reviewers over (syncReviewers), finding
+	// Gerrit reviewers' GitHub accounts.
+	Reviewers GitHubAccounts
 	// Authors, if set, posts the Gerrit content of users who linked their
 	// GitHub account as them, without the attribution header; the rest,
 	// and theirs when GitHub refuses their token, as the bridge.
@@ -182,6 +187,10 @@ func githubKind(frag string) string {
 // snapshot is one change's comments on both sides.
 type commentSnapshot struct {
 	messages []gerrit.ChangeMessage
+	// status is the change's (NEW, MERGED, ABANDONED), and reviewers its
+	// reviewers by state (REVIEWER, CC).
+	status    string
+	reviewers map[string][]gerrit.AccountInfo
 	// psGitHub is the GitHub commit for each patch set, where it differs
 	// from Gerrit's (GitHub-born and re-parented revisions).
 	psGitHub map[int]string
@@ -396,6 +405,7 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 		return nil
 	}
 	m := newCommentMap(st.Comments)
+	reviewers := st.State.Reviewers
 	threads := map[string]*state.Thread{}
 	for i := range st.Threads {
 		t := st.Threads[i]
@@ -410,6 +420,7 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 		return updateStateFn(ctx, c.Store, n, "Sync comments", func(s *state.Change) {
 			s.Comments = m.list()
 			s.Threads = ts
+			s.State.Reviewers = reviewers
 		})
 	}
 	var first *commentSnapshot
@@ -472,6 +483,7 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 		if err := c.dismissStale(ctx, n, pr, snap, m); err != nil {
 			return err
 		}
+		reviewers = c.syncReviewers(ctx, n, pr, snap, reviewers)
 		break
 	}
 	if err := save(); err != nil {
@@ -566,6 +578,7 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	s.owner, s.revs = ch.Owner, revisionsByNumber(ch)
 	s.messages = ch.Messages
 	s.labels = ch.Labels
+	s.status, s.reviewers = ch.Status, ch.Reviewers
 	s.current = s.shaToPS[ch.CurrentRevision]
 	// GitHub-born revisions have their own SHAs (design §5.2).
 	s.psGitHub = map[int]string{}

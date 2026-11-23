@@ -576,3 +576,22 @@ func TestLiveChecksGetDeliveries(t *testing.T) {
 		t.Errorf("routed %d, live saw it %v", routed, live.SawStatus())
 	}
 }
+
+// Reviewers are carried over only where GitHub owns the branches, by the
+// directory if there is one (never a nil one: that would be read).
+func TestReviewerAccounts(t *testing.T) {
+	users := &reconcile.Users{}
+	if reviewerAccounts(false, users, nil, nil, &github.Client{}) != nil {
+		t.Error("Gerrit owns the branches, and reviewers are carried over")
+	}
+	r, ok := reviewerAccounts(true, users, nil, nil, &github.Client{}).(*reconcile.ReviewerAccounts)
+	if !ok || r.Directory != nil || r.Users != users {
+		t.Errorf("without a directory: %#v", r)
+	}
+	dir := &ldap.Directory{BaseDN: "ou=People"}
+	linked := func(context.Context, int) (github.User, bool, error) { return github.User{}, false, nil }
+	r, ok = reviewerAccounts(true, users, dir, linked, &github.Client{}).(*reconcile.ReviewerAccounts)
+	if !ok || r.Directory != dir || r.Linked == nil {
+		t.Errorf("with a directory: %#v", r)
+	}
+}

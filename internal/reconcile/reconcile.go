@@ -105,8 +105,10 @@ func (r *Router) Event(e *events.Event) {
 			r.Queue.Add(Key{Branch: e.Change.Branch})
 		}
 		// New comments come with replies and with uploads that publish
-		// drafts.
-		if e.Change.Number > 0 && (e.Type == "comment-added" || e.Type == "patchset-created") {
+		// drafts. Where GitHub owns the branches, the comment sync also
+		// carries reviewers over (design §6.6).
+		reviewers := r.FollowGitHub && (e.Type == "reviewer-added" || e.Type == "reviewer-deleted")
+		if e.Change.Number > 0 && (e.Type == "comment-added" || e.Type == "patchset-created" || reviewers) {
 			r.Queue.Add(Key{Comments: e.Change.Number})
 		}
 		return
@@ -161,6 +163,14 @@ func (r *Router) Delivery(d *github.Delivery) {
 	switch d.Event {
 	case "pull_request_review", "pull_request_review_comment", "pull_request_review_thread", "issue_comment":
 		r.Queue.Add(Key{PRComments: d.PR})
+	case "pull_request":
+		if r.FollowGitHub && d.Action == "review_requested" {
+			// Someone asked to review: the comment sync makes them a
+			// Gerrit reviewer (design §6.6).
+			r.Queue.Add(Key{PRComments: d.PR})
+			return
+		}
+		r.Queue.Add(Key{PR: d.PR})
 	default:
 		r.Queue.Add(Key{PR: d.PR})
 	}

@@ -250,6 +250,25 @@ func (c *Client) UserID(ctx context.Context, login string) (int64, time.Time, er
 	return u.ID, u.Created, err
 }
 
+// UserByID is the account with numeric id id, under its login now.
+func (c *Client) UserByID(ctx context.Context, id int64) (User, error) {
+	var u User
+	_, err := c.Do(ctx, http.MethodGet, "/user/"+strconv.FormatInt(id, 10), nil, &u)
+	return u, err
+}
+
+// RequestReviewers asks logins to review PR n.
+func (c *Client) RequestReviewers(ctx context.Context, n int, logins []string) error {
+	_, err := c.Do(ctx, http.MethodPost, c.RepoPath(fmt.Sprintf("pulls/%d/requested_reviewers", n)), map[string][]string{"reviewers": logins}, nil)
+	return err
+}
+
+// RemoveRequestedReviewers withdraws PR n's requests that logins review.
+func (c *Client) RemoveRequestedReviewers(ctx context.Context, n int, logins []string) error {
+	_, err := c.Do(ctx, http.MethodDelete, c.RepoPath(fmt.Sprintf("pulls/%d/requested_reviewers", n)), map[string][]string{"reviewers": logins}, nil)
+	return err
+}
+
 // UpdateReviewComment replaces a review comment's body.
 func (c *Client) UpdateReviewComment(ctx context.Context, id int64, body string) error {
 	_, err := c.Do(ctx, http.MethodPatch, c.RepoPath("pulls/comments/"+strconv.FormatInt(id, 10)), map[string]string{"body": body}, nil)

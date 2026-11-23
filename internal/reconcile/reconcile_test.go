@@ -77,6 +77,27 @@ func TestRouterEvents(t *testing.T) {
 	}
 }
 
+// Reviewer events go to the comment sync, which carries reviewers over,
+// only where GitHub owns the branches; where Gerrit does, as before.
+func TestRouterReviewerEvents(t *testing.T) {
+	for _, follow := range []bool{false, true} {
+		q := queue.New[Key]()
+		r := NewRouter("p", q, slog.Default())
+		r.FollowGitHub = follow
+		r.Event(parse(t, `{"type":"reviewer-added","change":{"project":"p","branch":"main","number":5}}`))
+		r.Event(parse(t, `{"type":"reviewer-deleted","change":{"project":"p","branch":"rel","number":7}}`))
+		r.Delivery(&github.Delivery{Event: "pull_request", Action: "review_requested", PR: 9})
+		r.Delivery(&github.Delivery{Event: "pull_request", Action: "review_request_removed", PR: 10})
+		want := []string{"branch/main", "branch/rel", "pr/9", "pr/10"}
+		if follow {
+			want = []string{"branch/main", "comments/5", "branch/rel", "comments/7", "pr-comments/9", "pr/10"}
+		}
+		if got := drain(q); !equal(got, want) {
+			t.Errorf("GitHub owns the branches %v: queued %v, want %v", follow, got, want)
+		}
+	}
+}
+
 type fakeLister struct {
 	mu    sync.Mutex
 	fails int
