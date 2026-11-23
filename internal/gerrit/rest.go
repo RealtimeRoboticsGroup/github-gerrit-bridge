@@ -122,6 +122,13 @@ type ChangeInfo struct {
 	// Reviewers maps a reviewer state (REVIEWER, CC, REMOVED) to its
 	// accounts; with DETAILED_LABELS.
 	Reviewers map[string][]AccountInfo `json:"reviewers"`
+	// ReviewerUpdates are who added or removed each reviewer, and when;
+	// with REVIEWER_UPDATES.
+	ReviewerUpdates []ReviewerUpdate `json:"reviewer_updates"`
+	// AttentionSet is whose turn it is, and RemovedFromAttentionSet whose
+	// it was, by account id.
+	AttentionSet            map[string]AttentionSetInfo `json:"attention_set"`
+	RemovedFromAttentionSet map[string]AttentionSetInfo `json:"removed_from_attention_set"`
 	// With SUBMITTABLE.
 	Submittable bool `json:"submittable"`
 	// With SUBMIT_REQUIREMENTS.
@@ -408,6 +415,34 @@ type ReviewInput struct {
 	OmitDuplicateComments bool `json:"omit_duplicate_comments,omitempty"`
 	// Reviewers are added to the change.
 	Reviewers []ReviewerInput `json:"reviewers,omitempty"`
+}
+
+// ReviewerUpdate is a reviewer's change of state (REVIEWER, CC, REMOVED).
+type ReviewerUpdate struct {
+	Updated   string      `json:"updated"`
+	UpdatedBy AccountInfo `json:"updated_by"`
+	Reviewer  AccountInfo `json:"reviewer"`
+	State     string      `json:"state"`
+}
+
+// AttentionSetInfo is an account's place in (or out of) the attention
+// set: when it last changed, and why. Gerrit does not say who changed it.
+type AttentionSetInfo struct {
+	Account    AccountInfo `json:"account"`
+	LastUpdate string      `json:"last_update"`
+	Reason     string      `json:"reason"`
+}
+
+// AddToAttentionSet makes it user's turn on change, for reason.
+func (c *Client) AddToAttentionSet(ctx context.Context, change int, user, reason string) error {
+	return c.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/attention", change), map[string]string{"user": user, "reason": reason}, nil)
+}
+
+// RemoveFromAttentionSet ends account's turn on change, for reason,
+// telling nobody.
+func (c *Client) RemoveFromAttentionSet(ctx context.Context, change, account int, reason string) error {
+	return c.Do(ctx, http.MethodPost, fmt.Sprintf("changes/%d/attention/%d/delete", change, account),
+		map[string]string{"reason": reason, "notify": "NONE"}, nil)
 }
 
 // ReviewerInput adds a reviewer (a username, account id or email).

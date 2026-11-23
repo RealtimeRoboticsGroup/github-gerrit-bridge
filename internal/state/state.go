@@ -37,13 +37,25 @@ type Change struct {
 	Version string
 }
 
-// Reviewer is a reviewer of a change on both sides: Gerrit username
-// GerritUser (which never changes) is GitHub account GitHubID. With no
-// GerritUser, GitHubID was asked on GitHub with no Gerrit account, and
-// Gerrit was told so.
-type Reviewer struct {
-	GerritUser string `json:"gerrit_user"`
-	GitHubID   int64  `json:"github_id"`
+// Reviewers is what the reviewer sync last saw of a change and its PR
+// (design §6.6): it carries over what changed since, on either side.
+type Reviewers struct {
+	// At is when the PR was read.
+	At time.Time `json:"at"`
+	// PatchSet is the change's current patch set then.
+	PatchSet int `json:"patch_set,omitempty"`
+	// Attention is the Gerrit usernames in the attention set.
+	Attention []string `json:"attention,omitempty"`
+	// Requested is the GitHub accounts with pending review requests, and
+	// Noted the ids of those Gerrit was told have no Gerrit account.
+	Requested []GitHubAccount `json:"requested,omitempty"`
+	Noted     []int64         `json:"noted,omitempty"`
+}
+
+// GitHubAccount is a GitHub account: its id, and its login then.
+type GitHubAccount struct {
+	ID    int64  `json:"id"`
+	Login string `json:"login"`
 }
 
 // ChangeState links a change to its pull request (state.json).
@@ -80,11 +92,8 @@ type ChangeState struct {
 	// matched: whichever side has changed since is newer (design §6.0).
 	SyncedText string `json:"synced_text,omitempty"`
 	SyncedWIP  string `json:"synced_wip,omitempty"`
-	// Reviewers are the reviewers the bridge has matched up on both sides:
-	// a Gerrit reviewer asked to review on GitHub, or a GitHub request
-	// made a Gerrit reviewer. Each is carried over once, so a review
-	// (which ends GitHub's request) does not ask again.
-	Reviewers []Reviewer `json:"reviewers,omitempty"`
+	// Reviewers is what the reviewer sync last saw (nil: nothing yet).
+	Reviewers *Reviewers `json:"reviewers,omitempty"`
 	// ClosedNoticePosted records that the "merged/abandoned in Gerrit"
 	// comment was posted on the PR.
 	ClosedNoticePosted bool `json:"closed_notice_posted,omitempty"`

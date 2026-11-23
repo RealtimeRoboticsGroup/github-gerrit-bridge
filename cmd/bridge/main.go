@@ -468,7 +468,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			GerritUser: users.Lookup, GerritAccount: gerritAccount, Directory: users.Directory != nil}).Register(mux)
 		logger.Info("people can link their GitHub accounts", "url", strings.TrimSuffix(a.PublicURL, "/")+"/github/link", "linked", len(linked.All()))
 	}
-	comments.Reviewers = reviewerAccounts(cfg, users, dir, linkedAs, gh)
+	comments.Reviewers, comments.Since = reviewerAccounts(cfg, users, dir, linkedAs, gh), time.Now()
 	checks := &reconcile.Checks{
 		Project:      cfg.Gerrit.Project,
 		Gerrit:       rest,
@@ -497,6 +497,8 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 		return err
 	}
 	code.Trusted, code.Importer.Trusted = checks.IsTrusted, checks.IsTrusted
+	// Only what trusted people do in Gerrit asks for reviews on GitHub.
+	comments.Trusted = checks.Trusts
 	code.Importer.ChangeIDKey = []byte("change-id\x00" + webhookSecret)
 	// Anyone can register on Gerrit; each new PR costs ~15 GitHub writes,
 	// and GitHub stalls a token past ~80 a minute or ~500 an hour.

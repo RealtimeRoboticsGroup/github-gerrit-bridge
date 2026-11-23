@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,117 @@ type fakeGerrit struct {
 	// refuseReviewers makes adding reviewers fail, and refuseNotes
 	// posting a message (of the bridge's, with no votes or comments).
 	refuseReviewers, refuseNotes bool
+	// The attention set, and who left it, by account id; the reviewer
+	// updates; accounts by username (for reviewers added by name).
+	attention, removed map[int]gerrit.AttentionSetInfo
+	updates            []gerrit.ReviewerUpdate
+	accounts           map[string]gerrit.AccountInfo
+	refuseAttention    bool
+}
+
+// account is user's account (a bare username if not in accounts).
+func (f *fakeGerrit) account(user string) gerrit.AccountInfo {
+	if a, ok := f.accounts[user]; ok {
+		return a
+	}
+	return gerrit.AccountInfo{Username: user}
+}
+
+// addReviewer is by adding who as a reviewer, as Gerrit records it: who
+// is in the attention set from then.
+func (f *fakeGerrit) addReviewer(by, who gerrit.AccountInfo) string {
+	ts := f.tick()
+	f.addReviewerAt(ts, by, who)
+	return ts
+}
+
+func (f *fakeGerrit) addReviewerAt(ts string, by, who gerrit.AccountInfo) {
+	if f.reviewers == nil {
+		f.reviewers = map[string][]gerrit.AccountInfo{}
+	}
+	f.reviewers["REVIEWER"] = append(f.reviewers["REVIEWER"], who)
+	f.updates = append(f.updates, gerrit.ReviewerUpdate{Updated: ts, UpdatedBy: by, Reviewer: who, State: "REVIEWER"})
+	f.setAttention(who, ts, "Reviewer was added", true)
+}
+
+// removeReviewer is by removing who.
+func (f *fakeGerrit) removeReviewer(by, who gerrit.AccountInfo) {
+	ts := f.tick()
+	f.reviewers["REVIEWER"] = slices.DeleteFunc(f.reviewers["REVIEWER"], func(a gerrit.AccountInfo) bool { return a.AccountID == who.AccountID })
+	f.updates = append(f.updates, gerrit.ReviewerUpdate{Updated: ts, UpdatedBy: by, Reviewer: who, State: "REMOVED"})
+	f.setAttention(who, ts, "Reviewer/Cc was removed", false)
+}
+
+// reply is by replying, putting in the attention set add and taking out
+// of it out.
+func (f *fakeGerrit) reply(by gerrit.AccountInfo, msg string, add, out []gerrit.AccountInfo) {
+	ts := f.tick()
+	f.nextID++
+	f.messages = append(f.messages, gerrit.ChangeMessage{ID: fmt.Sprintf("hm%d", f.nextID), Author: by, Date: ts, Message: msg, RevisionNumber: f.revs[f.current]})
+	for _, a := range add {
+		f.setAttention(a, ts, "Someone replied", true)
+	}
+	for _, a := range out {
+		f.setAttention(a, ts, "Someone replied", false)
+	}
+}
+
+// upload is by uploading patch set ps as sha.
+func (f *fakeGerrit) upload(by gerrit.AccountInfo, ps int, sha string) string {
+	return f.uploadAs(by, nil, ps, sha)
+}
+
+// uploadAs is upload by real, on by's behalf (nil: by's own).
+func (f *fakeGerrit) uploadAs(by gerrit.AccountInfo, real *gerrit.AccountInfo, ps int, sha string) string {
+	ts := f.tick()
+	if f.realUploaders == nil {
+		f.realUploaders = map[int]*gerrit.AccountInfo{}
+	}
+	f.realUploaders[ps] = real
+	if f.created == nil {
+		f.created = map[int]string{}
+	}
+	if f.uploaders == nil {
+		f.uploaders = map[int]gerrit.AccountInfo{}
+	}
+	f.revs[sha], f.created[ps], f.uploaders[ps], f.current = ps, ts, by, sha
+	return ts
+}
+
+func (f *fakeGerrit) setAttention(a gerrit.AccountInfo, ts, reason string, in bool) {
+	if f.attention == nil {
+		f.attention, f.removed = map[int]gerrit.AttentionSetInfo{}, map[int]gerrit.AttentionSetInfo{}
+	}
+	info := gerrit.AttentionSetInfo{Account: a, LastUpdate: ts, Reason: reason}
+	if in {
+		f.attention[a.AccountID] = info
+		delete(f.removed, a.AccountID)
+	} else if _, ok := f.attention[a.AccountID]; ok {
+		f.removed[a.AccountID] = info
+		delete(f.attention, a.AccountID)
+	}
+}
+
+func (f *fakeGerrit) AddToAttentionSet(_ context.Context, _ int, user, reason string) error {
+	if f.refuseAttention {
+		return &gerrit.Error{Status: 500, Body: "Internal server error"}
+	}
+	f.reviews++
+	f.setAttention(f.account(user), f.tick(), reason, true)
+	return nil
+}
+
+func (f *fakeGerrit) RemoveFromAttentionSet(_ context.Context, _ int, account int, reason string) error {
+	if f.refuseAttention {
+		return &gerrit.Error{Status: 500, Body: "Internal server error"}
+	}
+	f.reviews++
+	for _, a := range f.attention {
+		if a.Account.AccountID == account {
+			f.setAttention(a.Account, f.tick(), reason, false)
+		}
+	}
+	return nil
 }
 
 // vote sets user's vote on the current patch set, as Gerrit would.
@@ -174,17 +286,14 @@ func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ i
 		return &gerrit.Error{Status: 500, Body: "Internal server error"}
 	}
 	f.reviews++
-	for _, r := range in.Reviewers {
-		if f.reviewers == nil {
-			f.reviewers = map[string][]gerrit.AccountInfo{}
-		}
-		f.reviewers["REVIEWER"] = append(f.reviewers["REVIEWER"], gerrit.AccountInfo{Username: r.Reviewer})
-	}
 	for l, v := range in.Labels {
 		f.votes = append(f.votes, fmt.Sprintf("%s:%s=%d", author.Username, l, v))
 		f.vote(author.Username, l, v)
 	}
 	ts := f.tick()
+	for _, r := range in.Reviewers {
+		f.addReviewerAt(ts, author, f.account(r.Reviewer))
+	}
 	var ps int
 	fmt.Sscan(rev, &ps)
 	if in.Message != "" || len(in.Labels) > 0 {
@@ -219,9 +328,19 @@ func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ i
 	return nil
 }
 
-func (f *fakeGerrit) GetChange(context.Context, int, ...string) (*gerrit.ChangeInfo, error) {
+func (f *fakeGerrit) GetChange(_ context.Context, _ int, opts ...string) (*gerrit.ChangeInfo, error) {
 	ci := &gerrit.ChangeInfo{CurrentRevision: f.current, Revisions: map[string]gerrit.RevisionInfo{}, Messages: f.messages,
-		Labels: map[string]gerrit.LabelInfo{}, Owner: f.owner, Status: cmp.Or(f.status, "NEW"), Reviewers: f.reviewers}
+		Labels: map[string]gerrit.LabelInfo{}, Owner: f.owner, Status: cmp.Or(f.status, "NEW"), Reviewers: f.reviewers,
+		AttentionSet: map[string]gerrit.AttentionSetInfo{}, RemovedFromAttentionSet: map[string]gerrit.AttentionSetInfo{}}
+	if slices.Contains(opts, "REVIEWER_UPDATES") {
+		ci.ReviewerUpdates = f.updates
+	}
+	for id, a := range f.attention {
+		ci.AttentionSet[strconv.Itoa(id)] = a
+	}
+	for id, a := range f.removed {
+		ci.RemovedFromAttentionSet[strconv.Itoa(id)] = a
+	}
 	for label, byUser := range f.labels {
 		var l gerrit.LabelInfo
 		for _, u := range slices.Sorted(maps.Keys(byUser)) {
@@ -327,6 +446,8 @@ type fakeGitHub struct {
 	asks      []string
 	ids       map[string]int64
 	refuseAsk error
+	draft     bool
+	createdAt time.Time
 }
 
 func (f *fakeGitHub) RequestReviewers(_ context.Context, _ int, logins []string) error {
@@ -551,7 +672,7 @@ func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error)
 func (f *fakeGitHub) GetPull(_ context.Context, n int) (*github.PullRequest, error) {
 	pr := &github.PullRequest{Number: n, HTMLURL: "https://github.com/o/r/pull/1", Head: github.Ref{Ref: "topic", SHA: cmp.Or(f.head, "sha2")},
 		Title: f.title, Body: f.body, Base: github.Ref{Ref: cmp.Or(f.base, "main")}, Stack: f.stack, Merged: f.merged, Commits: f.commits,
-		User: f.author, RequestedReviewers: slices.Clone(f.requested), State: "open"}
+		User: f.author, RequestedReviewers: slices.Clone(f.requested), State: "open", Draft: f.draft, CreatedAt: f.createdAt}
 	if f.merged || f.closed {
 		pr.State = "closed"
 	}

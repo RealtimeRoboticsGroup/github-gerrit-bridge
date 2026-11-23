@@ -90,7 +90,7 @@ func TestRouterReviewerEvents(t *testing.T) {
 		r.Delivery(&github.Delivery{Event: "pull_request", Action: "review_request_removed", PR: 10})
 		want := []string{"branch/main", "branch/rel", "pr/9", "pr/10"}
 		if follow {
-			want = []string{"branch/main", "comments/5", "branch/rel", "comments/7", "pr-comments/9", "pr/10"}
+			want = []string{"branch/main", "comments/5", "branch/rel", "comments/7", "pr-comments/9", "pr-comments/10"}
 		}
 		if got := drain(q); !equal(got, want) {
 			t.Errorf("GitHub owns the branches %v: queued %v, want %v", follow, got, want)

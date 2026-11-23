@@ -164,9 +164,9 @@ func (r *Router) Delivery(d *github.Delivery) {
 	case "pull_request_review", "pull_request_review_comment", "pull_request_review_thread", "issue_comment":
 		r.Queue.Add(Key{PRComments: d.PR})
 	case "pull_request":
-		if r.FollowGitHub && d.Action == "review_requested" {
-			// Someone asked to review: the comment sync makes them a
-			// Gerrit reviewer (design §6.6).
+		if r.FollowGitHub && (d.Action == "review_requested" || d.Action == "review_request_removed") {
+			// Someone asked to review, or no longer: the comment sync
+			// carries it to Gerrit (design §6.6).
 			r.Queue.Add(Key{PRComments: d.PR})
 			return
 		}

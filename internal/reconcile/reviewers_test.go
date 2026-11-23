@@ -14,8 +14,8 @@ import (
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
-// fakeGitHubAccounts maps Gerrit usernames to GitHub accounts; unknown, if set,
-// is its error.
+// fakeGitHubAccounts maps Gerrit usernames to GitHub accounts; unknown,
+// if set, is its error.
 type fakeGitHubAccounts struct {
 	m       map[string]github.User
 	unknown error
@@ -32,29 +32,34 @@ func (f *fakeGitHubAccounts) GitHubFor(_ context.Context, a gerrit.AccountInfo) 
 }
 
 var (
-	mike    = gerrit.AccountInfo{AccountID: 20, Username: "mikebauer"}
-	mikeGH  = github.User{Login: "mike-gh", ID: 77}
-	jane    = gerrit.AccountInfo{AccountID: 21, Username: "jane"}
-	janeGH  = github.User{Login: "jane-gh", ID: 78}
-	ownerGA = gerrit.AccountInfo{AccountID: 22, Username: "owen"}
-	ownerGH = github.User{Login: "owen-gh", ID: 79}
+	mike     = gerrit.AccountInfo{AccountID: 20, Username: "mikebauer"}
+	mikeGH   = github.User{Login: "mike-gh", ID: 77, Type: "User"}
+	jane     = gerrit.AccountInfo{AccountID: 21, Username: "jane"}
+	janeGH   = github.User{Login: "jane-gh", ID: 78, Type: "User"}
+	ownerGA  = gerrit.AccountInfo{AccountID: 22, Username: "owen"}
+	ownerGH  = github.User{Login: "owen-gh", ID: 79, Type: "User"}
+	austin   = gerrit.AccountInfo{AccountID: 25, Username: "austin"} // trusted
+	stranger = gerrit.AccountInfo{AccountID: 26, Username: "stranger"}
+	bridgeGA = gerrit.AccountInfo{AccountID: bridgeID, Username: "bridge"}
 )
 
 // reviewersEnv is a comment sync where GitHub owns the branches: change 5
-// is owen's, PR 1 opened as him.
+// is owen's, PR 1 opened as him; austin and owen are trusted.
 func reviewersEnv(t *testing.T) (*commentsEnv, *fakeGitHubAccounts) {
 	e := newCommentsEnv(t)
 	e.c.GitHubOwned = true
 	a := &fakeGitHubAccounts{m: map[string]github.User{"mikebauer": mikeGH, "jane": janeGH, "owen": ownerGH}}
 	e.c.Reviewers = a
+	e.c.Trusted = func(_ context.Context, id int) bool { return id == austin.AccountID || id == ownerGA.AccountID }
 	e.c.Users = &Users{Overrides: map[string]string{"mike-gh": "mikebauer", "jane-gh": "jane", "owen-gh": "owen"}}
 	e.g.owner = ownerGA
+	e.g.accounts = map[string]gerrit.AccountInfo{"mikebauer": mike, "jane": jane, "owen": ownerGA}
 	e.h.author = ownerGH
 	e.h.ids = map[string]int64{"mike-gh": 77, "jane-gh": 78, "owen-gh": 79}
 	return e, a
 }
 
-func (e *commentsEnv) pairs(t *testing.T) []state.Reviewer {
+func (e *commentsEnv) seen(t *testing.T) *state.Reviewers {
 	t.Helper()
 	st, err := e.st.Load(context.Background(), 5)
 	if err != nil {
@@ -63,230 +68,346 @@ func (e *commentsEnv) pairs(t *testing.T) []state.Reviewer {
 	return st.State.Reviewers
 }
 
-// git push origin HEAD:refs/for/main%r=mikebauer: mikebauer is asked to
-// review the PR, once. A review on GitHub ends the request; it is not
-// made again.
+// reviewed is u's review on GitHub, which ends their request.
+func (e *commentsEnv) reviewed(u github.User, state string) {
+	e.h.requested = slices.DeleteFunc(e.h.requested, func(r github.User) bool { return r.ID == u.ID })
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: state, User: u, CommitID: "sha2", SubmittedAt: time.Now()})
+}
+
+func (e *commentsEnv) wantAsks(t *testing.T, want ...string) {
+	t.Helper()
+	if !slices.Equal(e.h.asks, want) {
+		t.Errorf("asks on GitHub = %v, want %v", e.h.asks, want)
+	}
+}
+
+// git push origin HEAD:refs/for/main%r=mikebauer: austin makes mikebauer
+// a reviewer, whose turn it is, and mikebauer is asked on GitHub, once.
+// Their review ends the request; it is not made again.
 func TestGerritReviewerIsAskedOnGitHub(t *testing.T) {
 	e, _ := reviewersEnv(t)
-	e.g.reviewers = map[string][]gerrit.AccountInfo{"REVIEWER": {mike}}
-	// Gerrit lists every reviewer with each label, at 0 until they vote.
-	e.g.vote("mikebauer", "Code-Review", 0)
+	e.g.addReviewer(austin, mike)
+	e.g.vote("mikebauer", "Code-Review", 0) // Gerrit lists reviewers at 0
 	e.sync(t)
-	if !slices.Equal(e.h.asks, []string{"+mike-gh"}) {
-		t.Fatalf("asks = %v", e.h.asks)
+	e.wantAsks(t, "+mike-gh")
+	if s := e.seen(t); !slices.Equal(s.Requested, []state.GitHubAccount{{ID: 77, Login: "mike-gh"}}) {
+		t.Errorf("seen = %+v", s)
 	}
-	if got := e.pairs(t); !slices.Equal(got, []state.Reviewer{{GerritUser: "mikebauer", GitHubID: 77}}) {
-		t.Errorf("pairs = %+v", got)
-	}
+	e.sync(t) // GitHub's review_requested comes back: nothing
+	e.reviewed(mikeGH, "COMMENTED")
 	e.sync(t)
-	if len(e.h.asks) != 1 {
-		t.Errorf("asked again: %v", e.h.asks)
-	}
-	// Mike reviews on GitHub: GitHub drops the request.
-	e.h.requested = nil
-	e.h.reviews = append(e.h.reviews, github.Review{ID: 90, State: "COMMENTED", User: mikeGH, CommitID: "sha2"})
 	e.sync(t)
-	if len(e.h.asks) != 1 {
-		t.Errorf("asked again after reviewing: %v", e.h.asks)
+	e.wantAsks(t, "+mike-gh")
+	if _, in := e.g.attention[mike.AccountID]; in || len(e.g.reviewers["REVIEWER"]) != 1 {
+		t.Errorf("after mike's review: attention %+v, reviewers %+v", e.g.attention, e.g.reviewers)
 	}
 }
 
-// Only reviewers are asked: not CCs, the owner, the bridge, the PR's
-// author, anyone who has voted, anyone already asked or who has reviewed
-// on GitHub, or anyone with no GitHub account.
-func TestOnlyWaitingReviewersAreAsked(t *testing.T) {
-	e, a := reviewersEnv(t)
-	bridge := gerrit.AccountInfo{AccountID: bridgeID, Username: "bridge"}
-	a.m["bridge"] = github.User{Login: "bridge", ID: 1}
-	voter := gerrit.AccountInfo{AccountID: 23, Username: "vic"}
-	a.m["vic"] = github.User{Login: "vic-gh", ID: 80}
-	nobody := gerrit.AccountInfo{AccountID: 24, Username: "nobody"}
-	e.g.vote("vic", "Code-Review", 1)
-	e.g.reviewers = map[string][]gerrit.AccountInfo{"REVIEWER": {ownerGA, bridge, voter, nobody}, "CC": {mike}}
-	e.sync(t)
-	if len(e.h.asks) != 0 {
-		t.Errorf("asks = %v", e.h.asks)
-	}
-	// Already asked on GitHub, or already reviewed there: not asked, but
-	// matched up.
-	e.g.reviewers["REVIEWER"] = append(e.g.reviewers["REVIEWER"], mike, jane)
-	e.h.requested = []github.User{mikeGH}
-	e.h.reviews = append(e.h.reviews, github.Review{ID: 91, State: "APPROVED", User: janeGH, CommitID: "sha2"})
-	e.sync(t)
-	if len(e.h.asks) != 0 {
-		t.Errorf("asks = %v", e.h.asks)
-	}
-	if got := e.pairs(t); len(got) != 2 {
-		t.Errorf("pairs = %+v", got)
-	}
-}
-
-// The change's owner is not asked though someone else opened its PR
-// (the bot, before PRs were opened as owners); nor is the PR's author
-// though not the owner.
-func TestOwnerAndAuthorAreNotAsked(t *testing.T) {
+// Only a trusted person, in Gerrit, asks: not a stranger, not the bridge,
+// not whatever Gerrit cannot say who did. Nor is the owner, a CC or the
+// PR's author asked.
+func TestOnlyTrustedPeopleAsk(t *testing.T) {
 	e, _ := reviewersEnv(t)
-	e.h.author = github.User{Login: "bridge", ID: 1}
-	e.g.reviewers = map[string][]gerrit.AccountInfo{"REVIEWER": {ownerGA}}
+	e.g.addReviewer(stranger, mike)
+	e.g.addReviewer(bridgeGA, jane)
 	e.sync(t)
-	if len(e.h.asks) != 0 {
-		t.Errorf("the owner was asked: %v", e.h.asks)
-	}
+	e.wantAsks(t)
+
+	e, _ = reviewersEnv(t)
+	e.g.reviewers = map[string][]gerrit.AccountInfo{"REVIEWER": {mike}}
+	e.g.setAttention(mike, e.g.tick(), "Someone replied", true) // nobody Gerrit names
+	e.g.addReviewer(austin, ownerGA)
+	e.g.reviewers["CC"] = []gerrit.AccountInfo{jane}
+	e.g.setAttention(jane, e.g.addReviewer(austin, gerrit.AccountInfo{AccountID: 30, Username: "x"}), "Someone replied", true)
+	e.sync(t)
+	e.wantAsks(t)
+
+	e, _ = reviewersEnv(t)
 	e.h.author = janeGH
-	e.g.reviewers["REVIEWER"] = append(e.g.reviewers["REVIEWER"], jane)
+	e.g.addReviewer(austin, jane)
 	e.sync(t)
-	if len(e.h.asks) != 0 {
-		t.Errorf("the PR's author was asked: %v", e.h.asks)
-	}
+	e.wantAsks(t)
+
+	// The owner, though the bot opened the PR.
+	e, _ = reviewersEnv(t)
+	e.h.author = github.User{Login: "bot", ID: 1}
+	e.g.addReviewer(austin, ownerGA)
+	e.sync(t)
+	e.wantAsks(t)
 }
 
-// Nothing is asked on a closed PR or change.
-func TestClosedChangesReviewersAreNotAsked(t *testing.T) {
-	for _, closed := range []func(*commentsEnv){
-		func(e *commentsEnv) { e.h.closed = true },
-		func(e *commentsEnv) { e.g.status = "ABANDONED" },
-	} {
-		e, _ := reviewersEnv(t)
-		e.g.reviewers = map[string][]gerrit.AccountInfo{"REVIEWER": {mike}}
-		closed(e)
-		e.sync(t)
-		if len(e.h.asks) != 0 {
-			t.Errorf("asks = %v", e.h.asks)
-		}
-	}
-}
-
-// A reviewer removed in Gerrit is no longer asked on GitHub; added back,
-// they are asked again.
-func TestRemovedReviewerIsNoLongerAsked(t *testing.T) {
+// A reviewer whose turn it is again in Gerrit (austin replies, handing it
+// to them) is asked again on GitHub; one whose turn ends there (they
+// reply, or austin removes them) is no longer asked. A stranger taking
+// them out of the attention set does nothing.
+func TestTurnsFollowTheAttentionSet(t *testing.T) {
 	e, _ := reviewersEnv(t)
-	e.g.reviewers = map[string][]gerrit.AccountInfo{"REVIEWER": {mike}}
+	e.g.addReviewer(austin, mike)
 	e.sync(t)
-	e.g.reviewers["REVIEWER"] = nil
+	e.reviewed(mikeGH, "CHANGES_REQUESTED") // ends their turn in Gerrit too
 	e.sync(t)
-	if !slices.Equal(e.h.asks, []string{"+mike-gh", "-mike-gh"}) || len(e.h.requested) != 0 {
-		t.Fatalf("asks = %v, requested %v", e.h.asks, e.h.requested)
+	if _, in := e.g.attention[mike.AccountID]; in {
+		t.Errorf("still mike's turn after his review: %+v", e.g.attention)
 	}
-	if got := e.pairs(t); len(got) != 0 {
-		t.Errorf("pairs = %+v", got)
-	}
-	// Withdrawn on GitHub, not added back in Gerrit as from GitHub.
-	if e.g.reviews != 0 {
-		t.Errorf("Gerrit reviews: %d", e.g.reviews)
-	}
-	e.g.reviewers["REVIEWER"] = []gerrit.AccountInfo{mike}
+	e.g.reply(austin, "Done", []gerrit.AccountInfo{mike}, nil)
 	e.sync(t)
-	if !slices.Equal(e.h.asks, []string{"+mike-gh", "-mike-gh", "+mike-gh"}) {
-		t.Errorf("asks = %v", e.h.asks)
-	}
-	// A withdrawal GitHub refuses is tried again.
-	e.g.reviewers["REVIEWER"] = nil
-	e.h.refuseAsk = errors.New("GitHub is down")
+	e.wantAsks(t, "+mike-gh", "+mike-gh")
+
+	e.g.reply(stranger, "meh", nil, []gerrit.AccountInfo{mike})
 	e.sync(t)
-	if len(e.pairs(t)) != 1 {
-		t.Errorf("a failed withdrawal was forgotten: %+v", e.pairs(t))
-	}
-	e.h.refuseAsk = nil
+	e.wantAsks(t, "+mike-gh", "+mike-gh")
+	e.g.setAttention(mike, e.g.tick(), "Someone replied", true) // back, by nobody Gerrit names
 	e.sync(t)
-	if len(e.h.requested) != 0 || len(e.pairs(t)) != 0 {
-		t.Errorf("not withdrawn: %v %+v", e.h.requested, e.pairs(t))
-	}
-	e.g.reviewers["REVIEWER"] = []gerrit.AccountInfo{mike}
+	e.g.reply(mike, "LGTM", nil, []gerrit.AccountInfo{mike})
 	e.sync(t)
-	// Moved to CC: no longer asked either.
-	e.g.reviewers = map[string][]gerrit.AccountInfo{"CC": {mike}}
+	e.wantAsks(t, "+mike-gh", "+mike-gh", "-mike-gh")
+
+	e.g.reply(austin, "PTAL", []gerrit.AccountInfo{mike}, nil)
 	e.sync(t)
-	if len(e.h.requested) != 0 {
-		t.Errorf("requested = %v", e.h.requested)
+	e.g.removeReviewer(austin, mike)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh", "-mike-gh", "+mike-gh", "-mike-gh")
+	if s := e.seen(t); len(e.h.requested) != 0 || len(s.Requested) != 0 {
+		t.Errorf("requested = %v, seen %+v", e.h.requested, s)
 	}
+	// Who is who unknown for now when their turn ends: tried again.
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.g.removeReviewer(austin, mike)
+	accounts := e.c.Reviewers
+	e.c.Reviewers = &fakeGitHubAccounts{unknown: &IdentityUnknown{errors.New("down")}}
+	e.sync(t)
+	e.c.Reviewers = accounts
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh", "-mike-gh", "+mike-gh", "-mike-gh", "+mike-gh", "-mike-gh")
 }
 
-// Someone asked to review on GitHub becomes a Gerrit reviewer, once; the
-// request is not then made again from Gerrit, and withdrawing it on
-// GitHub leaves Gerrit alone.
-func TestGitHubRequestMakesAGerritReviewer(t *testing.T) {
+// A patch set austin uploads asks again whoever last requested changes on
+// GitHub (Gerrit hands nobody the turn then); not whoever approved, and
+// not for a patch set the bridge or a stranger uploaded.
+func TestNewPatchSetAsksChangeRequestersAgain(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.g.addReviewer(austin, jane)
+	e.sync(t)
+	// GitHub counts each one's latest approval or change request; a
+	// comment after either does not change it.
+	e.reviewed(janeGH, "CHANGES_REQUESTED")
+	e.reviewed(mikeGH, "APPROVED")
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.reviewed(mikeGH, "COMMENTED")
+	e.reviewed(janeGH, "APPROVED")
+	e.reviewed(github.User{Login: "lint[bot]", ID: 90, Type: "Bot"}, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.g.upload(bridgeGA, 3, "sha3")
+	e.sync(t)
+	e.g.upload(stranger, 4, "sha4")
+	e.sync(t)
+	e.wantAsks(t, "+jane-gh", "+mike-gh")
+	e.g.upload(austin, 5, "sha5")
+	e.sync(t)
+	e.wantAsks(t, "+jane-gh", "+mike-gh", "+mike-gh")
+	e.g.upload(austin, 6, "sha6") // asked already: not again
+	e.sync(t)
+	e.wantAsks(t, "+jane-gh", "+mike-gh", "+mike-gh")
+	// Changes requested again: asked again by the next patch set, not
+	// before.
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.wantAsks(t, "+jane-gh", "+mike-gh", "+mike-gh")
+	// Nor while a draft; once it is ready.
+	e.h.draft = true
+	e.g.upload(austin, 7, "sha7")
+	e.sync(t)
+	e.wantAsks(t, "+jane-gh", "+mike-gh", "+mike-gh")
+	e.h.draft = false
+	e.sync(t)
+	e.wantAsks(t, "+jane-gh", "+mike-gh", "+mike-gh", "+mike-gh")
+}
+
+// Someone asked on GitHub becomes a Gerrit reviewer (whose turn it is);
+// that is the bridge's doing, and not carried back. Withdrawn on GitHub
+// (not ended by their review), it is no longer their turn in Gerrit;
+// asked again, it is again.
+func TestGitHubRequestsReachGerrit(t *testing.T) {
 	e, _ := reviewersEnv(t)
 	e.h.requested = []github.User{janeGH}
 	e.sync(t)
 	if got := e.g.reviewers["REVIEWER"]; len(got) != 1 || got[0].Username != "jane" {
 		t.Fatalf("Gerrit reviewers = %+v", e.g.reviewers)
 	}
-	if len(e.h.asks) != 0 {
-		t.Errorf("asks = %v", e.h.asks)
-	}
-	if got := e.pairs(t); !slices.Equal(got, []state.Reviewer{{GerritUser: "jane", GitHubID: 78}}) {
-		t.Errorf("pairs = %+v", got)
-	}
-	reviews := e.g.reviews
+	e.sync(t)
+	e.wantAsks(t)
 	e.h.requested = nil
 	e.sync(t)
-	if e.g.reviews != reviews || len(e.g.reviewers["REVIEWER"]) != 1 || len(e.h.asks) != 0 {
-		t.Errorf("after the request was withdrawn: reviews %d->%d, reviewers %+v, asks %v", reviews, e.g.reviews, e.g.reviewers, e.h.asks)
+	if _, in := e.g.attention[jane.AccountID]; in {
+		t.Errorf("still jane's turn: %+v", e.g.attention)
 	}
-	// Someone already a Gerrit reviewer is not added again.
-	e.g.reviewers["REVIEWER"] = append(e.g.reviewers["REVIEWER"], mike)
-	e.h.requested = []github.User{mikeGH}
+	e.sync(t)
+	e.h.requested = []github.User{janeGH}
+	e.sync(t)
+	if _, in := e.g.attention[jane.AccountID]; !in {
+		t.Errorf("not jane's turn: %+v", e.g.attention)
+	}
+	if n := len(e.g.reviewers["REVIEWER"]); n != 1 {
+		t.Errorf("jane added again: %+v", e.g.reviewers)
+	}
+	// Ended by her review: no longer her turn.
+	e.reviewed(janeGH, "APPROVED")
+	e.sync(t)
+	if _, in := e.g.attention[jane.AccountID]; in {
+		t.Errorf("still jane's turn after her review: %+v", e.g.attention)
+	}
+	e.wantAsks(t)
+	// Asked on GitHub when it is her turn already (a stranger gave it
+	// her, which asks nobody): nothing to do.
+	e.g.reply(stranger, "PTAL", []gerrit.AccountInfo{jane}, nil)
+	e.sync(t)
+	reviews := e.g.reviews
+	e.h.requested = []github.User{janeGH}
 	e.sync(t)
 	if e.g.reviews != reviews {
-		t.Errorf("mikebauer added again: %+v", e.g.reviewers)
+		t.Errorf("Gerrit written to: %+v", e.g.attention)
 	}
-	// Nor is a reviewer who voted (and so was not asked from Gerrit),
-	// asked again on GitHub.
-	e.g.vote("vic", "Code-Review", 1)
-	e.g.reviewers["REVIEWER"] = append(e.g.reviewers["REVIEWER"], gerrit.AccountInfo{AccountID: 23, Username: "vic"})
-	e.c.Users = &Users{Overrides: map[string]string{"mike-gh": "mikebauer", "jane-gh": "jane", "vic-gh": "vic"}}
-	e.h.requested = []github.User{{Login: "vic-gh", ID: 80}}
+	e.h.requested = nil
+	e.c.Users = failingUsers{} // ended, who is who unknown: tried again
 	e.sync(t)
-	if e.g.reviews != reviews {
-		t.Errorf("vic added again: %+v", e.g.reviewers)
+	e.c.Users = &Users{Overrides: map[string]string{"mike-gh": "mikebauer", "jane-gh": "jane", "owen-gh": "owen"}}
+	e.sync(t)
+	if _, in := e.g.attention[jane.AccountID]; in {
+		t.Errorf("still jane's turn: %+v", e.g.attention)
 	}
-	// Nobody the mapping knows is not added.
-	e.h.requested = []github.User{mikeGH, {Login: "stranger", ID: 99}}
+	// The owner asked on GitHub (a bot-opened PR): not made a reviewer.
+	e.h.requested = []github.User{ownerGH}
 	e.sync(t)
-	if len(e.g.reviewers["REVIEWER"]) != 3 {
-		t.Errorf("a stranger was added: %+v", e.g.reviewers)
+	if n := len(e.g.reviewers["REVIEWER"]); n != 1 {
+		t.Errorf("the owner was made a reviewer: %+v", e.g.reviewers)
+	}
+	if _, in := e.g.attention[ownerGA.AccountID]; in {
+		t.Errorf("the owner's turn: %+v", e.g.attention)
+	}
+}
+
+// A PR made and worked on GitHub alone, nobody doing anything in Gerrit,
+// never has the bridge write to GitHub for its reviewers: what Gerrit
+// shows of it is the bridge's (imports, mirrored reviews, reviewers it
+// added), though done as the PR's trusted author.
+func TestGitHubOnlyPRNeverAsksOnGitHub(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(bridgeGA, mike)
+	e.g.addReviewer(bridgeGA, jane)
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	// owen pushes to the PR: imported as him, which (were Gerrit to)
+	// hands jane the turn.
+	ts := e.g.uploadAs(ownerGA, &bridgeGA, 3, "sha3")
+	e.g.setAttention(jane, ts, "Someone replied", true)
+	e.sync(t)
+	// owen comments on GitHub: mirrored as him (Run-As), handing mike
+	// the turn; once tagged as the bridge's, once only said to be
+	// another's.
+	e.g.setAttention(mike, e.g.tick(), "Someone replied", false)
+	e.sync(t)
+	ts = e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "m1", Author: ownerGA, Tag: commentTag, Date: ts, Message: "Patch Set 3:\n\n(1 comment)"})
+	e.g.setAttention(mike, ts, "Someone replied", true)
+	e.sync(t)
+	e.g.setAttention(mike, e.g.tick(), "Someone replied", false)
+	e.sync(t)
+	// A vote mirrored as him: Gerrit makes him a reviewer, as his doing.
+	ts = e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "m2", Author: ownerGA, RealAuthor: &bridgeGA, Date: ts, Message: "Patch Set 3: Code-Review+1"})
+	e.g.updates = append(e.g.updates, gerrit.ReviewerUpdate{Updated: ts, UpdatedBy: ownerGA, Reviewer: ownerGA, State: "REVIEWER"})
+	e.g.setAttention(mike, ts, "Someone replied", true)
+	e.sync(t)
+	e.wantAsks(t)
+
+	e, _ = reviewersEnv(t)
+	e.g.upload(bridgeGA, 3, "sha3") // imported
+	e.h.requested = []github.User{janeGH, mikeGH}
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	// The bridge mirrors mike's review as him, which hands owen the turn
+	// and takes mike's.
+	ts = e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "mm", Author: mike, Tag: commentTag, Date: ts, Message: "Patch Set 3:\n\n(1 comment)"})
+	e.g.setAttention(ownerGA, ts, "Someone else replied", true)
+	e.g.setAttention(mike, ts, "Someone replied", false)
+	e.sync(t)
+	e.g.upload(bridgeGA, 4, "sha4") // a push to the PR
+	e.h.requested = nil             // withdrawn
+	e.sync(t)
+	e.h.requested = []github.User{janeGH}
+	e.sync(t)
+	e.sync(t)
+	e.wantAsks(t)
+}
+
+// A PR from before the bridge started is taken as it is: nothing on it
+// is carried over until something changes.
+func TestPRsFromBeforeAreTakenAsTheyAre(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.c.Since = time.Now()
+	e.h.createdAt = e.c.Since.Add(-time.Hour)
+	e.g.addReviewer(austin, mike)
+	e.h.requested = []github.User{janeGH}
+	e.sync(t)
+	e.wantAsks(t)
+	if e.g.reviews != 0 {
+		t.Errorf("Gerrit written to: %+v", e.g.reviewers)
+	}
+	e.g.reply(austin, "PTAL", []gerrit.AccountInfo{jane}, nil)
+	e.g.addReviewer(austin, jane)
+	e.sync(t)
+	e.wantAsks(t)                                                                    // jane is asked already
+	e.g.reply(austin, "and you", []gerrit.AccountInfo{}, []gerrit.AccountInfo{mike}) // mike's turn ends
+	e.sync(t)
+	e.g.reply(austin, "PTAL", []gerrit.AccountInfo{mike}, nil)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+}
+
+// While a draft, nobody is asked; once ready, those whose turn it is are.
+// A closed PR is left alone, and what it saw kept.
+func TestDraftsAndClosedPRs(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.h.draft = true
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.wantAsks(t)
+	e.h.draft = false
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+
+	e, _ = reviewersEnv(t)
+	e.sync(t)
+	e.h.closed = true
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.wantAsks(t)
+	if e.seen(t) == nil {
+		t.Error("forgot what it saw")
 	}
 }
 
 // A request GitHub refuses for good (422: not a collaborator) is not made
-// every sync; one that failed otherwise is tried again; who is who being
-// unknown asks nobody.
+// again; one that failed otherwise, or whose GitHub account could not be
+// found for now, is tried again.
 func TestRefusedRequests(t *testing.T) {
-	// Gerrit refusing the reviewer: tried again.
-	e, _ := reviewersEnv(t)
-	e.h.requested = []github.User{janeGH}
-	e.g.refuseReviewers = true
-	e.sync(t)
-	if len(e.pairs(t)) != 0 {
-		t.Fatalf("pairs = %+v", e.pairs(t))
-	}
-	e.g.refuseReviewers = false
-	e.sync(t)
-	if len(e.g.reviewers["REVIEWER"]) != 1 {
-		t.Fatalf("not tried again: %+v", e.g.reviewers)
-	}
-
 	e, a := reviewersEnv(t)
-	e.g.reviewers = map[string][]gerrit.AccountInfo{"REVIEWER": {mike}}
+	e.g.addReviewer(austin, mike)
 	a.unknown = &IdentityUnknown{errors.New("down")}
 	e.sync(t)
-	if len(e.pairs(t)) != 0 {
-		t.Fatalf("pairs = %+v", e.pairs(t))
-	}
 	a.unknown = nil
 	e.h.refuseAsk = errors.New("GitHub is down")
 	e.sync(t)
-	if len(e.pairs(t)) != 0 {
-		t.Fatalf("pairs = %+v", e.pairs(t))
-	}
 	e.h.refuseAsk = nil
 	e.sync(t)
-	if !slices.Equal(e.h.asks, []string{"+mike-gh"}) {
-		t.Fatalf("not tried again: %v", e.h.asks)
-	}
+	e.wantAsks(t, "+mike-gh")
 
 	e, a = reviewersEnv(t)
-	e.g.reviewers = map[string][]gerrit.AccountInfo{"REVIEWER": {mike}}
+	e.g.addReviewer(austin, mike)
 	e.h.refuseAsk = &github.APIError{Status: 422, Message: "Reviews may only be requested from collaborators."}
 	e.sync(t)
 	asked := a.asked
@@ -295,6 +416,103 @@ func TestRefusedRequests(t *testing.T) {
 	if len(e.h.asks) != 0 || a.asked != asked {
 		t.Errorf("a refused request was made again: %v", e.h.asks)
 	}
+
+	// Withdrawing, refused for now: tried again.
+	e, _ = reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.g.removeReviewer(austin, mike)
+	e.h.refuseAsk = errors.New("GitHub is down")
+	e.sync(t)
+	e.h.refuseAsk = nil
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "-mike-gh")
+
+	// Gerrit refusing: tried again.
+	e, _ = reviewersEnv(t)
+	e.h.requested = []github.User{janeGH}
+	e.g.refuseReviewers = true
+	e.sync(t)
+	e.g.refuseReviewers = false
+	e.sync(t)
+	if len(e.g.reviewers["REVIEWER"]) != 1 {
+		t.Errorf("not tried again: %+v", e.g.reviewers)
+	}
+	e.h.requested = nil
+	e.g.refuseAttention = true
+	e.sync(t)
+	e.g.refuseAttention = false
+	e.sync(t)
+	if _, in := e.g.attention[jane.AccountID]; in {
+		t.Errorf("not tried again: %+v", e.g.attention)
+	}
+}
+
+// Someone asked on GitHub with no Gerrit account (yet) is said so in
+// Gerrit, once per request (not for a bot, and not again for the mapping
+// being unknown for a while); once they have one, the next sync makes
+// them a Gerrit reviewer, if still asked.
+func TestGitHubReviewerWithoutAGerritAccount(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	newcomer := github.User{Login: "new-gh", ID: 81, Type: "User"}
+	e.h.requested = []github.User{newcomer, {Login: "Copilot", ID: 82, Type: "Bot"}}
+	e.sync(t)
+	notes := func() (got []string) {
+		for _, m := range e.g.messages {
+			if strings.Contains(m.Message, "asked to review on GitHub") {
+				got = append(got, m.Message)
+			}
+		}
+		return got
+	}
+	if got := notes(); len(got) != 1 || !strings.Contains(got[0], "@new-gh") || len(e.h.requested) != 2 {
+		t.Fatalf("notes %q, requested %v", got, e.h.requested)
+	}
+	e.sync(t)
+	e.c.Users = failingUsers{}
+	e.sync(t)
+	e.c.Users = &Users{}
+	e.sync(t)
+	if got := notes(); len(got) != 1 || len(e.h.asks) != 0 {
+		t.Fatalf("said again, or the request was withdrawn: %q %v", got, e.h.asks)
+	}
+	e.c.Users = &Users{Overrides: map[string]string{"new-gh": "newcomer"}}
+	e.sync(t)
+	if got := e.g.reviewers["REVIEWER"]; len(got) != 1 || got[0].Username != "newcomer" {
+		t.Errorf("Gerrit reviewers = %+v", e.g.reviewers)
+	}
+	if s := e.seen(t); len(s.Noted) != 0 {
+		t.Errorf("still noted: %+v", s)
+	}
+
+	// Who is who unknown when first asked: tried again.
+	e, _ = reviewersEnv(t)
+	e.c.Users = failingUsers{}
+	e.h.requested = []github.User{janeGH}
+	e.sync(t)
+	e.c.Users = &Users{Overrides: map[string]string{"jane-gh": "jane"}}
+	e.sync(t)
+	if len(e.g.reviewers["REVIEWER"]) != 1 {
+		t.Errorf("not tried again: %+v", e.g.reviewers)
+	}
+
+	// Gerrit refusing the note: said next time.
+	e, _ = reviewersEnv(t)
+	e.h.requested = []github.User{newcomer}
+	e.g.refuseNotes = true
+	e.sync(t)
+	e.g.refuseNotes = false
+	e.sync(t)
+	if len(notes()) != 1 {
+		t.Errorf("not said after Gerrit refused it: %q", notes())
+	}
+}
+
+// failingUsers cannot say who anyone is for now.
+type failingUsers struct{}
+
+func (failingUsers) Lookup(context.Context, github.User) (string, bool, error) {
+	return "", false, &IdentityUnknown{errors.New("down")}
 }
 
 // fakeDirectoryOf gives Gerrit users GitHub ids.
@@ -393,7 +611,7 @@ func TestReviewerAccounts(t *testing.T) {
 	} {
 		r.MatchUsernames = c.match
 		got, ok, err := r.GitHubFor(ctx, c.a)
-		if err != nil || ok != (c.want.ID != 0) || got != c.want {
+		if err != nil || ok != (c.want.ID != 0) || got.ID != c.want.ID || got.Login != c.want.Login {
 			t.Errorf("%+v (match %v): %+v %v %v, want %+v", c.a, c.match, got, ok, err, c.want)
 		}
 	}
@@ -401,64 +619,5 @@ func TestReviewerAccounts(t *testing.T) {
 	r.Directory, r.MatchUsernames = fakeDirectoryOf{}, true
 	if got, ok, err := r.GitHubFor(ctx, brt); ok || err != nil {
 		t.Errorf("with a directory, by username: %+v %v", got, err)
-	}
-}
-
-// Someone asked on GitHub who has no Gerrit account (yet) stays asked on
-// GitHub only, and is not recorded: once they have one (signed in to
-// Gerrit), the next sync makes them a Gerrit reviewer, if still asked.
-func TestGitHubReviewerWithoutAGerritAccount(t *testing.T) {
-	e, _ := reviewersEnv(t)
-	newcomer := github.User{Login: "new-gh", ID: 81, Type: "User"}
-	e.h.requested = []github.User{newcomer, {Login: "Copilot", ID: 82, Type: "Bot"}}
-	e.sync(t)
-	// Said once in Gerrit (not for a bot), and still asked on GitHub.
-	notes := func() (got []string) {
-		for _, m := range e.g.messages {
-			if strings.Contains(m.Message, "asked to review on GitHub") {
-				got = append(got, m.Message)
-			}
-		}
-		return got
-	}
-	if got := notes(); len(got) != 1 || !strings.Contains(got[0], "@new-gh") || len(e.g.reviewers["REVIEWER"]) != 0 || len(e.h.requested) != 2 {
-		t.Fatalf("notes %q, reviewers %+v, requested %v", got, e.g.reviewers, e.h.requested)
-	}
-	e.sync(t)
-	if got := notes(); len(got) != 1 || len(e.h.asks) != 0 {
-		t.Fatalf("said again, or the request was withdrawn: %q %v", got, e.h.asks)
-	}
-	// Gerrit refusing the note: said next time.
-	e2, _ := reviewersEnv(t)
-	e2.h.requested = []github.User{newcomer}
-	e2.g.refuseNotes = true
-	e2.sync(t)
-	e2.g.refuseNotes = false
-	e2.sync(t)
-	if e2.g.reviews != 1 {
-		t.Errorf("not said after Gerrit refused it: %d", e2.g.reviews)
-	}
-	// They sign in to Gerrit: made a reviewer.
-	e.c.Users = &Users{Overrides: map[string]string{"new-gh": "newcomer"}}
-	e.sync(t)
-	if got := e.g.reviewers["REVIEWER"]; len(got) != 1 || got[0].Username != "newcomer" {
-		t.Errorf("Gerrit reviewers = %+v", e.g.reviewers)
-	}
-	if got := e.pairs(t); !slices.Equal(got, []state.Reviewer{{GerritUser: "newcomer", GitHubID: 81}}) {
-		t.Errorf("pairs = %+v", got)
-	}
-	// Asked again later with no account: said again.
-	e.c.Users = &Users{}
-	e.h.requested = []github.User{{Login: "other-gh", ID: 83, Type: "User"}}
-	e.sync(t)
-	e.h.requested = nil
-	e.sync(t)
-	if len(e.pairs(t)) != 1 {
-		t.Errorf("a request that ended is still kept: %+v", e.pairs(t))
-	}
-	e.h.requested = []github.User{{Login: "other-gh", ID: 83, Type: "User"}}
-	e.sync(t)
-	if got := notes(); len(got) != 3 {
-		t.Errorf("notes = %q", got)
 	}
 }

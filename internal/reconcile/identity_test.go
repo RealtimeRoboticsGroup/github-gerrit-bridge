@@ -342,3 +342,36 @@ func TestOneGitHubAccountIsNotPinnedToTwoGerritAccounts(t *testing.T) {
 		t.Errorf("bob's GitHub account (pinned to Gerrit bob) now acts as Gerrit %q too; pins %+v", user, pins.ids.ByUser)
 	}
 }
+
+// A lookup that only asks (the reviewer sync's, for whoever a stranger
+// names) takes pins as they are: it writes none, finds nobody yet
+// unpinned, and keeps no answer that a later lookup would reuse.
+func TestLookupsWithoutNewPins(t *testing.T) {
+	ids := fakeIDs{"alice": 1, "bob": 2, "carol-gh": 3, "carol": 4}
+	pins := &memPins{ids: &state.Identities{ByUser: map[string]state.Identity{"alice": {GitHubID: 1, GitHubLogin: "alice"}}}}
+	u := &Users{Gerrit: fakeAccounts{users: []string{"alice", "bob", "carol"}}, Overrides: map[string]string{"carol-gh": "carol"},
+		Pins: pins, GitHub: ids}
+	ctx := withoutNewPins(context.Background())
+	if user, ok, err := u.Lookup(ctx, github.User{Login: "alice", ID: 1}); err != nil || !ok || user != "alice" {
+		t.Errorf("pinned alice: %q %v %v", user, ok, err)
+	}
+	// carol: by her override's login, and by her username (which the
+	// override says is not hers).
+	for _, gh := range []github.User{{Login: "bob", ID: 2}, {Login: "carol-gh", ID: 3}, {Login: "carol", ID: 4}} {
+		if user, ok, err := u.Lookup(ctx, gh); err != nil || ok {
+			t.Errorf("unpinned %s: %q %v %v", gh.Login, user, ok, err)
+		}
+	}
+	if len(pins.ids.ByUser) != 1 {
+		t.Errorf("pinned: %+v", pins.ids.ByUser)
+	}
+	// The reviewer sync's reverse lookup is such a lookup.
+	r := &ReviewerAccounts{Users: u, GitHub: fakeUsersByID{2: {Login: "bob", ID: 2}}, MatchUsernames: true}
+	if gh, ok, err := r.GitHubFor(context.Background(), gerrit.AccountInfo{AccountID: 2, Username: "bob"}); ok || err != nil || len(pins.ids.ByUser) != 1 {
+		t.Errorf("reverse lookup of bob: %+v %v %v, pins %+v", gh, ok, err, pins.ids.ByUser)
+	}
+	// Asked for real, bob is found (and pinned): nothing was kept.
+	if user, ok, err := u.Lookup(context.Background(), github.User{Login: "bob", ID: 2}); err != nil || !ok || user != "bob" {
+		t.Errorf("bob for real: %q %v %v", user, ok, err)
+	}
+}

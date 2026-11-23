@@ -259,6 +259,18 @@ func checkGroup(ctx context.Context, gl groupLister, group string, seen map[stri
 	return nil
 }
 
+type noNewPinsKey struct{}
+
+// withoutNewPins is ctx for a lookup that only asks: it takes pins as
+// they are and writes none (nor keeps its answer for others). The
+// reviewer sync's reverse lookups are made for whoever a stranger names a
+// reviewer, not for anyone who acted (review of the reviewer sync).
+func withoutNewPins(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noNewPinsKey{}, true)
+}
+
+func mayPin(ctx context.Context) bool { return ctx.Value(noNewPinsKey{}) == nil }
+
 // byLogin is login's Gerrit account as a lookup finds it (and, with
 // pins, the GitHub id it was checked against), reused for userCacheTTL
 // unless fresh.
@@ -300,6 +312,9 @@ func (u *Users) byLogin(ctx context.Context, login string, fresh bool) cachedUse
 		user = ""
 	}
 	c := cachedUser{user: user, ok: ok, at: time.Now(), id: id}
+	if !mayPin(ctx) {
+		return c
+	}
 	u.mu.Lock()
 	if u.cache == nil {
 		u.cache = map[string]cachedUser{}
@@ -624,6 +639,9 @@ func (u *Users) pin(ctx context.Context, login, user string, account int, id int
 			if err != nil {
 				return false, err
 			}
+			if !mayPin(ctx) {
+				return false, nil
+			}
 			p, ok = state.Identity{GitHubID: oid, GitHubLogin: over, Pinned: time.Now().UTC()}, true
 			if !u.DryRun {
 				ids.ByUser[key] = p
@@ -671,6 +689,9 @@ func (u *Users) pin(ctx context.Context, login, user string, account int, id int
 				}
 				return false, nil
 			}
+		}
+		if !mayPin(ctx) {
+			return false, nil
 		}
 		if u.DryRun {
 			return true, nil

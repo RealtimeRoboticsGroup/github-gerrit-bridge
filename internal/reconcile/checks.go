@@ -301,6 +301,12 @@ func (c *Checks) IsTrusted(ctx context.Context, account int) (trusted, known boo
 	return c.isTrusted(ctx, account, false)
 }
 
+// Trusts is IsTrusted's answer, no if unknown.
+func (c *Checks) Trusts(ctx context.Context, account int) bool {
+	trusted, _ := c.IsTrusted(ctx, account)
+	return trusted
+}
+
 // isTrusted is IsTrusted, reading the group afresh if fresh.
 func (c *Checks) isTrusted(ctx context.Context, account int, fresh bool) (trusted, known bool) {
 	if c.TrustedGroup == "" {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -258,17 +259,23 @@ func TestInBranch(t *testing.T) {
 	}
 }
 
-// A review can add reviewers; a change lists its reviewers by state.
+// A review can add reviewers; a change lists its reviewers by state, who
+// changed them, and its attention set; the attention set can be changed.
 func TestReviewers(t *testing.T) {
 	var body string
+	var posts []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			b, _ := io.ReadAll(r.Body)
 			body = string(b)
+			posts = append(posts, r.URL.Path+" "+body)
 			fmt.Fprint(w, ")]}'\n{}")
 			return
 		}
-		fmt.Fprint(w, ")]}'\n"+`{"_number":5,"reviewers":{"REVIEWER":[{"_account_id":20,"username":"mikebauer"}],"CC":[{"_account_id":21,"username":"jane"}]}}`)
+		fmt.Fprint(w, ")]}'\n"+`{"_number":5,"reviewers":{"REVIEWER":[{"_account_id":20,"username":"mikebauer"}],"CC":[{"_account_id":21,"username":"jane"}]},`+
+			`"reviewer_updates":[{"updated":"2026-11-23 08:35:29.000000000","updated_by":{"_account_id":25,"username":"austin"},"reviewer":{"_account_id":20},"state":"REVIEWER"}],`+
+			`"attention_set":{"20":{"account":{"_account_id":20,"username":"mikebauer"},"last_update":"2026-11-23 08:35:29.000000000","reason":"Reviewer was added"}},`+
+			`"removed_from_attention_set":{"25":{"account":{"_account_id":25},"last_update":"2026-11-23 08:35:30.000000000","reason":"x"}}}`)
 	}))
 	defer srv.Close()
 	c := &Client{BaseURL: srv.URL, User: "bridge", Password: "secret"}
@@ -282,5 +289,25 @@ func TestReviewers(t *testing.T) {
 	ci, err := c.GetChange(ctx, 5, "DETAILED_LABELS")
 	if err != nil || len(ci.Reviewers["REVIEWER"]) != 1 || ci.Reviewers["REVIEWER"][0].Username != "mikebauer" || ci.Reviewers["CC"][0].AccountID != 21 {
 		t.Errorf("reviewers: %+v %v", ci, err)
+	}
+	if u := ci.ReviewerUpdates; len(u) != 1 || u[0].UpdatedBy.Username != "austin" || u[0].Updated != "2026-11-23 08:35:29.000000000" || u[0].State != "REVIEWER" {
+		t.Errorf("reviewer updates: %+v", u)
+	}
+	if a := ci.AttentionSet["20"]; a.Account.Username != "mikebauer" || a.LastUpdate != "2026-11-23 08:35:29.000000000" || a.Reason != "Reviewer was added" {
+		t.Errorf("attention set: %+v", ci.AttentionSet)
+	}
+	if a := ci.RemovedFromAttentionSet["25"]; a.Account.AccountID != 25 {
+		t.Errorf("removed from attention set: %+v", ci.RemovedFromAttentionSet)
+	}
+	posts = nil
+	if err := c.AddToAttentionSet(ctx, 5, "mikebauer", "GitHub: asked"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RemoveFromAttentionSet(ctx, 5, 20, "GitHub: ended"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{`/a/changes/5/attention {"reason":"GitHub: asked","user":"mikebauer"}`, `/a/changes/5/attention/20/delete {"notify":"NONE","reason":"GitHub: ended"}`}
+	if !slices.Equal(posts, want) {
+		t.Errorf("attention set posts:\n%q\nwant\n%q", posts, want)
 	}
 }

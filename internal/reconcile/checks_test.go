@@ -439,3 +439,17 @@ func TestGitHubChecksCommit(t *testing.T) {
 		}
 	}
 }
+
+// Trusts is IsTrusted's answer, and no when the group cannot be read.
+func TestTrusts(t *testing.T) {
+	ctx := context.Background()
+	f := &checksFakes{group: []gerrit.AccountInfo{{AccountID: 5}}}
+	c := &Checks{Gerrit: f, TrustedGroup: "Verified Users", Logger: slog.Default()}
+	if !c.Trusts(ctx, 5) || c.Trusts(ctx, 9) {
+		t.Error("Trusts is not IsTrusted")
+	}
+	c = &Checks{Gerrit: failingGroups{f}, TrustedGroup: "Verified Users", Logger: slog.Default()}
+	if c.Trusts(ctx, 5) {
+		t.Error("trusted, though the group cannot be read")
+	}
+}

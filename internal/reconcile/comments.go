@@ -31,6 +31,8 @@ type GerritAPI interface {
 	DeleteVote(ctx context.Context, change int, account, label string) error
 	GetChange(ctx context.Context, change int, opts ...string) (*gerrit.ChangeInfo, error)
 	FileContent(ctx context.Context, change int, revision, path string) ([]byte, error)
+	AddToAttentionSet(ctx context.Context, change int, user, reason string) error
+	RemoveFromAttentionSet(ctx context.Context, change, account int, reason string) error
 	CommentURL(project string, change int, id string) string
 	ChangeURL(project string, number int) string
 }
@@ -115,8 +117,12 @@ type Comments struct {
 	Users    Identity
 	GerritAs func(user string) GerritAPI
 	// Reviewers, if set, carries reviewers over (syncReviewers), finding
-	// Gerrit reviewers' GitHub accounts.
+	// Gerrit reviewers' GitHub accounts. Only what Trusted people do in
+	// Gerrit is carried to GitHub; PRs created before Since are taken as
+	// they are the first time.
 	Reviewers GitHubAccounts
+	Trusted   func(ctx context.Context, account int) bool
+	Since     time.Time
 	// Authors, if set, posts the Gerrit content of users who linked their
 	// GitHub account as them, without the attribution header; the rest,
 	// and theirs when GitHub refuses their token, as the bridge.
@@ -188,9 +194,16 @@ func githubKind(frag string) string {
 type commentSnapshot struct {
 	messages []gerrit.ChangeMessage
 	// status is the change's (NEW, MERGED, ABANDONED), and reviewers its
-	// reviewers by state (REVIEWER, CC).
-	status    string
-	reviewers map[string][]gerrit.AccountInfo
+	// reviewers by state (REVIEWER, CC). For the reviewer sync: its
+	// attention set, who left it, its reviewer updates and revisions, and
+	// its messages and the PR's reviews as read (settle leaves no others).
+	status                      string
+	reviewers                   map[string][]gerrit.AccountInfo
+	attention, removedAttention []gerrit.AttentionSetInfo
+	reviewerUpdates             []gerrit.ReviewerUpdate
+	revInfos                    map[string]gerrit.RevisionInfo
+	allMessages                 []gerrit.ChangeMessage
+	allReviews                  []github.Review
 	// psGitHub is the GitHub commit for each patch set, where it differs
 	// from Gerrit's (GitHub-born and re-parented revisions).
 	psGitHub map[int]string
@@ -564,7 +577,11 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	for i := range s.gerrit {
 		s.byID[s.gerrit[i].ID] = &s.gerrit[i]
 	}
-	ch, err := c.Gerrit.GetChange(ctx, n, "ALL_REVISIONS", "ALL_COMMITS", "MESSAGES", "DETAILED_ACCOUNTS", "DETAILED_LABELS")
+	opts := []string{"ALL_REVISIONS", "ALL_COMMITS", "MESSAGES", "DETAILED_ACCOUNTS", "DETAILED_LABELS"}
+	if c.Reviewers != nil {
+		opts = append(opts, "REVIEWER_UPDATES")
+	}
+	ch, err := c.Gerrit.GetChange(ctx, n, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -579,6 +596,8 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	s.messages = ch.Messages
 	s.labels = ch.Labels
 	s.status, s.reviewers = ch.Status, ch.Reviewers
+	s.attention, s.removedAttention = slices.Collect(maps.Values(ch.AttentionSet)), slices.Collect(maps.Values(ch.RemovedFromAttentionSet))
+	s.reviewerUpdates, s.revInfos, s.allMessages = ch.ReviewerUpdates, ch.Revisions, slices.Clone(ch.Messages)
 	s.current = s.shaToPS[ch.CurrentRevision]
 	// GitHub-born revisions have their own SHAs (design §5.2).
 	s.psGitHub = map[int]string{}
@@ -601,6 +620,7 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	if s.reviews, err = c.GitHub.ListReviews(ctx, pr); err != nil {
 		return nil, err
 	}
+	s.allReviews = slices.Clone(s.reviews)
 	if s.threads, err = c.GitHub.ReviewThreads(ctx, pr); err != nil {
 		return nil, err
 	}
