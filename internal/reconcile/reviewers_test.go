@@ -489,6 +489,10 @@ func TestGitHubOnlyPRNeverAsksOnGitHub(t *testing.T) {
 	ts := e.imported(t, ownerGA, 3, "sha3")
 	e.g.setAttention(jane, ts, "Someone replied", true)
 	e.sync(t)
+	// Seen, as the bridge's: not waited on forever.
+	if !slices.Contains(e.seen(t).Attention, "jane") {
+		t.Errorf("the turn an import gave is not seen: %+v", e.seen(t))
+	}
 	// A commit-message edit the bridge made as him (Run-As).
 	ts = e.g.uploadAs(ownerGA, &bridgeGA, 4, "sha4")
 	e.g.setAttention(jane, ts, "Someone replied", false)
@@ -940,4 +944,36 @@ func TestAnImportIsNeverAnExport(t *testing.T) {
 	}
 	e.sync(t)
 	e.wantAsks(t)
+}
+
+// austin's push with %r=mikebauer to a change with a PR: the comment sync
+// may get to it before the export is recorded. Whose turn it gave waits
+// for that, then mike is asked (fourth review).
+func TestATurnWithAnUnrecordedPatchSetWaits(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.sync(t)
+	ts := e.g.upload(austin, 3, "sha3")
+	e.g.addReviewerAt(ts, austin, mike)
+	e.sync(t)
+	e.wantAsks(t)
+	if err := updateStateFn(context.Background(), e.st, 5, "export", func(st *state.Change) {
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: 3, GerritSHA: "sha3", GitHubSHA: "sha3", Exported: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+	// Taken out with austin's next push, before its export is recorded:
+	// withdrawn once it is.
+	ts = e.g.upload(austin, 4, "sha4")
+	e.g.setAttention(mike, ts, "Reviewer/Cc was removed", false)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+	if err := updateStateFn(context.Background(), e.st, 5, "export", func(st *state.Change) {
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: 4, GerritSHA: "sha4", GitHubSHA: "sha4", Exported: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "-mike-gh")
 }

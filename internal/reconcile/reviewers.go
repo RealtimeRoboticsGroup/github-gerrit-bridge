@@ -234,7 +234,11 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			notSeen[key] = true
 			continue
 		}
-		who, ok := c.actorAt(s, a)
+		who, ok, wait := c.actorAt(s, a)
+		if wait {
+			notSeen[key] = true
+			continue
+		}
 		if !ok {
 			continue
 		}
@@ -261,7 +265,11 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		if _, in := attention[key]; in {
 			continue
 		}
-		who, ok := c.actorAt(s, r)
+		who, ok, wait := c.actorAt(s, r)
+		if wait {
+			stillSeen[key] = true
+			continue
+		}
 		if !ok {
 			continue
 		}
@@ -433,20 +441,25 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 // false: nobody Gerrit names, or the bridge on someone's behalf (a
 // mirrored post, Run-As: tagged as the bridge's, or with a real author,
 // though Gerrit records the reviewer it makes of them as their doing).
-// The bridge's own account is never
-// trusted (Checks.CheckUntrusted), so what it does as itself is not
-// carried either.
-func (c *Comments) actorAt(s *commentSnapshot, a gerrit.AttentionSetInfo) (gerrit.AccountInfo, bool) {
+// The bridge's own account is never trusted (Checks.CheckUntrusted), so
+// what it does as itself is not carried either. wait: made with a patch
+// set the bridge has yet to record as exported or imported, so whose it
+// is cannot be told yet (fourth review: a push with %r= the comment sync
+// got to first was taken as seen, and its reviewer never asked).
+func (c *Comments) actorAt(s *commentSnapshot, a gerrit.AttentionSetInfo) (who gerrit.AccountInfo, ok, wait bool) {
 	// Gerrit's times are to the second: two people's doings in one second
 	// cannot be told apart, so neither is taken (review of the redesign).
-	var who []gerrit.AccountInfo
+	var named []gerrit.AccountInfo
 	mirrored := false
 	for sha, r := range s.revInfos {
-		// Imported, or not yet recorded either way: an import whose state
-		// the bridge has yet to save (or failed to) looks like its
-		// author's own upload.
-		if r.Created == a.LastUpdate && !s.exported(sha) {
-			mirrored = true
+		if r.Created != a.LastUpdate {
+			continue
+		}
+		switch {
+		case s.imported(sha):
+			mirrored = true // Gerrit says its author uploaded it
+		case !s.exported(sha):
+			wait = true
 		}
 	}
 	for _, m := range s.allMessages {
@@ -454,24 +467,30 @@ func (c *Comments) actorAt(s *commentSnapshot, a gerrit.AttentionSetInfo) (gerri
 			if m.RealAuthor != nil || isBridgeTag(m.Tag) {
 				mirrored = true
 			} else {
-				who = append(who, m.Author)
+				named = append(named, m.Author)
 			}
 		}
 	}
 	for _, u := range s.reviewerUpdates {
 		if u.Updated == a.LastUpdate && sameAccount(u.Reviewer, a.Account) {
-			who = append(who, u.UpdatedBy)
+			named = append(named, u.UpdatedBy)
 		}
 	}
-	if mirrored || len(who) == 0 {
-		return gerrit.AccountInfo{}, false
+	if mirrored {
+		return gerrit.AccountInfo{}, false, false
 	}
-	for _, w := range who[1:] {
-		if !sameAccount(w, who[0]) {
-			return gerrit.AccountInfo{}, false
+	if wait {
+		return gerrit.AccountInfo{}, false, true
+	}
+	if len(named) == 0 {
+		return gerrit.AccountInfo{}, false, false
+	}
+	for _, w := range named[1:] {
+		if !sameAccount(w, named[0]) {
+			return gerrit.AccountInfo{}, false, false
 		}
 	}
-	return who[0], true
+	return named[0], true, false
 }
 
 // exported reports whether the bridge recorded Gerrit commit sha as
@@ -481,8 +500,13 @@ func (c *Comments) actorAt(s *commentSnapshot, a gerrit.AttentionSetInfo) (gerri
 // state the bridge has yet to save). Each export queues a comment sync
 // once recorded (Code.OnExported).
 func (s *commentSnapshot) exported(sha string) bool {
-	return slices.ContainsFunc(s.revisions, func(r state.Revision) bool { return r.GerritSHA == sha && r.Exported }) &&
-		!slices.ContainsFunc(s.revisions, func(r state.Revision) bool { return r.GerritSHA == sha && r.Imported })
+	return slices.ContainsFunc(s.revisions, func(r state.Revision) bool { return r.GerritSHA == sha && r.Exported }) && !s.imported(sha)
+}
+
+// imported reports whether the bridge recorded Gerrit commit sha as
+// imported from GitHub.
+func (s *commentSnapshot) imported(sha string) bool {
+	return slices.ContainsFunc(s.revisions, func(r state.Revision) bool { return r.GerritSHA == sha && r.Imported })
 }
 
 // recorded reports whether the bridge recorded Gerrit commit sha, as
