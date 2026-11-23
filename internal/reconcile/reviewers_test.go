@@ -633,6 +633,10 @@ func TestGitHubReviewerWithoutAGerritAccount(t *testing.T) {
 	if got := notes(); len(got) != 1 || !strings.Contains(got[0], "@new-gh") || len(e.h.requested) != 2 {
 		t.Fatalf("notes %q, requested %v", got, e.h.requested)
 	}
+	// A note is nobody's turn: not the owner's either (third review).
+	if a, in := e.g.attention[ownerGA.AccountID]; in {
+		t.Errorf("the note handed the owner the turn: %+v", a)
+	}
 	e.sync(t)
 	e.c.Users = failingUsers{}
 	e.sync(t)

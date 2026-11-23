@@ -321,7 +321,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			}
 			msg := fmt.Sprintf("@%s was asked to review on GitHub (%s), but has no Gerrit account the bridge knows, so is not a reviewer here. "+
 				"They are added once they have one (by signing in to Gerrit).", u.Login, s.pull.HTMLURL)
-			if err := c.Gerrit.SetReview(ctx, n, s.revision, gerrit.ReviewInput{Message: msg, Tag: commentTag, Notify: "OWNER"}); err != nil {
+			if err := c.Gerrit.SetReview(ctx, n, s.revision, gerrit.ReviewInput{Message: msg, Tag: commentTag, Notify: "OWNER",
+				// A note: nobody's turn (third review).
+				IgnoreAutomaticAttentionSetRules: true}); err != nil {
 				c.Logger.Warn("saying in Gerrit that someone asked to review on GitHub has no Gerrit account", "change", n, "github_login", u.Login, "err", err)
 				if !refused(err) {
 					notRequested[id] = true

@@ -2,6 +2,7 @@ package gerrit
 
 import (
 	"bytes"
+	"encoding/json"
 	"context"
 	"errors"
 	"fmt"
@@ -309,5 +310,17 @@ func TestReviewers(t *testing.T) {
 	want := []string{`/a/changes/5/attention {"reason":"GitHub: asked","user":"mikebauer"}`, `/a/changes/5/attention/20/delete {"notify":"NONE","reason":"GitHub: ended"}`}
 	if !slices.Equal(posts, want) {
 		t.Errorf("attention set posts:\n%q\nwant\n%q", posts, want)
+	}
+}
+
+// Gerrit's name for leaving everyone's turn alone, checked on Gerrit
+// 3.14.4: a reply by someone else without it hands the owner the turn.
+func TestReviewInputLeavesTurnsAlone(t *testing.T) {
+	b, err := json.Marshal(ReviewInput{Message: "note", IgnoreAutomaticAttentionSetRules: true})
+	if err != nil || !bytes.Contains(b, []byte(`"ignore_automatic_attention_set_rules":true`)) {
+		t.Errorf("%s, %v", b, err)
+	}
+	if b, _ := json.Marshal(ReviewInput{Message: "note"}); bytes.Contains(b, []byte("attention")) {
+		t.Errorf("%s: says something of turns", b)
 	}
 }

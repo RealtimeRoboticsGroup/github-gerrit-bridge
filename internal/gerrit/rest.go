@@ -415,6 +415,9 @@ type ReviewInput struct {
 	OmitDuplicateComments bool `json:"omit_duplicate_comments,omitempty"`
 	// Reviewers are added to the change.
 	Reviewers []ReviewerInput `json:"reviewers,omitempty"`
+	// IgnoreAutomaticAttentionSetRules: the reply changes nobody's turn
+	// (by default, one by someone else hands the owner the turn).
+	IgnoreAutomaticAttentionSetRules bool `json:"ignore_automatic_attention_set_rules,omitempty"`
 }
 
 // ReviewerUpdate is a reviewer's change of state (REVIEWER, CC, REMOVED).
