@@ -171,6 +171,10 @@ func (r *Router) Delivery(d *github.Delivery) {
 			return
 		}
 		r.Queue.Add(Key{PR: d.PR})
+		if r.FollowGitHub && d.Action == "ready_for_review" {
+			// What waited for the draft to be ready (design §6.6).
+			r.Queue.Add(Key{PRComments: d.PR})
+		}
 	default:
 		r.Queue.Add(Key{PR: d.PR})
 	}
