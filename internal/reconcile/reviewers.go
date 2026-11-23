@@ -188,6 +188,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	}
 	// Retries: what failed is left to look new (or gone) next time; and
 	// whom the bridge took out of the attention set is out.
+	// The bridge's own turns, handed out for GitHub requests, are seen as
+	// they are made: Gerrit names nobody for one, and a person's post in
+	// the same second would be taken for its maker (third review).
 	notSeen, stillSeen := map[string]bool{}, map[string]bool{}
 	notRequested, stillRequested := map[int64]bool{}, map[int64]github.User{}
 	// Whether a is trusted; known false: the group could not be read, and
@@ -338,10 +341,14 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		if strings.EqualFold(user, s.owner.Username) {
 			continue
 		}
+		_, in := attention[key]
 		if !reviewer[key] {
 			err = c.Gerrit.SetReview(ctx, n, s.revision, gerrit.ReviewInput{Tag: commentTag, Reviewers: []gerrit.ReviewerInput{{Reviewer: user}}})
-		} else if _, in := attention[key]; !in {
+		} else if !in {
 			err = c.Gerrit.AddToAttentionSet(ctx, n, user, reviewerReason+"asked to review on GitHub")
+		}
+		if err == nil && !in {
+			stillSeen[key] = true
 		}
 		if err != nil && !refused(err) {
 			c.Logger.Warn("making someone asked to review on GitHub a Gerrit reviewer", "change", n, "gerrit_user", user, "github_login", u.Login, "err", err)
@@ -386,7 +393,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			next.Attention = append(next.Attention, key)
 		}
 	}
-	for key := range stillSeen {
+	for key := range stillSeen { // none of whose turn it is now
 		next.Attention = append(next.Attention, key)
 	}
 	slices.Sort(next.Attention)

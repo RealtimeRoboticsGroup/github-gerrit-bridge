@@ -277,6 +277,30 @@ func TestNewPatchSetAsksChangeRequestersAgain(t *testing.T) {
 // that is the bridge's doing, and not carried back. Withdrawn on GitHub
 // (not ended by their review), it is no longer their turn in Gerrit;
 // asked again, it is again.
+// The turn the bridge gives for a GitHub request is its own, though
+// Gerrit names nobody for it and a trusted person posted in the same
+// second (third review): when the request ends, nobody is asked again.
+func TestTheBridgesOwnTurnsAreSeen(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(bridgeGA, jane)
+	e.g.setAttention(jane, e.g.tick(), "x", false)
+	e.sync(t)
+	e.h.requested = []github.User{janeGH}
+	e.sync(t)
+	a, in := e.g.attention[jane.AccountID]
+	if !in {
+		t.Fatalf("not jane's turn: %+v", e.g.attention)
+	}
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "same", Author: austin, Date: a.LastUpdate, Message: "Patch Set 2:\n\nlooking"})
+	e.reviewed(janeGH, "COMMENTED")
+	e.sync(t)
+	e.sync(t)
+	e.wantAsks(t)
+	if _, in := e.g.attention[jane.AccountID]; in {
+		t.Errorf("still jane's turn after her review: %+v", e.g.attention)
+	}
+}
+
 func TestGitHubRequestsReachGerrit(t *testing.T) {
 	e, _ := reviewersEnv(t)
 	e.h.requested = []github.User{janeGH}
