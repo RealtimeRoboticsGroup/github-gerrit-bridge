@@ -470,9 +470,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 	}
 	comments.Reviewers = reviewerAccounts(cfg, users, dir, linkedAs, gh)
 	if comments.Reviewers != nil {
-		if comments.Since, err = store.ReviewersSince(ctx, time.Now(), dryRun); err != nil {
-			return fmt.Errorf("when the reviewer sync started: %w", err)
-		}
+		comments.Since = reviewersSince(ctx, store, dryRun, logger)
 	}
 	checks := &reconcile.Checks{
 		Project:      cfg.Gerrit.Project,
@@ -781,6 +779,22 @@ func reviewerAccounts(cfg *config.Config, users *reconcile.Users, dir *ldap.Dire
 // login on GitHub; nor anyone for the bridge's own GitHub login. A Gerrit
 // account follows the GitHub account (numeric id) it was first matched
 // to, or the directory gives it, not whoever holds the login later.
+// reviewersSince is when the reviewer sync first ran (state.Store's
+// record), or, when that cannot be read or recorded (a Gerrit refusing
+// the ref, say), now: PRs from before this run are taken as they are,
+// and the bridge still starts (fourth review).
+func reviewersSince(ctx context.Context, store interface {
+	ReviewersSince(ctx context.Context, now time.Time, dryRun bool) (time.Time, error)
+}, dryRun bool, logger *slog.Logger) time.Time {
+	now := time.Now()
+	since, err := store.ReviewersSince(ctx, now, dryRun)
+	if err != nil {
+		logger.Warn("cannot read or record when the reviewer sync started; PRs from before now are taken as they are", "err", err)
+		return now
+	}
+	return since
+}
+
 func newUsers(cfg *config.Config, rest *gerrit.Client, pins reconcile.Pins, gh reconcile.GitHubUsers, user, login string, dryRun bool,
 	logger *slog.Logger) (*reconcile.Users, *ldap.Directory, error) {
 	users := &reconcile.Users{Logger: logger,

@@ -563,7 +563,7 @@ func TestOldReviewersListStillLoads(t *testing.T) {
 // When the reviewer sync first ran is recorded once: a restart, or the
 // other instance, reads it back rather than starting again.
 func TestReviewersSince(t *testing.T) {
-	_, s := newStores(t, 2)
+	_, s := newStores(t, 3)
 	ctx := context.Background()
 	t0 := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	if got, err := s[0].ReviewersSince(ctx, t0, true); err != nil || !got.Equal(t0) {
@@ -574,6 +574,13 @@ func TestReviewersSince(t *testing.T) {
 	}
 	if got, err := s[0].ReviewersSince(ctx, t0.Add(2*time.Hour), false); err != nil || !got.Equal(t0.Add(time.Hour)) {
 		t.Errorf("restart: %v, %v", got, err)
+	}
+	// Fetched with the rest, it is read without a push.
+	if err := s[2].Fetch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ver, err := s[2].Repo.RevParse(ctx, ReviewersSinceRef); err != nil || ver == "" {
+		t.Errorf("not fetched: %q, %v", ver, err)
 	}
 	// The other instance, not yet fetched: its record conflicts, and it
 	// takes the first.

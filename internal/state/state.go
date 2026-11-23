@@ -315,7 +315,8 @@ func (s *Store) isHead(ver string) bool {
 // PR index. Call it at startup.
 func (s *Store) Fetch(ctx context.Context) error {
 	if _, err := s.Repo.Git(ctx, nil, "fetch", "--quiet", "--prune", "origin",
-		"+"+refPrefix+"*:"+refPrefix+"*", "+"+IdentitiesRef+"*:"+IdentitiesRef+"*"); err != nil {
+		"+"+refPrefix+"*:"+refPrefix+"*", "+"+IdentitiesRef+"*:"+IdentitiesRef+"*",
+		"+"+ReviewersSinceRef+"*:"+ReviewersSinceRef+"*"); err != nil {
 		return err
 	}
 	return s.rebuildIndex(ctx)

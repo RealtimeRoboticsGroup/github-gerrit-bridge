@@ -602,3 +602,24 @@ func TestReviewerAccounts(t *testing.T) {
 		t.Errorf("with a directory: %#v", r)
 	}
 }
+
+type sinceStore struct {
+	t   time.Time
+	err error
+}
+
+func (s sinceStore) ReviewersSince(context.Context, time.Time, bool) (time.Time, error) { return s.t, s.err }
+
+// When the reviewer sync started is the store's; if it cannot say, now,
+// and the bridge starts all the same (fourth review).
+func TestReviewersSince(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	if got := reviewersSince(ctx, sinceStore{t: t0}, false, slog.Default()); !got.Equal(t0) {
+		t.Errorf("recorded: %v", got)
+	}
+	before := time.Now()
+	if got := reviewersSince(ctx, sinceStore{err: errors.New("push rejected")}, false, slog.Default()); got.Before(before) {
+		t.Errorf("unreadable: %v, want now", got)
+	}
+}
