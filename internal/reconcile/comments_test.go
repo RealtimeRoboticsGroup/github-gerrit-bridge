@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -223,6 +224,8 @@ func (f *fakeGerrit) tick() string {
 }
 
 func (f *fakeGerrit) ListComments(context.Context, int) ([]gerrit.CommentInfo, error) {
+	fakeReads.Lock()
+	defer fakeReads.Unlock()
 	if f.onList != nil {
 		f.onList()
 	}
@@ -351,6 +354,8 @@ func (f *fakeGerrit) setReview(_ context.Context, author gerrit.AccountInfo, _ i
 }
 
 func (f *fakeGerrit) GetChange(_ context.Context, _ int, opts ...string) (*gerrit.ChangeInfo, error) {
+	fakeReads.Lock()
+	defer fakeReads.Unlock()
 	ci := &gerrit.ChangeInfo{CurrentRevision: f.current, Revisions: map[string]gerrit.RevisionInfo{}, Messages: f.messages,
 		Labels: map[string]gerrit.LabelInfo{}, Owner: f.owner, Status: cmp.Or(f.status, "NEW"), Reviewers: f.reviewers,
 		AttentionSet: map[string]gerrit.AttentionSetInfo{}, RemovedFromAttentionSet: map[string]gerrit.AttentionSetInfo{}}
@@ -402,6 +407,11 @@ func (f *fakeGerrit) user(id, path string, ps, line int, msg, inReplyTo string, 
 		Updated: f.tick(), Unresolved: unresolved, Author: gerrit.AccountInfo{AccountID: 1, Name: "Alice Trusted", Username: "alice"},
 	})
 }
+
+// fakeReads is held by the fakes' reads, which comment sync makes
+// alongside each other: one read's hook (onList) may change what another
+// reads.
+var fakeReads sync.Mutex
 
 type fakeGitHub struct {
 	// issueListings counts ListIssueComments calls.
@@ -653,9 +663,13 @@ func (f *fakeGitHub) IsAncestor(_ context.Context, a, b string) (bool, error) {
 }
 
 func (f *fakeGitHub) ListReviewComments(context.Context, int) ([]github.ReviewComment, error) {
+	fakeReads.Lock()
+	defer fakeReads.Unlock()
 	return append([]github.ReviewComment(nil), f.rcs...), nil
 }
 func (f *fakeGitHub) ListReviews(context.Context, int) ([]github.Review, error) {
+	fakeReads.Lock()
+	defer fakeReads.Unlock()
 	out := append([]github.Review(nil), f.reviews...)
 	for i := range out {
 		if out[i].SubmittedAt.IsZero() {
@@ -666,6 +680,8 @@ func (f *fakeGitHub) ListReviews(context.Context, int) ([]github.Review, error) 
 	return out, nil
 }
 func (f *fakeGitHub) ListIssueComments(context.Context, int) ([]github.IssueComment, error) {
+	fakeReads.Lock()
+	defer fakeReads.Unlock()
 	f.issueListings++
 	out := append([]github.IssueComment(nil), f.ics...)
 	for i := range out {
@@ -678,6 +694,8 @@ func (f *fakeGitHub) ListIssueComments(context.Context, int) ([]github.IssueComm
 	return out, nil
 }
 func (f *fakeGitHub) Edits(context.Context, int) (map[int64]string, error) {
+	fakeReads.Lock()
+	defer fakeReads.Unlock()
 	out := map[int64]string{}
 	for id, by := range f.edits {
 		out[id] = by
@@ -685,6 +703,8 @@ func (f *fakeGitHub) Edits(context.Context, int) (map[int64]string, error) {
 	return out, nil
 }
 func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error) {
+	fakeReads.Lock()
+	defer fakeReads.Unlock()
 	out := map[int64]string{}
 	for id, by := range f.reviewEdits {
 		out[id] = by
@@ -692,6 +712,8 @@ func (f *fakeGitHub) ReviewEdits(context.Context, int) (map[int64]string, error)
 	return out, nil
 }
 func (f *fakeGitHub) GetPull(_ context.Context, n int) (*github.PullRequest, error) {
+	fakeReads.Lock()
+	defer fakeReads.Unlock()
 	pr := &github.PullRequest{Number: n, HTMLURL: "https://github.com/o/r/pull/1", Head: github.Ref{Ref: "topic", SHA: cmp.Or(f.head, "sha2")},
 		Title: f.title, Body: f.body, Base: github.Ref{Ref: cmp.Or(f.base, "main")}, Stack: f.stack, Merged: f.merged, Commits: f.commits,
 		User: f.author, RequestedReviewers: slices.Clone(f.requested), State: "open", Draft: f.draft, CreatedAt: f.createdAt}
@@ -704,6 +726,8 @@ func (f *fakeGitHub) GetPull(_ context.Context, n int) (*github.PullRequest, err
 	return pr, nil
 }
 func (f *fakeGitHub) Pushes(_ context.Context, repo, ref string) ([]github.Push, error) {
+	fakeReads.Lock()
+	defer fakeReads.Unlock()
 	if repo != "o/r" || ref != "refs/heads/topic" {
 		return nil, fmt.Errorf("pushes to %s %s", repo, ref)
 	}
@@ -720,6 +744,8 @@ func (e *commentsEnv) pushed(t *testing.T, sha string, at time.Time) {
 }
 
 func (f *fakeGitHub) ReviewThreads(context.Context, int) ([]github.ReviewThread, error) {
+	fakeReads.Lock()
+	defer fakeReads.Unlock()
 	var out []github.ReviewThread
 	for _, rc := range f.rcs {
 		if rc.InReplyTo == 0 {

@@ -614,8 +614,21 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	ctx = github.WithReads(ctx)
 	s := &commentSnapshot{byID: map[string]*gerrit.CommentInfo{}, rcByID: map[int64]*github.ReviewComment{},
 		psToSHA: map[int]string{}, shaToPS: map[string]int{}}
-	var err error
-	if s.gerrit, err = c.Gerrit.ListComments(ctx, n); err != nil {
+	opts := []string{"ALL_REVISIONS", "ALL_COMMITS", "MESSAGES", "DETAILED_ACCOUNTS", "DETAILED_LABELS"}
+	if c.Reviewers != nil {
+		opts = append(opts, "REVIEWER_UPDATES")
+	}
+	// The reads go in three stages, each read in a stage alongside the
+	// others: each stage needs only what those before it read. Each read
+	// writes its own field; what is built from them is built after.
+	var ch *gerrit.ChangeInfo
+	err := together(ctx,
+		func(ctx context.Context) (err error) { s.gerrit, err = c.Gerrit.ListComments(ctx, n); return },
+		func(ctx context.Context) (err error) { ch, err = c.Gerrit.GetChange(ctx, n, opts...); return },
+		func(ctx context.Context) (err error) { s.rcs, err = c.GitHub.ListReviewComments(ctx, pr); return },
+		func(ctx context.Context) (err error) { s.ics, err = c.GitHub.ListIssueComments(ctx, pr); return },
+		func(ctx context.Context) (err error) { s.reviews, err = c.GitHub.ListReviews(ctx, pr); return })
+	if err != nil {
 		return nil, err
 	}
 	sort.SliceStable(s.gerrit, func(i, j int) bool {
@@ -626,14 +639,6 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	})
 	for i := range s.gerrit {
 		s.byID[s.gerrit[i].ID] = &s.gerrit[i]
-	}
-	opts := []string{"ALL_REVISIONS", "ALL_COMMITS", "MESSAGES", "DETAILED_ACCOUNTS", "DETAILED_LABELS"}
-	if c.Reviewers != nil {
-		opts = append(opts, "REVIEWER_UPDATES")
-	}
-	ch, err := c.Gerrit.GetChange(ctx, n, opts...)
-	if err != nil {
-		return nil, err
 	}
 	s.parents = map[int]int{}
 	for sha, r := range ch.Revisions {
@@ -658,32 +663,21 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 			s.psGitHub[r.PatchSet] = r.GitHubSHA
 		}
 	}
-	if s.rcs, err = c.GitHub.ListReviewComments(ctx, pr); err != nil {
-		return nil, err
-	}
 	s.rcReview = map[int64]int64{}
 	for i := range s.rcs {
 		s.rcByID[s.rcs[i].ID] = &s.rcs[i]
 		s.rcReview[s.rcs[i].ID] = s.rcs[i].ReviewID
 	}
-	if s.ics, err = c.GitHub.ListIssueComments(ctx, pr); err != nil {
-		return nil, err
-	}
-	if s.reviews, err = c.GitHub.ListReviews(ctx, pr); err != nil {
-		return nil, err
-	}
 	s.allReviews = slices.Clone(s.reviews)
-	if s.threads, err = c.GitHub.ReviewThreads(ctx, pr); err != nil {
-		return nil, err
-	}
-	if s.edits, err = c.GitHub.Edits(ctx, pr); err != nil {
-		return nil, err
-	}
-	if s.reviewEdits, err = c.GitHub.ReviewEdits(ctx, pr); err != nil {
-		return nil, err
-	}
-	// What GitHub has now, read after everything above was listed.
-	p, err := c.GitHub.GetPull(ctx, pr)
+	// The GraphQL answers, vouched for by the lists just read (ctx's
+	// reads), and what GitHub has now: read after every list, so its head
+	// covers every commit they name.
+	var p *github.PullRequest
+	err = together(ctx,
+		func(ctx context.Context) (err error) { s.threads, err = c.GitHub.ReviewThreads(ctx, pr); return },
+		func(ctx context.Context) (err error) { s.edits, err = c.GitHub.Edits(ctx, pr); return },
+		func(ctx context.Context) (err error) { s.reviewEdits, err = c.GitHub.ReviewEdits(ctx, pr); return },
+		func(ctx context.Context) (err error) { p, err = c.GitHub.GetPull(ctx, pr); return })
 	if err != nil {
 		return nil, err
 	}
@@ -693,6 +687,8 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 			return nil, err
 		}
 	}
+	// The branch's pushes, read after the PR: a push between the two is
+	// in the pushes, so the heads never miss one the PR's head is after.
 	heads, err := withPushes(ctx, c.GitHub, p, st.Heads)
 	if err != nil {
 		return nil, err
@@ -700,6 +696,31 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	s.heads = withHead(heads, p.Head.SHA, s.at)
 	s.pull = p
 	return s, nil
+}
+
+// together runs reads alongside each other and returns the first error,
+// once all have returned. The first error cancels the rest: their answers
+// would not be used.
+func together(ctx context.Context, reads ...func(context.Context) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var first error
+	for _, read := range reads {
+		wg.Go(func() {
+			if err := read(ctx); err != nil {
+				mu.Lock()
+				if first == nil {
+					first = err
+					cancel()
+				}
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	return first
 }
 
 // recover adds mappings that the markers prove but state lacks. err: a

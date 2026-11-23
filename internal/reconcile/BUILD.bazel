@@ -63,6 +63,7 @@ go_test(
         "identity_test.go",
         "importer_test.go",
         "lock_test.go",
+        "observe_test.go",
         "plan_test.go",
         "push_test.go",
         "reconcile_test.go",
