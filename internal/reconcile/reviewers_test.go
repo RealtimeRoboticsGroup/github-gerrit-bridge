@@ -362,3 +362,21 @@ func TestReviewerAccounts(t *testing.T) {
 		t.Errorf("an unreadable directory: %v", err)
 	}
 }
+
+// Someone asked on GitHub who has no Gerrit account (yet) stays asked on
+// GitHub only, and is not recorded: once they have one (signed in to
+// Gerrit), the next sync makes them a Gerrit reviewer, if still asked.
+func TestGitHubReviewerWithoutAGerritAccount(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	newcomer := github.User{Login: "new-gh", ID: 81}
+	e.h.requested = []github.User{newcomer}
+	e.sync(t)
+	if e.g.reviews != 0 || len(e.pairs(t)) != 0 || len(e.h.requested) != 1 {
+		t.Fatalf("reviews %d, pairs %+v, requested %v", e.g.reviews, e.pairs(t), e.h.requested)
+	}
+	e.c.Users = &Users{Overrides: map[string]string{"new-gh": "newcomer"}}
+	e.sync(t)
+	if got := e.g.reviewers["REVIEWER"]; len(got) != 1 || got[0].Username != "newcomer" {
+		t.Errorf("Gerrit reviewers = %+v", e.g.reviewers)
+	}
+}
