@@ -581,16 +581,23 @@ func TestLiveChecksGetDeliveries(t *testing.T) {
 // directory if there is one (never a nil one: that would be read).
 func TestReviewerAccounts(t *testing.T) {
 	users := &reconcile.Users{}
-	if reviewerAccounts(false, users, nil, nil, &github.Client{}) != nil {
+	cfg := &config.Config{BranchOwner: config.OwnerGerrit}
+	if reviewerAccounts(cfg, users, nil, nil, &github.Client{}) != nil {
 		t.Error("Gerrit owns the branches, and reviewers are carried over")
 	}
-	r, ok := reviewerAccounts(true, users, nil, nil, &github.Client{}).(*reconcile.ReviewerAccounts)
-	if !ok || r.Directory != nil || r.Users != users {
+	cfg = &config.Config{BranchOwner: config.OwnerGitHub, Identity: config.Identity{GitHubToGerrit: map[string]string{"m-gh": "mike"}}}
+	r, ok := reviewerAccounts(cfg, users, nil, nil, &github.Client{}).(*reconcile.ReviewerAccounts)
+	if !ok || r.Directory != nil || r.Users != users || r.Overrides["m-gh"] != "mike" || !r.MatchUsernames {
 		t.Errorf("without a directory: %#v", r)
+	}
+	off := false
+	cfg.Identity.MatchUsernames = &off
+	if r, _ := reviewerAccounts(cfg, users, nil, nil, &github.Client{}).(*reconcile.ReviewerAccounts); r.MatchUsernames {
+		t.Error("match_usernames: false, and usernames are matched")
 	}
 	dir := &ldap.Directory{BaseDN: "ou=People"}
 	linked := func(context.Context, int) (github.User, bool, error) { return github.User{}, false, nil }
-	r, ok = reviewerAccounts(true, users, dir, linked, &github.Client{}).(*reconcile.ReviewerAccounts)
+	r, ok = reviewerAccounts(cfg, users, dir, linked, &github.Client{}).(*reconcile.ReviewerAccounts)
 	if !ok || r.Directory != dir || r.Linked == nil {
 		t.Errorf("with a directory: %#v", r)
 	}

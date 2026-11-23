@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
@@ -317,6 +318,15 @@ func (f fakeUsersByID) UserByID(_ context.Context, id int64) (github.User, error
 	return u, nil
 }
 
+func (f fakeUsersByID) UserID(_ context.Context, login string) (int64, time.Time, error) {
+	for id, u := range f {
+		if strings.EqualFold(u.Login, login) {
+			return id, time.Time{}, nil
+		}
+	}
+	return 0, time.Time{}, &github.APIError{Status: 404}
+}
+
 // fakeIdentity maps GitHub ids to Gerrit users.
 type fakeIdentity map[int64]string
 
@@ -361,6 +371,36 @@ func TestReviewerAccounts(t *testing.T) {
 	r.Directory = fakeDirectoryOf{err: errors.New("down")}
 	if _, _, err := r.GitHubFor(ctx, mike); !isIdentityUnknown(err) {
 		t.Errorf("an unreadable directory: %v", err)
+	}
+
+	// Without a directory: an override's login, else the username if
+	// usernames are matched; each only if the mapping agrees.
+	users[90] = github.User{Login: "AustinSchuhBRT", ID: 90}
+	users[91] = github.User{Login: "a-squatter", ID: 91}
+	r = &ReviewerAccounts{Users: fakeIdentity{77: "mikebauer", 90: "AustinSchuhBRT"}, GitHub: users,
+		Overrides: map[string]string{"0-gone": "mikebauer", "a-squatter": "mikebauer", "mike-gh": "MikeBauer"}}
+	brt := gerrit.AccountInfo{AccountID: 40, Username: "AustinSchuhBRT"}
+	for _, c := range []struct {
+		a     gerrit.AccountInfo
+		match bool
+		want  github.User
+	}{
+		{a: mike, want: mikeGH},                // past a login GitHub does not have, and one the mapping disagrees with
+		{a: brt},                               // not matching usernames
+		{a: brt, match: true, want: users[90]}, // matching them
+		{a: jane, match: true},                 // no such login
+		{a: gerrit.AccountInfo{AccountID: 41, Username: "a-squatter"}, match: true}, // the mapping says 91 is nobody's
+	} {
+		r.MatchUsernames = c.match
+		got, ok, err := r.GitHubFor(ctx, c.a)
+		if err != nil || ok != (c.want.ID != 0) || got != c.want {
+			t.Errorf("%+v (match %v): %+v %v %v, want %+v", c.a, c.match, got, ok, err, c.want)
+		}
+	}
+	// With a directory, it alone says (as for Lookup).
+	r.Directory, r.MatchUsernames = fakeDirectoryOf{}, true
+	if got, ok, err := r.GitHubFor(ctx, brt); ok || err != nil {
+		t.Errorf("with a directory, by username: %+v %v", got, err)
 	}
 }
 

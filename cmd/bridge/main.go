@@ -468,7 +468,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			GerritUser: users.Lookup, GerritAccount: gerritAccount, Directory: users.Directory != nil}).Register(mux)
 		logger.Info("people can link their GitHub accounts", "url", strings.TrimSuffix(a.PublicURL, "/")+"/github/link", "linked", len(linked.All()))
 	}
-	comments.Reviewers = reviewerAccounts(cfg.GitHubOwned(), users, dir, linkedAs, gh)
+	comments.Reviewers = reviewerAccounts(cfg, users, dir, linkedAs, gh)
 	checks := &reconcile.Checks{
 		Project:      cfg.Gerrit.Project,
 		Gerrit:       rest,
@@ -752,13 +752,15 @@ func setMode(githubOwned bool, code *reconcile.Code, comments *reconcile.Comment
 
 // reviewerAccounts finds Gerrit reviewers' GitHub accounts, to carry
 // reviewers over (design §6.6): only where GitHub owns the branches (nil
-// otherwise). By linked accounts, and the directory if there is one.
-func reviewerAccounts(githubOwned bool, users *reconcile.Users, dir *ldap.Directory,
+// otherwise). By linked accounts, and the directory if there is one, else
+// overrides and matching usernames as configured.
+func reviewerAccounts(cfg *config.Config, users *reconcile.Users, dir *ldap.Directory,
 	linked func(context.Context, int) (github.User, bool, error), gh *github.Client) reconcile.GitHubAccounts {
-	if !githubOwned {
+	if !cfg.GitHubOwned() {
 		return nil
 	}
-	r := &reconcile.ReviewerAccounts{Linked: linked, Users: users, GitHub: gh}
+	r := &reconcile.ReviewerAccounts{Linked: linked, Users: users, GitHub: gh,
+		Overrides: cfg.Identity.GitHubToGerrit, MatchUsernames: cfg.Identity.MatchesUsernames()}
 	if dir != nil {
 		r.Directory = dir
 	}

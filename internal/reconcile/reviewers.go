@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gerrit"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
@@ -22,18 +23,24 @@ type GitHubAccounts interface {
 }
 
 // ReviewerAccounts is GitHubAccounts: the GitHub account a Gerrit account
-// linked, else the one the directory gives it, either only while the
-// identity mapping maps it back to that account (as Users.Lookup decides
-// whose a GitHub account's comments and votes are).
+// linked, else the one the directory gives it, else (without a directory)
+// a login an override gives it or, matching usernames, its username; each
+// only while the identity mapping maps it back to that account (as
+// Users.Lookup decides whose a GitHub account's comments and votes are).
 type ReviewerAccounts struct {
 	// Linked is the GitHub account a Gerrit account linked (Tokens.Linked).
 	Linked    func(ctx context.Context, account int) (github.User, bool, error)
 	Directory interface {
 		ByGerritUser(user string) (ldap.Account, bool, error)
 	}
-	Users  Identity
-	GitHub interface {
+	// Overrides are identity.github_to_gerrit (login -> Gerrit user), and
+	// MatchUsernames identity.match_usernames.
+	Overrides      map[string]string
+	MatchUsernames bool
+	Users          Identity
+	GitHub         interface {
 		UserByID(ctx context.Context, id int64) (github.User, error)
+		UserID(ctx context.Context, login string) (int64, time.Time, error)
 	}
 }
 
@@ -58,6 +65,30 @@ func (r *ReviewerAccounts) GitHubFor(ctx context.Context, a gerrit.AccountInfo) 
 			id = d.GitHubID
 		}
 	}
+	if id == 0 && r.Directory == nil {
+		var logins []string
+		for _, l := range slices.Sorted(maps.Keys(r.Overrides)) {
+			if strings.EqualFold(r.Overrides[l], a.Username) {
+				logins = append(logins, l)
+			}
+		}
+		if r.MatchUsernames {
+			logins = append(logins, a.Username)
+		}
+		for _, l := range logins {
+			n, _, err := r.GitHub.UserID(ctx, l)
+			if github.IsNotFound(err) {
+				continue
+			}
+			if err != nil {
+				return github.User{}, false, err
+			}
+			if gh, ok, err := r.check(ctx, a, github.User{Login: l, ID: n}); err != nil || ok {
+				return gh, ok, err
+			}
+		}
+		return github.User{}, false, nil
+	}
 	if id == 0 {
 		return github.User{}, false, nil
 	}
@@ -70,6 +101,11 @@ func (r *ReviewerAccounts) GitHubFor(ctx context.Context, a gerrit.AccountInfo) 
 	if err != nil {
 		return github.User{}, false, err
 	}
+	return r.check(ctx, a, gh)
+}
+
+// check is gh if the mapping maps it to a.
+func (r *ReviewerAccounts) check(ctx context.Context, a gerrit.AccountInfo, gh github.User) (github.User, bool, error) {
 	user, ok, err := r.Users.Lookup(ctx, gh)
 	if err != nil || !ok || !strings.EqualFold(user, a.Username) {
 		return github.User{}, false, err
