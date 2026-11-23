@@ -409,7 +409,7 @@ func (c *Comments) sync(ctx context.Context, n int) (*prRead, error) {
 	return read, err
 }
 
-func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
+func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) (err error) {
 	st, err := c.Store.Load(ctx, n)
 	if err != nil {
 		return err
@@ -437,9 +437,21 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 			s.State.Reviewers = reviewers
 		})
 	}
-	var first *commentSnapshot
+	var first, latest *commentSnapshot
 	var wait time.Duration
 	posters := map[int]*poster{}
+	// Comments that fail (or do not settle) do not hold up reviewers: they
+	// are carried from what was last read, and saved alone (fourth review:
+	// a comment GitHub kept refusing left a GitHub request out of Gerrit).
+	defer func() {
+		if err == nil || latest == nil || c.DryRun || c.Reviewers == nil || ctx.Err() != nil {
+			return
+		}
+		r := c.syncReviewers(ctx, n, pr, latest, reviewers)
+		if serr := updateStateFn(ctx, c.Store, n, "Sync reviewers", func(s *state.Change) { s.State.Reviewers = r }); serr != nil {
+			c.Logger.Warn("saving what the reviewer sync saw", "change", n, "err", serr)
+		}
+	}()
 	for pass := 0; ; pass++ {
 		if pass == 4 {
 			return fmt.Errorf("comments on change %d did not settle", n)
@@ -450,6 +462,7 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 		if err != nil {
 			return err
 		}
+		latest = snap
 		if first == nil {
 			first = snap
 			*read = &prRead{ics: slices.Clone(snap.ics), edits: maps.Clone(snap.edits), pull: snap.pull,
@@ -498,6 +511,7 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) error {
 			return err
 		}
 		reviewers = c.syncReviewers(ctx, n, pr, snap, reviewers)
+		latest = nil // done
 		break
 	}
 	if err := save(); err != nil {

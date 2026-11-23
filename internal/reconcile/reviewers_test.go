@@ -995,3 +995,35 @@ func TestTrustIsAskedOnceASync(t *testing.T) {
 	}
 	e.wantAsks(t, "+jane-gh", "+mike-gh")
 }
+
+type refusingIssueComments struct{ *fakeGitHub }
+
+func (f refusingIssueComments) CreateIssueComment(context.Context, int, string) (*github.IssueComment, error) {
+	return nil, &github.APIError{Status: 502, Message: "Bad Gateway"}
+}
+
+// A comment GitHub keeps refusing holds up the comments, not the
+// reviewers (fourth review).
+func TestReviewersAreNotHeldUpByComments(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.c.GitHub = refusingIssueComments{e.h}
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "m1", Author: austin, Date: e.g.tick(), RevisionNumber: 1, Message: "Patch Set 1:\n\nLooks good"})
+	e.h.requested = []github.User{janeGH}
+	e.g.addReviewer(austin, mike)
+	if err := e.c.Sync(context.Background(), 5); err == nil {
+		t.Fatal("the comment was posted")
+	}
+	if got := e.g.reviewers["REVIEWER"]; !slices.ContainsFunc(got, func(a gerrit.AccountInfo) bool { return a.Username == "jane" }) {
+		t.Errorf("jane is not a Gerrit reviewer: %+v", got)
+	}
+	e.wantAsks(t, "+mike-gh")
+	if seen := e.seen(t); seen == nil || !slices.Contains(seen.Attention, "mikebauer") {
+		t.Errorf("what the reviewer sync saw is not saved: %+v", seen)
+	}
+	// Seen, so not again.
+	e.c.Sync(context.Background(), 5)
+	e.wantAsks(t, "+mike-gh")
+	if n := len(e.g.reviewers["REVIEWER"]); n != 2 {
+		t.Errorf("reviewers added again: %+v", e.g.reviewers)
+	}
+}
