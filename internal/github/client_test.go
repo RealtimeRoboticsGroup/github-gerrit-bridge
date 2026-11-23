@@ -1058,3 +1058,45 @@ func TestEditsErrsWhenTheRestOfAThreadCannotBeRead(t *testing.T) {
 		t.Errorf("Edits = %v, nil; want an error", edits)
 	}
 }
+
+// Review requests go to the PR's requested_reviewers, by login; an
+// account is read by id; a PR says who it asks.
+func TestReviewRequests(t *testing.T) {
+	var got []string
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = append(got, r.Method+" "+r.URL.Path+" "+string(b))
+		switch r.URL.Path {
+		case "/user/77":
+			io.WriteString(w, `{"login":"mike-gh","id":77,"type":"User"}`)
+		case "/repos/o/r/pulls/3":
+			io.WriteString(w, `{"number":3,"requested_reviewers":[{"login":"jane-gh","id":78,"type":"User"}]}`)
+		default:
+			io.WriteString(w, `{}`)
+		}
+	})
+	ctx := context.Background()
+	if err := c.RequestReviewers(ctx, 3, []string{"mike-gh"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RemoveRequestedReviewers(ctx, 3, []string{"mike-gh"}); err != nil {
+		t.Fatal(err)
+	}
+	u, err := c.UserByID(ctx, 77)
+	if err != nil || u != (User{Login: "mike-gh", ID: 77, Type: "User"}) {
+		t.Errorf("UserByID: %+v %v", u, err)
+	}
+	pr, err := c.GetPull(ctx, 3)
+	if err != nil || len(pr.RequestedReviewers) != 1 || pr.RequestedReviewers[0].ID != 78 {
+		t.Errorf("GetPull: %+v %v", pr, err)
+	}
+	want := []string{
+		`POST /repos/o/r/pulls/3/requested_reviewers {"reviewers":["mike-gh"]}`,
+		`DELETE /repos/o/r/pulls/3/requested_reviewers {"reviewers":["mike-gh"]}`,
+		`GET /user/77 `,
+		`GET /repos/o/r/pulls/3 `,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("requests:\n%q\nwant\n%q", got, want)
+	}
+}

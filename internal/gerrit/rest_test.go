@@ -257,3 +257,30 @@ func TestInBranch(t *testing.T) {
 		t.Errorf("asked %s", asked)
 	}
 }
+
+// A review can add reviewers; a change lists its reviewers by state.
+func TestReviewers(t *testing.T) {
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			b, _ := io.ReadAll(r.Body)
+			body = string(b)
+			fmt.Fprint(w, ")]}'\n{}")
+			return
+		}
+		fmt.Fprint(w, ")]}'\n"+`{"_number":5,"reviewers":{"REVIEWER":[{"_account_id":20,"username":"mikebauer"}],"CC":[{"_account_id":21,"username":"jane"}]}}`)
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, User: "bridge", Password: "secret"}
+	ctx := context.Background()
+	if err := c.SetReview(ctx, 5, "abc", ReviewInput{Tag: "t", Reviewers: []ReviewerInput{{Reviewer: "jane"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if body != `{"tag":"t","reviewers":[{"reviewer":"jane"}]}` {
+		t.Errorf("review: %s", body)
+	}
+	ci, err := c.GetChange(ctx, 5, "DETAILED_LABELS")
+	if err != nil || len(ci.Reviewers["REVIEWER"]) != 1 || ci.Reviewers["REVIEWER"][0].Username != "mikebauer" || ci.Reviewers["CC"][0].AccountID != 21 {
+		t.Errorf("reviewers: %+v %v", ci, err)
+	}
+}
