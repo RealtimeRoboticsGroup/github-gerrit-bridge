@@ -625,3 +625,41 @@ func TestReviewersSince(t *testing.T) {
 		t.Errorf("unreadable: %v, want now", got)
 	}
 }
+
+type fakeDirectory struct {
+	ids map[int64]bool
+	err error
+}
+
+func (d fakeDirectory) ByGitHubID(id int64) (ldap.Account, bool, error) {
+	return ldap.Account{GitHubID: id}, d.ids[id], d.err
+}
+func (d fakeDirectory) Ready() error { return d.err }
+
+// The link page tells someone the directory names (who may only need to
+// sign in to Gerrit once) from someone it does not, by the directory
+// itself: by id, and nobody when it cannot be read or with no directory.
+func TestInDirectory(t *testing.T) {
+	if inDirectory(nil) != nil {
+		t.Error("without a directory, the link page is told there is one")
+	}
+	in := inDirectory(fakeDirectory{ids: map[int64]bool{42: true}})
+	if !in(github.User{Login: "newcomer", ID: 42}) {
+		t.Error("an account the directory names is not in it")
+	}
+	if in(github.User{Login: "stranger", ID: 7}) || in(github.User{Login: "newcomer"}) {
+		t.Error("an account the directory does not name (or with no id) is in it")
+	}
+	if inDirectory(fakeDirectory{ids: map[int64]bool{42: true}, err: errors.New("down")})(github.User{Login: "newcomer", ID: 42}) {
+		t.Error("an unreadable directory names someone")
+	}
+
+	// The link page is given it.
+	l := newLinker(&config.Config{}, nil, nil, "", &reconcile.Users{Directory: fakeDirectory{ids: map[int64]bool{42: true}}}, nil, slog.Default())
+	if l.InDirectory == nil || !l.InDirectory(github.User{Login: "newcomer", ID: 42}) {
+		t.Error("the link page cannot tell who the directory names")
+	}
+	if newLinker(&config.Config{}, nil, nil, "", &reconcile.Users{}, nil, slog.Default()).InDirectory != nil {
+		t.Error("without a directory, the link page is told there is one")
+	}
+}

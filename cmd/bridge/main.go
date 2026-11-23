@@ -464,8 +464,7 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			merger = githubMerger{gerritUser: users.Lookup, account: gerritAccount, tokenFor: tokens.For, source: tokens.Source, gh: gh}
 		}
 		// Public: people link their GitHub account here (design §7.2).
-		(&usertokens.Linker{App: app, Tokens: tokens, PublicURL: a.PublicURL, GerritURL: cfg.Gerrit.URL, Logger: logger, GitHubOwned: cfg.GitHubOwned(),
-			GerritUser: users.Lookup, GerritAccount: gerritAccount, Directory: users.Directory != nil}).Register(mux)
+		newLinker(cfg, app, tokens, a.PublicURL, users, gerritAccount, logger).Register(mux)
 		logger.Info("people can link their GitHub accounts", "url", strings.TrimSuffix(a.PublicURL, "/")+"/github/link", "linked", len(linked.All()))
 	}
 	comments.Reviewers = reviewerAccounts(cfg, users, dir, linkedAs, gh)
@@ -986,6 +985,27 @@ func gerritEvents(counts map[string]int, last, now time.Time) string {
 
 // liveChecks is what keeps GitHub's checks current for the Checks tab,
 // where it shows them (GitHub owns the branches), or nil.
+// newLinker is the page where people link their GitHub accounts.
+func newLinker(cfg *config.Config, app *github.UserApp, tokens *usertokens.Tokens, publicURL string, users *reconcile.Users,
+	gerritAccount func(context.Context, string) (int, error), logger *slog.Logger) *usertokens.Linker {
+	return &usertokens.Linker{App: app, Tokens: tokens, PublicURL: publicURL, GerritURL: cfg.Gerrit.URL, Logger: logger, GitHubOwned: cfg.GitHubOwned(),
+		GerritUser: users.Lookup, GerritAccount: gerritAccount, InDirectory: inDirectory(users.Directory)}
+}
+
+// inDirectory says whether directory d names a GitHub account (by id, as
+// the directory goes), for the link page's words; nil without a
+// directory. A directory that cannot be read now names nobody: the page
+// says "try again later" before it asks this.
+func inDirectory(d reconcile.GitHubDirectory) func(github.User) bool {
+	if d == nil {
+		return nil
+	}
+	return func(gh github.User) bool {
+		_, found, err := d.ByGitHubID(gh.ID)
+		return err == nil && found
+	}
+}
+
 func liveChecks(cfg *config.Config) *gerritchecks.Live {
 	if cfg.CI.ChecksURL == "" || !cfg.GitHubOwned() {
 		return nil

@@ -435,14 +435,23 @@ func TestLink(t *testing.T) {
 	}
 	unknown = false
 	// Nobody's, where a directory says who is whose: ask its administrators.
-	l.Directory = true
+	l.InDirectory = func(gh github.User) bool { return gh.Login == "newcomer" }
 	f.codes["c2"] = "stranger"
 	state, cookie = start()
-	if w := do("GET", "/github/link/callback?code=c2&state="+state, cookie); !strings.Contains(w.Body.String(), "Ask an administrator") ||
-		strings.Contains(w.Body.String(), "Sign in to Gerrit with GitHub") || len(s.All()) != 0 {
+	if w := do("GET", "/github/link/callback?code=c2&state="+state, cookie); !strings.Contains(w.Body.String(), "is not in the directory") ||
+		strings.Contains(w.Body.String(), "Sign in to Gerrit with GitHub") || strings.Contains(w.Body.String(), "sign in once") || len(s.All()) != 0 {
 		t.Errorf("not in the directory: %d %s", w.Code, w.Body)
 	}
-	l.Directory = false
+	// Named by the directory, but with no Gerrit account yet (one is made
+	// when they first sign in to Gerrit): sign in, not "not in the
+	// directory".
+	f.codes["c3"] = "newcomer"
+	state, cookie = start()
+	if w := do("GET", "/github/link/callback?code=c3&state="+state, cookie); !strings.Contains(w.Body.String(), "sign in once, then link again") ||
+		strings.Contains(w.Body.String(), "is not in the directory") || len(s.All()) != 0 {
+		t.Errorf("in the directory, no Gerrit account yet: %d %s", w.Code, w.Body)
+	}
+	l.InDirectory = nil
 
 	state, cookie = start()
 	w := do("GET", "/github/link/callback?code=c1&state="+state, cookie)
@@ -504,7 +513,7 @@ func TestLink(t *testing.T) {
 	l.mu.Lock()
 	n := len(l.used)
 	l.mu.Unlock()
-	if n != 4 { // alice's (and while unknown), the stranger's and bob's, which GitHub authorized
+	if n != 5 { // alice's (and while unknown), the stranger's, the newcomer's and bob's, which GitHub authorized
 		t.Errorf("%d states kept", n)
 	}
 	s.Delete(42)
