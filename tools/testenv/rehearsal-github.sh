@@ -435,9 +435,23 @@ check "and they are not asked meanwhile" not_asked AustinSchuhBRT
 (cd "${ME_CLONE}" && echo "fixed" >> "reviewers-${RUN}.txt" && git commit -qa --amend --no-edit &&
   git push -q gerrit HEAD:refs/for/main 2>/dev/null)
 wait_for "AustinSchuh's new patch set asks them again" asked AustinSchuhBRT
-# A PR worked on GitHub alone (step 1's) never had the bridge ask or
-# withdraw anyone's review.
+# A trusted person's own PR, worked on GitHub alone: changes requested,
+# a fix pushed (imported as theirs) asks nobody on the bridge's behalf.
+S12="GitHub-only ${RUN}"
+gh_pr "${ME_CLONE}" me "gh-${RUN}-12" main "github-only-${RUN}.txt" "${S12}"
+N12=$(pr_for "${S12}")
+imported12() { C12=$(change "${S12}"); [[ -n "${C12}" ]]; }
+wait_for "AustinSchuh's PR #${N12} becomes a change" imported12
+C12=$(change "${S12}")
+brt api "repos/${R}/pulls/${N12}/reviews" -f event=REQUEST_CHANGES -f body="Rehearsal ${RUN}: fix this too." --silent
+(cd "${ME_CLONE}" && echo "fixed" >> "github-only-${RUN}.txt" && git commit -qa -m "Fix ${RUN}" && git push -q github "HEAD:refs/heads/gh-${RUN}-12")
+ps2_12() { gerrit "changes/${C12}?o=ALL_REVISIONS" | jq -e '[.revisions[]._number] | max >= 2'; }
+wait_for "the fix is imported as patch set 2" ps2_12
+read_it
+# A PR worked on GitHub alone (step 1's, and this one) never had the
+# bridge ask or withdraw anyone's review.
 bot_asked() { me api "repos/${R}/issues/$1/timeline" --paginate --jq '.[] | select(.event == "review_requested" or .event == "review_request_removed") | .actor.login' | grep -qx realtimeroboticsbot; }
+check "the bridge asked nobody to review PR #${N12} after the fix" eval "! bot_asked ${N12}"
 check "the bridge asked nobody to review PR #${N1}, worked on GitHub alone" eval "! bot_asked ${N1}"
 
 echo
