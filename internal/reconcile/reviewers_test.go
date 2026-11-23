@@ -1027,3 +1027,24 @@ func TestReviewersAreNotHeldUpByComments(t *testing.T) {
 		t.Errorf("reviewers added again: %+v", e.g.reviewers)
 	}
 }
+
+// Linked to another PR, a change starts again: what was seen of the old
+// one's requests is not taken for withdrawn on the new (fourth review).
+func TestAnotherPRStartsAgain(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+	if err := updateStateFn(context.Background(), e.st, 5, "relink", func(st *state.Change) {
+		st.State.PR = 8
+		st.State.Reviewers.Requested = []state.GitHubAccount{{ID: janeGH.ID, Login: janeGH.Login}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.h.requested = nil
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh")
+	if got := e.seen(t); got.PR != 8 {
+		t.Errorf("seen of PR %d, want 8", got.PR)
+	}
+}

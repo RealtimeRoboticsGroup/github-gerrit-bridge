@@ -163,10 +163,13 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		requested[u.ID] = u
 	}
 	attentionNow := slices.Sorted(maps.Keys(attention))
+	if prev != nil && prev.PR != pr {
+		prev = nil // linked to another PR since: what was seen was of that one (fourth review)
+	}
 	if prev == nil {
 		if s.pull.CreatedAt.Before(c.Since) {
 			// From before the bridge started: as it is.
-			return &state.Reviewers{At: s.at, PatchSet: s.current, Attention: attentionNow, Requested: accounts(requested)}
+			return &state.Reviewers{At: s.at, PR: pr, PatchSet: s.current, Attention: attentionNow, Requested: accounts(requested)}
 		}
 		prev = &state.Reviewers{} // new: everything on it is
 	}
@@ -416,7 +419,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		notSeen[strings.ToLower(user)] = true
 	}
 
-	next := &state.Reviewers{At: s.at, PatchSet: s.current}
+	next := &state.Reviewers{At: s.at, PR: pr, PatchSet: s.current}
 	if s.pull.Draft || !s.recorded(s.revision) || holdPatchSet {
 		// Asked again once ready, or once the bridge has recorded where
 		// the patch set came from.

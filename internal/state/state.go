@@ -40,8 +40,10 @@ type Change struct {
 // Reviewers is what the reviewer sync last saw of a change and its PR
 // (design §6.6): it carries over what changed since, on either side.
 type Reviewers struct {
-	// At is when the PR was read.
+	// At is when the PR was read, and PR which it was: a change linked to
+	// another PR since starts again.
 	At time.Time `json:"at"`
+	PR int       `json:"pr,omitempty"`
 	// PatchSet is the change's current patch set then.
 	PatchSet int `json:"patch_set,omitempty"`
 	// Attention is the Gerrit usernames in the attention set.
