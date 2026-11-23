@@ -485,6 +485,52 @@ func TestAWithheldPatchSetHoldsBackOnlyItself(t *testing.T) {
 	}
 }
 
+// mike asks for changes, on GitHub and in Gerrit, and austin uploads a
+// new patch set, all before the sync: mike is asked again on GitHub, and
+// it is his turn in Gerrit too (fifth review: he was asked before, so the
+// bridge's own ask was taken for one Gerrit had seen).
+func TestAskedAgainInOneSyncIsTheirTurnInGerrit(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.g.reply(mike, "Patch Set 2: needs work", nil, []gerrit.AccountInfo{mike})
+	e.exported(t, austin, 3, "sha3")
+	e.sync(t)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh")
+	if _, in := e.g.attention[mike.AccountID]; !in {
+		t.Error("asked again on GitHub, but not his turn in Gerrit")
+	}
+}
+
+// austin uploads a new patch set, then mike, who asked for changes,
+// takes himself out of the attention set: whether the bridge sees both
+// in one sync or two, he is not asked again, on either side (fifth
+// review: in one, he was withdrawn on GitHub and asked again).
+func TestANewPatchSetThenOwnRemovalInOneSync(t *testing.T) {
+	for _, split := range []bool{true, false} {
+		e, _ := reviewersEnv(t)
+		e.g.addReviewer(austin, mike)
+		e.sync(t)
+		e.reviewed(mikeGH, "CHANGES_REQUESTED")
+		e.sync(t)
+		e.g.reply(austin, "PTAL", []gerrit.AccountInfo{mike}, nil)
+		e.sync(t)
+		e.exported(t, austin, 3, "sha3")
+		if split {
+			e.sync(t)
+		}
+		e.g.reply(mike, "Not now", nil, []gerrit.AccountInfo{mike})
+		e.sync(t)
+		e.sync(t)
+		if _, in := e.g.attention[mike.AccountID]; in || len(e.h.requested) > 0 {
+			t.Errorf("seen in two syncs %v: his turn in Gerrit %v, asked on GitHub %v (%v)", split, in, e.h.requested, e.h.asks)
+		}
+	}
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // gets to either: austin's still asks again (third review).
 func TestAnyNewPatchSetByATrustedPersonAsks(t *testing.T) {

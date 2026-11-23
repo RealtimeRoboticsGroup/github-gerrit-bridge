@@ -227,12 +227,16 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		return gh, ok, err
 	}
+	// askedNow are those the bridge asked on GitHub this sync, and
+	// withdrawn those whose request it withdrew.
+	askedNow, withdrawn := map[int64]bool{}, map[int64]bool{}
 	ask := func(gh github.User) error {
 		if err := c.GitHub.RequestReviewers(ctx, pr, []string{gh.Login}); err != nil {
 			c.Logger.Warn("asking someone to review on GitHub", "change", n, "pr", pr, "github_login", gh.Login, "err", err)
 			return err
 		}
 		requested[gh.ID] = gh
+		askedNow[gh.ID] = true
 		return nil
 	}
 
@@ -316,6 +320,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		delete(requested, gh.ID)
+		withdrawn[gh.ID] = true
 	}
 	if s.current > prev.PatchSet && !s.pull.Draft {
 		// Any of the new patch sets a trusted person uploaded (one may be
@@ -334,7 +339,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		if byTrusted {
 			for _, rv := range latestReviews(s.allReviews) {
 				u := rv.User
-				if _, asked := requested[u.ID]; rv.State != "CHANGES_REQUESTED" || asked || u.Type == "Bot" {
+				// Not who took themselves out since (fifth review: asked
+				// again, they were asked on GitHub but not in Gerrit).
+				if _, asked := requested[u.ID]; rv.State != "CHANGES_REQUESTED" || asked || u.Type == "Bot" || withdrawn[u.ID] {
 					continue
 				}
 				ask(u) // failing, not asked again: the next patch set may
@@ -346,7 +353,10 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	// it is nobody's turn): once ready (third review).
 	for _, id := range slices.Sorted(maps.Keys(requested)) {
 		u := requested[id]
+		// Asked again by the bridge (their request had ended since last
+		// seen): their turn in Gerrit too (fifth review).
 		_, was := wasRequested[id]
+		was = was && !askedNow[id]
 		if was && !noted[id] {
 			continue
 		}
