@@ -468,7 +468,12 @@ func run(configPath string, dryRun bool, logger *slog.Logger) error {
 			GerritUser: users.Lookup, GerritAccount: gerritAccount, Directory: users.Directory != nil}).Register(mux)
 		logger.Info("people can link their GitHub accounts", "url", strings.TrimSuffix(a.PublicURL, "/")+"/github/link", "linked", len(linked.All()))
 	}
-	comments.Reviewers, comments.Since = reviewerAccounts(cfg, users, dir, linkedAs, gh), time.Now()
+	comments.Reviewers = reviewerAccounts(cfg, users, dir, linkedAs, gh)
+	if comments.Reviewers != nil {
+		if comments.Since, err = store.ReviewersSince(ctx, time.Now(), dryRun); err != nil {
+			return fmt.Errorf("when the reviewer sync started: %w", err)
+		}
+	}
 	checks := &reconcile.Checks{
 		Project:      cfg.Gerrit.Project,
 		Gerrit:       rest,

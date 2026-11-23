@@ -4,6 +4,7 @@ go_library(
     name = "state",
     srcs = [
         "identities.go",
+        "since.go",
         "state.go",
     ],
     importpath = "github.com/AustinSchuh/github-gerrit-bridge/internal/state",

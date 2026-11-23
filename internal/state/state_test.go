@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/gitmirror"
 )
@@ -556,5 +557,27 @@ func TestOldReviewersListStillLoads(t *testing.T) {
 	var back ChangeState
 	if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back.Reviewers, cs.Reviewers) {
 		t.Errorf("round trip of %s: %+v, %v", b, back.Reviewers, err)
+	}
+}
+
+// When the reviewer sync first ran is recorded once: a restart, or the
+// other instance, reads it back rather than starting again.
+func TestReviewersSince(t *testing.T) {
+	_, s := newStores(t, 2)
+	ctx := context.Background()
+	t0 := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	if got, err := s[0].ReviewersSince(ctx, t0, true); err != nil || !got.Equal(t0) {
+		t.Fatalf("dry run: %v, %v", got, err)
+	}
+	if got, err := s[0].ReviewersSince(ctx, t0.Add(time.Hour), false); err != nil || !got.Equal(t0.Add(time.Hour)) {
+		t.Fatalf("first: %v, %v", got, err)
+	}
+	if got, err := s[0].ReviewersSince(ctx, t0.Add(2*time.Hour), false); err != nil || !got.Equal(t0.Add(time.Hour)) {
+		t.Errorf("restart: %v, %v", got, err)
+	}
+	// The other instance, not yet fetched: its record conflicts, and it
+	// takes the first.
+	if got, err := s[1].ReviewersSince(ctx, t0.Add(3*time.Hour), false); err != nil || !got.Equal(t0.Add(time.Hour)) {
+		t.Errorf("other instance: %v, %v", got, err)
 	}
 }
