@@ -31,3 +31,21 @@ func TestR12WaitingWithdrawalTakesANewRequest(t *testing.T) {
 		}
 	})
 }
+
+// jane, a reviewer out of the attention set, is asked on GitHub by owen
+// while austin hands her the turn in Gerrit; the sync's lookups fail, so
+// the request is left to look new though her turn was seen (asked
+// already). owen then withdraws her: its end never takes her turn.
+func TestR12SeenTurnRequestLostToALookupFailure(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "austin adds jane", do: func(w *wf) { w.addReviewer("austin", "jane") }, want: "G[jane] H[jane]"},
+			{name: "jane approves", do: func(w *wf) { w.review("jane", "APPROVED") }, want: "G[] H[]"},
+			{name: "owen asks jane; austin hands her the turn (lookups fail)", do: func(w *wf) {
+				w.request("jane")
+				w.handOff("austin", "jane")
+			}, fail: "lookup", want: "G[jane] H[jane]"},
+			{name: "owen withdraws jane", do: func(w *wf) { w.withdraw("jane") }, want: "G[] H[]"},
+		}
+	})
+}

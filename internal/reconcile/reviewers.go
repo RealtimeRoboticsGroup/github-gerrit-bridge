@@ -246,7 +246,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		return gh, ok, err
 	}
 	// askedNow are those the bridge asked on GitHub this sync; handedOn,
-	// those of them asked for their Gerrit turn, which is theirs already.
+	// those asked (by it or anyone) whose Gerrit turn is theirs already.
 	askedNow, handedOn := map[int64]bool{}, map[int64]bool{}
 	ask := func(gh github.User) error {
 		if err := c.GitHub.RequestReviewers(ctx, pr, []string{gh.Login}); err != nil {
@@ -304,7 +304,14 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			notSeen[key] = true
 			continue
 		}
-		if _, asked := requested[gh.ID]; !ok || asked || gh.ID == s.pull.User.ID {
+		if _, asked := requested[gh.ID]; asked && ok {
+			// Asked already, their turn seen: nothing to carry either
+			// way (twelfth review: a lookup failing later left the
+			// request to look new, so its end never took the turn).
+			handedOn[gh.ID] = true
+			continue
+		}
+		if !ok || gh.ID == s.pull.User.ID {
 			continue
 		}
 		if reviewedAfter(s, gh.ID, a.LastUpdate) {
