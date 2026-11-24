@@ -27,6 +27,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -110,6 +111,12 @@ type wf struct {
 	// whether each one's Gerrit turn was uncarried before they were last
 	// asked.
 	seenRequest, beforeRequest map[string]bool
+	// recordedRequest is who was asked on GitHub when a sync last looked
+	// at the PR not a draft, and asked since: while a draft, the bridge
+	// sees the turn only of someone so asked (a request made while one
+	// is not recorded); draftUnseen are whose turn it was when a sync
+	// last looked while a draft, not so asked: not seen.
+	recordedRequest, draftUnseen map[string]bool
 	// looks counts the syncs that looked at reviewers (the PR open);
 	// endedAt is looks when each one's request last ended.
 	looks   int
@@ -302,7 +309,7 @@ func (w *wf) mayAsk(by, n string) {
 
 // mayWithdraw is n's request withdrawn, if the bridge carries what by did.
 func (w *wf) mayWithdraw(by, n string) {
-	if !w.seenTurn[n] && w.requested(n) {
+	if (!w.seenTurn[n] || w.draftUnseen[n]) && w.requested(n) {
 		// A turn given and taken since the bridge last looked: no
 		// change in Gerrit (design: "what changes on either side since
 		// the bridge last looked is carried"), so a request from before
@@ -703,7 +710,8 @@ func cmpOr(a, b string) string {
 // "gh502" (GitHub refuses requests), "gh502:<login>" (for one login),
 // "gerrit500" (Gerrit refuses attention, reviewer and note changes),
 // "trust" (the trusted group cannot be read), "lookup" (identity lookups
-// cannot answer).
+// cannot answer, either way), "lookupGitHub" (those of GitHub accounts'
+// Gerrit accounts alone).
 func (w *wf) withFailure(kinds string) func() {
 	var undo []func()
 	for _, kind := range strings.Split(kinds, ",") {
@@ -723,10 +731,20 @@ func (w *wf) withFailure(kinds string) func() {
 			old := e.c.Trusted
 			e.c.Trusted = func(context.Context, int) (bool, bool) { return false, false }
 			undo = append(undo, func() { e.c.Trusted = old })
-		case kind == "lookup":
+		case kind == "lookup", kind == "lookupGitHub":
 			old := e.c.Users
 			e.c.Users = failingLookups{old}
 			undo = append(undo, func() { e.c.Users = old })
+			// Gerrit -> GitHub too: ReviewerAccounts.GitHubFor checks
+			// what it finds with the same lookups, which cannot answer
+			// either. ("lookupGitHub" is the GitHub -> Gerrit ones alone:
+			// what GitHubFor needs answered already, as by the lookup
+			// cache, the rest not.)
+			if a, ok := e.c.Reviewers.(*fakeGitHubAccounts); ok && kind == "lookup" {
+				oldU := a.unknown
+				a.unknown = &IdentityUnknown{errors.New("directory down")}
+				undo = append(undo, func() { a.unknown = oldU })
+			}
 		default:
 			w.t.Fatalf("unknown failure %q", kind)
 		}
@@ -739,6 +757,18 @@ func (w *wf) withFailure(kinds string) func() {
 }
 
 // ---- syncing and checking ----
+
+// failsSeeing is whether a sync with fail's failures may fail to record
+// whom GitHub asks: not for GitHub refusing the bridge's own requests
+// alone (gh502), which reads them as ever.
+func failsSeeing(fail string) bool {
+	for _, k := range strings.Split(fail, ",") {
+		if k != "" && k != "gh502" && !strings.HasPrefix(k, "gh502:") {
+			return true
+		}
+	}
+	return false
+}
 
 func (w *wf) errorf(format string, args ...any) {
 	w.errs = append(w.errs, fmt.Sprintf(format, args...))
@@ -759,9 +789,21 @@ func (w *wf) sync(at, fail string) {
 		w.seenTurn, w.seenRequest = map[string]bool{}, map[string]bool{}
 	}
 	for _, n := range wfNames() {
-		if looked {
-			w.seenTurn[n] = w.turn(n) && (fail == "" || w.seenTurn[n])
-			w.seenRequest[n] = w.requested(n) && (fail == "" || w.seenRequest[n])
+		if !looked {
+			continue
+		}
+		if w.recordedRequest == nil {
+			w.recordedRequest, w.draftUnseen = map[string]bool{}, map[string]bool{}
+		}
+		w.seenTurn[n] = w.turn(n) && (fail == "" || w.seenTurn[n])
+		// Design: "a turn handed while a draft to someone asked before
+		// it was one is seen", and no other, so its end withdraws no
+		// request.
+		w.recordedRequest[n] = w.recordedRequest[n] && w.requested(n)
+		w.draftUnseen[n] = w.e.h.draft && w.turn(n) && !w.recordedRequest[n]
+		w.seenRequest[n] = w.requested(n) && (!failsSeeing(fail) || w.seenRequest[n])
+		if !w.e.h.draft {
+			w.recordedRequest[n] = w.seenRequest[n]
 		}
 	}
 	if looked {

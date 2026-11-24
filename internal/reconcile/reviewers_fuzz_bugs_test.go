@@ -13,7 +13,7 @@ import "testing"
 func TestReviewerBugOwnAskLostToALookupFailureReview(t *testing.T) {
 	runWF(t, "owen", nil, func() []wfStep {
 		return []wfStep{
-			{name: "austin adds jane (lookups fail)", do: func(w *wf) { w.addReviewer("austin", "jane") }, fail: "lookup", want: "G[jane] H[jane]"},
+			{name: "austin adds jane (lookups fail)", do: func(w *wf) { w.addReviewer("austin", "jane") }, fail: "lookupGitHub", want: "G[jane] H[jane]"},
 			{name: "jane asks for changes", do: func(w *wf) { w.review("jane", "CHANGES_REQUESTED") }, want: "G[] H[]"},
 		}
 	})
@@ -25,7 +25,7 @@ func TestReviewerBugOwnAskLostToALookupFailureReview(t *testing.T) {
 func TestReviewerBugOwnAskLostToALookupFailureTurnGivenBack(t *testing.T) {
 	runWF(t, "owen", nil, func() []wfStep {
 		return []wfStep{
-			{name: "austin adds jane (lookups fail)", do: func(w *wf) { w.addReviewer("austin", "jane") }, fail: "lookup", want: "G[jane] H[jane]"},
+			{name: "austin adds jane (lookups fail)", do: func(w *wf) { w.addReviewer("austin", "jane") }, fail: "lookupGitHub", want: "G[jane] H[jane]"},
 			{name: "austin takes jane's turn (GitHub down)", do: func(w *wf) { w.takeTurn("austin", "jane") }, fail: "gh502", want: "G[] H[jane]"},
 			{name: "nothing", do: func(w *wf) {}, want: "G[] H[]"},
 		}
@@ -119,7 +119,7 @@ func TestReviewerBugAskedAgainWhileAnEndWaits(t *testing.T) {
 	runWF(t, "austin", nil, func() []wfStep {
 		return []wfStep{
 			{name: "owen is asked", do: func(w *wf) { w.request("owen") }, want: "G[owen] H[owen]"},
-			{name: "austin removes owen (lookups fail)", do: func(w *wf) { w.removeReviewer("austin", "owen") }, fail: "lookup", want: "G[] H[]"},
+			{name: "austin removes owen (lookups fail)", do: func(w *wf) { w.removeReviewer("austin", "owen") }, fail: "lookupGitHub", want: "G[] H[]"},
 			{name: "owen is asked again", do: func(w *wf) { w.request("owen") }, want: "G[owen] H[owen]"},
 		}
 	})
