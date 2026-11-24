@@ -50,7 +50,9 @@ func reviewersEnv(t *testing.T) (*commentsEnv, *fakeGitHubAccounts) {
 	e.c.GitHubOwned = true
 	a := &fakeGitHubAccounts{m: map[string]github.User{"mikebauer": mikeGH, "jane": janeGH, "owen": ownerGH}}
 	e.c.Reviewers = a
-	e.c.Trusted = func(_ context.Context, id int) (bool, bool) { return id == austin.AccountID || id == ownerGA.AccountID, true }
+	e.c.Trusted = func(_ context.Context, id int) (bool, bool) {
+		return id == austin.AccountID || id == ownerGA.AccountID, true
+	}
 	e.c.Users = &Users{Overrides: map[string]string{"mike-gh": "mikebauer", "jane-gh": "jane", "owen-gh": "owen"}}
 	e.g.owner = ownerGA
 	e.g.accounts = map[string]gerrit.AccountInfo{"mikebauer": mike, "jane": jane, "owen": ownerGA}

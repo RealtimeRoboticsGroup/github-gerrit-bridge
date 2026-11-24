@@ -608,7 +608,9 @@ type sinceStore struct {
 	err error
 }
 
-func (s sinceStore) ReviewersSince(context.Context, time.Time, bool) (time.Time, error) { return s.t, s.err }
+func (s sinceStore) ReviewersSince(context.Context, time.Time, bool) (time.Time, error) {
+	return s.t, s.err
+}
 
 // When the reviewer sync started is the store's; if it cannot say, now,
 // and the bridge starts all the same (fourth review).
