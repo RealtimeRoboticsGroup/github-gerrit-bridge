@@ -440,7 +440,6 @@ func TestGitHubChecksCommit(t *testing.T) {
 	}
 }
 
-
 // IsTrustedNow reads the group each time: someone just added is trusted
 // at once, someone just removed no longer (fourth review).
 func TestIsTrustedNow(t *testing.T) {
