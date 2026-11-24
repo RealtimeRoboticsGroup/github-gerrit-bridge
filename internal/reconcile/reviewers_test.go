@@ -48,6 +48,7 @@ var (
 func reviewersEnv(t *testing.T) (*commentsEnv, *fakeGitHubAccounts) {
 	e := newCommentsEnv(t)
 	e.c.GitHubOwned = true
+	e.c.BridgeLogin = "bridge" // as in production (eleventh review)
 	a := &fakeGitHubAccounts{m: map[string]github.User{"mikebauer": mikeGH, "jane": janeGH, "owen": ownerGH}}
 	e.c.Reviewers = a
 	e.c.Trusted = func(_ context.Context, id int) (bool, bool) {
