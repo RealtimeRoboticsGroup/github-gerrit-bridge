@@ -296,7 +296,10 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	}
 	for _, key := range prev.Attention {
 		r := removed[key] // none: nobody Gerrit names took them out
-		if _, in := attention[key]; in {
+		if _, in := attention[key]; in || clearedReasons[r.Reason] {
+			// Or Gerrit cleared the set (WIP, abandoned, submitted): not
+			// anyone ending their turn, so their request stands (seventh
+			// review: a WIP withdrew it, and ready never asked again).
 			continue
 		}
 		who, ok, wait := c.actorAt(s, r)
@@ -610,6 +613,13 @@ func (c *Comments) answeredSince(ctx context.Context, rv github.Review, removed 
 	}
 	r, out := removed[strings.ToLower(user)]
 	return out && r.LastUpdate >= newest, nil
+}
+
+// clearedReasons are Gerrit's reasons for clearing the attention set.
+var clearedReasons = map[string]bool{
+	"Change was marked work in progress": true,
+	"Change was abandoned":               true,
+	"Change was submitted":               true,
 }
 
 // attentionAt is when Gerrit says each in the attention set was put in.
