@@ -1042,6 +1042,22 @@ func TestAReviewAfterAHandOffAnswersIt(t *testing.T) {
 	}
 }
 
+// austin takes mike's turn; mike comments on GitHub and owen asks him
+// again, before the sync: owen's request stands (ninth review).
+func TestAnOlderRemovalKeepsANewerRequest(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.g.reply(austin, "Patch Set 2:\n\nnot yet", nil, []gerrit.AccountInfo{mike})
+	e.reviewed(mikeGH, "COMMENTED")
+	e.h.requested = append(e.h.requested, mikeGH)
+	e.sync(t)
+	e.sync(t)
+	if _, h := sides(e, mike, mikeGH); !h {
+		t.Errorf("owen's request undone: %v", e.h.asks)
+	}
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // CI, though trusted, is not a person: its vote on jane's push, which
 // Gerrit says hands her the turn as the uploader, asks nobody on GitHub

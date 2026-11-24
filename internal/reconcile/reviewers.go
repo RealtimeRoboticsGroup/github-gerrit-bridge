@@ -331,7 +331,10 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		u, asked := requested[gh.ID]
-		if !ok || !asked {
+		if !ok || !asked || reviewedAfter(s, gh.ID, r.LastUpdate) {
+			// Or asked again since: a review after the removal ended the
+			// request it was about (ninth review: an older removal
+			// withdrew a newer request).
 			continue
 		}
 		if err := c.GitHub.RemoveRequestedReviewers(ctx, pr, []string{u.Login}); err != nil {
