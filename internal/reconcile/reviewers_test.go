@@ -1728,3 +1728,35 @@ func TestAnAnsweredTurnAskedAgainIsGivenBack(t *testing.T) {
 		}
 	}
 }
+
+// jane replies in Gerrit (her turn ends): the bridge withdraws her GitHub
+// request, but finding her Gerrit account fails, so "her request ended"
+// is kept to carry back. Before the next sync, austin hands her the turn
+// again, and asking her on GitHub fails for now: that sync takes her new
+// turn out of the attention set for the old request's end, so austin's
+// hand-off is lost on both sides. (Workflow: Withdrawals, each-failing.)
+func TestAnOldRequestEndKeepsANewTurn(t *testing.T) {
+	for _, by := range []gerrit.AccountInfo{austin, stranger} {
+		e, _ := reviewersEnv(t)
+		e.g.addReviewer(austin, jane)
+		e.sync(t)
+		e.g.reply(jane, "done", nil, []gerrit.AccountInfo{jane})
+		users := e.c.Users
+		e.c.Users = failingLookups{users}
+		e.sync(t)
+		e.c.Users = users
+		e.wantAsks(t, "+jane-gh", "-jane-gh")
+		e.g.reply(by, "jane, PTAL", []gerrit.AccountInfo{jane}, nil)
+		e.c.GitHub = &refuseFor{e.h, "jane-gh"}
+		e.sync(t)
+		e.c.GitHub = e.h
+		e.sync(t)
+		e.sync(t)
+		g, h := sides(e, jane, janeGH)
+		// austin's: carried; stranger's (untrusted): not carried, but
+		// not undone.
+		if !g || h != (by == austin) {
+			t.Errorf("%s's hand-off: jane's turn in Gerrit %v, asked on GitHub %v (%v)", by.Username, g, h, e.h.asks)
+		}
+	}
+}

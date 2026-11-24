@@ -474,7 +474,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		key := strings.ToLower(user)
 		a, in := attention[key]
-		if !in {
+		if !in || !sameTurn(key, a) {
+			// Or given again since: not the turn the request was for
+			// (tenth review: an old request's end took a new turn).
 			continue
 		}
 		// Their review ends it too (mirrored as them, it usually has).
