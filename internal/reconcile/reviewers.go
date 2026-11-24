@@ -347,7 +347,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		// followed by an import before the sync: third review).
 		// first and newest are the first and the newest of them.
 		first, newest := 0, ""
-		pushed := map[string]bool{}   // their commits on GitHub
+		pushed := map[string]bool{}    // their commits on GitHub
 		uploaders := map[string]bool{} // and who uploaded them
 		for sha, r := range s.revInfos {
 			if r.Number <= prev.PatchSet || !s.exported(sha) {
