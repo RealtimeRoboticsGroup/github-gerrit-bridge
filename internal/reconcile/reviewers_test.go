@@ -688,6 +688,31 @@ func TestALateRecordKeepsAnOwnRemoval(t *testing.T) {
 	}
 }
 
+// sides is whether it is a's turn in Gerrit, and u asked on GitHub.
+func sides(e *commentsEnv, a gerrit.AccountInfo, u github.User) (bool, bool) {
+	_, inGerrit := e.g.attention[a.AccountID]
+	return inGerrit, slices.ContainsFunc(e.h.requested, func(r github.User) bool { return r.ID == u.ID })
+}
+
+// The bridge gives jane the turn for her GitHub request; she reviews,
+// and austin hands it to her again in Gerrit, before the next sync: a
+// new turn, asked, and not taken away (seventh review: taken for the
+// bridge's own).
+func TestATurnHandedAgainAfterTheBridgesIsNew(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.h.requested = []github.User{janeGH}
+	e.sync(t)
+	if _, in := e.g.attention[jane.AccountID]; !in {
+		t.Fatal("jane not given the turn")
+	}
+	e.reviewed(janeGH, "COMMENTED")
+	e.g.reply(austin, "jane: PTAL again", []gerrit.AccountInfo{jane}, nil)
+	e.sync(t)
+	if g, h := sides(e, jane, janeGH); !g || !h {
+		t.Errorf("austin's turn lost: Gerrit %v, GitHub %v", g, h)
+	}
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // CI, though trusted, is not a person: its vote on jane's push, which
 // Gerrit says hands her the turn as the uploader, asks nobody on GitHub

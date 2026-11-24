@@ -184,9 +184,13 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	// sameTurn reports whether a is the turn seen before: one taken back
 	// and given again since (or a stale one kept, waiting) is new (sixth
 	// review: a removal kept waiting for good hid a later turn).
+	// The bridge's own ("*") is the same while Gerrit still gives its
+	// reason: an entry Gerrit wrote again since is new (seventh review:
+	// one a trusted person handed again was taken for the bridge's).
 	sameTurn := func(key string, a gerrit.AttentionSetInfo) bool {
 		at, ok := prev.AttentionAt[key]
-		return wasAttention[key] && (!ok || at == "*" || at == a.LastUpdate)
+		bridges := at == "*" && (strings.HasPrefix(a.Reason, reviewerReason) || a.Reason == "Reviewer was added")
+		return wasAttention[key] && (!ok || bridges || at == a.LastUpdate)
 	}
 	wasRequested := map[int64]github.User{}
 	for _, a := range prev.Requested {
