@@ -228,8 +228,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		return gh, ok, err
 	}
 	// askedNow are those the bridge asked on GitHub this sync, and
-	// withdrawn those whose request it withdrew.
-	askedNow, withdrawn := map[int64]bool{}, map[int64]bool{}
+	// withdrawn those whose request it withdrew, with when they were
+	// taken out of the attention set.
+	askedNow, withdrawn := map[int64]bool{}, map[int64]string{}
 	ask := func(gh github.User) error {
 		if err := c.GitHub.RequestReviewers(ctx, pr, []string{gh.Login}); err != nil {
 			c.Logger.Warn("asking someone to review on GitHub", "change", n, "pr", pr, "github_login", gh.Login, "err", err)
@@ -320,12 +321,13 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		delete(requested, gh.ID)
-		withdrawn[gh.ID] = true
+		withdrawn[gh.ID] = r.LastUpdate
 	}
 	if s.current > prev.PatchSet && !s.pull.Draft {
 		// Any of the new patch sets a trusted person uploaded (one may be
 		// followed by an import before the sync: third review).
-		byTrusted := false
+		// first and newest are the first and the newest of them.
+		first, newest := 0, ""
 		for sha, r := range s.revInfos {
 			if r.Number <= prev.PatchSet || !s.exported(sha) {
 				continue
@@ -334,14 +336,22 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			if !known {
 				waitAt(r.Number)
 			}
-			byTrusted = byTrusted || t && known
+			if t && known {
+				if first == 0 || r.Number < first {
+					first = r.Number
+				}
+				newest = max(newest, r.Created)
+			}
 		}
-		if byTrusted {
+		if first != 0 {
 			for _, rv := range latestReviews(s.allReviews) {
 				u := rv.User
-				// Not who took themselves out since (fifth review: asked
-				// again, they were asked on GitHub but not in Gerrit).
-				if _, asked := requested[u.ID]; rv.State != "CHANGES_REQUESTED" || asked || u.Type == "Bot" || withdrawn[u.ID] {
+				// Not who took themselves out since it (fifth review:
+				// asked again, they were asked on GitHub but not in
+				// Gerrit); who did before it is (sixth review). Gerrit's
+				// times are all one width.
+				out, wasOut := withdrawn[u.ID]
+				if _, asked := requested[u.ID]; rv.State != "CHANGES_REQUESTED" || asked || u.Type == "Bot" || wasOut && out >= newest {
 					continue
 				}
 				ask(u) // failing, not asked again: the next patch set may

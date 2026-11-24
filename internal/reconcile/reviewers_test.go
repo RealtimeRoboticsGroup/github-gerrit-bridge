@@ -533,6 +533,32 @@ func TestANewPatchSetThenOwnRemovalInOneSync(t *testing.T) {
 	}
 }
 
+// mike, who asked for changes, takes himself out of the attention set,
+// then austin uploads a new patch set: asked again for it, whether the
+// bridge sees both in one sync or two (sixth review: in one, the
+// withdrawal kept the new patch set from asking).
+func TestOwnRemovalThenANewPatchSetInOneSync(t *testing.T) {
+	for _, split := range []bool{true, false} {
+		e, _ := reviewersEnv(t)
+		e.g.addReviewer(austin, mike)
+		e.sync(t)
+		e.reviewed(mikeGH, "CHANGES_REQUESTED")
+		e.sync(t)
+		e.g.reply(austin, "PTAL", []gerrit.AccountInfo{mike}, nil)
+		e.sync(t)
+		e.g.reply(mike, "Still no", nil, []gerrit.AccountInfo{mike})
+		if split {
+			e.sync(t)
+		}
+		e.exported(t, austin, 3, "sha3")
+		e.sync(t)
+		e.sync(t)
+		if len(e.h.requested) == 0 {
+			t.Errorf("seen in two syncs %v: a new patch set after his change request, yet not asked (%v)", split, e.h.asks)
+		}
+	}
+}
+
 // mike's change request, lifted by his +2 in Gerrit on austin's new
 // patch set, seen in one sync: dismissed on GitHub, and he is not asked
 // again on either side (sixth review).
