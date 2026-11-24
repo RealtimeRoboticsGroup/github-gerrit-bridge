@@ -844,6 +844,31 @@ func TestAClearedTurnIsNoAnswer(t *testing.T) {
 	e.wantAsks(t, "+mike-gh", "+mike-gh")
 }
 
+// Gerrit refusing for good to give a turn back after a reopen: tried
+// once, not every sync (eighth review).
+func TestARefusedTurnBackIsTriedOnce(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.h.requested = []github.User{janeGH}
+	e.sync(t)
+	ts := e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "ab", Author: ownerGA, RealAuthor: &bridgeGA, Date: ts, Message: "Abandoned", RevisionNumber: 1})
+	e.g.setAttention(jane, ts, "Change was abandoned", false)
+	e.g.status, e.h.closed = "ABANDONED", true
+	e.sync(t)
+	e.sync(t)
+	ts = e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "re", Author: ownerGA, RealAuthor: &bridgeGA, Date: ts, Message: "Restored", RevisionNumber: 1})
+	e.g.status, e.h.closed = "NEW", false
+	e.g.refuseAttention, e.g.refuseStatus = true, 403
+	before := e.g.attempts
+	for range 4 {
+		e.sync(t)
+	}
+	if n := e.g.attempts - before; n != 1 {
+		t.Errorf("refused attention add tried %d times, want once", n)
+	}
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // CI, though trusted, is not a person: its vote on jane's push, which
 // Gerrit says hands her the turn as the uploader, asks nobody on GitHub

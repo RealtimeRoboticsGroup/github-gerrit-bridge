@@ -144,7 +144,13 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		return prev
 	}
 	if s.pull == nil || s.pull.State != "open" || s.status != "NEW" {
-		return prev // closed: nothing to carry; reopened, what changed since
+		// Closed: nothing to carry; reopened, what changed since.
+		if prev != nil && !prev.Closed {
+			closed := *prev
+			closed.Closed = true
+			return &closed
+		}
+		return prev
 	}
 	attention := map[string]gerrit.AttentionSetInfo{} // by lower-case username
 	for _, a := range s.attention {
@@ -395,7 +401,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		// seen): their turn in Gerrit too (fifth review).
 		_, was := wasRequested[id]
 		was = was && !askedNow[id]
-		if was && !noted[id] && !c.abandonedOut(ctx, u, removed, attention) {
+		if was && !noted[id] && !(prev.Closed && c.abandonedOut(ctx, u, removed, attention)) {
 			continue
 		}
 		if s.pull.Draft {
@@ -645,7 +651,9 @@ var clearedReasons = map[string]bool{
 
 // abandonedOut reports whether u, asked on GitHub, was taken out of the
 // attention set by the change's abandon: restored, Gerrit gives nobody
-// the turn, and theirs is given back (seventh review).
+// the turn, and theirs is given back (seventh review), on the first sync
+// after it reopens only (eighth review: refused, it was tried every
+// sync, each with a lookup for everyone asked).
 func (c *Comments) abandonedOut(ctx context.Context, u github.User, removed, attention map[string]gerrit.AttentionSetInfo) bool {
 	if !slices.ContainsFunc(slices.Collect(maps.Values(removed)), func(r gerrit.AttentionSetInfo) bool { return r.Reason == "Change was abandoned" }) {
 		return false // no lookup, most syncs

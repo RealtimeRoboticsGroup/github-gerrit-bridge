@@ -56,6 +56,9 @@ type Reviewers struct {
 	// Noted the ids of those Gerrit was told have no Gerrit account.
 	Requested []GitHubAccount `json:"requested,omitempty"`
 	Noted     []int64         `json:"noted,omitempty"`
+	// Closed is set if the change was closed when last seen: the first
+	// sync after it reopens gives back the turns its close took.
+	Closed bool `json:"closed,omitempty"`
 }
 
 // GitHubAccount is a GitHub account: its id, and its login then.
