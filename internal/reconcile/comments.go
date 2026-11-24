@@ -618,13 +618,22 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	if c.Reviewers != nil {
 		opts = append(opts, "REVIEWER_UPDATES")
 	}
-	// The reads go in three stages, each read in a stage alongside the
+	// Gerrit first, comments then the change: a reply's comments and its
+	// message are written together, so every comment's message is in the
+	// change read after (sixth review: read alongside, a reply posted
+	// between the two was taken for someone's not named).
+	var err error
+	if s.gerrit, err = c.Gerrit.ListComments(ctx, n); err != nil {
+		return nil, err
+	}
+	ch, err := c.Gerrit.GetChange(ctx, n, opts...)
+	if err != nil {
+		return nil, err
+	}
+	// GitHub's reads go in stages, each read in a stage alongside the
 	// others: each stage needs only what those before it read. Each read
 	// writes its own field; what is built from them is built after.
-	var ch *gerrit.ChangeInfo
-	err := together(ctx,
-		func(ctx context.Context) (err error) { s.gerrit, err = c.Gerrit.ListComments(ctx, n); return },
-		func(ctx context.Context) (err error) { ch, err = c.Gerrit.GetChange(ctx, n, opts...); return },
+	err = together(ctx,
 		func(ctx context.Context) (err error) { s.rcs, err = c.GitHub.ListReviewComments(ctx, pr); return },
 		func(ctx context.Context) (err error) { s.ics, err = c.GitHub.ListIssueComments(ctx, pr); return },
 		func(ctx context.Context) (err error) { s.reviews, err = c.GitHub.ListReviews(ctx, pr); return })
