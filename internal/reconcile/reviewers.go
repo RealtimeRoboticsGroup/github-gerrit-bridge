@@ -527,7 +527,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		_, in := attention[key]
-		if at := prev.Unrecorded[id]; !was && !reviewer[key] && at != "" && removedSince(s, user, at+"~") {
+		if at := prev.Unrecorded[id].At; !was && !reviewer[key] && at != "" && removedSince(s, user, at+"~") {
 			// Removed as a reviewer after the request was first seen
 			// (twelfth review: carried late, it undid the removal).
 			continue
@@ -558,11 +558,19 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			c.Logger.Info("Gerrit will not make someone asked to review on GitHub a reviewer", "change", n, "gerrit_user", user, "github_login", u.Login, "err", err)
 		}
 	}
-	for _, id := range slices.Sorted(maps.Keys(wasRequested)) {
+	// Ended: requests recorded, and those left out (twelfth review: a
+	// draft's, withdrawn, left the turn it was for).
+	ended := maps.Clone(wasRequested)
+	for id, r := range prev.Unrecorded {
+		if _, ok := ended[id]; !ok {
+			ended[id] = github.User{ID: id, Login: r.Login}
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(ended)) {
 		if _, still := requested[id]; still {
 			continue
 		}
-		u := wasRequested[id]
+		u := ended[id]
 		user, _, err := askOnly(ctx, c.Users, u)
 		if err != nil {
 			stillRequested[id], ending[id] = u, endingAt(id)
@@ -614,11 +622,11 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	}
 	slices.Sort(next.Attention)
 	for id := range notRequested {
-		delete(requested, id)
 		if next.Unrecorded == nil {
-			next.Unrecorded = map[int64]string{}
+			next.Unrecorded = map[int64]state.UnrecordedRequest{}
 		}
-		next.Unrecorded[id] = cmp.Or(prev.Unrecorded[id], next.GerritAt)
+		next.Unrecorded[id] = state.UnrecordedRequest{Login: requested[id].Login, At: cmp.Or(prev.Unrecorded[id].At, next.GerritAt)}
+		delete(requested, id)
 	}
 	maps.Copy(requested, stillRequested)
 	next.Requested = accounts(requested)

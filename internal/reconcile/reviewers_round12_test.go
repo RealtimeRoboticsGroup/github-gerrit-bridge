@@ -201,3 +201,22 @@ func TestR12UntrustedHandOffEndedByAWithdrawal(t *testing.T) {
 		}
 	})
 }
+
+// stranger, asked, is handed the turn while a draft; her request is
+// withdrawn, made again and withdrawn again, all while a draft: the
+// last request, made while a draft, is not recorded, but its end takes
+// her turn as a recorded one's would.
+func TestR12DraftRequestsEndTakesTheTurn(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "owen asks stranger", do: func(w *wf) { w.request("stranger") }, want: "G[stranger] H[stranger]"},
+			{name: "austin replies", do: func(w *wf) { w.replyG("austin") }, want: "G[stranger] H[stranger]"},
+			{name: "owen makes it WIP", do: func(w *wf) { w.wip("owen", nil) }, want: "G[] H[stranger]"},
+			{name: "austin hands stranger the turn", do: func(w *wf) { w.handOff("austin", "stranger") }, want: "G[stranger] H[stranger]"},
+			{name: "owen withdraws stranger (lookups fail)", do: func(w *wf) { w.withdraw("stranger") }, fail: "lookup", want: "G[stranger] H[]"},
+			{name: "owen asks stranger again", do: func(w *wf) { w.request("stranger") }, want: "G[stranger] H[stranger]"},
+			{name: "owen withdraws stranger", do: func(w *wf) { w.withdraw("stranger") }, want: "G[] H[]"},
+			{name: "austin marks it ready", do: func(w *wf) { w.ready("austin", nil) }},
+		}
+	})
+}

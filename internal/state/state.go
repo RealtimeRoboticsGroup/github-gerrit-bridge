@@ -70,15 +70,23 @@ type Reviewers struct {
 	GivenBack map[string]string `json:"given_back,omitempty"`
 	// GerritAt is the newest time Gerrit gave for anything the sync saw
 	// (Gerrit's clock, not At's). Unrecorded is, by GitHub account id,
-	// the GerritAt when a request left out of Requested (made while a
-	// draft, or whose Gerrit side failed: carried later as new) was
+	// the requests left out of Requested (made while a draft, or whose
+	// Gerrit side failed: carried later as new), each with when it was
 	// first seen.
-	GerritAt   string           `json:"gerrit_at,omitempty"`
-	Unrecorded map[int64]string `json:"unrecorded,omitempty"`
+	GerritAt   string                      `json:"gerrit_at,omitempty"`
+	Unrecorded map[int64]UnrecordedRequest `json:"unrecorded,omitempty"`
 	// Withdrawn is, by GitHub account id, the GerritAt of the last look
 	// that saw such a request before it ended: a turn given by then was
 	// answered by its end.
 	Withdrawn map[int64]string `json:"withdrawn,omitempty"`
+}
+
+// UnrecordedRequest is a review request the reviewer sync saw but left
+// out of Requested: whose (their login then), and the GerritAt of the
+// look that first saw it.
+type UnrecordedRequest struct {
+	Login string `json:"login"`
+	At    string `json:"at"`
 }
 
 // GitHubAccount is a GitHub account: its id, and its login then.
