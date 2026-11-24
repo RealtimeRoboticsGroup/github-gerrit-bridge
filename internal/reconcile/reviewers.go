@@ -294,7 +294,13 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 				if !refused(err) {
 					notSeen[key] = true
 				}
+				continue
 			}
+			// Out now: asked again below (a new patch set), they are
+			// given it back (tenth review: the add was skipped, the
+			// attention set as read still having them).
+			delete(attention, key)
+			notSeen[key] = true
 			continue
 		}
 		if err := ask(gh); err != nil && !githubRefusedForGood(err) {
@@ -466,7 +472,8 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			stillRequested[id] = u
 			continue
 		}
-		a, in := attention[strings.ToLower(user)]
+		key := strings.ToLower(user)
+		a, in := attention[key]
 		if !in {
 			continue
 		}

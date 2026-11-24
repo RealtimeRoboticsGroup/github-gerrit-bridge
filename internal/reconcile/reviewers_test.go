@@ -1701,3 +1701,30 @@ func TestAnotherPRStartsAgain(t *testing.T) {
 		t.Errorf("seen of PR %d, want 8", got.PR)
 	}
 }
+
+// austin makes mike a reviewer, mike asks for changes on GitHub and
+// austin uploads PS3, all before the bridge syncs (or with the first ask
+// failing for now): the sync takes mike's turn, as answered, out of the
+// attention set and asks him again for PS3 on GitHub, but gives him no
+// turn in Gerrit for it (it skips the add, the attention set it read still
+// having him), and the sides disagree for good. (Workflows NoGitHubAccount,
+// UnrecordedPatchSets, ReAsksWithFailures, ReviewerUploads and
+// TrustUnreadable, synced once.)
+func TestAnAnsweredTurnAskedAgainIsGivenBack(t *testing.T) {
+	for _, failFirst := range []bool{false, true} {
+		e, _ := reviewersEnv(t)
+		e.g.addReviewer(austin, mike)
+		if failFirst {
+			e.c.GitHub = &refuseFor{e.h, "mike-gh"}
+			e.sync(t)
+			e.c.GitHub = e.h
+		}
+		e.reviewed(mikeGH, "CHANGES_REQUESTED")
+		e.exported(t, austin, 3, "sha3")
+		e.sync(t)
+		e.sync(t)
+		if g, h := sides(e, mike, mikeGH); !g || !h {
+			t.Errorf("first ask failed %v: mike's turn in Gerrit %v, asked on GitHub %v (%v)", failFirst, g, h, e.h.asks)
+		}
+	}
+}
