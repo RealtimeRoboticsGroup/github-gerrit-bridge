@@ -1,19 +1,10 @@
 package reconcile
 
 // Bugs the reviewer fuzzer (reviewers_fuzz_test.go) found, each cut down
-// to a workflow that fails on the current code. Remove a test's skip once
-// its bug is fixed.
+// to a workflow. A new one found is added here skipped (and to
+// fzKnownBugs) until fixed.
 
-import (
-	"os"
-	"testing"
-)
-
-func fzBug(t *testing.T) {
-	if os.Getenv("REVIEWERS_FUZZ_BUGS") == "" {
-		t.Skip("a known bug (REVIEWERS_FUZZ_BUGS=1 to run)")
-	}
-}
+import "testing"
 
 // The bridge asks jane on GitHub for austin's adding her, in a sync whose
 // identity lookups fail for now: the request it made is not recorded as
@@ -92,7 +83,6 @@ func TestReviewerBugReAskUndoesARemoval(t *testing.T) {
 // bridge never took that turn as seen, so never sees it end. mike stays
 // asked on GitHub for good, no longer a reviewer in Gerrit.
 func TestReviewerBugRemovedWhileADraftAfterAHandOff(t *testing.T) {
-	fzBug(t)
 	runWF(t, "austin", nil, func() []wfStep {
 		return []wfStep{
 			{name: "owen adds mike", do: func(w *wf) { w.addReviewer("owen", "mike") }, want: "G[mike] H[mike]"},
@@ -108,7 +98,6 @@ func TestReviewerBugRemovedWhileADraftAfterAHandOff(t *testing.T) {
 // owen marks the PR ready, before a sync sees it ready: her request
 // stays on GitHub, her turn in Gerrit gone.
 func TestReviewerBugRepliedAfterReadyAfterADraftHandOff(t *testing.T) {
-	fzBug(t)
 	runWF(t, "owen", nil, func() []wfStep {
 		return []wfStep{
 			{name: "austin adds jane", do: func(w *wf) { w.addReviewer("austin", "jane") }, want: "G[jane] H[jane]"},

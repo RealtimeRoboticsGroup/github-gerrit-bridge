@@ -270,7 +270,14 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		if s.pull.Draft {
-			notSeen[key] = true
+			// Unless asked on GitHub already: nothing to carry once
+			// ready, and its end is (eleventh review: a turn handed
+			// while a draft, never seen, never withdrew it).
+			if gh, ok, err := githubFor(a.Account); err != nil || !ok {
+				notSeen[key] = true
+			} else if _, asked := requested[gh.ID]; !asked {
+				notSeen[key] = true
+			}
 			continue
 		}
 		who, ok, wait := c.actorAt(s, a)

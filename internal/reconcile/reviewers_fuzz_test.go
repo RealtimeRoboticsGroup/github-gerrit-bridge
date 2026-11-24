@@ -526,9 +526,7 @@ func fzEnvInt(name string, def int) int {
 // reviewers_fuzz_bugs_test.go), each with what takes away what it needs:
 // a failure kind (steps' and the variant's), or steps of a kind skipped
 // when skipIf holds (fzOp.skipIf). Remove an entry once its bug is fixed.
-var fzKnownBugs = []struct{ bug, fail, kind, skipIf string }{
-	{bug: "TestReviewerBugRemovedWhileADraftAfterAHandOff, TestReviewerBugRepliedAfterReadyAfterADraftHandOff", kind: "handOff", skipIf: "draft"},
-}
+var fzKnownBugs = []struct{ bug, fail, kind, skipIf string }{}
 
 // fzKnown is the known bug a failure is, "" if none: one that goes away
 // once what the bug needs is taken out.
