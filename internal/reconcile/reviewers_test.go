@@ -533,6 +533,33 @@ func TestANewPatchSetThenOwnRemovalInOneSync(t *testing.T) {
 	}
 }
 
+// mike's change request, lifted by his +2 in Gerrit on austin's new
+// patch set, seen in one sync: dismissed on GitHub, and he is not asked
+// again on either side (sixth review).
+func TestAnApprovalInGerritIsNotAskedAgain(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.maxVote = 2
+	e.c.GerritAs = func(user string) GerritAPI { return fakeAs{e.g, e.g.account(user)} }
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.h.requested = slices.DeleteFunc(e.h.requested, func(r github.User) bool { return r.ID == mikeGH.ID })
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "CHANGES_REQUESTED", Body: "Needs work", User: mikeGH, CommitID: "sha2", SubmittedAt: e.g.now(),
+		HTMLURL: "https://github.com/o/r/pull/1#pullrequestreview-1"})
+	e.sync(t)
+	e.sync(t)
+	e.exported(t, austin, 3, "sha3")
+	e.g.vote("mikebauer", "Code-Review", 2)
+	e.g.reply(mike, "Patch Set 3: Code-Review+2\n\nLGTM now", nil, []gerrit.AccountInfo{mike})
+	e.sync(t)
+	e.sync(t)
+	if len(e.h.dismissed) == 0 {
+		t.Errorf("the change request was not dismissed")
+	}
+	if _, in := e.g.attention[mike.AccountID]; len(e.h.asks) > 1 || in {
+		t.Errorf("mike approved in Gerrit, yet asked again: asks %v, his turn in Gerrit %v", e.h.asks, in)
+	}
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // CI, though trusted, is not a person: its vote on jane's push, which
 // Gerrit says hands her the turn as the uploader, asks nobody on GitHub

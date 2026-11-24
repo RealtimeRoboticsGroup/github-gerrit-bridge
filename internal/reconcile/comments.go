@@ -2311,6 +2311,13 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 		if err := c.GitHub.DismissReview(ctx, pr, rv.ID, msg); err != nil {
 			return fmt.Errorf("dismissing review %d on #%d: %w", rv.ID, pr, err)
 		}
+		// As GitHub has it now, for the reviewer sync after (sixth review:
+		// a change request lifted by a +2 asked its reviewer again).
+		for i := range s.allReviews {
+			if s.allReviews[i].ID == rv.ID {
+				s.allReviews[i].State = "DISMISSED"
+			}
+		}
 		c.Logger.Info("dismissed GitHub review Gerrit disagrees with", "change", n, "pr", pr, "review", rv.ID, "user", rv.User.Login, "state", rv.State, "gerrit", now)
 	}
 	return nil
