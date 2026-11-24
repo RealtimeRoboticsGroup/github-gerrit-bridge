@@ -73,7 +73,7 @@ func (e *commentsEnv) seen(t *testing.T) *state.Reviewers {
 // reviewed is u's review on GitHub, which ends their request.
 func (e *commentsEnv) reviewed(u github.User, state string) {
 	e.h.requested = slices.DeleteFunc(e.h.requested, func(r github.User) bool { return r.ID == u.ID })
-	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: state, User: u, CommitID: "sha2", SubmittedAt: time.Now()})
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: state, User: u, CommitID: "sha2", SubmittedAt: e.g.now()}) // as Gerrit's clock has it
 }
 
 // exported is ps, uploaded to Gerrit by by, which the bridge records once
@@ -640,6 +640,52 @@ func TestATurnWithASupersededUnrecordedPatchSetIsSeen(t *testing.T) {
 		t.Errorf("still waiting for a record that will not come: %+v", e.seen(t))
 	}
 	e.wantAsks(t)
+}
+
+// A re-ask held back (it failed) is not made again of who reviewed the
+// new patch set meanwhile (seventh review).
+func TestAHeldReAskSkipsWhoReviewedSince(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.exported(t, austin, 3, "sha3")
+	e.h.refuseAsk = &github.APIError{Status: 502, Message: "Bad Gateway"}
+	e.sync(t)
+	e.h.refuseAsk = nil
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "CHANGES_REQUESTED", User: mikeGH, CommitID: "sha3", SubmittedAt: e.g.now()})
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+}
+
+// mike takes himself out after austin's new patch set, whose record
+// comes a sync later: he is not asked again once it does (seventh
+// review: only a withdrawal in the same sync counted).
+func TestALateRecordKeepsAnOwnRemoval(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.exported(t, austin, 3, "sha3")
+	e.sync(t)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh")
+	e.g.upload(austin, 4, "sha4") // record not yet saved
+	e.g.reply(mike, "not today", nil, []gerrit.AccountInfo{mike})
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh", "-mike-gh")
+	if err := updateStateFn(context.Background(), e.st, 5, "export", func(st *state.Change) {
+		st.Revisions = append(st.Revisions, state.Revision{PatchSet: 4, GerritSHA: "sha4", GitHubSHA: "sha4", Exported: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh", "-mike-gh")
+	if _, in := e.g.attention[mike.AccountID]; in {
+		t.Errorf("mike's own removal undone in Gerrit")
+	}
 }
 
 // austin's Gerrit upload, then a push on GitHub imported before the sync

@@ -236,10 +236,8 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		return gh, ok, err
 	}
-	// askedNow are those the bridge asked on GitHub this sync, and
-	// withdrawn those whose request it withdrew, with when they were
-	// taken out of the attention set.
-	askedNow, withdrawn := map[int64]bool{}, map[int64]string{}
+	// askedNow are those the bridge asked on GitHub this sync.
+	askedNow := map[int64]bool{}
 	ask := func(gh github.User) error {
 		if err := c.GitHub.RequestReviewers(ctx, pr, []string{gh.Login}); err != nil {
 			c.Logger.Warn("asking someone to review on GitHub", "change", n, "pr", pr, "github_login", gh.Login, "err", err)
@@ -330,7 +328,6 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		delete(requested, gh.ID)
-		withdrawn[gh.ID] = r.LastUpdate
 	}
 	if s.current > prev.PatchSet && !s.pull.Draft {
 		// Any of the new patch sets a trusted person uploaded (one may be
@@ -355,12 +352,13 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		if first != 0 {
 			for _, rv := range latestReviews(s.allReviews) {
 				u := rv.User
-				// Not who took themselves out since it (fifth review:
-				// asked again, they were asked on GitHub but not in
-				// Gerrit); who did before it is (sixth review). Gerrit's
-				// times are all one width.
-				out, wasOut := withdrawn[u.ID]
-				if _, asked := requested[u.ID]; rv.State != "CHANGES_REQUESTED" || asked || u.Type == "Bot" || wasOut && out >= newest {
+				if _, asked := requested[u.ID]; rv.State != "CHANGES_REQUESTED" || asked || u.Type == "Bot" {
+					continue
+				}
+				if answered, err := c.answeredSince(ctx, rv, removed, newest); err != nil {
+					waitAt(first) // known next sync
+					continue
+				} else if answered {
 					continue
 				}
 				if err := ask(u); err != nil && !githubRefusedForGood(err) {
@@ -590,6 +588,24 @@ func uploader(r gerrit.RevisionInfo) gerrit.AccountInfo {
 		return *r.RealUploader
 	}
 	return r.Uploader
+}
+
+// answeredSince reports whether rv's reviewer answered the patch set
+// uploaded at newest already: reviewed it since (seventh review: a
+// re-ask held back for a sync asked again who had reviewed it
+// meanwhile), or was taken out of the attention set since (fifth
+// review: asked again, they were asked on GitHub but not in Gerrit;
+// seventh: whenever it was seen). Gerrit's times are all one width.
+func (c *Comments) answeredSince(ctx context.Context, rv github.Review, removed map[string]gerrit.AttentionSetInfo, newest string) (bool, error) {
+	if at, err := time.Parse("2006-01-02 15:04:05.999999999", newest); err == nil && rv.SubmittedAt.After(at) {
+		return true, nil
+	}
+	user, ok, err := askOnly(ctx, c.Users, rv.User)
+	if err != nil || !ok {
+		return false, err
+	}
+	r, out := removed[strings.ToLower(user)]
+	return out && r.LastUpdate >= newest, nil
 }
 
 // attentionAt is when Gerrit says each in the attention set was put in.
