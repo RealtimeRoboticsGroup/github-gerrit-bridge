@@ -244,6 +244,10 @@ type commentSnapshot struct {
 	at    time.Time
 	// pull is the PR, read after everything above.
 	pull *github.PullRequest
+	// rcReview is each review comment's review, as read: not settled
+	// (eleventh review: a linked user's, new since the first pass, was
+	// dropped from rcByID, and its review taken for their answer).
+	rcReview map[int64]int64
 	// mirrored are the GitHub reviews the bridge posted for Gerrit
 	// replies: not anyone answering on GitHub (tenth review).
 	mirrored map[int64]bool
@@ -374,8 +378,8 @@ func (m *commentMap) reviewsFromGerrit(s *commentSnapshot) map[int64]bool {
 		case kindReviewComment:
 			// A Gerrit comment, posted in a review of its own (tenth
 			// review).
-			if rc := s.rcByID[mc.GitHubID]; rc != nil && rc.ReviewID != 0 {
-				out[rc.ReviewID] = true
+			if rid := s.rcReview[mc.GitHubID]; rid != 0 {
+				out[rid] = true
 			}
 		}
 	}
@@ -657,8 +661,10 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 	if s.rcs, err = c.GitHub.ListReviewComments(ctx, pr); err != nil {
 		return nil, err
 	}
+	s.rcReview = map[int64]int64{}
 	for i := range s.rcs {
 		s.rcByID[s.rcs[i].ID] = &s.rcs[i]
+		s.rcReview[s.rcs[i].ID] = s.rcs[i].ReviewID
 	}
 	if s.ics, err = c.GitHub.ListIssueComments(ctx, pr); err != nil {
 		return nil, err

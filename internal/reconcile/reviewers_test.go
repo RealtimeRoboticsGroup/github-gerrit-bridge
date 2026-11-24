@@ -1796,6 +1796,7 @@ func (u realUserClient) CreateReview(ctx context.Context, n int, r github.NewRev
 // hand-off is lost on both sides.
 func TestAMirroredCommentIsNoAnswerToALaterHandOff(t *testing.T) {
 	e, _ := reviewersEnv(t)
+	e.c.BridgeLogin = "bridge" // as in production: others' comments are not the bridge's (eleventh review)
 	e.c.Authors = realAuthors{&fakeAuthors{f: e.h, linked: map[int]github.User{mike.AccountID: mikeGH}}}
 	e.g.addReviewer(austin, mike)
 	e.sync(t)
