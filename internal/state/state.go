@@ -44,7 +44,8 @@ type Reviewers struct {
 	// another PR since starts again.
 	At time.Time `json:"at"`
 	PR int       `json:"pr,omitempty"`
-	// PatchSet is the change's current patch set then.
+	// PatchSet is the change's current patch set when first seen: newer
+	// ones a trusted person uploaded ask change requesters again.
 	PatchSet int `json:"patch_set,omitempty"`
 	// Attention is the Gerrit usernames in the attention set, and
 	// AttentionAt when Gerrit said each was last put in or taken out ("*":
@@ -56,9 +57,12 @@ type Reviewers struct {
 	// Noted the ids of those Gerrit was told have no Gerrit account.
 	Requested []GitHubAccount `json:"requested,omitempty"`
 	Noted     []int64         `json:"noted,omitempty"`
-	// Closed is set if the change was closed when last seen: the first
-	// sync after it reopens gives back the turns its close took.
-	Closed bool `json:"closed,omitempty"`
+	// AskedFor is, by GitHub account id, the newest patch set each was
+	// asked to review again (or was found to have answered): asked once
+	// for each. GivenBack is, by Gerrit username, the abandon (its
+	// removal's time) whose taking their turn was given back on restore.
+	AskedFor  map[int64]int     `json:"asked_for,omitempty"`
+	GivenBack map[string]string `json:"given_back,omitempty"`
 }
 
 // GitHubAccount is a GitHub account: its id, and its login then.

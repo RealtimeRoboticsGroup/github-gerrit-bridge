@@ -144,13 +144,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		return prev
 	}
 	if s.pull == nil || s.pull.State != "open" || s.status != "NEW" {
-		// Closed: nothing to carry; reopened, what changed since.
-		if prev != nil && !prev.Closed {
-			closed := *prev
-			closed.Closed = true
-			return &closed
-		}
-		return prev
+		return prev // closed: nothing to carry; reopened, what changed since
 	}
 	attention := map[string]gerrit.AttentionSetInfo{} // by lower-case username
 	for _, a := range s.attention {
@@ -231,13 +225,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		return t.trusted, t.known
 	}
-	// waitFrom is the first patch set not yet known to be a trusted
-	// person's or not (0: none): seen only up to the one before it.
-	waitFrom := 0
-	waitAt := func(ps int) {
-		if waitFrom == 0 || ps < waitFrom {
-			waitFrom = ps
-		}
+	askedFor := maps.Clone(prev.AskedFor)
+	if askedFor == nil {
+		askedFor = map[int64]int{}
 	}
 	githubFor := func(a gerrit.AccountInfo) (github.User, bool, error) {
 		gh, ok, err := c.Reviewers.GitHubFor(ctx, a)
@@ -342,56 +332,46 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		delete(requested, gh.ID)
 	}
-	if s.current > prev.PatchSet && !s.pull.Draft {
-		// Any of the new patch sets a trusted person uploaded (one may be
-		// followed by an import before the sync: third review).
-		// first and newest are the first and the newest of them.
-		first, newest := 0, ""
-		pushed := map[string]bool{}    // their commits on GitHub
-		uploaders := map[string]bool{} // and who uploaded them
-		for sha, r := range s.revInfos {
-			if r.Number <= prev.PatchSet || !s.exported(sha) {
+	if !s.pull.Draft {
+		c.askAgain(ctx, s, prev, removed, requested, askedFor, trusted, ask)
+	}
+
+	// Gerrit gave nobody back the turn its abandon took, on restore:
+	// whoever is still asked on GitHub is given it back, once for each
+	// abandon (seventh and ninth reviews).
+	givenBack := map[string]string{}
+	giveBack := map[int64]bool{}
+	pending := map[string]string{}
+	for key, r := range removed {
+		if r.Reason != "Change was abandoned" {
+			continue
+		}
+		if _, in := attention[key]; in {
+			continue
+		}
+		if prev.GivenBack[key] == r.LastUpdate {
+			givenBack[key] = r.LastUpdate
+		} else {
+			pending[key] = r.LastUpdate
+		}
+	}
+	if len(pending) > 0 {
+		known := true
+		for id, u := range requested {
+			if _, was := wasRequested[id]; !was {
+				continue // new: added as any request is
+			}
+			user, ok, err := askOnly(ctx, c.Users, u)
+			if err != nil {
+				known = false
 				continue
 			}
-			t, known := trusted(uploader(r))
-			if !known {
-				waitAt(r.Number)
-			}
-			if t && known {
-				if first == 0 || r.Number < first {
-					first = r.Number
-				}
-				newest = max(newest, r.Created)
-				uploaders[strings.ToLower(uploader(r).Username)] = true
-				for _, rec := range s.revisions {
-					if rec.GerritSHA == sha {
-						pushed[rec.GitHubSHA] = true
-					}
-				}
+			if _, out := pending[strings.ToLower(user)]; ok && out {
+				giveBack[id] = true
 			}
 		}
-		if first != 0 {
-			for _, rv := range latestReviews(s.allReviews) {
-				u := rv.User
-				if _, asked := requested[u.ID]; rv.State != "CHANGES_REQUESTED" || asked || u.Type == "Bot" {
-					continue
-				}
-				onGitHub := slices.ContainsFunc(s.pull.RequestedReviewers, func(r github.User) bool { return r.ID == u.ID })
-				if _, was := wasRequested[u.ID]; was && !onGitHub && !reviewedSince(s, u, prev.At) {
-					// Their request ended on GitHub since, with no review:
-					// someone withdrew it there (eighth review).
-					continue
-				}
-				if answered, err := c.answeredSince(ctx, s, u, removed, newest, pushed, uploaders); err != nil {
-					waitAt(first) // known next sync
-					continue
-				} else if answered {
-					continue
-				}
-				if err := ask(u); err != nil && !githubRefusedForGood(err) {
-					waitAt(first) // asked again next sync (sixth review)
-				}
-			}
+		if known {
+			maps.Copy(givenBack, pending)
 		}
 	}
 
@@ -403,7 +383,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		// seen): their turn in Gerrit too (fifth review).
 		_, was := wasRequested[id]
 		was = was && !askedNow[id]
-		if was && !noted[id] && !(prev.Closed && c.abandonedOut(ctx, u, removed, attention)) {
+		if was && !noted[id] && !giveBack[id] {
 			continue
 		}
 		if s.pull.Draft {
@@ -487,21 +467,12 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		notSeen[strings.ToLower(user)] = true
 	}
 
-	next := &state.Reviewers{At: s.at, PR: pr, PatchSet: s.current}
-	if !s.recorded(s.revision) {
-		// Asked once the bridge has recorded where it came from. One
-		// before it never recorded (withheld from GitHub) waits for
-		// nothing: a later one was.
-		waitAt(s.current)
+	next := &state.Reviewers{At: s.at, PR: pr, PatchSet: prev.PatchSet}
+	if len(askedFor) > 0 {
+		next.AskedFor = askedFor
 	}
-	switch {
-	case s.pull.Draft:
-		next.PatchSet = prev.PatchSet // asked once ready
-	case waitFrom != 0:
-		// Only those waited for are looked at again: the rest were acted
-		// on (fifth review: a withheld patch set held back the one
-		// before it, asking for it after every review).
-		next.PatchSet = max(prev.PatchSet, waitFrom-1)
+	if len(givenBack) > 0 {
+		next.GivenBack = givenBack
 	}
 	next.AttentionAt = map[string]string{}
 	for _, key := range attentionNow {
@@ -620,34 +591,77 @@ func uploader(r gerrit.RevisionInfo) gerrit.AccountInfo {
 	return r.Uploader
 }
 
-// answeredSince reports whether rv's reviewer answered the patch set
-// uploaded at newest already: reviewed it since (seventh review: a
-// re-ask held back for a sync asked again who had reviewed it
-// meanwhile), or was taken out of the attention set since (fifth
-// review: asked again, they were asked on GitHub but not in Gerrit;
-// seventh: whenever it was seen). Gerrit's times are all one width.
-func (c *Comments) answeredSince(ctx context.Context, s *commentSnapshot, u github.User, removed map[string]gerrit.AttentionSetInfo, newest string, pushed, uploaders map[string]bool) (bool, error) {
-	// Any review of one of them, a comment too (eighth review: only a
-	// change request counted; and by time, one of the old commit made
-	// after the upload did).
-	if slices.ContainsFunc(s.allReviews, func(rv github.Review) bool { return rv.User.ID == u.ID && pushed[rv.CommitID] }) {
-		return true, nil
+// askAgain asks again, once for each, whoever last requested changes
+// on GitHub, for the newest patch set a trusted person uploaded since
+// the PR was first seen (Gerrit hands nobody the turn on an upload).
+// askedFor records each asked, or found to have answered it; what fails
+// for now is not, and is tried again next sync. Not:
+//   - whoever uploaded it;
+//   - whoever reviewed it, or a later patch set's commit, on GitHub;
+//   - whoever was taken out of the attention set at or after it, but by
+//     Gerrit clearing the set (fifth review);
+//   - while whether a newer one is a trusted person's cannot be told.
+//
+// Once asked, a withdrawal on GitHub stands (ninth review: kept as a
+// patch-set number held back, the asks were made again, or lost, as
+// what was seen moved on).
+func (c *Comments) askAgain(ctx context.Context, s *commentSnapshot, prev *state.Reviewers, removed map[string]gerrit.AttentionSetInfo,
+	requested map[int64]github.User, askedFor map[int64]int, trusted func(gerrit.AccountInfo) (bool, bool), ask func(github.User) error) {
+	// The newest exported one a trusted person uploaded; one newer whose
+	// uploader's trust cannot be told waits (third review).
+	var newest gerrit.RevisionInfo
+	for _, sha := range slices.SortedFunc(maps.Keys(s.revInfos), func(a, b string) int { return s.revInfos[b].Number - s.revInfos[a].Number }) {
+		r := s.revInfos[sha]
+		if r.Number <= prev.PatchSet {
+			break
+		}
+		if !s.exported(sha) {
+			continue
+		}
+		t, known := trusted(uploader(r))
+		if !known {
+			return
+		}
+		if t {
+			newest = r
+			break
+		}
 	}
-	user, ok, err := askOnly(ctx, c.Users, u)
-	if err != nil || !ok {
-		return false, err
+	if newest.Number == 0 {
+		return
 	}
-	if uploaders[strings.ToLower(user)] {
-		return true, nil // theirs: not asked to review it (eighth review)
+	// Its commits on GitHub, and those of every later patch set (an
+	// import of a push made on it, say).
+	pushed := map[string]bool{}
+	for _, rec := range s.revisions {
+		if rec.PatchSet >= newest.Number {
+			pushed[rec.GitHubSHA] = true
+		}
 	}
-	// Taken out, not by Gerrit clearing the set (eighth review).
-	r, out := removed[strings.ToLower(user)]
-	return out && r.LastUpdate >= newest && !clearedReasons[r.Reason], nil
-}
-
-// reviewedSince reports whether u reviewed the PR after at.
-func reviewedSince(s *commentSnapshot, u github.User, at time.Time) bool {
-	return slices.ContainsFunc(s.allReviews, func(rv github.Review) bool { return rv.User.ID == u.ID && rv.SubmittedAt.After(at) })
+	for _, rv := range latestReviews(s.allReviews) {
+		u := rv.User
+		if rv.State != "CHANGES_REQUESTED" || u.Type == "Bot" || askedFor[u.ID] >= newest.Number {
+			continue
+		}
+		if _, asked := requested[u.ID]; asked || slices.ContainsFunc(s.allReviews, func(rv github.Review) bool { return rv.User.ID == u.ID && pushed[rv.CommitID] }) {
+			askedFor[u.ID] = newest.Number
+			continue
+		}
+		user, ok, err := askOnly(ctx, c.Users, u)
+		if err != nil {
+			continue // asked once known
+		}
+		if ok {
+			r, out := removed[strings.ToLower(user)]
+			if strings.EqualFold(user, uploader(newest).Username) || out && r.LastUpdate >= newest.Created && !clearedReasons[r.Reason] {
+				askedFor[u.ID] = newest.Number
+				continue
+			}
+		}
+		if err := ask(u); err == nil || githubRefusedForGood(err) {
+			askedFor[u.ID] = newest.Number
+		}
+	}
 }
 
 // clearedReasons are Gerrit's reasons for clearing the attention set.
@@ -655,24 +669,6 @@ var clearedReasons = map[string]bool{
 	"Change was marked work in progress": true,
 	"Change was abandoned":               true,
 	"Change was submitted":               true,
-}
-
-// abandonedOut reports whether u, asked on GitHub, was taken out of the
-// attention set by the change's abandon: restored, Gerrit gives nobody
-// the turn, and theirs is given back (seventh review), on the first sync
-// after it reopens only (eighth review: refused, it was tried every
-// sync, each with a lookup for everyone asked).
-func (c *Comments) abandonedOut(ctx context.Context, u github.User, removed, attention map[string]gerrit.AttentionSetInfo) bool {
-	if !slices.ContainsFunc(slices.Collect(maps.Values(removed)), func(r gerrit.AttentionSetInfo) bool { return r.Reason == "Change was abandoned" }) {
-		return false // no lookup, most syncs
-	}
-	user, ok, err := askOnly(ctx, c.Users, u)
-	if err != nil || !ok {
-		return false
-	}
-	key := strings.ToLower(user)
-	_, in := attention[key]
-	return !in && removed[key].Reason == "Change was abandoned"
 }
 
 // attentionAt is when Gerrit says each in the attention set was put in.

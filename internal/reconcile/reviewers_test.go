@@ -446,8 +446,8 @@ func TestUnrecordedPatchSetsWait(t *testing.T) {
 	e.g.upload(austin, 4, "sha4")
 	e.sync(t)
 	e.wantAsks(t)
-	if got := e.seen(t).PatchSet; got != 3 {
-		t.Errorf("seen patch set %d before it is recorded, want 3", got)
+	if got := e.seen(t).AskedFor[mikeGH.ID]; got != 0 {
+		t.Errorf("asked for patch set %d before it is recorded", got)
 	}
 	if err := updateStateFn(context.Background(), e.st, 5, "export", func(st *state.Change) {
 		st.Revisions = append(st.Revisions, state.Revision{PatchSet: 4, GerritSHA: "sha4", GitHubSHA: "sha4", Exported: true})
@@ -477,8 +477,8 @@ func TestAWithheldPatchSetHoldsBackOnlyItself(t *testing.T) {
 			e.sync(t)
 		}
 		e.wantAsks(t, "+mike-gh", "+mike-gh")
-		if got := e.seen(t).PatchSet; got != 3 {
-			t.Errorf("seen patch set %d, want 3", got)
+		if got := e.seen(t).AskedFor[mikeGH.ID]; got != 3 {
+			t.Errorf("asked for patch set %d, want 3", got)
 		}
 		e.exported(t, austin, 5, "sha5")
 		e.sync(t)
@@ -900,6 +900,121 @@ func TestTheUploaderIsNotAskedAgain(t *testing.T) {
 	e.exported(t, austin, 3, "sha3")
 	e.sync(t)
 	e.wantAsks(t)
+}
+
+// Ninth review: asked once for each newest patch set, recorded per
+// person, rather than held back as a patch-set number.
+
+// While held (jane's ask failed), mike asks for changes on PS3 and austin
+// uploads PS4: asked for PS4.
+func TestAHeldReAskThenANewerPatchSetAsks(t *testing.T) {
+	e := heldReAsk(t)
+	e.h.requested = slices.DeleteFunc(e.h.requested, func(r github.User) bool { return r.ID == mikeGH.ID })
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "CHANGES_REQUESTED", User: mikeGH, CommitID: "sha3", SubmittedAt: time.Now()})
+	e.exported(t, austin, 4, "sha4")
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh", "+jane-gh")
+}
+
+// While a draft, mike asks for changes on PS3 and austin uploads PS4:
+// asked for PS4 once it is ready.
+func TestADraftsNewerPatchSetAsks(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.h.asks = nil
+	e.h.draft = true
+	e.sync(t)
+	e.exported(t, austin, 3, "sha3")
+	e.sync(t)
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "CHANGES_REQUESTED", User: mikeGH, CommitID: "sha3", SubmittedAt: time.Now()})
+	e.exported(t, austin, 4, "sha4")
+	e.sync(t)
+	e.h.draft = false
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+}
+
+// austin uploads PS3 and owen PS4 while a draft: austin, who asked for
+// changes, is asked for owen's.
+func TestTheUploaderOfAnEarlierPatchSetIsAsked(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	austinGH := github.User{Login: "austin-gh", ID: 80, Type: "User"}
+	e.c.Users.(*Users).Overrides["austin-gh"] = "austin"
+	e.g.accounts["austin"] = austin
+	e.h.ids["austin-gh"] = 80
+	e.reviewed(austinGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.h.draft = true
+	e.sync(t)
+	e.exported(t, austin, 3, "sha3")
+	e.sync(t)
+	e.exported(t, ownerGA, 4, "sha4")
+	e.sync(t)
+	e.h.draft = false
+	e.sync(t)
+	e.wantAsks(t, "+austin-gh")
+}
+
+// mike reviews the import of a push made on austin's PS3: he has seen it.
+func TestAReviewOfALaterImportAnswers(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.h.asks = nil
+	e.exported(t, austin, 3, "sha3")
+	e.imported(t, ownerGA, 4, "sha4")
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "CHANGES_REQUESTED", User: mikeGH, CommitID: "sha4", SubmittedAt: time.Now()})
+	e.sync(t)
+	e.wantAsks(t)
+}
+
+// Abandoned and restored between two syncs: jane's turn is given back.
+func TestAbandonAndRestoreBetweenSyncsGivesTheTurnBack(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.h.requested = []github.User{janeGH}
+	e.sync(t)
+	ts := e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "ab", Author: ownerGA, RealAuthor: &bridgeGA, Date: ts, Message: "Abandoned", RevisionNumber: 1})
+	e.g.setAttention(jane, ts, "Change was abandoned", false)
+	ts = e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "re", Author: ownerGA, RealAuthor: &bridgeGA, Date: ts, Message: "Restored", RevisionNumber: 1})
+	e.sync(t)
+	e.sync(t)
+	if g, h := sides(e, jane, janeGH); !g || !h {
+		t.Errorf("jane's turn in Gerrit %v, asked on GitHub %v", g, h)
+	}
+}
+
+// failingLookups is Users whose lookups for the reviewer sync fail.
+type failingLookups struct{ Identity }
+
+func (f failingLookups) Lookup(ctx context.Context, gh github.User) (string, bool, error) {
+	if probeOf(ctx) != nil {
+		return "", false, &IdentityUnknown{errors.New("directory down")}
+	}
+	return f.Identity.Lookup(ctx, gh)
+}
+
+// mike's request ends with his change request while lookups fail (kept
+// as requested); austin then uploads PS3: mike is asked for it.
+func TestAKeptRequestThenANewPatchSetAsks(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	users := e.c.Users
+	e.c.Users = failingLookups{users}
+	e.sync(t)
+	e.c.Users = users
+	e.exported(t, austin, 3, "sha3")
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh")
 }
 
 // austin's Gerrit upload, then a push on GitHub imported before the sync
