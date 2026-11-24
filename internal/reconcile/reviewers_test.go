@@ -725,6 +725,9 @@ func TestRefusedRequests(t *testing.T) {
 		{&github.APIError{Status: 403, Message: "Resource not accessible by integration"}, false},
 		{&github.APIError{Status: 404, Message: "Not Found"}, false},
 		{&github.APIError{Status: 403, Message: "secondary rate limit", RetryAfter: time.Minute}, true},
+		// GitHub may say only this: "wait at least one minute".
+		{&github.APIError{Status: 403, Message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}, true},
+		{&github.APIError{Status: 401, Message: "Bad credentials"}, true},
 		{&github.APIError{Status: 429, Message: "rate limited"}, true},
 		{&github.APIError{Status: 409, Message: "conflict"}, true},
 		{&github.APIError{Status: 502, Message: "Bad Gateway"}, true},

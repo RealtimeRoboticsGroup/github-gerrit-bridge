@@ -566,11 +566,14 @@ func uploader(r gerrit.RevisionInfo) gerrit.AccountInfo {
 // githubRefusedForGood reports whether GitHub refused err's request for good (a
 // 4xx other than a conflict or a rate limit: a 422 for someone who may not
 // review, a 403 or 404 for a token that may not): not made again every
-// sync, each a GitHub write (third review).
+// sync, each a GitHub write (third review). Not a 401, which is about the
+// token, nor a secondary rate limit, which may come with no header saying
+// how long to wait (fifth review).
 func githubRefusedForGood(err error) bool {
 	var ae *github.APIError
 	return errors.As(err, &ae) && ae.Status >= 400 && ae.Status < 500 &&
-		ae.Status != http.StatusConflict && ae.Status != http.StatusTooManyRequests && ae.RetryAfter == 0
+		ae.Status != http.StatusConflict && ae.Status != http.StatusTooManyRequests && ae.Status != http.StatusUnauthorized &&
+		ae.RetryAfter == 0 && !strings.Contains(strings.ToLower(ae.Message), "rate limit")
 }
 
 // refused reports whether Gerrit refused err's request for good (a 4xx
