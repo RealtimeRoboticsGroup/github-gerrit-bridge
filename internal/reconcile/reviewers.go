@@ -200,6 +200,14 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	for _, id := range prev.Noted {
 		noted[id] = true
 	}
+	// Asked again since their request ended, its end not yet carried: a
+	// new request (eleventh review: taken for the old one, never carried).
+	for _, id := range prev.Ending {
+		if _, asked := requested[id]; asked {
+			delete(wasRequested, id)
+		}
+	}
+	ending := map[int64]bool{}
 	// Retries: what failed is left to look new (or gone) next time; and
 	// whom the bridge took out of the attention set is out.
 	// The bridge's own turns, handed out for GitHub requests, are seen as
@@ -477,7 +485,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		u := wasRequested[id]
 		user, _, err := askOnly(ctx, c.Users, u)
 		if err != nil {
-			stillRequested[id] = u
+			stillRequested[id], ending[id] = u, true
 			continue
 		}
 		key := strings.ToLower(user)
@@ -491,7 +499,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		if err := c.Gerrit.RemoveFromAttentionSet(ctx, n, a.Account.AccountID, reviewerReason+"review request ended"); err != nil {
 			c.Logger.Warn("taking someone no longer asked on GitHub out of the attention set", "change", n, "gerrit_user", user, "err", err)
 			if !refused(err) {
-				stillRequested[id] = u
+				stillRequested[id], ending[id] = u, true
 			}
 			continue
 		}
@@ -525,6 +533,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	for _, a := range next.Requested {
 		if noted[a.ID] {
 			next.Noted = append(next.Noted, a.ID)
+		}
+		if ending[a.ID] {
+			next.Ending = append(next.Ending, a.ID)
 		}
 	}
 	return next

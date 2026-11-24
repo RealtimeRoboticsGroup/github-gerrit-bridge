@@ -123,3 +123,17 @@ func TestReviewerBugRepliedAfterReadyAfterADraftHandOff(t *testing.T) {
 		}
 	})
 }
+
+// austin removes owen as a reviewer in Gerrit; the bridge withdraws his
+// GitHub request in a sync whose lookups fail, so cannot settle its end
+// in Gerrit; owen is asked again before the next sync. That request is
+// new, and gives him the turn, not taken for the one that ended.
+func TestReviewerBugAskedAgainWhileAnEndWaits(t *testing.T) {
+	runWF(t, "austin", nil, func() []wfStep {
+		return []wfStep{
+			{name: "owen is asked", do: func(w *wf) { w.request("owen") }, want: "G[owen] H[owen]"},
+			{name: "austin removes owen (lookups fail)", do: func(w *wf) { w.removeReviewer("austin", "owen") }, fail: "lookup", want: "G[] H[]"},
+			{name: "owen is asked again", do: func(w *wf) { w.request("owen") }, want: "G[owen] H[owen]"},
+		}
+	})
+}
