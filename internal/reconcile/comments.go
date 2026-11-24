@@ -362,11 +362,21 @@ type commentMap struct {
 
 // reviewsFromGerrit are the GitHub reviews the bridge posted for Gerrit
 // replies, by id.
-func (m *commentMap) reviewsFromGerrit() map[int64]bool {
+func (m *commentMap) reviewsFromGerrit(s *commentSnapshot) map[int64]bool {
 	out := map[int64]bool{}
 	for _, mc := range m.byGitHub {
-		if mc.Kind == kindReviewBody && mc.Origin == "gerrit" {
+		if mc.Origin != "gerrit" {
+			continue
+		}
+		switch mc.Kind {
+		case kindReviewBody:
 			out[mc.GitHubID] = true
+		case kindReviewComment:
+			// A Gerrit comment, posted in a review of its own (tenth
+			// review).
+			if rc := s.rcByID[mc.GitHubID]; rc != nil && rc.ReviewID != 0 {
+				out[rc.ReviewID] = true
+			}
 		}
 	}
 	return out
@@ -466,7 +476,7 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) (err erro
 		if err == nil || latest == nil || c.DryRun || c.Reviewers == nil || ctx.Err() != nil {
 			return
 		}
-		latest.mirrored = m.reviewsFromGerrit()
+		latest.mirrored = m.reviewsFromGerrit(latest)
 		r := c.syncReviewers(ctx, n, pr, latest, reviewers)
 		if serr := updateStateFn(ctx, c.Store, n, "Sync reviewers", func(s *state.Change) { s.State.Reviewers = r }); serr != nil {
 			c.Logger.Warn("saving what the reviewer sync saw", "change", n, "err", serr)
@@ -530,7 +540,7 @@ func (c *Comments) syncInto(ctx context.Context, n int, read **prRead) (err erro
 		if err := c.dismissStale(ctx, n, pr, snap, m); err != nil {
 			return err
 		}
-		snap.mirrored = m.reviewsFromGerrit()
+		snap.mirrored = m.reviewsFromGerrit(snap)
 		reviewers = c.syncReviewers(ctx, n, pr, snap, reviewers)
 		latest = nil // done
 		break

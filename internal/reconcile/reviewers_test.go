@@ -1760,3 +1760,54 @@ func TestAnOldRequestEndKeepsANewTurn(t *testing.T) {
 		}
 	}
 }
+
+// realAuthors posts as linked users as GitHub does: a review is kept
+// for its comments, body or not, and ends its author's review request.
+type realAuthors struct{ *fakeAuthors }
+
+type realUserClient struct{ fakeUserClient }
+
+func (a realAuthors) Client(ctx context.Context, account int) (UserGitHub, github.User, bool, error) {
+	c, u, ok, err := a.fakeAuthors.Client(ctx, account)
+	if !ok || err != nil {
+		return c, u, ok, err
+	}
+	return realUserClient{c.(fakeUserClient)}, u, ok, err
+}
+
+func (u realUserClient) CreateReview(ctx context.Context, n int, r github.NewReview) (*github.Review, error) {
+	out, err := u.fakeUserClient.CreateReview(ctx, n, r)
+	if err != nil {
+		return out, err
+	}
+	if !slices.ContainsFunc(u.f.reviews, func(rv github.Review) bool { return rv.ID == out.ID }) {
+		u.f.reviews = append(u.f.reviews, github.Review{ID: out.ID, User: u.as, State: "COMMENTED", CommitID: r.CommitID,
+			SubmittedAt: time.Date(2026, 10, 4, 1, 0, 0, 0, time.UTC)}) // after the fake Gerrit's times, as the sync is
+	}
+	u.f.requested = slices.DeleteFunc(u.f.requested, func(x github.User) bool { return x.ID == u.as.ID })
+	return out, err
+}
+
+// mike, who linked his GitHub account, comments in Gerrit (his turn
+// ends), and austin hands him the turn again, before the bridge syncs:
+// the sync posts mike's comment on GitHub as mike, a review after
+// austin's hand-off, which it then takes for mike's answer to it, taking
+// mike's turn out of the attention set and not asking him. austin's
+// hand-off is lost on both sides.
+func TestAMirroredCommentIsNoAnswerToALaterHandOff(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.c.Authors = realAuthors{&fakeAuthors{f: e.h, linked: map[int]github.User{mike.AccountID: mikeGH}}}
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+	ts := e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "m1", Author: mike, Date: ts, Message: "Patch Set 2:\n\n(1 comment)", RevisionNumber: 2})
+	e.g.comments = append(e.g.comments, gerrit.CommentInfo{ID: "c1", Path: "a.txt", PatchSet: 2, Line: 2, Message: "nit", Updated: ts, Author: mike})
+	e.g.setAttention(mike, ts, "removed on reply", false)
+	e.g.reply(austin, "Patch Set 2:\n\nmike, one more look", []gerrit.AccountInfo{mike}, nil)
+	e.sync(t)
+	e.sync(t)
+	if g, h := sides(e, mike, mikeGH); !g || !h {
+		t.Errorf("austin's hand-off: mike's turn in Gerrit %v, asked on GitHub %v (%v)", g, h, e.h.asks)
+	}
+}
