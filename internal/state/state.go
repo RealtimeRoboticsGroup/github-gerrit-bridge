@@ -46,8 +46,12 @@ type Reviewers struct {
 	PR int       `json:"pr,omitempty"`
 	// PatchSet is the change's current patch set then.
 	PatchSet int `json:"patch_set,omitempty"`
-	// Attention is the Gerrit usernames in the attention set.
-	Attention []string `json:"attention,omitempty"`
+	// Attention is the Gerrit usernames in the attention set, and
+	// AttentionAt when Gerrit said each was last put in or taken out ("*":
+	// by the bridge, at whatever time Gerrit says next; none, in state
+	// from before: any).
+	Attention   []string          `json:"attention,omitempty"`
+	AttentionAt map[string]string `json:"attention_at,omitempty"`
 	// Requested is the GitHub accounts with pending review requests, and
 	// Noted the ids of those Gerrit was told have no Gerrit account.
 	Requested []GitHubAccount `json:"requested,omitempty"`

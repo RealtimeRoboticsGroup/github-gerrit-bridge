@@ -603,6 +603,26 @@ func TestAFailedAskForANewPatchSetIsAskedAgain(t *testing.T) {
 	e.wantAsks(t, "+mike-gh", "+mike-gh")
 }
 
+// mike's turn, taken in the second of a patch set never recorded
+// (withheld from GitHub), current still: the removal waits, yet a turn
+// austin hands him later is new, and asks (sixth review: the waiting
+// removal kept him seen in the attention set, and he was never asked).
+func TestATurnAfterAWaitingRemovalAsks(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+	ts := e.g.upload(austin, 3, "sha3") // withheld: never recorded
+	e.g.setAttention(mike, ts, "change was marked WIP", false)
+	e.sync(t)
+	e.sync(t)
+	e.reviewed(mikeGH, "COMMENTED")
+	e.sync(t)
+	e.g.reply(austin, "PTAL again", []gerrit.AccountInfo{mike}, nil)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh")
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // CI, though trusted, is not a person: its vote on jane's push, which
 // Gerrit says hands her the turn as the uploader, asks nobody on GitHub

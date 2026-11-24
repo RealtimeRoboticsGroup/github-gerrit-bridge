@@ -169,7 +169,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	if prev == nil {
 		if s.pull.CreatedAt.Before(c.Since) {
 			// From before the bridge started: as it is.
-			return &state.Reviewers{At: s.at, PR: pr, PatchSet: s.current, Attention: attentionNow, Requested: accounts(requested)}
+			return &state.Reviewers{At: s.at, PR: pr, PatchSet: s.current, Attention: attentionNow, AttentionAt: attentionAt(attention), Requested: accounts(requested)}
 		}
 		prev = &state.Reviewers{} // new: everything on it is
 	}
@@ -180,6 +180,13 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	wasAttention := map[string]bool{}
 	for _, u := range prev.Attention {
 		wasAttention[u] = true
+	}
+	// sameTurn reports whether a is the turn seen before: one taken back
+	// and given again since (or a stale one kept, waiting) is new (sixth
+	// review: a removal kept waiting for good hid a later turn).
+	sameTurn := func(key string, a gerrit.AttentionSetInfo) bool {
+		at, ok := prev.AttentionAt[key]
+		return wasAttention[key] && (!ok || at == "*" || at == a.LastUpdate)
 	}
 	wasRequested := map[int64]github.User{}
 	for _, a := range prev.Requested {
@@ -194,7 +201,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	// The bridge's own turns, handed out for GitHub requests, are seen as
 	// they are made: Gerrit names nobody for one, and a person's post in
 	// the same second would be taken for its maker (third review).
-	notSeen, stillSeen := map[string]bool{}, map[string]bool{}
+	// stillSeen is when each was taken out, as Gerrit said ("*": put in
+	// by the bridge).
+	notSeen, stillSeen := map[string]bool{}, map[string]string{}
 	notRequested, stillRequested := map[int64]bool{}, map[int64]github.User{}
 	// Whether a is trusted; known false: the group could not be read, and
 	// what a did waits for the next sync, unseen.
@@ -244,7 +253,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	// Gerrit → GitHub. Not while a draft: it is their turn once ready.
 	for _, key := range attentionNow {
 		a := attention[key]
-		if wasAttention[key] || sameAccount(a.Account, s.owner) {
+		if sameTurn(key, a) || sameAccount(a.Account, s.owner) {
 			continue
 		}
 		if !reviewer[key] {
@@ -290,7 +299,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		who, ok, wait := c.actorAt(s, r)
 		if wait {
-			stillSeen[key] = true
+			stillSeen[key] = r.LastUpdate
 			continue
 		}
 		if !ok {
@@ -298,7 +307,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		if !sameAccount(who, r.Account) {
 			if t, known := trusted(who); !known {
-				stillSeen[key] = true
+				stillSeen[key] = r.LastUpdate
 				continue
 			} else if !t {
 				continue
@@ -306,7 +315,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		gh, ok, err := githubFor(r.Account)
 		if err != nil {
-			stillSeen[key] = true
+			stillSeen[key] = r.LastUpdate
 			continue
 		}
 		u, asked := requested[gh.ID]
@@ -316,7 +325,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		if err := c.GitHub.RemoveRequestedReviewers(ctx, pr, []string{u.Login}); err != nil {
 			c.Logger.Warn("withdrawing a review request on GitHub", "change", n, "pr", pr, "github_login", u.Login, "err", err)
 			if !githubRefusedForGood(err) {
-				stillSeen[key] = true
+				stillSeen[key] = r.LastUpdate
 			}
 			continue
 		}
@@ -416,7 +425,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			err = c.Gerrit.AddToAttentionSet(ctx, n, user, reviewerReason+"asked to review on GitHub")
 		}
 		if err == nil && !in {
-			stillSeen[key] = true
+			stillSeen[key] = "*"
 		}
 		if err != nil && !refused(err) {
 			c.Logger.Warn("making someone asked to review on GitHub a Gerrit reviewer", "change", n, "gerrit_user", user, "github_login", u.Login, "err", err)
@@ -466,13 +475,16 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		// before it, asking for it after every review).
 		next.PatchSet = max(prev.PatchSet, waitFrom-1)
 	}
+	next.AttentionAt = map[string]string{}
 	for _, key := range attentionNow {
 		if !notSeen[key] {
 			next.Attention = append(next.Attention, key)
+			next.AttentionAt[key] = attention[key].LastUpdate
 		}
 	}
-	for key := range stillSeen { // none of whose turn it is now
+	for key, at := range stillSeen { // none of whose turn it is now
 		next.Attention = append(next.Attention, key)
+		next.AttentionAt[key] = at
 	}
 	slices.Sort(next.Attention)
 	for id := range notRequested {
@@ -573,6 +585,15 @@ func uploader(r gerrit.RevisionInfo) gerrit.AccountInfo {
 		return *r.RealUploader
 	}
 	return r.Uploader
+}
+
+// attentionAt is when Gerrit says each in the attention set was put in.
+func attentionAt(attention map[string]gerrit.AttentionSetInfo) map[string]string {
+	at := map[string]string{}
+	for key, a := range attention {
+		at[key] = a.LastUpdate
+	}
+	return at
 }
 
 // githubRefusedForGood reports whether GitHub refused err's request for good (a
