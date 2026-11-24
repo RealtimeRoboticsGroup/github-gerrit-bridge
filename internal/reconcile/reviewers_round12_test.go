@@ -66,3 +66,20 @@ func TestR12BridgesOwnRemovalSkipsReAsk(t *testing.T) {
 		}
 	})
 }
+
+// austin uploads PS3 in Gerrit; owen pushes to the PR, its import not yet
+// recorded when mike, asked on GitHub, requests changes on that push. The
+// ask again for PS3 must not ask mike: he reviewed a later commit (design:
+// "reviewed it or a later patch set's commit on GitHub").
+func TestR12ReAskForAReviewOfAPushNotYetImported(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "austin uploads PS3", do: func(w *wf) { w.upload("austin", 3) }, want: "G[] H[]"},
+			{name: "owen asks mike", do: func(w *wf) { w.request("mike") }, want: "G[mike] H[mike]"},
+			{name: "owen pushes sha4 (import pending); mike asks for changes on it", do: func(w *wf) {
+				w.e.h.head = "sha4"
+				w.review("mike", "CHANGES_REQUESTED")
+			}, want: "G[] H[]"},
+		}
+	})
+}

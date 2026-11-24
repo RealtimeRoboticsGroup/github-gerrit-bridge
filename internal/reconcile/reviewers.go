@@ -706,10 +706,14 @@ func (c *Comments) askAgain(ctx context.Context, s *commentSnapshot, prev *state
 	}
 	// Its commits on GitHub, and those of every later patch set (an
 	// import of a push made on it, say).
-	pushed := map[string]bool{}
+	// A commit recorded as no patch set is later too: a push not yet
+	// imported (twelfth review: a review of it was asked again).
+	pushed, older := map[string]bool{}, map[string]bool{}
 	for _, rec := range s.revisions {
 		if rec.PatchSet >= newest.Number {
 			pushed[rec.GitHubSHA] = true
+		} else {
+			older[rec.GitHubSHA] = true
 		}
 	}
 	for _, rv := range latestReviews(s.allReviews) {
@@ -717,7 +721,7 @@ func (c *Comments) askAgain(ctx context.Context, s *commentSnapshot, prev *state
 		if rv.State != "CHANGES_REQUESTED" || u.Type == "Bot" || askedFor[u.ID] >= newest.Number {
 			continue
 		}
-		if _, asked := requested[u.ID]; asked || slices.ContainsFunc(s.allReviews, func(rv github.Review) bool { return rv.User.ID == u.ID && pushed[rv.CommitID] }) {
+		if _, asked := requested[u.ID]; asked || slices.ContainsFunc(s.allReviews, func(rv github.Review) bool { return rv.User.ID == u.ID && (pushed[rv.CommitID] || !older[rv.CommitID]) }) {
 			askedFor[u.ID] = newest.Number
 			continue
 		}
