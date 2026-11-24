@@ -80,3 +80,17 @@ func TestR13LateRequestBeforeAnythingInGerrit(t *testing.T) {
 		}
 	})
 }
+
+// Fuzz seed 400029: ready gives mike, asked on GitHub, a new turn while
+// lookups fail, so it is not seen; austin then takes it. His taking it
+// must withdraw mike's request, as for a turn seen.
+func TestR13TurnUnseenForALookupTaken(t *testing.T) {
+	runWF(t, "austin", nil, func() []wfStep {
+		return []wfStep{
+			{name: "owen asks mike", do: func(w *wf) { w.request("mike") }, want: "G[mike] H[mike]"},
+			{name: "austin marks it WIP", do: func(w *wf) { w.wip("austin", nil) }},
+			{name: "austin marks it ready (lookups fail)", do: func(w *wf) { w.ready("austin", nil) }, fail: "lookup"},
+			{name: "austin takes mike's turn", do: func(w *wf) { w.takeTurn("austin", "mike") }, want: "G[] H[]"},
+		}
+	})
+}

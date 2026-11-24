@@ -238,7 +238,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	// they are made: Gerrit names nobody for one, and a person's post in
 	// the same second would be taken for its maker (third review).
 	// stillSeen is when each was taken out, as Gerrit said ("*": put in
-	// by the bridge).
+	// by the bridge; "?": in, its lookup failed, so new again next time).
 	notSeen, stillSeen := map[string]bool{}, map[string]string{}
 	notRequested, stillRequested := map[int64]bool{}, map[int64]github.User{}
 	// Whether a is trusted; known false: the group could not be read, and
@@ -325,7 +325,10 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		gh, linked, err := githubFor(a.Account)
 		if err != nil {
-			notSeen[key] = true
+			// Looked at again next time, but there: taken out meanwhile,
+			// by someone trusted, their request is withdrawn (thirteenth
+			// review: never seen, its taking never was).
+			notSeen[key], stillSeen[key] = true, "?"+a.LastUpdate
 			continue
 		}
 		_, asked := requested[gh.ID]
