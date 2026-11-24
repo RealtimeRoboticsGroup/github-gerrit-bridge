@@ -205,6 +205,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	for _, id := range prev.Ending {
 		if _, asked := requested[id]; asked {
 			delete(wasRequested, id)
+			delete(noted, id) // said again (twelfth review)
 		}
 	}
 	ending := map[int64]bool{}
