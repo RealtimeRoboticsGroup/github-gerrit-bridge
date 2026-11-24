@@ -160,6 +160,9 @@ func (f *fakeGerrit) setAttention(a gerrit.AccountInfo, ts, reason string, in bo
 		f.attention, f.removed = map[int]gerrit.AttentionSetInfo{}, map[int]gerrit.AttentionSetInfo{}
 	}
 	info := gerrit.AttentionSetInfo{Account: a, LastUpdate: ts, Reason: reason}
+	if cur, ok := f.attention[a.AccountID]; in && ok && cur.Reason == reason {
+		return // Gerrit skips adding who is in already, for the same reason
+	}
 	if in {
 		f.attention[a.AccountID] = info
 		delete(f.removed, a.AccountID)
