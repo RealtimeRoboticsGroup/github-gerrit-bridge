@@ -83,3 +83,42 @@ func TestR12ReAskForAReviewOfAPushNotYetImported(t *testing.T) {
 		}
 	})
 }
+
+// mike, a reviewer out of the attention set, is asked on GitHub in a sync
+// whose Gerrit writes fail (the request left to look new); austin then
+// removes him as a reviewer. Retrying the request must not make him a
+// reviewer again (as TestReviewerBugFailedGiveBackUndoesARemoval).
+func TestR12FailedRequestRetryUndoesARemoval(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "austin adds mike", do: func(w *wf) { w.addReviewer("austin", "mike") }, want: "G[mike] H[mike]"},
+			{name: "mike asks for changes", do: func(w *wf) { w.review("mike", "CHANGES_REQUESTED") }, want: "G[] H[]"},
+			{name: "owen asks mike (Gerrit down)", do: func(w *wf) { w.request("mike") }, fail: "gerrit500", want: "G[] H[mike]"},
+			{name: "austin removes mike", do: func(w *wf) { w.removeReviewer("austin", "mike") }, want: "G[] H[mike]", check: func(w *wf) []string {
+				if w.reviewer("mike") {
+					return []string{"mike made a reviewer again"}
+				}
+				return nil
+			}},
+		}
+	})
+}
+
+// The same, the request made while a draft (left to look new once ready).
+func TestR12DraftRequestUndoesARemoval(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "austin adds mike", do: func(w *wf) { w.addReviewer("austin", "mike") }, want: "G[mike] H[mike]"},
+			{name: "mike approves", do: func(w *wf) { w.review("mike", "APPROVED") }, want: "G[] H[]"},
+			{name: "owen makes it a draft", do: func(w *wf) { w.wip("owen", &bridgeGA) }, want: "G[] H[]"},
+			{name: "owen asks mike", do: func(w *wf) { w.request("mike") }, want: "G[] H[mike]"},
+			{name: "austin removes mike", do: func(w *wf) { w.removeReviewer("austin", "mike") }, want: "G[] H[mike]"},
+			{name: "owen marks it ready", do: func(w *wf) { w.ready("owen", &bridgeGA) }, want: "G[] H[mike]", check: func(w *wf) []string {
+				if w.reviewer("mike") {
+					return []string{"mike made a reviewer again"}
+				}
+				return nil
+			}},
+		}
+	})
+}

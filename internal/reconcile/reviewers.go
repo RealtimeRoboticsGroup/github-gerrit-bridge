@@ -480,6 +480,11 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		_, in := attention[key]
+		if at := prev.Unrecorded[id]; !was && !reviewer[key] && at != "" && removedSince(s, user, at+"~") {
+			// Removed as a reviewer after the request was first seen
+			// (twelfth review: carried late, it undid the removal).
+			continue
+		}
 		if !reviewer[key] {
 			err = c.Gerrit.SetReview(ctx, n, s.revision, gerrit.ReviewInput{Tag: commentTag, Reviewers: []gerrit.ReviewerInput{{Reviewer: user}}})
 		} else if !in {
@@ -538,6 +543,12 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	}
 
 	next := &state.Reviewers{At: s.at, PR: pr, PatchSet: prev.PatchSet}
+	for _, u := range s.reviewerUpdates {
+		next.GerritAt = max(next.GerritAt, u.Updated)
+	}
+	for _, m := range s.allMessages {
+		next.GerritAt = max(next.GerritAt, m.Date)
+	}
 	if len(askedFor) > 0 {
 		next.AskedFor = askedFor
 	}
@@ -558,6 +569,10 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	slices.Sort(next.Attention)
 	for id := range notRequested {
 		delete(requested, id)
+		if next.Unrecorded == nil {
+			next.Unrecorded = map[int64]string{}
+		}
+		next.Unrecorded[id] = cmp.Or(prev.Unrecorded[id], next.GerritAt)
 	}
 	maps.Copy(requested, stillRequested)
 	next.Requested = accounts(requested)

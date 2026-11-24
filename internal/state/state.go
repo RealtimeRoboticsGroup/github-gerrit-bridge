@@ -67,6 +67,13 @@ type Reviewers struct {
 	// removal's time) whose taking their turn was given back on restore.
 	AskedFor  map[int64]int     `json:"asked_for,omitempty"`
 	GivenBack map[string]string `json:"given_back,omitempty"`
+	// GerritAt is the newest time Gerrit gave for anything the sync saw
+	// (Gerrit's clock, not At's). Unrecorded is, by GitHub account id,
+	// the GerritAt when a request left out of Requested (made while a
+	// draft, or whose Gerrit side failed: carried later as new) was
+	// first seen.
+	GerritAt   string           `json:"gerrit_at,omitempty"`
+	Unrecorded map[int64]string `json:"unrecorded,omitempty"`
 }
 
 // GitHubAccount is a GitHub account: its id, and its login then.
