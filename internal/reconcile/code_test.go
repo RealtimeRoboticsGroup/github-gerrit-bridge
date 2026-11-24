@@ -520,6 +520,23 @@ func TestBridgesOwnHeadIsNotImported(t *testing.T) {
 	if len(st.Revisions) != 1 || st.Revisions[0].GerritSHA != g[0] || !st.Revisions[0].Found {
 		t.Errorf("recorded %+v", st.Revisions)
 	}
+	// Yet Gerrit's own upload, the change being born there: its
+	// uploader's, as the export would have been (fifth review). Not a
+	// GitHub-born PR's.
+	if !st.Revisions[0].Exported {
+		t.Errorf("Gerrit's own commit of a Gerrit-born change not recorded as exported: %+v", st.Revisions)
+	}
+	st.Revisions = nil
+	st.State.Origin = "github"
+	if err := im.Store.Save(ctx, 1, st, "forget"); err != nil {
+		t.Fatal(err)
+	}
+	if err := im.recordGerritHead(ctx, 1, 1, g[0]); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ = im.Store.Load(ctx, 1); len(st.Revisions) != 1 || st.Revisions[0].Exported {
+		t.Errorf("a GitHub-born PR's found commit recorded as exported: %+v", st.Revisions)
+	}
 }
 
 // Design §5.2.1: a new patch set goes on top of the PR's history; a
