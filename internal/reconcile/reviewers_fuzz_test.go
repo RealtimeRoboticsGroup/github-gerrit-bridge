@@ -529,7 +529,6 @@ func fzEnvInt(name string, def int) int {
 var fzKnownBugs = []struct{ bug, fail, kind, skipIf string }{
 	{bug: "TestReviewerBugRemovedWhileADraftAfterAHandOff, TestReviewerBugRepliedAfterReadyAfterADraftHandOff", kind: "handOff", skipIf: "draft"},
 	{bug: "TestReviewerBugGiveBackUndoesARemoval", kind: "removeReviewer", skipIf: "abandonedOut"},
-	{bug: "TestReviewerBugReAskUndoesARemoval", kind: "removeReviewer", skipIf: "outChangeRequester"},
 }
 
 // fzKnown is the known bug a failure is, "" if none: one that goes away

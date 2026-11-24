@@ -695,7 +695,8 @@ func (c *Comments) askAgain(ctx context.Context, s *commentSnapshot, prev *state
 		}
 		if ok {
 			r, out := removed[strings.ToLower(user)]
-			if strings.EqualFold(user, uploader(newest).Username) || out && r.LastUpdate >= newest.Created && !clearedReasons[r.Reason] {
+			if strings.EqualFold(user, uploader(newest).Username) || out && r.LastUpdate >= newest.Created && !clearedReasons[r.Reason] ||
+				removedSince(s, user, gerritTime(rv.SubmittedAt)) {
 				askedFor[u.ID] = newest.Number
 				continue
 			}
@@ -715,6 +716,24 @@ func reviewedAfter(s *commentSnapshot, id int64, at string) bool {
 	return err == nil && slices.ContainsFunc(s.allReviews, func(rv github.Review) bool {
 		return rv.User.ID == id && rv.SubmittedAt.After(t) && !s.mirrored[rv.ID]
 	})
+}
+
+// removedSince reports whether Gerrit user was last removed as a
+// reviewer, at or after Gerrit time at: no longer theirs to review
+// (eleventh review: asked again, they were made a reviewer again).
+func removedSince(s *commentSnapshot, user, at string) bool {
+	last := gerrit.ReviewerUpdate{}
+	for _, u := range s.reviewerUpdates {
+		if strings.EqualFold(u.Reviewer.Username, user) && u.Updated >= last.Updated {
+			last = u
+		}
+	}
+	return last.State == "REMOVED" && last.Updated >= at
+}
+
+// gerritTime is t as Gerrit writes times.
+func gerritTime(t time.Time) string {
+	return t.UTC().Format("2006-01-02 15:04:05.000000000")
 }
 
 // clearedReasons are Gerrit's reasons for clearing the attention set.

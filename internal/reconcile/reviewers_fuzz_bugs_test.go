@@ -70,7 +70,6 @@ func TestReviewerBugGiveBackUndoesARemoval(t *testing.T) {
 // after it, but mike, out already, was not, so he is asked on GitHub and
 // made a reviewer in Gerrit again, undoing owen's removal.
 func TestReviewerBugReAskUndoesARemoval(t *testing.T) {
-	fzBug(t)
 	runWF(t, "owen", nil, func() []wfStep {
 		return []wfStep{
 			{name: "owen asks mike", do: func(w *wf) { w.request("mike") }, want: "G[mike] H[mike]"},
