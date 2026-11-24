@@ -336,6 +336,15 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			notSeen[key] = true
 			continue
 		}
+		if asked && linked {
+			// Asked already: nothing to carry, whoever gave the turn
+			// (twelfth review: a lookup failing later left the request
+			// to look new, so its end never took the turn; and a turn
+			// left unseen, waiting on its patch set's record, was not
+			// seen to end, by their own reply say).
+			handedOn[gh.ID] = true
+			continue
+		}
 		who, ok, wait := c.actorAt(s, a)
 		if wait {
 			notSeen[key] = true
@@ -350,15 +359,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		} else if !t {
 			continue
 		}
-		ok = linked
-		if asked && ok {
-			// Asked already, their turn seen: nothing to carry either
-			// way (twelfth review: a lookup failing later left the
-			// request to look new, so its end never took the turn).
-			handedOn[gh.ID] = true
-			continue
-		}
-		if !ok || gh.ID == s.pull.User.ID {
+		if !linked || gh.ID == s.pull.User.ID {
 			continue
 		}
 		if reviewedAfter(s, gh.ID, a.LastUpdate) {

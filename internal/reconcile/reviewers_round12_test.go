@@ -220,3 +220,17 @@ func TestR12DraftRequestsEndTakesTheTurn(t *testing.T) {
 		}
 	})
 }
+
+// jane uploads a patch set not yet on GitHub with %r=austin (his turn
+// waits for its record); owen asks austin on GitHub too. austin's reply
+// ends his turn: his own doing, which withdraws his request, though the
+// bridge had not yet carried the turn.
+func TestR12WaitingTurnOfSomeoneAskedEndedByTheirReply(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "jane uploads PS3 %r=austin", do: func(w *wf) { w.uploadUnrecorded("jane", 3, "austin") }, want: "G[austin] H[]"},
+			{name: "owen asks austin", do: func(w *wf) { w.request("austin") }, want: "G[austin] H[austin]"},
+			{name: "austin replies", do: func(w *wf) { w.replyG("austin") }, want: "G[] H[]"},
+		}
+	})
+}
