@@ -397,7 +397,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 				known = false
 				continue
 			}
-			if _, out := pending[strings.ToLower(user)]; ok && out {
+			// Not if removed as a reviewer since (eleventh review: given
+			// back, they were made one again).
+			if at, out := pending[strings.ToLower(user)]; ok && out && !removedSince(s, user, at) {
 				giveBack[id] = true
 			}
 		}

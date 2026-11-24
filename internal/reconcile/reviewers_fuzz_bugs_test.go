@@ -46,7 +46,6 @@ func TestReviewerBugOwnAskLostToALookupFailureTurnGivenBack(t *testing.T) {
 // before the next sync: giving back the turn the abandon took, the bridge
 // makes mike a reviewer again, undoing owen's removal.
 func TestReviewerBugGiveBackUndoesARemoval(t *testing.T) {
-	fzBug(t)
 	runWF(t, "owen", nil, func() []wfStep {
 		return []wfStep{
 			{name: "owen asks mike", do: func(w *wf) { w.request("mike") }, want: "G[mike] H[mike]"},
