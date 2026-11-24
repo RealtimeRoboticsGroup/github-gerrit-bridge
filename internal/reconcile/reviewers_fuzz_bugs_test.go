@@ -124,3 +124,20 @@ func TestReviewerBugAskedAgainWhileAnEndWaits(t *testing.T) {
 		}
 	})
 }
+
+// jane is asked on GitHub while the change is WIP (a draft), then handed
+// the turn in Gerrit; her review ends the request before it is ready. A
+// request made while a draft is not recorded, so neither is that turn:
+// once ready it is carried, and her review since answers it.
+func TestReviewerBugHandOffWhileADraftToSomeoneAskedWhileADraft(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "austin marks it WIP", do: func(w *wf) { w.wip("austin", nil) }, want: "G[] H[]"},
+			{name: "jane is asked", do: func(w *wf) { w.request("jane") }, want: "G[] H[jane]"},
+			{name: "austin adds jane", do: func(w *wf) { w.addReviewer("austin", "jane") }, want: "G[] H[jane]"},
+			{name: "owen hands jane the turn", do: func(w *wf) { w.handOff("owen", "jane") }, want: "G[jane] H[jane]"},
+			{name: "jane asks for changes", do: func(w *wf) { w.review("jane", "CHANGES_REQUESTED") }, want: "G[jane] H[]"},
+			{name: "owen marks it ready", do: func(w *wf) { w.ready("owen", nil) }, want: "G[] H[]"},
+		}
+	})
+}
