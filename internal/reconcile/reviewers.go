@@ -315,6 +315,27 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			}
 			continue
 		}
+		gh, linked, err := githubFor(a.Account)
+		if err != nil {
+			notSeen[key] = true
+			continue
+		}
+		_, asked := requested[gh.ID]
+		if _, was := wasRequested[gh.ID]; linked && !asked && (was && a.LastUpdate <= prev.GerritAt || a.LastUpdate <= withdrawn[gh.ID]) {
+			// Given before the last look, when they were asked: their
+			// request has ended since, after it, and ends the turn too,
+			// whoever gave it (twelfth review: an unseen hand-off undid
+			// a withdrawal).
+			if err := c.Gerrit.RemoveFromAttentionSet(ctx, n, a.Account.AccountID, reviewerReason+"review request ended"); err != nil {
+				c.Logger.Warn("taking someone no longer asked on GitHub out of the attention set", "change", n, "gerrit_user", a.Account.Username, "err", err)
+				if !refused(err) {
+					notSeen[key] = true
+				}
+				continue
+			}
+			notSeen[key] = true
+			continue
+		}
 		who, ok, wait := c.actorAt(s, a)
 		if wait {
 			notSeen[key] = true
@@ -329,12 +350,8 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		} else if !t {
 			continue
 		}
-		gh, ok, err := githubFor(a.Account)
-		if err != nil {
-			notSeen[key] = true
-			continue
-		}
-		if _, asked := requested[gh.ID]; asked && ok {
+		ok = linked
+		if asked && ok {
 			// Asked already, their turn seen: nothing to carry either
 			// way (twelfth review: a lookup failing later left the
 			// request to look new, so its end never took the turn).
@@ -358,20 +375,6 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			// given it back (tenth review: the add was skipped, the
 			// attention set as read still having them).
 			delete(attention, key)
-			notSeen[key] = true
-			continue
-		}
-		if _, was := wasRequested[gh.ID]; was && a.LastUpdate <= prev.GerritAt || a.LastUpdate <= withdrawn[gh.ID] {
-			// Given before the last look, when they were asked: their
-			// request has ended since, after it, and ends the turn too
-			// (twelfth review: an unseen hand-off undid a withdrawal).
-			if err := c.Gerrit.RemoveFromAttentionSet(ctx, n, a.Account.AccountID, reviewerReason+"review request ended"); err != nil {
-				c.Logger.Warn("taking someone no longer asked on GitHub out of the attention set", "change", n, "gerrit_user", a.Account.Username, "err", err)
-				if !refused(err) {
-					notSeen[key] = true
-				}
-				continue
-			}
 			notSeen[key] = true
 			continue
 		}

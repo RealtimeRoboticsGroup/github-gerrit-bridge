@@ -183,3 +183,21 @@ func TestR12FuzzF3(t *testing.T) {
 		}
 	})
 }
+
+// mike, untrusted, hands jane the turn while a draft; owen asks her on
+// GitHub, then withdraws the request, still a draft. Once ready, the
+// request's end takes the turn given before it, whoever gave it (a
+// request that ends takes them out): not left with the sides apart.
+func TestR12UntrustedHandOffEndedByAWithdrawal(t *testing.T) {
+	runWF(t, "austin", nil, func() []wfStep {
+		return []wfStep{
+			{name: "owen asks jane", do: func(w *wf) { w.request("jane") }, want: "G[jane] H[jane]"},
+			{name: "jane replies in Gerrit", do: func(w *wf) { w.replyG("jane") }, want: "G[] H[]"},
+			{name: "austin makes it a draft", do: func(w *wf) { w.wip("austin", &bridgeGA) }, want: "G[] H[]"},
+			{name: "mike hands jane the turn", do: func(w *wf) { w.handOff("mike", "jane") }, want: "G[jane] H[]"},
+			{name: "owen asks jane", do: func(w *wf) { w.request("jane") }, want: "G[jane] H[jane]"},
+			{name: "owen withdraws jane", do: func(w *wf) { w.withdraw("jane") }, want: "G[jane] H[]"},
+			{name: "austin marks it ready", do: func(w *wf) { w.ready("austin", &bridgeGA) }, want: "G[] H[]"},
+		}
+	})
+}
