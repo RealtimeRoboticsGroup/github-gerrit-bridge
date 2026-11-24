@@ -27,6 +27,8 @@ const bridgeID = 99
 type fakeGerrit struct {
 	// parents counts patch sets' commits' parents (default 1).
 	parents map[int]int
+	// wip is the change being WIP: adding a reviewer gives no turn.
+	wip bool
 	// onList, if set, runs whenever comments are listed.
 	onList func()
 	// noFixes makes SetReview fail like a site without the fix
@@ -104,7 +106,9 @@ func (f *fakeGerrit) addReviewerAt(ts string, by, who gerrit.AccountInfo) {
 	}
 	f.reviewers["REVIEWER"] = append(f.reviewers["REVIEWER"], who)
 	f.updates = append(f.updates, gerrit.ReviewerUpdate{Updated: ts, UpdatedBy: by, Reviewer: who, State: "REVIEWER"})
-	f.setAttention(who, ts, "Reviewer was added", true)
+	if !f.wip { // Gerrit gives nobody the turn on a WIP change
+		f.setAttention(who, ts, "Reviewer was added", true)
+	}
 }
 
 // removeReviewer is by removing who.

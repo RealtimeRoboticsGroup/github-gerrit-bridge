@@ -195,7 +195,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	// one a trusted person handed again was taken for the bridge's).
 	sameTurn := func(key string, a gerrit.AttentionSetInfo) bool {
 		at, ok := prev.AttentionAt[key]
-		bridges := at == "*" && (strings.HasPrefix(a.Reason, reviewerReason) || a.Reason == "Reviewer was added")
+		bridges := strings.HasPrefix(at, "*") && (strings.HasPrefix(a.Reason, reviewerReason) || a.Reason == "Reviewer was added")
 		return wasAttention[key] && (!ok || bridges || at == a.LastUpdate)
 	}
 	wasRequested := map[int64]github.User{}
@@ -302,7 +302,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	}
 	for _, key := range prev.Attention {
 		r := removed[key] // none: nobody Gerrit names took them out
-		if _, in := attention[key]; in || clearedReasons[r.Reason] {
+		if _, in := attention[key]; in || clearedReasons[r.Reason] || prev.AttentionAt[key] == "*"+r.LastUpdate {
 			// Or Gerrit cleared the set (WIP, abandoned, submitted): not
 			// anyone ending their turn, so their request stands (seventh
 			// review: a WIP withdrew it, and ready never asked again).
@@ -448,7 +448,10 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			err = c.Gerrit.AddToAttentionSet(ctx, n, user, reviewerReason+"asked to review on GitHub")
 		}
 		if err == nil && !in {
-			stillSeen[key] = "*"
+			// With their removal as it was: Gerrit may give no turn
+			// (a WIP change), and that removal is not a new one then
+			// (eighth review: it withdrew the request just made).
+			stillSeen[key] = "*" + removed[key].LastUpdate
 		}
 		if err != nil && !refused(err) {
 			c.Logger.Warn("making someone asked to review on GitHub a Gerrit reviewer", "change", n, "gerrit_user", user, "github_login", u.Login, "err", err)

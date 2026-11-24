@@ -869,6 +869,24 @@ func TestARefusedTurnBackIsTriedOnce(t *testing.T) {
 	}
 }
 
+// jane, a CC who replied (out of the attention set), is asked on GitHub
+// while the change is WIP in Gerrit: made a reviewer, Gerrit gives her
+// no turn, and her old removal does not withdraw the new request
+// (eighth review).
+func TestAnOldRemovalKeepsANewRequest(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.reviewers = map[string][]gerrit.AccountInfo{"CC": {jane}}
+	e.g.setAttention(jane, e.g.tick(), "Added by austin using the hovercard menu", true)
+	e.sync(t)
+	e.g.reply(jane, "done", nil, []gerrit.AccountInfo{jane})
+	e.sync(t)
+	e.g.wip = true
+	e.h.requested = []github.User{janeGH}
+	e.sync(t)
+	e.sync(t)
+	e.wantAsks(t)
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // CI, though trusted, is not a person: its vote on jane's push, which
 // Gerrit says hands her the turn as the uploader, asks nobody on GitHub
