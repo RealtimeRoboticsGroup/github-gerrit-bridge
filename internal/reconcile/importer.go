@@ -1752,7 +1752,8 @@ func (im *Importer) recordGerritHead(ctx context.Context, n, ps int, sha string)
 		return nil
 	}
 	tree, parentTree := revisionTrees(ctx, im.Mirror, sha)
-	return updateStateFn(ctx, im.Store, n, fmt.Sprintf("Gerrit's patch set %d is on GitHub", ps), func(st *state.Change) {
+	exported := false
+	err = updateStateFn(ctx, im.Store, n, fmt.Sprintf("Gerrit's patch set %d is on GitHub", ps), func(st *state.Change) {
 		// Gerrit's own upload, where the change was born in Gerrit: its
 		// uploader's, for the reviewer sync, as its export would have
 		// been (fifth review: a GitHub 500 between creating a PR and
@@ -1761,7 +1762,14 @@ func (im *Importer) recordGerritHead(ctx context.Context, n, ps int, sha string)
 		// pass for a person's upload.
 		st.Revisions = append(st.Revisions, state.Revision{PatchSet: ps, GerritSHA: sha, GitHubSHA: sha, Tree: tree, ParentTree: parentTree, At: time.Now(), Found: true,
 			Exported: st.State.Origin != "github"})
+		exported = st.State.Origin != "github"
 	})
+	if err != nil || !exported || im.onImported == nil {
+		return err
+	}
+	// As for an export: the comment sync carries its turns now, not at
+	// the next thing done on the change (sixth review).
+	return im.onImported(ctx, n)
 }
 
 func (im *Importer) belowReader() belowReader {

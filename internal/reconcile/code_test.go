@@ -511,8 +511,14 @@ func TestBridgesOwnHeadIsNotImported(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.pulls[10].Head.SHA = g[0]
+	var handed []int
+	im.onImported = func(_ context.Context, n int) error { handed = append(handed, n); return nil }
 	if err := im.Import(ctx, "main"); err != nil || len(up.uploads) != 0 {
 		t.Errorf("err=%v uploads=%v; Gerrit's own commit was imported", err, up.uploads)
+	}
+	// Handed on to the comment sync, as an export is (sixth review).
+	if !slices.Equal(handed, []int{1}) {
+		t.Errorf("handed on %v, want change 1", handed)
 	}
 	// Recorded as found there, not as the bridge's own: whoever put it
 	// there is not known (twelfth review).
@@ -536,6 +542,9 @@ func TestBridgesOwnHeadIsNotImported(t *testing.T) {
 	}
 	if st, _ = im.Store.Load(ctx, 1); len(st.Revisions) != 1 || st.Revisions[0].Exported {
 		t.Errorf("a GitHub-born PR's found commit recorded as exported: %+v", st.Revisions)
+	}
+	if len(handed) != 1 {
+		t.Errorf("handed on %v: a GitHub-born PR's found commit is nothing new to sync", handed)
 	}
 }
 
