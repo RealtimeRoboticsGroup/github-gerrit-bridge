@@ -347,7 +347,8 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		// followed by an import before the sync: third review).
 		// first and newest are the first and the newest of them.
 		first, newest := 0, ""
-		pushed := map[string]bool{} // their commits on GitHub
+		pushed := map[string]bool{}   // their commits on GitHub
+		uploaders := map[string]bool{} // and who uploaded them
 		for sha, r := range s.revInfos {
 			if r.Number <= prev.PatchSet || !s.exported(sha) {
 				continue
@@ -361,6 +362,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 					first = r.Number
 				}
 				newest = max(newest, r.Created)
+				uploaders[strings.ToLower(uploader(r).Username)] = true
 				for _, rec := range s.revisions {
 					if rec.GerritSHA == sha {
 						pushed[rec.GitHubSHA] = true
@@ -380,7 +382,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 					// someone withdrew it there (eighth review).
 					continue
 				}
-				if answered, err := c.answeredSince(ctx, s, u, removed, newest, pushed); err != nil {
+				if answered, err := c.answeredSince(ctx, s, u, removed, newest, pushed, uploaders); err != nil {
 					waitAt(first) // known next sync
 					continue
 				} else if answered {
@@ -624,7 +626,7 @@ func uploader(r gerrit.RevisionInfo) gerrit.AccountInfo {
 // meanwhile), or was taken out of the attention set since (fifth
 // review: asked again, they were asked on GitHub but not in Gerrit;
 // seventh: whenever it was seen). Gerrit's times are all one width.
-func (c *Comments) answeredSince(ctx context.Context, s *commentSnapshot, u github.User, removed map[string]gerrit.AttentionSetInfo, newest string, pushed map[string]bool) (bool, error) {
+func (c *Comments) answeredSince(ctx context.Context, s *commentSnapshot, u github.User, removed map[string]gerrit.AttentionSetInfo, newest string, pushed, uploaders map[string]bool) (bool, error) {
 	// Any review of one of them, a comment too (eighth review: only a
 	// change request counted; and by time, one of the old commit made
 	// after the upload did).
@@ -634,6 +636,9 @@ func (c *Comments) answeredSince(ctx context.Context, s *commentSnapshot, u gith
 	user, ok, err := askOnly(ctx, c.Users, u)
 	if err != nil || !ok {
 		return false, err
+	}
+	if uploaders[strings.ToLower(user)] {
+		return true, nil // theirs: not asked to review it (eighth review)
 	}
 	// Taken out, not by Gerrit clearing the set (eighth review).
 	r, out := removed[strings.ToLower(user)]

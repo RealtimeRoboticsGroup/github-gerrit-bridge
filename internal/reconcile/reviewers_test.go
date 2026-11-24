@@ -887,6 +887,21 @@ func TestAnOldRemovalKeepsANewRequest(t *testing.T) {
 	e.wantAsks(t)
 }
 
+// austin requested changes on GitHub, then uploads the fix in Gerrit: he
+// is not asked to review his own patch set (eighth review).
+func TestTheUploaderIsNotAskedAgain(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	austinGH := github.User{Login: "austin-gh", ID: 80, Type: "User"}
+	e.c.Users.(*Users).Overrides["austin-gh"] = "austin"
+	e.g.accounts["austin"] = austin
+	e.h.ids["austin-gh"] = 80
+	e.reviewed(austinGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.exported(t, austin, 3, "sha3")
+	e.sync(t)
+	e.wantAsks(t)
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // CI, though trusted, is not a person: its vote on jane's push, which
 // Gerrit says hands her the turn as the uploader, asks nobody on GitHub
