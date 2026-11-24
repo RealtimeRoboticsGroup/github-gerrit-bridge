@@ -236,8 +236,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		return gh, ok, err
 	}
-	// askedNow are those the bridge asked on GitHub this sync.
-	askedNow := map[int64]bool{}
+	// askedNow are those the bridge asked on GitHub this sync; handedOn,
+	// those of them asked for their Gerrit turn, which is theirs already.
+	askedNow, handedOn := map[int64]bool{}, map[int64]bool{}
 	ask := func(gh github.User) error {
 		if err := c.GitHub.RequestReviewers(ctx, pr, []string{gh.Login}); err != nil {
 			c.Logger.Warn("asking someone to review on GitHub", "change", n, "pr", pr, "github_login", gh.Login, "err", err)
@@ -305,6 +306,8 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		if err := ask(gh); err != nil && !githubRefusedForGood(err) {
 			notSeen[key] = true
+		} else if err == nil {
+			handedOn[gh.ID] = true
 		}
 	}
 	for _, key := range prev.Attention {
@@ -403,7 +406,10 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		// seen): their turn in Gerrit too (fifth review).
 		_, was := wasRequested[id]
 		was = was && !askedNow[id]
-		if was && !noted[id] && !giveBack[id] {
+		if was && !noted[id] && !giveBack[id] || handedOn[id] {
+			// Or asked for the Gerrit turn they have: nothing to carry,
+			// and a lookup failing must not leave the request unseen
+			// (eleventh review: its end then never took their turn).
 			continue
 		}
 		if s.pull.Draft {

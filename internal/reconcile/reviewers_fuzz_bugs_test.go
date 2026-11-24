@@ -20,7 +20,6 @@ func fzBug(t *testing.T) {
 // seen (the GitHub → Gerrit pass could not tell whose it is, so left it
 // to look new), so her review ending it never takes her turn in Gerrit.
 func TestReviewerBugOwnAskLostToALookupFailureReview(t *testing.T) {
-	fzBug(t)
 	runWF(t, "owen", nil, func() []wfStep {
 		return []wfStep{
 			{name: "austin adds jane (lookups fail)", do: func(w *wf) { w.addReviewer("austin", "jane") }, fail: "lookup", want: "G[jane] H[jane]"},
@@ -33,7 +32,6 @@ func TestReviewerBugOwnAskLostToALookupFailureReview(t *testing.T) {
 // withdrawal: the bridge's own request, looking new, gives jane back the
 // turn austin took (undoing a trusted person's last doing).
 func TestReviewerBugOwnAskLostToALookupFailureTurnGivenBack(t *testing.T) {
-	fzBug(t)
 	runWF(t, "owen", nil, func() []wfStep {
 		return []wfStep{
 			{name: "austin adds jane (lookups fail)", do: func(w *wf) { w.addReviewer("austin", "jane") }, fail: "lookup", want: "G[jane] H[jane]"},

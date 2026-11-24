@@ -527,7 +527,6 @@ func fzEnvInt(name string, def int) int {
 // a failure kind (steps' and the variant's), or steps of a kind skipped
 // when skipIf holds (fzOp.skipIf). Remove an entry once its bug is fixed.
 var fzKnownBugs = []struct{ bug, fail, kind, skipIf string }{
-	{bug: "TestReviewerBugOwnAskLostToALookupFailure*", fail: "lookup"},
 	{bug: "TestReviewerBugRemovedWhileADraftAfterAHandOff, TestReviewerBugRepliedAfterReadyAfterADraftHandOff", kind: "handOff", skipIf: "draft"},
 	{bug: "TestReviewerBugGiveBackUndoesARemoval", kind: "removeReviewer", skipIf: "abandonedOut"},
 	{bug: "TestReviewerBugReAskUndoesARemoval", kind: "removeReviewer", skipIf: "outChangeRequester"},
