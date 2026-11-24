@@ -50,3 +50,18 @@ func TestR13EndingTakesALaterTurnDirectoryDown(t *testing.T) {
 		}
 	})
 }
+
+// Fuzz seed 300245: austin's request, its Gerrit write failing, ends
+// while lookups fail; asked again, the new request must still be carried.
+func TestR13FuzzF300245(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "mike asks for changes", do: func(w *wf) { w.review("mike", "CHANGES_REQUESTED") }, fail: "gh502", want: "G[] H[]"},
+			{name: "austin comments", do: func(w *wf) { w.review("austin", "COMMENTED") }, want: "G[] H[]"},
+			{name: "austin asked (gerrit fails)", do: func(w *wf) { w.request("austin") }, fail: "gerrit500", want: "G[] H[austin]"},
+			{name: "austin comments (lookups fail)", do: func(w *wf) { w.review("austin", "COMMENTED") }, fail: "lookup", want: "G[] H[]"},
+			{name: "austin asked again (trust fails)", do: func(w *wf) { w.request("austin") }, fail: "trust", want: "G[austin] H[austin]"},
+			{name: "jane approves", do: func(w *wf) { w.review("jane", "APPROVED") }, want: "G[austin] H[austin]"},
+		}
+	})
+}

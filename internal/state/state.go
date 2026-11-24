@@ -60,7 +60,8 @@ type Reviewers struct {
 	// Ending is, by GitHub account id, those in Requested whose request
 	// had ended, its end not yet carried (a lookup failed), with the
 	// GerritAt of the look that first saw it end: asked again meanwhile,
-	// they are asked anew; a turn given after that is not its to end.
+	// they are asked anew; a turn given after that is not its to end. An
+	// empty time is one before anything in Gerrit, not none.
 	Ending map[int64]string `json:"ending,omitempty"`
 	// AskedFor is, by GitHub account id, the newest patch set each was
 	// asked to review again (or was found to have answered): asked once
