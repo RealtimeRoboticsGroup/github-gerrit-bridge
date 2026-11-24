@@ -368,6 +368,12 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 				if _, asked := requested[u.ID]; rv.State != "CHANGES_REQUESTED" || asked || u.Type == "Bot" {
 					continue
 				}
+				onGitHub := slices.ContainsFunc(s.pull.RequestedReviewers, func(r github.User) bool { return r.ID == u.ID })
+				if _, was := wasRequested[u.ID]; was && !onGitHub && !reviewedSince(s, u, prev.At) {
+					// Their request ended on GitHub since, with no review:
+					// someone withdrew it there (eighth review).
+					continue
+				}
 				if answered, err := c.answeredSince(ctx, s, u, removed, newest, pushed); err != nil {
 					waitAt(first) // known next sync
 					continue
@@ -622,6 +628,11 @@ func (c *Comments) answeredSince(ctx context.Context, s *commentSnapshot, u gith
 	}
 	r, out := removed[strings.ToLower(user)]
 	return out && r.LastUpdate >= newest, nil
+}
+
+// reviewedSince reports whether u reviewed the PR after at.
+func reviewedSince(s *commentSnapshot, u github.User, at time.Time) bool {
+	return slices.ContainsFunc(s.allReviews, func(rv github.Review) bool { return rv.User.ID == u.ID && rv.SubmittedAt.After(at) })
 }
 
 // clearedReasons are Gerrit's reasons for clearing the attention set.

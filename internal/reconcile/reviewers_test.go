@@ -803,6 +803,15 @@ func TestAHeldReAskSkipsACommentOnTheNewPatchSet(t *testing.T) {
 	e.wantAsks(t, "+mike-gh", "+jane-gh")
 }
 
+// While held, owen withdraws mike's request on GitHub: not asked again
+// (eighth review).
+func TestAHeldReAskKeepsAWithdrawalOnGitHub(t *testing.T) {
+	e := heldReAsk(t)
+	e.h.requested = slices.DeleteFunc(e.h.requested, func(u github.User) bool { return u.ID == mikeGH.ID })
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+jane-gh")
+}
+
 // mike asks for changes again on the old commit after austin's upload,
 // before the push reached GitHub: he has not seen it, and is asked
 // (eighth review: by time, it counted as an answer).
