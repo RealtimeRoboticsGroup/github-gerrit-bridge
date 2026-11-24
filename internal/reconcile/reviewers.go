@@ -510,6 +510,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		key := strings.ToLower(user)
+		// A withdrawal waiting for this request: it has ended (twelfth
+		// review: kept, it withdrew a request made again later).
+		delete(stillSeen, key)
 		a, in := attention[key]
 		if !in || !sameTurn(key, a) {
 			// Or given again since: not the turn the request was for

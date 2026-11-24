@@ -16,3 +16,18 @@ func TestR12NoteAfterEndingRequest(t *testing.T) {
 		}
 	})
 }
+
+// austin takes jane's turn while the trusted group cannot be read (the
+// withdrawal waits); owen withdraws her request on GitHub (still unread),
+// then asks her again: a new request, which the waiting withdrawal must
+// not withdraw.
+func TestR12WaitingWithdrawalTakesANewRequest(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "owen asks jane", do: func(w *wf) { w.request("jane") }, want: "G[jane] H[jane]"},
+			{name: "austin takes jane's turn (trust unknown)", do: func(w *wf) { w.takeTurn("austin", "jane") }, fail: "trust", want: "G[] H[jane]"},
+			{name: "owen withdraws jane (trust unknown)", do: func(w *wf) { w.withdraw("jane") }, fail: "trust", want: "G[] H[]"},
+			{name: "owen asks jane again", do: func(w *wf) { w.request("jane") }, want: "G[jane] H[jane]"},
+		}
+	})
+}
