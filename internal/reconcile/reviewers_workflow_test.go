@@ -509,6 +509,10 @@ func (w *wf) record(ps int) {
 	for _, r := range p.rs {
 		w.uncarried[r] = false
 		w.mayAsk(p.by, r)
+		// The turn is a Gerrit doing from before the record, which the
+		// bridge cannot order against what people did about r on GitHub
+		// meanwhile (as for an ask again).
+		delete(w.last, r)
 		// Or, reviewed on GitHub since, taken (the turn waited for this).
 		w.may("g-" + r)
 	}
