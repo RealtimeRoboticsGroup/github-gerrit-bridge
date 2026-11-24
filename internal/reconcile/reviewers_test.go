@@ -532,6 +532,31 @@ func TestANewPatchSetThenOwnRemovalInOneSync(t *testing.T) {
 }
 
 // austin's Gerrit upload, then a push on GitHub imported before the sync
+// CI, though trusted, is not a person: its vote on jane's push, which
+// Gerrit says hands her the turn as the uploader, asks nobody on GitHub
+// (fifth review). austin doing the same asks her.
+func TestCIsTurnsAreNobodys(t *testing.T) {
+	ci := gerrit.AccountInfo{AccountID: 30, Username: "ci"}
+	e, _ := reviewersEnv(t)
+	e.c.CIAccount = "CI"
+	e.c.Trusted = func(_ context.Context, id int) (bool, bool) {
+		return id == austin.AccountID || id == ownerGA.AccountID || id == ci.AccountID, true
+	}
+	e.g.addReviewer(bridgeGA, jane) // asked on GitHub before
+	e.g.setAttention(jane, e.g.tick(), "x", false)
+	e.sync(t)
+	e.imported(t, jane, 3, "sha3")
+	e.sync(t)
+	e.g.reply(ci, "Patch Set 3: Verified+1", []gerrit.AccountInfo{jane}, nil)
+	e.sync(t)
+	e.wantAsks(t)
+	e.g.reply(jane, "ok", nil, []gerrit.AccountInfo{jane})
+	e.sync(t)
+	e.g.reply(austin, "Patch Set 3: Jane, PTAL", []gerrit.AccountInfo{jane}, nil)
+	e.sync(t)
+	e.wantAsks(t, "+jane-gh")
+}
+
 // gets to either: austin's still asks again (third review).
 func TestAnyNewPatchSetByATrustedPersonAsks(t *testing.T) {
 	e, _ := reviewersEnv(t)

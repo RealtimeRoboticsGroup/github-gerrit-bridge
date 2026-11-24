@@ -202,8 +202,8 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	type trust struct{ trusted, known bool }
 	trustOf := map[int]trust{}
 	trusted := func(a gerrit.AccountInfo) (bool, bool) {
-		if c.Trusted == nil {
-			return false, true
+		if c.Trusted == nil || c.CIAccount != "" && strings.EqualFold(a.Username, c.CIAccount) {
+			return false, true // fifth review
 		}
 		t, ok := trustOf[a.AccountID]
 		if !ok {

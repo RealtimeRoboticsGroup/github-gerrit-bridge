@@ -124,6 +124,10 @@ type Comments struct {
 	Reviewers GitHubAccounts
 	Trusted   func(ctx context.Context, account int) (trusted, known bool)
 	Since     time.Time
+	// CIAccount is CI's Gerrit username: what it does is never a
+	// person's, trusted or not (its vote on an import hands the turn to
+	// whoever pushed it, unless it is a service user).
+	CIAccount string
 	// Authors, if set, posts the Gerrit content of users who linked their
 	// GitHub account as them, without the attribution header; the rest,
 	// and theirs when GitHub refuses their token, as the bridge.
