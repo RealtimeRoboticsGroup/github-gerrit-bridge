@@ -74,6 +74,10 @@ type Reviewers struct {
 	// first seen.
 	GerritAt   string           `json:"gerrit_at,omitempty"`
 	Unrecorded map[int64]string `json:"unrecorded,omitempty"`
+	// Withdrawn is, by GitHub account id, the GerritAt of the last look
+	// that saw such a request before it ended: a turn given by then was
+	// answered by its end.
+	Withdrawn map[int64]string `json:"withdrawn,omitempty"`
 }
 
 // GitHubAccount is a GitHub account: its id, and its login then.

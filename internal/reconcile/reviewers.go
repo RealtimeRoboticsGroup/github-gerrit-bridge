@@ -234,6 +234,21 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		return t.trusted, t.known
 	}
+	// Requests left out of Requested that have ended: the last look that
+	// saw each (twelfth review: a turn handed while a draft, then the
+	// request withdrawn, asked again once ready).
+	withdrawn := maps.Clone(prev.Withdrawn)
+	if withdrawn == nil {
+		withdrawn = map[int64]string{}
+	}
+	for id := range prev.Unrecorded {
+		if _, asked := requested[id]; !asked {
+			withdrawn[id] = prev.GerritAt
+		}
+	}
+	for id := range requested {
+		delete(withdrawn, id)
+	}
 	askedFor := maps.Clone(prev.AskedFor)
 	if askedFor == nil {
 		askedFor = map[int64]int{}
@@ -328,6 +343,20 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			// given it back (tenth review: the add was skipped, the
 			// attention set as read still having them).
 			delete(attention, key)
+			notSeen[key] = true
+			continue
+		}
+		if _, was := wasRequested[gh.ID]; was && a.LastUpdate <= prev.GerritAt || a.LastUpdate <= withdrawn[gh.ID] {
+			// Given before the last look, when they were asked: their
+			// request has ended since, after it, and ends the turn too
+			// (twelfth review: an unseen hand-off undid a withdrawal).
+			if err := c.Gerrit.RemoveFromAttentionSet(ctx, n, a.Account.AccountID, reviewerReason+"review request ended"); err != nil {
+				c.Logger.Warn("taking someone no longer asked on GitHub out of the attention set", "change", n, "gerrit_user", a.Account.Username, "err", err)
+				if !refused(err) {
+					notSeen[key] = true
+				}
+				continue
+			}
 			notSeen[key] = true
 			continue
 		}
@@ -554,6 +583,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	}
 	if len(givenBack) > 0 {
 		next.GivenBack = givenBack
+	}
+	if len(withdrawn) > 0 {
+		next.Withdrawn = withdrawn
 	}
 	next.AttentionAt = map[string]string{}
 	for _, key := range attentionNow {

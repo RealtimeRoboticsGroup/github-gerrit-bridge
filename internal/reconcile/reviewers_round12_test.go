@@ -122,3 +122,49 @@ func TestR12DraftRequestUndoesARemoval(t *testing.T) {
 		}
 	})
 }
+
+// austin hands jane, a reviewer, the turn while the trusted group cannot
+// be read (the turn left unseen), and owen asks her on GitHub too; owen
+// then withdraws her request. The unseen hand-off, older than the
+// withdrawal, must not ask her again.
+func TestR12UnseenHandOffUndoesAWithdrawal(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "austin adds jane", do: func(w *wf) { w.addReviewer("austin", "jane") }, want: "G[jane] H[jane]"},
+			{name: "jane approves", do: func(w *wf) { w.review("jane", "APPROVED") }, want: "G[] H[]"},
+			{name: "austin hands jane the turn; owen asks her (trust unknown)", do: func(w *wf) {
+				w.handOff("austin", "jane")
+				w.request("jane")
+			}, fail: "trust", want: "G[jane] H[jane]"},
+			{name: "owen withdraws jane", do: func(w *wf) { w.withdraw("jane") }, check: func(w *wf) []string {
+				if w.requested("jane") {
+					return []string{"jane asked again: " + w.view()}
+				}
+				return nil
+			}},
+		}
+	})
+}
+
+// The same while a draft, no failure needed: jane asked while a draft,
+// austin hands her the turn (unseen: a request made while a draft), owen
+// withdraws her request, then marks the PR ready. The hand-off, older
+// than the withdrawal, must not ask her again.
+func TestR12DraftHandOffUndoesAWithdrawal(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "austin adds jane", do: func(w *wf) { w.addReviewer("austin", "jane") }, want: "G[jane] H[jane]"},
+			{name: "jane approves", do: func(w *wf) { w.review("jane", "APPROVED") }, want: "G[] H[]"},
+			{name: "owen makes it a draft", do: func(w *wf) { w.wip("owen", &bridgeGA) }, want: "G[] H[]"},
+			{name: "owen asks jane", do: func(w *wf) { w.request("jane") }, want: "G[] H[jane]"},
+			{name: "austin hands jane the turn", do: func(w *wf) { w.handOff("austin", "jane") }, want: "G[jane] H[jane]"},
+			{name: "owen withdraws jane", do: func(w *wf) { w.withdraw("jane") }},
+			{name: "owen marks it ready", do: func(w *wf) { w.ready("owen", &bridgeGA) }, check: func(w *wf) []string {
+				if w.requested("jane") {
+					return []string{"jane asked again: " + w.view()}
+				}
+				return nil
+			}},
+		}
+	})
+}
