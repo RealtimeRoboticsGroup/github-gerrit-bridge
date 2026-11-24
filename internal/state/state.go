@@ -57,10 +57,11 @@ type Reviewers struct {
 	// Noted the ids of those Gerrit was told have no Gerrit account.
 	Requested []GitHubAccount `json:"requested,omitempty"`
 	Noted     []int64         `json:"noted,omitempty"`
-	// Ending is the ids of those in Requested whose request had ended,
-	// its end not yet carried (a lookup failed): asked again meanwhile,
-	// they are asked anew.
-	Ending []int64 `json:"ending,omitempty"`
+	// Ending is, by GitHub account id, those in Requested whose request
+	// had ended, its end not yet carried (a lookup failed), with the
+	// GerritAt of the look that first saw it end: asked again meanwhile,
+	// they are asked anew; a turn given after that is not its to end.
+	Ending map[int64]string `json:"ending,omitempty"`
 	// AskedFor is, by GitHub account id, the newest patch set each was
 	// asked to review again (or was found to have answered): asked once
 	// for each. GivenBack is, by Gerrit username, the abandon (its

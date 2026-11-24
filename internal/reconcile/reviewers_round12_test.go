@@ -168,3 +168,18 @@ func TestR12DraftHandOffUndoesAWithdrawal(t *testing.T) {
 		}
 	})
 }
+
+func TestR12FuzzF3(t *testing.T) {
+	runWF(t, "austin", nil, func() []wfStep {
+		return []wfStep{
+			{name: "1", do: func(w *wf) { w.request("owen") }},
+			{name: "2", do: func(w *wf) { w.request("jane") }},
+			{name: "3", do: func(w *wf) { w.request("mike") }},
+			{name: "4", do: func(w *wf) { w.takeTurn("owen", "jane") }},
+			{name: "5", do: func(w *wf) { w.review("mike", "COMMENTED") }, fail: "lookup"},
+			{name: "6", do: func(w *wf) { w.upload("owen", w.ps+1) }},
+			{name: "7", do: func(w *wf) { w.handOff("nogh", "owen") }},
+			{name: "8", do: func(w *wf) { w.upload("austin", w.ps+1) }, fail: "lookup"},
+		}
+	})
+}

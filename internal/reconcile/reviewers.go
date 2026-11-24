@@ -202,13 +202,28 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	}
 	// Asked again since their request ended, its end not yet carried: a
 	// new request (eleventh review: taken for the old one, never carried).
-	for _, id := range prev.Ending {
+	for id := range prev.Ending {
 		if _, asked := requested[id]; asked {
 			delete(wasRequested, id)
 			delete(noted, id) // said again (twelfth review)
 		}
 	}
-	ending := map[int64]bool{}
+	ending := map[int64]string{}
+	// What this look saw: the newest time Gerrit gave for anything.
+	gerritAt := ""
+	for _, u := range s.reviewerUpdates {
+		gerritAt = max(gerritAt, u.Updated)
+	}
+	for _, m := range s.allMessages {
+		gerritAt = max(gerritAt, m.Date)
+	}
+	for _, a := range attention {
+		gerritAt = max(gerritAt, a.LastUpdate)
+	}
+	for _, a := range removed {
+		gerritAt = max(gerritAt, a.LastUpdate)
+	}
+	endingAt := func(id int64) string { return cmp.Or(prev.Ending[id], gerritAt) }
 	// Retries: what failed is left to look new (or gone) next time; and
 	// whom the bridge took out of the attention set is out.
 	// The bridge's own turns, handed out for GitHub requests, are seen as
@@ -547,7 +562,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		u := wasRequested[id]
 		user, _, err := askOnly(ctx, c.Users, u)
 		if err != nil {
-			stillRequested[id], ending[id] = u, true
+			stillRequested[id], ending[id] = u, endingAt(id)
 			continue
 		}
 		key := strings.ToLower(user)
@@ -555,29 +570,25 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		// review: kept, it withdrew a request made again later).
 		delete(stillSeen, key)
 		a, in := attention[key]
-		if !in || !sameTurn(key, a) {
+		if at := prev.Ending[id]; !in || !sameTurn(key, a) || at != "" && a.LastUpdate > at {
 			// Or given again since: not the turn the request was for
-			// (tenth review: an old request's end took a new turn).
+			// (tenth review: an old request's end took a new turn;
+			// twelfth: one given after the end was seen, its carrying
+			// waiting on a lookup).
 			continue
 		}
 		// Their review ends it too (mirrored as them, it usually has).
 		if err := c.Gerrit.RemoveFromAttentionSet(ctx, n, a.Account.AccountID, reviewerReason+"review request ended"); err != nil {
 			c.Logger.Warn("taking someone no longer asked on GitHub out of the attention set", "change", n, "gerrit_user", user, "err", err)
 			if !refused(err) {
-				stillRequested[id], ending[id] = u, true
+				stillRequested[id], ending[id] = u, endingAt(id)
 			}
 			continue
 		}
 		notSeen[strings.ToLower(user)] = true
 	}
 
-	next := &state.Reviewers{At: s.at, PR: pr, PatchSet: prev.PatchSet}
-	for _, u := range s.reviewerUpdates {
-		next.GerritAt = max(next.GerritAt, u.Updated)
-	}
-	for _, m := range s.allMessages {
-		next.GerritAt = max(next.GerritAt, m.Date)
-	}
+	next := &state.Reviewers{At: s.at, PR: pr, PatchSet: prev.PatchSet, GerritAt: gerritAt}
 	if len(askedFor) > 0 {
 		next.AskedFor = askedFor
 	}
@@ -612,8 +623,11 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		if noted[a.ID] {
 			next.Noted = append(next.Noted, a.ID)
 		}
-		if ending[a.ID] {
-			next.Ending = append(next.Ending, a.ID)
+		if at := ending[a.ID]; at != "" {
+			if next.Ending == nil {
+				next.Ending = map[int64]string{}
+			}
+			next.Ending[a.ID] = at
 		}
 	}
 	return next
