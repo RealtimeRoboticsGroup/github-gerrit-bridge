@@ -65,3 +65,18 @@ func TestR13FuzzF300245(t *testing.T) {
 		}
 	})
 }
+
+// jane is asked on a PR nothing has been done to in Gerrit, her Gerrit
+// write failing; austin then adds and removes her in Gerrit. Carried
+// late, the request must not undo austin's removal.
+func TestR13LateRequestBeforeAnythingInGerrit(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "owen asks jane (gerrit fails)", do: func(w *wf) { w.request("jane") }, fail: "gerrit500", want: "G[] H[jane]"},
+			{name: "austin adds and removes jane", do: func(w *wf) {
+				w.addReviewer("austin", "jane")
+				w.removeReviewer("austin", "jane")
+			}, want: "G[] H[jane]"},
+		}
+	})
+}

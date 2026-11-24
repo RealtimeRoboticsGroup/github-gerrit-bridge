@@ -536,13 +536,20 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		_, in := attention[key]
-		if at := prev.Unrecorded[id].At; !was && at != "" {
+		if ur, ok := prev.Unrecorded[id]; !was && ok {
+			at := ur.At
 			// Removed as a reviewer, or taken out of the attention set
 			// by someone (not Gerrit clearing it, nor the bridge), after
 			// the request was first seen: that stands (twelfth review:
 			// carried late, it undid the removal, or their own reply).
+			// An empty time is before anything in Gerrit (thirteenth
+			// review: taken for none, a removal since was undone).
+			since := at
+			if at != "" {
+				since += "~"
+			}
 			r, out := removed[key]
-			if !reviewer[key] && removedSince(s, user, at+"~") ||
+			if !reviewer[key] && removedSince(s, user, since) ||
 				out && r.LastUpdate > at && !clearedReasons[r.Reason] && !strings.HasPrefix(r.Reason, reviewerReason) {
 				continue
 			}
@@ -640,7 +647,11 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		if next.Unrecorded == nil {
 			next.Unrecorded = map[int64]state.UnrecordedRequest{}
 		}
-		next.Unrecorded[id] = state.UnrecordedRequest{Login: requested[id].Login, At: cmp.Or(prev.Unrecorded[id].At, next.GerritAt)}
+		at := next.GerritAt
+		if ur, ok := prev.Unrecorded[id]; ok {
+			at = ur.At // empty: before anything in Gerrit
+		}
+		next.Unrecorded[id] = state.UnrecordedRequest{Login: requested[id].Login, At: at}
 		delete(requested, id)
 	}
 	maps.Copy(requested, stillRequested)
