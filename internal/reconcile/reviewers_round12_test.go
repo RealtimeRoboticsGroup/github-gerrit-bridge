@@ -49,3 +49,20 @@ func TestR12SeenTurnRequestLostToALookupFailure(t *testing.T) {
 		}
 	})
 }
+
+// austin uploads PS3, not yet on GitHub when mike asks for changes on
+// PS2's commit (the bridge then takes his turn); once PS3 is recorded,
+// mike is not asked for it: the bridge's own removal, after PS3's upload,
+// is taken for someone taking him out.
+func TestR12BridgesOwnRemovalSkipsReAsk(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "austin adds mike", do: func(w *wf) { w.addReviewer("austin", "mike") }, want: "G[mike] H[mike]"},
+			{name: "austin uploads PS3 (unrecorded); mike asks for changes on PS2", do: func(w *wf) {
+				w.uploadUnrecorded("austin", 3)
+				w.review("mike", "CHANGES_REQUESTED")
+			}, want: "G[] H[]"},
+			{name: "PS3 recorded", do: func(w *wf) { w.record(3) }, want: "G[mike] H[mike]"},
+		}
+	})
+}

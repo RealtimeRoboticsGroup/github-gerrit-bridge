@@ -672,7 +672,8 @@ func uploader(r gerrit.RevisionInfo) gerrit.AccountInfo {
 //   - whoever uploaded it;
 //   - whoever reviewed it, or a later patch set's commit, on GitHub;
 //   - whoever was taken out of the attention set at or after it, but by
-//     Gerrit clearing the set (fifth review);
+//     Gerrit clearing the set (fifth review) or by the bridge (twelfth:
+//     its taking the turn of a request that ended);
 //   - while whether a newer one is a trusted person's cannot be told.
 //
 // Once asked, a withdrawal on GitHub stands (ninth review: kept as a
@@ -726,7 +727,7 @@ func (c *Comments) askAgain(ctx context.Context, s *commentSnapshot, prev *state
 		}
 		if ok {
 			r, out := removed[strings.ToLower(user)]
-			if strings.EqualFold(user, uploader(newest).Username) || out && r.LastUpdate >= newest.Created && !clearedReasons[r.Reason] ||
+			if strings.EqualFold(user, uploader(newest).Username) || out && r.LastUpdate >= newest.Created && !clearedReasons[r.Reason] && !strings.HasPrefix(r.Reason, reviewerReason) ||
 				removedSince(s, user, gerritTime(rv.SubmittedAt)) {
 				askedFor[u.ID] = newest.Number
 				continue
