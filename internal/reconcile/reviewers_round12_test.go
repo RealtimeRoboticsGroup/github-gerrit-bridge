@@ -234,3 +234,20 @@ func TestR12WaitingTurnOfSomeoneAskedEndedByTheirReply(t *testing.T) {
 		}
 	})
 }
+
+// jane asked for changes; owen's new patch set asks her again, in a
+// sync whose Gerrit writes fail (the request left to carry later);
+// austin then adds her in Gerrit, and she replies, ending her turn. The
+// late carrying of the request must not give her the turn back.
+func TestR12FailedReAskRetryUndoesAReply(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "jane asks for changes", do: func(w *wf) { w.review("jane", "CHANGES_REQUESTED") }, want: "G[] H[]"},
+			{name: "owen uploads PS3 (Gerrit down)", do: func(w *wf) { w.upload("owen", 3) }, fail: "gerrit500", want: "G[] H[jane]"},
+			{name: "austin adds jane; she replies", do: func(w *wf) {
+				w.addReviewer("austin", "jane")
+				w.replyG("jane")
+			}},
+		}
+	})
+}

@@ -528,10 +528,16 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		_, in := attention[key]
-		if at := prev.Unrecorded[id].At; !was && !reviewer[key] && at != "" && removedSince(s, user, at+"~") {
-			// Removed as a reviewer after the request was first seen
-			// (twelfth review: carried late, it undid the removal).
-			continue
+		if at := prev.Unrecorded[id].At; !was && at != "" {
+			// Removed as a reviewer, or taken out of the attention set
+			// by someone (not Gerrit clearing it, nor the bridge), after
+			// the request was first seen: that stands (twelfth review:
+			// carried late, it undid the removal, or their own reply).
+			r, out := removed[key]
+			if !reviewer[key] && removedSince(s, user, at+"~") ||
+				out && r.LastUpdate > at && !clearedReasons[r.Reason] && !strings.HasPrefix(r.Reason, reviewerReason) {
+				continue
+			}
 		}
 		if !reviewer[key] {
 			err = c.Gerrit.SetReview(ctx, n, s.revision, gerrit.ReviewInput{Tag: commentTag, Reviewers: []gerrit.ReviewerInput{{Reviewer: user}}})
