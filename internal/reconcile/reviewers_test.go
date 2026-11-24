@@ -73,7 +73,7 @@ func (e *commentsEnv) seen(t *testing.T) *state.Reviewers {
 // reviewed is u's review on GitHub, which ends their request.
 func (e *commentsEnv) reviewed(u github.User, state string) {
 	e.h.requested = slices.DeleteFunc(e.h.requested, func(r github.User) bool { return r.ID == u.ID })
-	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: state, User: u, CommitID: "sha2", SubmittedAt: e.g.now()}) // as Gerrit's clock has it
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: state, User: u, CommitID: "sha2", SubmittedAt: time.Now()})
 }
 
 // exported is ps, uploaded to Gerrit by by, which the bridge records once
@@ -759,6 +759,63 @@ func TestATurnHandedAgainAfterTheBridgesIsNew(t *testing.T) {
 	if g, h := sides(e, jane, janeGH); !g || !h {
 		t.Errorf("austin's turn lost: Gerrit %v, GitHub %v", g, h)
 	}
+}
+
+// refuseFor is GitHub refusing (for now) to ask login.
+type refuseFor struct {
+	*fakeGitHub
+	login string
+}
+
+func (f *refuseFor) RequestReviewers(ctx context.Context, pr int, logins []string) error {
+	if slices.Contains(logins, f.login) {
+		return &github.APIError{Status: 502, Message: "Bad Gateway"}
+	}
+	return f.fakeGitHub.RequestReviewers(ctx, pr, logins)
+}
+
+// heldReAsk is mike and jane asking for changes, and austin's new patch
+// set asking them again: mike's ask made, jane's failed, so held back.
+func heldReAsk(t *testing.T) *commentsEnv {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.g.addReviewer(austin, jane)
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.reviewed(janeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.h.asks = nil
+	e.exported(t, austin, 3, "sha3")
+	e.c.GitHub = &refuseFor{e.h, "jane-gh"}
+	e.sync(t)
+	e.c.GitHub = e.h
+	e.wantAsks(t, "+mike-gh")
+	return e
+}
+
+// While held, mike comments on the new patch set: answered, not asked
+// again (eighth review: only a change request counted).
+func TestAHeldReAskSkipsACommentOnTheNewPatchSet(t *testing.T) {
+	e := heldReAsk(t)
+	e.h.requested = slices.DeleteFunc(e.h.requested, func(r github.User) bool { return r.ID == mikeGH.ID })
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "COMMENTED", User: mikeGH, CommitID: "sha3", SubmittedAt: time.Now()})
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+jane-gh")
+}
+
+// mike asks for changes again on the old commit after austin's upload,
+// before the push reached GitHub: he has not seen it, and is asked
+// (eighth review: by time, it counted as an answer).
+func TestAReviewOfTheOldCommitIsNoAnswer(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.exported(t, austin, 3, "sha3")
+	e.reviewed(mikeGH, "CHANGES_REQUESTED") // of sha2
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh")
 }
 
 // austin's Gerrit upload, then a push on GitHub imported before the sync

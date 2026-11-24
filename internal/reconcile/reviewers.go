@@ -341,6 +341,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		// followed by an import before the sync: third review).
 		// first and newest are the first and the newest of them.
 		first, newest := 0, ""
+		pushed := map[string]bool{} // their commits on GitHub
 		for sha, r := range s.revInfos {
 			if r.Number <= prev.PatchSet || !s.exported(sha) {
 				continue
@@ -354,6 +355,11 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 					first = r.Number
 				}
 				newest = max(newest, r.Created)
+				for _, rec := range s.revisions {
+					if rec.GerritSHA == sha {
+						pushed[rec.GitHubSHA] = true
+					}
+				}
 			}
 		}
 		if first != 0 {
@@ -362,7 +368,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 				if _, asked := requested[u.ID]; rv.State != "CHANGES_REQUESTED" || asked || u.Type == "Bot" {
 					continue
 				}
-				if answered, err := c.answeredSince(ctx, rv, removed, newest); err != nil {
+				if answered, err := c.answeredSince(ctx, s, u, removed, newest, pushed); err != nil {
 					waitAt(first) // known next sync
 					continue
 				} else if answered {
@@ -603,11 +609,14 @@ func uploader(r gerrit.RevisionInfo) gerrit.AccountInfo {
 // meanwhile), or was taken out of the attention set since (fifth
 // review: asked again, they were asked on GitHub but not in Gerrit;
 // seventh: whenever it was seen). Gerrit's times are all one width.
-func (c *Comments) answeredSince(ctx context.Context, rv github.Review, removed map[string]gerrit.AttentionSetInfo, newest string) (bool, error) {
-	if at, err := time.Parse("2006-01-02 15:04:05.999999999", newest); err == nil && rv.SubmittedAt.After(at) {
+func (c *Comments) answeredSince(ctx context.Context, s *commentSnapshot, u github.User, removed map[string]gerrit.AttentionSetInfo, newest string, pushed map[string]bool) (bool, error) {
+	// Any review of one of them, a comment too (eighth review: only a
+	// change request counted; and by time, one of the old commit made
+	// after the upload did).
+	if slices.ContainsFunc(s.allReviews, func(rv github.Review) bool { return rv.User.ID == u.ID && pushed[rv.CommitID] }) {
 		return true, nil
 	}
-	user, ok, err := askOnly(ctx, c.Users, rv.User)
+	user, ok, err := askOnly(ctx, c.Users, u)
 	if err != nil || !ok {
 		return false, err
 	}
