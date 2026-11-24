@@ -321,7 +321,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		_, asked := requested[gh.ID]
-		if _, was := wasRequested[gh.ID]; linked && !asked && (was && a.LastUpdate <= prev.GerritAt || a.LastUpdate <= withdrawn[gh.ID]) {
+		if _, was := wasRequested[gh.ID]; linked && !asked && (was && a.LastUpdate <= cmp.Or(prev.Ending[gh.ID], prev.GerritAt) || a.LastUpdate <= withdrawn[gh.ID]) {
 			// Given before the last look, when they were asked: their
 			// request has ended since, after it, and ends the turn too,
 			// whoever gave it (twelfth review: an unseen hand-off undid
