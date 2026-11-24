@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -247,4 +248,80 @@ func TestReplyDuringReadIsStillHerOwn(t *testing.T) {
 		}
 	}
 	t.Errorf("not posted: %+v", e.h.ics)
+}
+
+// A read that panics panics the caller, where the reconcile recovers
+// it, once the others have returned (seventh review).
+func TestTogetherPanicsInTheCaller(t *testing.T) {
+	var returned bool
+	defer func() {
+		if p := recover(); p != "boom" || !returned {
+			t.Errorf("recovered %v, the other read returned %v", p, returned)
+		}
+	}()
+	together(context.Background(),
+		func(context.Context) error { panic("boom") },
+		func(ctx context.Context) error { <-ctx.Done(); returned = true; return ctx.Err() })
+	t.Error("together returned")
+}
+
+// reviewMidRead is GitHub, with bob approving with an inline comment (a
+// review and its comment, written together) once the reviews are read,
+// before the review comments are.
+type reviewMidRead struct {
+	GitHubAPI
+	e      *commentsEnv
+	listed chan struct{}
+	once   sync.Once
+	done   bool
+}
+
+func (g *reviewMidRead) ListReviews(ctx context.Context, n int) ([]github.Review, error) {
+	out, err := g.GitHubAPI.ListReviews(ctx, n)
+	g.once.Do(func() { close(g.listed) })
+	return out, err
+}
+
+func (g *reviewMidRead) ListReviewComments(ctx context.Context, n int) ([]github.ReviewComment, error) {
+	select {
+	case <-g.listed:
+	case <-time.After(time.Second):
+	}
+	fakeReads.Lock()
+	if !g.done {
+		g.done = true
+		id := g.e.h.human("a.txt", 3, "sha2", "nit", 0)
+		rid := id + 5000
+		g.e.h.reviews = append(g.e.h.reviews, github.Review{ID: rid, State: "APPROVED", CommitID: "sha2", User: github.User{Login: "bob"},
+			Body: "LGTM", HTMLURL: fmt.Sprintf("https://github.com/o/r/pull/1#pullrequestreview-%d", rid)})
+	}
+	fakeReads.Unlock()
+	return g.GitHubAPI.ListReviewComments(ctx, n)
+}
+
+// A review whose comment is listed before it (posted between the lists,
+// read alongside each other) reaches Gerrit in two messages, each once,
+// its vote cast once (seventh review).
+func TestReviewDuringReadIsMirroredOnce(t *testing.T) {
+	e := newCommentsEnv(t)
+	e.runAs()
+	e.c.GitHub = &reviewMidRead{GitHubAPI: e.c.GitHub, e: e, listed: make(chan struct{})}
+	e.sync(t)
+	e.sync(t)
+	e.settled(t)
+	nits, bodies := 0, 0
+	for _, gc := range e.g.comments {
+		if strings.Contains(gc.Message, "nit") {
+			nits++
+		}
+		if strings.Contains(gc.Message, "LGTM") {
+			bodies++
+		}
+	}
+	if nits != 1 || bodies != 1 {
+		t.Errorf("comment mirrored %d times, body %d times", nits, bodies)
+	}
+	if len(e.g.votes) != 1 {
+		t.Errorf("votes = %v, want the approval's +2 once", e.g.votes)
+	}
 }

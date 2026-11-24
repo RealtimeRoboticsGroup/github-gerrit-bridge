@@ -709,15 +709,28 @@ func (c *Comments) observe(ctx context.Context, n, pr int, st *state.Change) (*c
 
 // together runs reads alongside each other and returns the first error,
 // once all have returned. The first error cancels the rest: their answers
-// would not be used.
+// would not be used. A read that panics panics the caller, once all have
+// returned, as made one after another (the reconcile recovers it; in its
+// own goroutine it would end the bridge: seventh review).
 func together(ctx context.Context, reads ...func(context.Context) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var first error
+	var panicked any
 	for _, read := range reads {
 		wg.Go(func() {
+			defer func() {
+				if p := recover(); p != nil {
+					mu.Lock()
+					if panicked == nil {
+						panicked = p
+					}
+					mu.Unlock()
+					cancel()
+				}
+			}()
 			if err := read(ctx); err != nil {
 				mu.Lock()
 				if first == nil {
@@ -729,6 +742,9 @@ func together(ctx context.Context, reads ...func(context.Context) error) error {
 		})
 	}
 	wg.Wait()
+	if panicked != nil {
+		panic(panicked)
+	}
 	return first
 }
 
