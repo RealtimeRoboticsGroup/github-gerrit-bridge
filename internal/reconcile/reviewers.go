@@ -449,7 +449,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		} else if !in {
 			err = c.Gerrit.AddToAttentionSet(ctx, n, user, reviewerReason+"asked to review on GitHub")
 		}
-		if err == nil && !in {
+		if err == nil && (!in || !reviewer[key]) {
+			// Made a reviewer while their turn as a CC was not seen:
+			// Gerrit writes it again, as the bridge's (tenth review).
 			// With their removal as it was: Gerrit may give no turn
 			// (a WIP change), and that removal is not a new one then
 			// (eighth review: it withdrew the request just made).

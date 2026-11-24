@@ -67,6 +67,8 @@ go_test(
         "push_test.go",
         "reconcile_test.go",
         "reviewers_test.go",
+        "reviewers_workflow_test.go",
+        "reviewers_workflows_test.go",
         "sites_test.go",
         "text_test.go",
     ],
