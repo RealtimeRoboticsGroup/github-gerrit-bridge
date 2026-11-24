@@ -623,6 +623,25 @@ func TestATurnAfterAWaitingRemovalAsks(t *testing.T) {
 	e.wantAsks(t, "+mike-gh", "+mike-gh")
 }
 
+// A turn given in the second of a patch set never recorded waits only
+// while it is current: once a later one is, it is nobody's (not carried,
+// and not waited for, for good: sixth review).
+func TestATurnWithASupersededUnrecordedPatchSetIsSeen(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	ts := e.g.upload(austin, 3, "sha3") // withheld
+	e.g.addReviewerAt(ts, austin, mike)
+	e.sync(t)
+	if slices.Contains(e.seen(t).Attention, "mikebauer") {
+		t.Errorf("seen while the patch set may yet be recorded: %+v", e.seen(t))
+	}
+	e.exported(t, austin, 4, "sha4")
+	e.sync(t)
+	if !slices.Contains(e.seen(t).Attention, "mikebauer") {
+		t.Errorf("still waiting for a record that will not come: %+v", e.seen(t))
+	}
+	e.wantAsks(t)
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // CI, though trusted, is not a person: its vote on jane's push, which
 // Gerrit says hands her the turn as the uploader, asks nobody on GitHub

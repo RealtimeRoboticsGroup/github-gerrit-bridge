@@ -522,8 +522,13 @@ func (c *Comments) actorAt(s *commentSnapshot, a gerrit.AttentionSetInfo) (who g
 		switch {
 		case s.imported(sha):
 			mirrored = true // Gerrit says its author uploaded it
+		case !s.recorded(sha) && sha == s.revision:
+			wait = true // for the record, which may come
 		case !s.exported(sha):
-			wait = true
+			// Recorded neither way, or never (withheld from GitHub, and a
+			// later one current): not known as anyone's, and never will
+			// be (sixth review: it waited for good).
+			mirrored = true
 		}
 	}
 	for _, m := range s.allMessages {
