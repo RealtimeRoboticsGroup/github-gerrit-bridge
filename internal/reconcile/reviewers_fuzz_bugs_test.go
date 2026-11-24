@@ -141,3 +141,24 @@ func TestReviewerBugHandOffWhileADraftToSomeoneAskedWhileADraft(t *testing.T) {
 		}
 	})
 }
+
+// mike is asked; owen closes the PR, and reopens it in a sync whose
+// Gerrit writes fail, so the turn the abandon took is not given back
+// then; austin removes mike as a reviewer before the next. The give-back
+// waits, mike still asked, and skips him then: not left to look like a
+// new request, which made him a reviewer again.
+func TestReviewerBugFailedGiveBackUndoesARemoval(t *testing.T) {
+	runWF(t, "owen", nil, func() []wfStep {
+		return []wfStep{
+			{name: "owen asks mike", do: func(w *wf) { w.request("mike") }, want: "G[mike] H[mike]"},
+			{name: "owen closes the PR", do: func(w *wf) { w.abandon("owen", &bridgeGA) }, want: "G[] H[mike]"},
+			{name: "owen reopens it (Gerrit down)", do: func(w *wf) { w.restore("owen", &bridgeGA) }, fail: "gerrit500", want: "G[] H[mike]"},
+			{name: "austin removes mike in Gerrit", do: func(w *wf) { w.removeReviewer("austin", "mike") }, want: "G[] H[mike]", check: func(w *wf) []string {
+				if w.reviewer("mike") {
+					return []string{"mike made a reviewer again"}
+				}
+				return nil
+			}},
+		}
+	})
+}

@@ -382,7 +382,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	// whoever is still asked on GitHub is given it back, once for each
 	// abandon (seventh and ninth reviews).
 	givenBack := map[string]string{}
-	giveBack := map[int64]bool{}
+	giveBack := map[int64]string{} // whose turn, by GitHub id
 	pending := map[string]string{}
 	for key, r := range removed {
 		if r.Reason != "Change was abandoned" {
@@ -411,7 +411,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			// Not if removed as a reviewer since (eleventh review: given
 			// back, they were made one again).
 			if at, out := pending[strings.ToLower(user)]; ok && out && !removedSince(s, user, at) {
-				giveBack[id] = true
+				giveBack[id] = strings.ToLower(user)
 			}
 		}
 		if known {
@@ -427,7 +427,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		// seen): their turn in Gerrit too (fifth review).
 		_, was := wasRequested[id]
 		was = was && !askedNow[id]
-		if was && !noted[id] && !giveBack[id] || handedOn[id] {
+		if was && !noted[id] && giveBack[id] == "" || handedOn[id] {
 			// Or asked for the Gerrit turn they have: nothing to carry,
 			// and a lookup failing must not leave the request unseen
 			// (eleventh review: its end then never took their turn).
@@ -445,6 +445,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			if !was {
 				notRequested[id] = true
 			}
+			delete(givenBack, giveBack[id]) // given back next time
 			continue
 		}
 		if !ok {
@@ -486,7 +487,13 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		}
 		if err != nil && !refused(err) {
 			c.Logger.Warn("making someone asked to review on GitHub a Gerrit reviewer", "change", n, "gerrit_user", user, "github_login", u.Login, "err", err)
-			notRequested[id] = true
+			if giveBack[id] != "" {
+				// Given back next time, still asked (eleventh review:
+				// left to look new, a removal since was undone).
+				delete(givenBack, giveBack[id])
+			} else {
+				notRequested[id] = true
+			}
 		} else if err != nil {
 			c.Logger.Info("Gerrit will not make someone asked to review on GitHub a reviewer", "change", n, "gerrit_user", user, "github_login", u.Login, "err", err)
 		}
