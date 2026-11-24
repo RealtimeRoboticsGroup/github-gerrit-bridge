@@ -827,6 +827,23 @@ func TestAReviewOfTheOldCommitIsNoAnswer(t *testing.T) {
 	e.wantAsks(t, "+mike-gh", "+mike-gh")
 }
 
+// Gerrit clearing the attention set after austin's upload (abandoned and
+// restored before the sync) is not mike answering it (eighth review).
+func TestAClearedTurnIsNoAnswer(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.g.setAttention(mike, e.g.tick(), "x", true) // named for nobody: not carried
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh")
+	e.exported(t, austin, 3, "sha3")
+	e.g.setAttention(mike, e.g.tick(), "Change was abandoned", false)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh")
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // CI, though trusted, is not a person: its vote on jane's push, which
 // Gerrit says hands her the turn as the uploader, asks nobody on GitHub

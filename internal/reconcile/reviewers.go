@@ -626,8 +626,9 @@ func (c *Comments) answeredSince(ctx context.Context, s *commentSnapshot, u gith
 	if err != nil || !ok {
 		return false, err
 	}
+	// Taken out, not by Gerrit clearing the set (eighth review).
 	r, out := removed[strings.ToLower(user)]
-	return out && r.LastUpdate >= newest, nil
+	return out && r.LastUpdate >= newest && !clearedReasons[r.Reason], nil
 }
 
 // reviewedSince reports whether u reviewed the PR after at.
