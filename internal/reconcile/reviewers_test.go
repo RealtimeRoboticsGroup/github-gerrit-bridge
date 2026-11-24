@@ -1058,6 +1058,29 @@ func TestAnOlderRemovalKeepsANewerRequest(t *testing.T) {
 	}
 }
 
+// mike (linked) votes -1 in Gerrit and austin hands him the turn, before
+// one sync: the bridge's mirror of mike's vote on GitHub, posted after
+// the hand-off, is no answer to it (tenth review: it undid the hand-off).
+func TestAMirroredReplyIsNoAnswerToALaterHandOff(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.c.BridgeLogin = "bridge"
+	e.c.Authors = &fakeAuthors{f: e.h, linked: map[int]github.User{mike.AccountID: mikeGH}}
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.reviewed(mikeGH, "COMMENTED")
+	e.sync(t)
+	e.h.asks = nil
+	e.g.vote("mikebauer", "Code-Review", -1)
+	e.g.reply(mike, "Patch Set 2: Code-Review-1\n\nPlease rename x", nil, nil)
+	e.g.reply(austin, "Patch Set 2:\n\nDone, PTAL", []gerrit.AccountInfo{mike}, nil)
+	e.sync(t)
+	e.sync(t)
+	if _, in := e.g.attention[mike.AccountID]; !in {
+		t.Errorf("austin's hand-off to mike undone in Gerrit: attention %+v", e.g.attention)
+	}
+	e.wantAsks(t, "+mike-gh")
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // CI, though trusted, is not a person: its vote on jane's push, which
 // Gerrit says hands her the turn as the uploader, asks nobody on GitHub

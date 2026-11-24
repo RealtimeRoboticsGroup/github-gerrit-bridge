@@ -682,7 +682,11 @@ func (c *Comments) askAgain(ctx context.Context, s *commentSnapshot, prev *state
 // Gerrit time at.
 func reviewedAfter(s *commentSnapshot, id int64, at string) bool {
 	t, err := time.Parse("2006-01-02 15:04:05.999999999", at)
-	return err == nil && slices.ContainsFunc(s.allReviews, func(rv github.Review) bool { return rv.User.ID == id && rv.SubmittedAt.After(t) })
+	// Not the bridge's mirror of a Gerrit reply, stamped when it was
+	// posted (tenth review: one posted after a later hand-off undid it).
+	return err == nil && slices.ContainsFunc(s.allReviews, func(rv github.Review) bool {
+		return rv.User.ID == id && rv.SubmittedAt.After(t) && !s.mirrored[rv.ID]
+	})
 }
 
 // clearedReasons are Gerrit's reasons for clearing the attention set.
