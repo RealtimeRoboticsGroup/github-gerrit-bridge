@@ -354,7 +354,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 				if _, asked := requested[u.ID]; rv.State != "CHANGES_REQUESTED" || asked || u.Type == "Bot" || wasOut && out >= newest {
 					continue
 				}
-				ask(u) // failing, not asked again: the next patch set may
+				if err := ask(u); err != nil && !githubRefusedForGood(err) {
+					waitAt(first) // asked again next sync (sixth review)
+				}
 			}
 		}
 	}

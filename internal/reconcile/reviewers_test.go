@@ -586,6 +586,23 @@ func TestAnApprovalInGerritIsNotAskedAgain(t *testing.T) {
 	}
 }
 
+// Asking again for a new patch set that fails for now is asked again
+// next sync (sixth review).
+func TestAFailedAskForANewPatchSetIsAskedAgain(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.g.addReviewer(austin, mike)
+	e.sync(t)
+	e.reviewed(mikeGH, "CHANGES_REQUESTED")
+	e.sync(t)
+	e.exported(t, austin, 3, "sha3")
+	e.h.refuseAsk = &github.APIError{Status: 502, Message: "Bad Gateway"}
+	e.sync(t)
+	e.h.refuseAsk = nil
+	e.sync(t)
+	e.sync(t)
+	e.wantAsks(t, "+mike-gh", "+mike-gh")
+}
+
 // austin's Gerrit upload, then a push on GitHub imported before the sync
 // CI, though trusted, is not a person: its vote on jane's push, which
 // Gerrit says hands her the turn as the uploader, asks nobody on GitHub
