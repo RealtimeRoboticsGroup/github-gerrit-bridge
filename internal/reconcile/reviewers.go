@@ -286,6 +286,17 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		if _, asked := requested[gh.ID]; !ok || asked || gh.ID == s.pull.User.ID {
 			continue
 		}
+		if reviewedAfter(s, gh.ID, a.LastUpdate) {
+			// Answered on GitHub since (ninth review: asked again, and
+			// handed the turn back): theirs no longer.
+			if err := c.Gerrit.RemoveFromAttentionSet(ctx, n, a.Account.AccountID, reviewerReason+"reviewed on GitHub"); err != nil {
+				c.Logger.Warn("taking someone who reviewed on GitHub out of the attention set", "change", n, "gerrit_user", a.Account.Username, "err", err)
+				if !refused(err) {
+					notSeen[key] = true
+				}
+			}
+			continue
+		}
 		if err := ask(gh); err != nil && !githubRefusedForGood(err) {
 			notSeen[key] = true
 		}
@@ -662,6 +673,13 @@ func (c *Comments) askAgain(ctx context.Context, s *commentSnapshot, prev *state
 			askedFor[u.ID] = newest.Number
 		}
 	}
+}
+
+// reviewedAfter reports whether GitHub account id reviewed the PR after
+// Gerrit time at.
+func reviewedAfter(s *commentSnapshot, id int64, at string) bool {
+	t, err := time.Parse("2006-01-02 15:04:05.999999999", at)
+	return err == nil && slices.ContainsFunc(s.allReviews, func(rv github.Review) bool { return rv.User.ID == id && rv.SubmittedAt.After(t) })
 }
 
 // clearedReasons are Gerrit's reasons for clearing the attention set.

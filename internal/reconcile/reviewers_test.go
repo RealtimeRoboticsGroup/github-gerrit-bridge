@@ -73,7 +73,7 @@ func (e *commentsEnv) seen(t *testing.T) *state.Reviewers {
 // reviewed is u's review on GitHub, which ends their request.
 func (e *commentsEnv) reviewed(u github.User, state string) {
 	e.h.requested = slices.DeleteFunc(e.h.requested, func(r github.User) bool { return r.ID == u.ID })
-	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: state, User: u, CommitID: "sha2", SubmittedAt: time.Now()})
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: state, User: u, CommitID: "sha2", SubmittedAt: e.g.now()})
 }
 
 // exported is ps, uploaded to Gerrit by by, which the bridge records once
@@ -798,7 +798,7 @@ func heldReAsk(t *testing.T) *commentsEnv {
 func TestAHeldReAskSkipsACommentOnTheNewPatchSet(t *testing.T) {
 	e := heldReAsk(t)
 	e.h.requested = slices.DeleteFunc(e.h.requested, func(r github.User) bool { return r.ID == mikeGH.ID })
-	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "COMMENTED", User: mikeGH, CommitID: "sha3", SubmittedAt: time.Now()})
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "COMMENTED", User: mikeGH, CommitID: "sha3", SubmittedAt: e.g.now()})
 	e.sync(t)
 	e.wantAsks(t, "+mike-gh", "+jane-gh")
 }
@@ -910,7 +910,7 @@ func TestTheUploaderIsNotAskedAgain(t *testing.T) {
 func TestAHeldReAskThenANewerPatchSetAsks(t *testing.T) {
 	e := heldReAsk(t)
 	e.h.requested = slices.DeleteFunc(e.h.requested, func(r github.User) bool { return r.ID == mikeGH.ID })
-	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "CHANGES_REQUESTED", User: mikeGH, CommitID: "sha3", SubmittedAt: time.Now()})
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "CHANGES_REQUESTED", User: mikeGH, CommitID: "sha3", SubmittedAt: e.g.now()})
 	e.exported(t, austin, 4, "sha4")
 	e.sync(t)
 	e.wantAsks(t, "+mike-gh", "+mike-gh", "+jane-gh")
@@ -929,7 +929,7 @@ func TestADraftsNewerPatchSetAsks(t *testing.T) {
 	e.sync(t)
 	e.exported(t, austin, 3, "sha3")
 	e.sync(t)
-	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "CHANGES_REQUESTED", User: mikeGH, CommitID: "sha3", SubmittedAt: time.Now()})
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "CHANGES_REQUESTED", User: mikeGH, CommitID: "sha3", SubmittedAt: e.g.now()})
 	e.exported(t, austin, 4, "sha4")
 	e.sync(t)
 	e.h.draft = false
@@ -968,7 +968,7 @@ func TestAReviewOfALaterImportAnswers(t *testing.T) {
 	e.h.asks = nil
 	e.exported(t, austin, 3, "sha3")
 	e.imported(t, ownerGA, 4, "sha4")
-	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "CHANGES_REQUESTED", User: mikeGH, CommitID: "sha4", SubmittedAt: time.Now()})
+	e.h.reviews = append(e.h.reviews, github.Review{ID: e.h.id(), State: "CHANGES_REQUESTED", User: mikeGH, CommitID: "sha4", SubmittedAt: e.g.now()})
 	e.sync(t)
 	e.wantAsks(t)
 }
@@ -1015,6 +1015,31 @@ func TestAKeptRequestThenANewPatchSetAsks(t *testing.T) {
 	e.exported(t, austin, 3, "sha3")
 	e.sync(t)
 	e.wantAsks(t, "+mike-gh", "+mike-gh")
+}
+
+// austin hands mike the turn; asking him fails for now, and he approves
+// on GitHub before the next sync: not asked again, nor his turn in
+// Gerrit (ninth review).
+func TestAReviewAfterAHandOffAnswersIt(t *testing.T) {
+	for _, fail := range []bool{true, false} {
+		e, _ := reviewersEnv(t)
+		e.g.addReviewer(austin, mike)
+		e.sync(t)
+		e.reviewed(mikeGH, "CHANGES_REQUESTED")
+		e.sync(t)
+		e.g.reply(austin, "Patch Set 2:\n\nDone, PTAL", []gerrit.AccountInfo{mike}, nil)
+		if fail {
+			e.c.GitHub = &refuseFor{e.h, "mike-gh"}
+			e.sync(t)
+			e.c.GitHub = e.h
+		}
+		e.reviewed(mikeGH, "APPROVED")
+		e.sync(t)
+		e.sync(t)
+		if g, h := sides(e, mike, mikeGH); g || h {
+			t.Errorf("failed first %v: mike asked again after approving: Gerrit %v, GitHub %v (%v)", fail, g, h, e.h.asks)
+		}
+	}
 }
 
 // austin's Gerrit upload, then a push on GitHub imported before the sync
