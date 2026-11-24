@@ -719,6 +719,29 @@ func TestWIPInGerritThenReadyOnGitHub(t *testing.T) {
 	}
 }
 
+// The PR closed and reopened on GitHub: Gerrit's abandon clears jane's
+// turn and its restore gives nobody one; still asked on GitHub, she is
+// given it back (seventh review).
+func TestCloseAndReopenOnGitHubGivesTheTurnBack(t *testing.T) {
+	e, _ := reviewersEnv(t)
+	e.h.requested = []github.User{janeGH}
+	e.sync(t)
+	ts := e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "ab", Author: ownerGA, RealAuthor: &bridgeGA, Date: ts, Message: "Abandoned", RevisionNumber: 1})
+	e.g.setAttention(jane, ts, "Change was abandoned", false)
+	e.g.status, e.h.closed = "ABANDONED", true
+	e.sync(t)
+	ts = e.g.tick()
+	e.g.messages = append(e.g.messages, gerrit.ChangeMessage{ID: "re", Author: ownerGA, RealAuthor: &bridgeGA, Date: ts, Message: "Restored", RevisionNumber: 1})
+	e.g.status, e.h.closed = "NEW", false
+	e.sync(t)
+	e.sync(t)
+	if g, h := sides(e, jane, janeGH); !g || !h {
+		t.Errorf("jane's turn in Gerrit %v, asked on GitHub %v", g, h)
+	}
+	e.wantAsks(t)
+}
+
 // The bridge gives jane the turn for her GitHub request; she reviews,
 // and austin hands it to her again in Gerrit, before the next sync: a
 // new turn, asked, and not taken away (seventh review: taken for the

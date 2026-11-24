@@ -383,7 +383,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		// seen): their turn in Gerrit too (fifth review).
 		_, was := wasRequested[id]
 		was = was && !askedNow[id]
-		if was && !noted[id] {
+		if was && !noted[id] && !c.abandonedOut(ctx, u, removed, attention) {
 			continue
 		}
 		if s.pull.Draft {
@@ -620,6 +620,22 @@ var clearedReasons = map[string]bool{
 	"Change was marked work in progress": true,
 	"Change was abandoned":               true,
 	"Change was submitted":               true,
+}
+
+// abandonedOut reports whether u, asked on GitHub, was taken out of the
+// attention set by the change's abandon: restored, Gerrit gives nobody
+// the turn, and theirs is given back (seventh review).
+func (c *Comments) abandonedOut(ctx context.Context, u github.User, removed, attention map[string]gerrit.AttentionSetInfo) bool {
+	if !slices.ContainsFunc(slices.Collect(maps.Values(removed)), func(r gerrit.AttentionSetInfo) bool { return r.Reason == "Change was abandoned" }) {
+		return false // no lookup, most syncs
+	}
+	user, ok, err := askOnly(ctx, c.Users, u)
+	if err != nil || !ok {
+		return false
+	}
+	key := strings.ToLower(user)
+	_, in := attention[key]
+	return !in && removed[key].Reason == "Change was abandoned"
 }
 
 // attentionAt is when Gerrit says each in the attention set was put in.
