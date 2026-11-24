@@ -103,6 +103,17 @@ type wf struct {
 	// pending are patch sets uploaded in Gerrit the bridge has yet to
 	// record exporting.
 	pending map[int]wfPending
+	// seenTurn is whose turn it was in Gerrit when the last sync looked
+	// (clean; after a failing one, only those it was and still is).
+	seenTurn map[string]bool
+	// seenRequest likewise is who was asked on GitHub; beforeRequest
+	// whether each one's Gerrit turn was uncarried before they were last
+	// asked.
+	seenRequest, beforeRequest map[string]bool
+	// looks counts the syncs that looked at reviewers (the PR open);
+	// endedAt is looks when each one's request last ended.
+	looks   int
+	endedAt map[string]int
 	errs    []string
 }
 
@@ -271,7 +282,12 @@ func (w *wf) did(n, side string, in bool) {
 		w.touched[n] = map[string]bool{}
 	}
 	w.touched[n][side] = true
-	w.uncarried[n] = false
+	if side == "g" || in {
+		// A request's end on GitHub leaves a turn in Gerrit the bridge
+		// does not carry as it was (design: an old request's end takes
+		// no newer turn).
+		w.uncarried[n] = false
+	}
 }
 
 // mayAsk is n being asked on GitHub, if the bridge carries what by did.
@@ -286,11 +302,27 @@ func (w *wf) mayAsk(by, n string) {
 
 // mayWithdraw is n's request withdrawn, if the bridge carries what by did.
 func (w *wf) mayWithdraw(by, n string) {
+	if !w.seenTurn[n] && w.requested(n) {
+		// A turn given and taken since the bridge last looked: no
+		// change in Gerrit (design: "what changes on either side since
+		// the bridge last looked is carried"), so a request from before
+		// may stand.
+		w.uncarried[n] = true
+	}
 	if wfTrusted[by] || by == n {
 		w.may("gh-" + n)
 	} else {
 		w.uncarried[n] = true
 	}
+}
+
+// inGerritFor is the Gerrit write the bridge's asking n on GitHub
+// brings: their turn, or (no Gerrit account) the note saying so.
+func (w *wf) inGerritFor(n string) string {
+	if wfPeople[n].g.AccountID == 0 {
+		return "note:" + n
+	}
+	return "g+" + n
 }
 
 // inGerrit marks a person acting in Gerrit.
@@ -382,6 +414,10 @@ func (w *wf) removeReviewer(by, n string) {
 	w.did(n, "g", false)
 	if was {
 		w.mayWithdraw(by, n)
+	} else if w.requested(n) {
+		// Design: not "a reviewer removed while out of it (as on a WIP
+		// change)": their request stands.
+		w.uncarried[n] = true
 	}
 }
 
@@ -410,9 +446,8 @@ func (w *wf) upload(by string, ps int, rs ...string) {
 	if wfTrusted[by] {
 		for _, n := range w.changeRequesters() {
 			if n != by {
-				w.may("gh+"+n, "g+"+n)
+				w.mayReAsk(n)
 				delete(w.last, n)
-				w.uncarried[n] = false
 			}
 		}
 	}
@@ -428,8 +463,10 @@ func (w *wf) uploadUnrecorded(by string, ps int, rs ...string) {
 	w.ps = ps
 	for _, r := range rs {
 		w.e.g.addReviewerAt(ts, wfPeople[by].g, wfPeople[r].g)
-		w.did(r, "g", true)
-		w.uncarried[r] = true // until recorded
+		if !w.e.g.wip { // Gerrit gives nobody the turn on a WIP change
+			w.did(r, "g", true)
+			w.uncarried[r] = true // until recorded
+		}
 	}
 	if w.pending == nil {
 		w.pending = map[int]wfPending{}
@@ -465,9 +502,8 @@ func (w *wf) record(ps int) {
 	if wfTrusted[p.by] {
 		for _, n := range w.changeRequesters() {
 			if n != p.by {
-				w.may("gh+"+n, "g+"+n)
+				w.mayReAsk(n)
 				delete(w.last, n)
-				w.uncarried[n] = false
 			}
 		}
 	}
@@ -567,7 +603,18 @@ func (w *wf) request(ns ...string) {
 		}
 		p := wfPeople[n]
 		w.e.h.requested = append(w.e.h.requested, p.gh)
+		if w.beforeRequest == nil {
+			w.beforeRequest = map[string]bool{}
+		}
+		w.beforeRequest[n] = w.uncarried[n]
 		w.did(n, "gh", true)
+		if e, ok := w.endedAt[n]; ok && e == w.looks && w.seenRequest[n] {
+			// Ended and asked again since the bridge last looked: still
+			// asked, no change on GitHub (design: "what changes on
+			// either side since the bridge last looked is carried"):
+			// whatever happened to their turn meanwhile stands.
+			w.uncarried[n] = true
+		}
 		if p.g.AccountID != 0 {
 			w.may("g+" + n)
 		} else if p.gh.Type != "Bot" {
@@ -585,8 +632,38 @@ func (w *wf) withdraw(ns ...string) {
 		id := wfPeople[n].gh.ID
 		w.e.h.requested = slices.DeleteFunc(w.e.h.requested, func(u github.User) bool { return u.ID == id })
 		w.did(n, "gh", false)
+		w.endedRequest(n)
 		w.may("g-" + n)
 	}
+}
+
+// endedRequest is n's request on GitHub ending: a turn in Gerrit the
+// bridge has yet to see is not the one the request was for, and stays
+// (design, tenth review: "an old request's end took a new turn").
+func (w *wf) endedRequest(n string) {
+	if w.endedAt == nil {
+		w.endedAt = map[string]int{}
+	}
+	w.endedAt[n] = w.looks
+	if w.turn(n) && !w.seenTurn[n] {
+		w.uncarried[n] = true
+	}
+	if !w.seenRequest[n] {
+		// Asked and ended since the bridge last looked: no change on
+		// GitHub, so what was not carried in Gerrit stays so.
+		w.uncarried[n] = w.uncarried[n] || w.beforeRequest[n]
+	}
+}
+
+// mayReAsk is n, who last asked for changes, asked again for a trusted
+// person's new patch set: a doing about n in Gerrit, which the bridge
+// cannot order against what people do about n on GitHub.
+func (w *wf) mayReAsk(n string) {
+	w.may("gh+"+n, w.inGerritFor(n))
+	if w.touched[n] == nil {
+		w.touched[n] = map[string]bool{}
+	}
+	w.touched[n]["g"] = true
 }
 
 // review is n reviewing the PR's head on GitHub (state APPROVED,
@@ -596,6 +673,7 @@ func (w *wf) review(n, state string) {
 	// Asked or not, their answer is about their turn: theirs no longer.
 	w.e.h.requested = slices.DeleteFunc(w.e.h.requested, func(u github.User) bool { return u.ID == p.gh.ID })
 	w.did(n, "gh", false)
+	w.endedRequest(n)
 	w.e.h.reviews = append(w.e.h.reviews, github.Review{ID: w.e.h.id(), State: state, Body: strings.ToLower(state) + " by " + n,
 		User: p.gh, CommitID: cmpOr(w.e.h.head, "sha2"), SubmittedAt: w.e.g.now()})
 	w.may("g-" + n)
@@ -663,8 +741,21 @@ func (w *wf) sync(at, fail string) {
 	undo := w.withFailure(fail)
 	w.writes = nil
 	asks := len(w.e.h.asks)
+	looked := w.open() // closed, the reviewer sync does not look
 	w.e.sync(w.t)
 	undo()
+	if w.seenTurn == nil {
+		w.seenTurn, w.seenRequest = map[string]bool{}, map[string]bool{}
+	}
+	for _, n := range wfNames() {
+		if looked {
+			w.seenTurn[n] = w.turn(n) && (fail == "" || w.seenTurn[n])
+			w.seenRequest[n] = w.requested(n) && (fail == "" || w.seenRequest[n])
+		}
+	}
+	if looked {
+		w.looks++
+	}
 	for _, a := range w.e.h.asks[asks:] {
 		w.writes = append(w.writes, "gh"+a[:1]+w.byLogin(a[1:]))
 	}
@@ -702,6 +793,13 @@ func (w *wf) sync(at, fail string) {
 	// or a failure).
 	if fail == "" && w.open() && !w.e.h.draft {
 		clear(w.allow)
+		for n, sides := range w.touched {
+			if len(sides) > 1 {
+				// Which came last, the bridge chose: its choice is
+				// what stands.
+				delete(w.last, n)
+			}
+		}
 		clear(w.touched)
 	}
 }

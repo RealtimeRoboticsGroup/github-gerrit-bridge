@@ -66,6 +66,8 @@ go_test(
         "plan_test.go",
         "push_test.go",
         "reconcile_test.go",
+        "reviewers_fuzz_bugs_test.go",
+        "reviewers_fuzz_test.go",
         "reviewers_test.go",
         "reviewers_workflow_test.go",
         "reviewers_workflows_test.go",
