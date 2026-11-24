@@ -335,6 +335,10 @@ func (w *wf) setTurn(n, ts, reason string, in bool) bool {
 		return false // Gerrit: no change
 	}
 	w.e.g.setAttention(wfPeople[n].g, ts, reason, in)
+	if in && w.seenTurn != nil {
+		// A new turn, whatever the bridge saw of an older one.
+		w.seenTurn[n] = false
+	}
 	return true
 }
 
@@ -498,6 +502,8 @@ func (w *wf) record(ps int) {
 	for _, r := range p.rs {
 		w.uncarried[r] = false
 		w.mayAsk(p.by, r)
+		// Or, reviewed on GitHub since, taken (the turn waited for this).
+		w.may("g-" + r)
 	}
 	if wfTrusted[p.by] {
 		for _, n := range w.changeRequesters() {
@@ -556,6 +562,11 @@ func (w *wf) ready(by string, real *gerrit.AccountInfo) {
 			// The bridge's doing for GitHub's ready: not carried (design).
 			delete(w.last, n)
 			w.uncarried[n] = !w.requested(n)
+			// Nor is a turn an unrecorded upload gave, now this one.
+			for ps, pd := range w.pending {
+				pd.rs = slices.DeleteFunc(slices.Clone(pd.rs), func(r string) bool { return r == n })
+				w.pending[ps] = pd
+			}
 		}
 	}
 	w.e.g.wip, w.e.h.draft = false, false
