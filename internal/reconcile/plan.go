@@ -450,6 +450,9 @@ func MakePlan(s *Snapshot) *Plan {
 	refs := map[string]string{}
 	appends := map[string]Append{}
 	finalBase := map[int]string{} // PR -> base after this plan
+	// PRs with a push not yet imported, where GitHub owns the branches:
+	// their base and stack wait for it.
+	pendingPush := map[int]bool{}
 	for _, n := range sortedKeys(mirrored) {
 		c := mirrored[n]
 		born := s.githubBorn(n)
@@ -528,7 +531,10 @@ func MakePlan(s *Snapshot) *Plan {
 		if pr != nil {
 			d.PR = pr.Number
 		}
-		if _, known := synced[gh]; s.GitHubOwned && onGitHub && !known && pr != nil && pr.State == "open" && pr.Base.Ref != d.Base {
+		if _, known := synced[gh]; s.GitHubOwned && onGitHub && !known && pr != nil && pr.State == "open" {
+			pendingPush[pr.Number] = true
+		}
+		if pendingPush[d.PR] && pr.Base.Ref != d.Base {
 			// A push to the PR not yet imported (GitHub's restack of the
 			// layers above a merged one, which are imported one at a
 			// time): its base stays as GitHub has it until it is, as the
@@ -750,6 +756,17 @@ func MakePlan(s *Snapshot) *Plan {
 		i := slices.IndexFunc(paths, func(w []int) bool {
 			return len(w) >= len(nums) && slices.Equal(w[:len(nums)], nums)
 		})
+		if slices.ContainsFunc(nums, func(n int) bool { return pendingPush[n] }) && !slices.ContainsFunc(nums, func(n int) bool { return retarget[n] }) {
+			// GitHub's restack, imported one layer at a time: until all
+			// are, the chain in Gerrit is broken where one waits, and the
+			// stack is left as GitHub has it (seen on the test instance:
+			// dissolved and made again, and making it again fails for a PR
+			// with auto-merge on, which GitHub then no longer restacks).
+			for _, n := range nums {
+				inKept[n] = true
+			}
+			continue
+		}
 		if i < 0 || claimed[i] || slices.ContainsFunc(nums, func(n int) bool { return retarget[n] }) {
 			p.Actions = append(p.Actions, Action{Kind: Unstack, Stack: st.Number})
 			continue
@@ -765,7 +782,7 @@ func MakePlan(s *Snapshot) *Plan {
 		}
 	}
 	for i, prs := range paths {
-		if claimed[i] || slices.Contains(prs, 0) || slices.ContainsFunc(prs, func(n int) bool { return inKept[n] }) {
+		if claimed[i] || slices.Contains(prs, 0) || slices.ContainsFunc(prs, func(n int) bool { return inKept[n] || pendingPush[n] }) {
 			continue
 		}
 		p.Actions = append(p.Actions, Action{Kind: CreateStack, PRs: prs})

@@ -274,7 +274,10 @@ changes would dismiss its approvals and whose old commit would conflict
 with the squash (checked 2026-11-25). A change on an outdated patch set of
 the merged one, frozen already, stays frozen. GitHub rebases every layer
 above at once, and the bridge imports them one at a time: a PR with a
-push not yet imported keeps the base GitHub gave it until it is.
+push not yet imported keeps the base GitHub gave it until it is, and a
+stack with one is left as GitHub has it (dissolving it and making it
+again fails for a PR with auto-merge on, which is then out of the stack
+and not rebased by GitHub after the next merge).
 
 **Known gaps.** A layer GitHub does not rebase (not in a native stack, or
 its rebase conflicts) stands on a commit not on the branch until it is

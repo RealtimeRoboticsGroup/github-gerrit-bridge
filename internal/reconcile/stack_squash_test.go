@@ -2,9 +2,11 @@ package reconcile
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
@@ -125,5 +127,37 @@ func TestGitHubOwnedUnimportedRestackKeepsItsBase(t *testing.T) {
 	}
 	if w.pr(3).Base.Ref != before {
 		t.Errorf("base moved")
+	}
+}
+
+// ...and the stack GitHub kept, the layers above the merged one, is left
+// as it is meanwhile: not dissolved and made again (which GitHub refuses
+// for a PR with auto-merge on, leaving it out of the stack for good).
+func TestGitHubOwnedUnimportedRestackKeepsItsStack(t *testing.T) {
+	w := newWorld(t)
+	w.githubOwned = true
+	w.upload(1, "a1", "m0")
+	w.upload(2, "b1", "a1")
+	w.upload(3, "c1", "b1")
+	w.converge()
+	pr1, pr2 := w.pr(1), w.pr(2)
+	pr1.State, pr1.Merged = "closed", true
+	w.gerrit[1].Status, w.gerrit[1].Revision, w.gerrit[1].Parent = "MERGED", "s1", "m0"
+	w.gerrit[1].PatchSet++
+	w.onMain["s1"] = true
+	w.branch["main"] = "s1"
+	pr2.Base.Ref = "main"
+	for _, st := range w.stacks { // GitHub drops the merged PR from its stack
+		st.PullRequests = slices.DeleteFunc(st.PullRequests, func(p github.StackPR) bool { return p.Number == pr1.Number })
+	}
+	w.upload(2, "b2", "s1")
+	w.branch["gerrit/"+cid(3)] = "c1-restacked"
+	for _, a := range MakePlan(w.snapshot()).Actions {
+		if isStackAction(a.Kind) {
+			t.Errorf("planned %s while 3's restack waits to be imported", a.String())
+		}
+	}
+	if got := w.stacksAsChanges(); !slices.Equal(got[0], []int{2, 3}) || len(got) != 1 {
+		t.Errorf("stacks = %v", got)
 	}
 }
