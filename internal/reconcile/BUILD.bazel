@@ -65,6 +65,7 @@ go_test(
         "lock_test.go",
         "observe_test.go",
         "plan_test.go",
+        "reapprove_test.go",
         "stack_squash_test.go",
         "push_test.go",
         "reconcile_test.go",

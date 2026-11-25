@@ -2320,6 +2320,11 @@ func (c *Comments) dismissStale(ctx context.Context, n, pr int, s *commentSnapsh
 			if err := c.dropDismissed(ctx, n, pr, rv, mc, s, &dismissals); err != nil {
 				return err
 			}
+			if c.GitHubOwned {
+				if err := c.reapprove(ctx, n, pr, rv, mc, s, m, &dismissals); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		if rv.State == "APPROVED" && c.GitHubOwned {
@@ -2447,6 +2452,94 @@ func (c *Comments) dismissOwn(ctx context.Context, n, pr int, rv github.Review, 
 	}
 	c.Logger.Info("dismissed a GitHub approval of its author's own code", "change", n, "pr", pr, "review", rv.ID, "user", rv.User.Login)
 	return true, nil
+}
+
+// reapprove approves again, as its reviewer, GitHub approval rv that
+// GitHub itself dismissed on a push (dismiss stale approvals) when Gerrit
+// kept the reviewer's vote across that patch set (its copyCondition: a
+// trivial rebase, say). Where GitHub owns the branches its approvals are
+// the gate, and Gerrit's vote said nothing new to post: the PR was held
+// back while Gerrit counted the approval. Only on the current patch set's
+// commit, while it is the PR's head; only with the reviewer's own link;
+// never their own change; once for each dismissed review, and only for
+// one mirrored either way.
+func (c *Comments) reapprove(ctx context.Context, n, pr int, rv github.Review, mc *state.Comment, s *commentSnapshot, m *commentMap, dismissals *map[int64]github.Dismissal) error {
+	if s.pull == nil || s.pull.State == "closed" || s.pull.Merged {
+		return nil
+	}
+	ps, sha := s.latestOnGitHub(s.current)
+	if ps != s.current || sha == "" || s.pull.Head.SHA != sha {
+		return nil
+	}
+	key := "reapproved:" + strconv.FormatInt(rv.ID, 10)
+	if mc == nil || strings.HasPrefix(mc.GerritID, "refused:") || m.byGerrit[key] != nil {
+		// Only one mirrored, either way: an approval that cast no vote is
+		// not the reviewer's Gerrit vote.
+		return nil
+	}
+	if *dismissals == nil {
+		ds, err := c.GitHub.Dismissals(ctx, pr)
+		if err != nil {
+			return err
+		}
+		*dismissals = ds
+	}
+	if d, ok := (*dismissals)[rv.ID]; !ok || d.State != "approved" || d.Commit == "" {
+		return nil // a person's or a bot's call, not a push's
+	}
+	_, user, err := c.asUser(ctx, rv.User)
+	if err != nil {
+		return err
+	}
+	if user == "" || gerrit.AmbiguousUsername(user) {
+		return nil
+	}
+	var vote *gerrit.ApprovalInfo
+	for _, a := range s.labels["Code-Review"].All {
+		if strings.EqualFold(a.Username, user) {
+			vote = &a
+		}
+	}
+	// As dismissStale reads agreement: one the bridge posted for a Gerrit
+	// +2 stands for a +2; one cast from GitHub, for a positive vote.
+	approves := 1
+	if mc.Origin == "gerrit" {
+		approves = 2
+	}
+	if vote == nil || vote.Value < approves {
+		return nil
+	}
+	voter := vote.AccountInfo
+	for _, msg := range s.messages { // named by username only: their own messages say who
+		if voter.AccountID == 0 && strings.EqualFold(msg.Author.Username, user) {
+			voter = msg.Author
+		}
+	}
+	if voter.AccountID == 0 || s.ownChange(voter) {
+		return nil
+	}
+	p, err := c.posterFor(ctx, s, voter.AccountID)
+	if err != nil {
+		return err
+	}
+	if p.api == nil || p.as.ID != rv.User.ID {
+		return nil // only as them
+	}
+	body := fmt.Sprintf("In [Gerrit](%s), @%s's Code-Review %s carried over to patch set %d; GitHub dismissed the approval on the push.",
+		c.Gerrit.ChangeURL(c.Project, n), rv.User.Login, voteString(vote.Value), ps)
+	out, err := p.api.CreateReview(ctx, pr, github.NewReview{CommitID: sha, Event: "APPROVE", Body: body})
+	var ae *github.APIError
+	if errors.As(err, &ae) && ae.Status >= 400 && ae.Status < 500 && ae.Status != http.StatusConflict && ae.Status != http.StatusTooManyRequests && ae.RetryAfter == 0 {
+		c.Logger.Info("GitHub refused approving again for a vote Gerrit kept", "change", n, "pr", pr, "github_login", rv.User.Login, "err", err)
+		m.add(state.Comment{GerritID: key, Kind: kindRefused, Origin: "gerrit"})
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	m.add(state.Comment{GerritID: key, GitHubID: out.ID, Kind: kindReviewBody, Origin: mc.Origin, As: p.as.ID})
+	c.Logger.Info("approved again on GitHub for a vote Gerrit kept across a push", "change", n, "pr", pr, "review", out.ID, "dismissed", rv.ID, "as", p.as.Login)
+	return nil
 }
 
 // dropDismissed withdraws the Code-Review vote a GitHub approval cast once

@@ -762,8 +762,12 @@ Gerrit                         GitHub
     GitHub itself (`review_dismissed` with a `dismissal_commit_id`, on a
     push) or by a bot. It does not remove the matching Gerrit vote.
     Gerrit's own `copyCondition` decides whether a vote survives a rebase.
-  - Approvals the bridge mirrored from Gerrit are re-posted if the Gerrit
-    vote is still there.
+  - Where GitHub owns the branches (its approvals are the gate), an
+    approval mirrored either way that GitHub dismissed on a push is
+    approved again, as its reviewer (their link), on the new head, if
+    Gerrit kept their vote across that patch set (a trivial rebase), once
+    per dismissed approval; not their own change, nor after a person's
+    or a bot's dismissal.
 
 The general form: for every PR, if its head's parent is the current head
 of the PR below it, the PR stays in the stack. Otherwise it gets a frozen
