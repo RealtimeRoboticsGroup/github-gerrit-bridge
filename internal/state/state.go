@@ -93,7 +93,10 @@ func (r *Reviewers) UnmarshalJSON(b []byte) error {
 	type plain Reviewers
 	var v struct {
 		plain
-		Requested  []GitHubAccount  `json:"requested"`
+		Requested []struct {
+			ID    int64  `json:"id"`
+			Login string `json:"login"`
+		} `json:"requested"`
 		Noted      []int64          `json:"noted"`
 		Ending     map[int64]string `json:"ending"`
 		Unrecorded map[int64]struct {
@@ -129,12 +132,6 @@ func (r *Reviewers) UnmarshalJSON(b []byte) error {
 		r.Requests[a.ID] = req
 	}
 	return nil
-}
-
-// GitHubAccount is a GitHub account: its id, and its login then.
-type GitHubAccount struct {
-	ID    int64  `json:"id"`
-	Login string `json:"login"`
 }
 
 // ChangeState links a change to its pull request (state.json).
