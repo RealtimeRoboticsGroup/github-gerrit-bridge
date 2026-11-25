@@ -19,8 +19,9 @@ import (
 // Submitter submits a Gerrit change as a user.
 type Submitter interface {
 	// CanSubmitAs reports whether user may submit change now; if not, why.
-	// Current is change's current patch set and when it was uploaded.
-	Current(ctx context.Context, change int) (rev string, uploaded time.Time, err error)
+	// Current is change's current patch set, when it was uploaded, and
+	// its commit message.
+	Current(ctx context.Context, change int) (rev string, uploaded time.Time, message string, err error)
 	CanSubmitAs(ctx context.Context, user string, change int, rev string) (bool, string, error)
 	// SubmitAs submits revision rev, which must still be current.
 	SubmitAs(ctx context.Context, user string, change int, rev string) error
@@ -32,20 +33,20 @@ type Submitter interface {
 type RunAsSubmitter struct{ Gerrit *gerrit.Client }
 
 // Current implements Submitter.
-func (r RunAsSubmitter) Current(ctx context.Context, change int) (string, time.Time, error) {
-	ci, err := r.Gerrit.GetChange(ctx, change, "CURRENT_REVISION")
+func (r RunAsSubmitter) Current(ctx context.Context, change int) (string, time.Time, string, error) {
+	ci, err := r.Gerrit.GetChange(ctx, change, "CURRENT_REVISION", "CURRENT_COMMIT")
 	if err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, "", err
 	}
 	rev, ok := ci.Current()
 	if !ok {
-		return "", time.Time{}, fmt.Errorf("change %d has no current revision", change)
+		return "", time.Time{}, "", fmt.Errorf("change %d has no current revision", change)
 	}
 	t, err := time.Parse("2006-01-02 15:04:05.999999999", rev.Created)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("change %d: patch set time %q: %w", change, rev.Created, err)
+		return "", time.Time{}, "", fmt.Errorf("change %d: patch set time %q: %w", change, rev.Created, err)
 	}
-	return ci.CurrentRevision, t, nil
+	return ci.CurrentRevision, t, rev.Commit.Message, nil
 }
 
 // CanSubmitAs implements Submitter.
@@ -297,23 +298,23 @@ func latest(a, b time.Time) time.Time {
 	return a
 }
 
-// seen is the current patch set of change n (rev) and the PR head that is
-// it (sha), if the /submit in ic is for it: what its author could have
-// seen. If not, reply says why.
-func (c *Commands) seen(ctx context.Context, n int, ic github.IssueComment, heads []state.Head) (rev, sha string, st *state.Change, reply string) {
+// seen is the current patch set of change n (rev), its commit message,
+// and the PR head that is it (sha), if the /submit in ic is for it: what
+// its author could have seen. If not, reply says why.
+func (c *Commands) seen(ctx context.Context, n int, ic github.IssueComment, heads []state.Head) (rev, message, sha string, st *state.Change, reply string) {
 	// A command is for the patch set its author saw: not for one uploaded
 	// after it, nor, long after, for whatever the change has become (the
 	// bridge was down, say).
-	rev, uploaded, err := c.Submitter.Current(ctx, n)
+	rev, uploaded, message, err := c.Submitter.Current(ctx, n)
 	if err != nil {
 		c.Logger.Warn("finding the patch set to submit", "change", n, "err", err)
-		return "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: the bridge could not reach Gerrit (see its log). Post it again.", ic.User.Login)
+		return "", "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: the bridge could not reach Gerrit (see its log). Post it again.", ic.User.Login)
 	}
 	if ic.CreatedAt.Before(uploaded) {
-		return "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: change %d has a patch set newer than your comment. Post it again to submit that.", ic.User.Login, n)
+		return "", "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: change %d has a patch set newer than your comment. Post it again to submit that.", ic.User.Login, n)
 	}
 	if age := c.now().Sub(ic.CreatedAt); age > maxCommandAge {
-		return "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: it is more than %v old. Post it again.", ic.User.Login, maxCommandAge)
+		return "", "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: it is more than %v old. Post it again.", ic.User.Login, maxCommandAge)
 	}
 	// And one the commenter could have seen: the PR's head from a minute
 	// (minSeen) before they wrote it until now (state.Head). A patch set
@@ -324,14 +325,14 @@ func (c *Commands) seen(ctx context.Context, n int, ic github.IssueComment, head
 	st, err = c.Store.Load(ctx, n)
 	if err != nil {
 		c.Logger.Warn("reading state for /submit", "change", n, "err", err)
-		return "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: the bridge could not read its state (see its log). Post it again.", ic.User.Login)
+		return "", "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: the bridge could not read its state (see its log). Post it again.", ic.User.Login)
 	}
 	sha = headThroughout(heads, ic.CreatedAt.Add(-minSeen), c.now())
 	seen := sha != "" && (sha == rev || slices.ContainsFunc(st.Revisions, func(r state.Revision) bool { return r.GitHubSHA == sha && r.GerritSHA == rev }))
 	if !seen {
-		return "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: change %d's current patch set was not on GitHub when you wrote it (not yet, only just, or not at all: see the change). Submit it in Gerrit, or post again once it is here.", ic.User.Login, n)
+		return "", "", "", nil, fmt.Sprintf("@%s: `/submit` was not run: change %d's current patch set was not on GitHub when you wrote it (not yet, only just, or not at all: see the change). Submit it in Gerrit, or post again once it is here.", ic.User.Login, n)
 	}
-	return rev, sha, st, ""
+	return rev, message, sha, st, ""
 }
 
 func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, heads []state.Head) (string, error) {
@@ -343,7 +344,7 @@ func (c *Commands) submit(ctx context.Context, n int, ic github.IssueComment, he
 		return fmt.Sprintf("@%s: `/submit` needs a linked Gerrit account, and yours is not linked. "+
 			"Ask an admin to add you to the bridge's identity map, or submit in Gerrit.", ic.User.Login), nil
 	}
-	rev, _, _, reply := c.seen(ctx, n, ic, heads)
+	rev, _, _, _, reply := c.seen(ctx, n, ic, heads)
 	if reply != "" {
 		return reply, nil
 	}
@@ -387,16 +388,16 @@ const maxListedCommits = 250
 // is merged on GitHub with the commenter's own linked token, so GitHub's
 // branch protection decides as it would for their button press, and only
 // at the head they could have seen, the change's current patch set. Its
-// commit message is the PR's description, ending with the change's
-// Change-Id, so Gerrit closes the change as merged when the merge reaches
-// its branch. A GitHub-born PR that pulls in a subtree (git subtree's
+// commit message is the PR's description, without the bridge's links
+// block, ending with the change's Change-Id and its sign-offs, so Gerrit
+// closes the change as merged when the merge reaches its branch. A GitHub-born PR that pulls in a subtree (git subtree's
 // commits, whose history later subtree pulls need) is merged with a merge
 // commit; everything else is squashed, whatever merges it has (an
 // "Update branch", the bridge's own patch-set history): a merge commit
 // would bring every commit of it, Change-Id footers that close other
 // changes included. Gerrit-born PRs' history is the patch sets'.
 func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, heads []state.Head, pr *github.PullRequest) (string, error) {
-	_, sha, st, reply := c.seen(ctx, n, ic, heads)
+	_, message, sha, st, reply := c.seen(ctx, n, ic, heads)
 	if reply != "" {
 		return reply, nil
 	}
@@ -431,10 +432,12 @@ func (c *Commands) merge(ctx context.Context, n int, ic github.IssueComment, hea
 	if msg != "" {
 		msg += "\n\n"
 	}
-	// The description's sign-offs stay, as the merge button keeps them,
-	// in the trailer paragraph.
+	// The trailer paragraph is the Change-Id and, under it, the change's
+	// sign-offs: its commit message's (the PR description leaves them
+	// out, as Gerrit's business) and any the description has. Nothing
+	// else of the bridge's: the links block is not the change's.
 	user, _ := splitBody(pr.Body)
-	trailers := append(signOffs(user), "Change-Id: "+st.State.ChangeID)
+	trailers := append([]string{"Change-Id: " + st.State.ChangeID}, signOffs(message, user)...)
 	// A PR in a native stack (the bridge's own, of a relation chain, or
 	// one made on GitHub) merges only asynchronously; being based on the
 	// branch, it is the bottom, and merges alone.

@@ -20,13 +20,15 @@ type fakeSubmitter struct {
 	// rev is the current patch set, uploaded at uploaded.
 	rev      string
 	uploaded time.Time
+	// message is its commit message.
+	message string
 }
 
-func (f *fakeSubmitter) Current(context.Context, int) (string, time.Time, error) {
+func (f *fakeSubmitter) Current(context.Context, int) (string, time.Time, string, error) {
 	if f.rev == "" {
-		return "sha2", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), nil
+		return "sha2", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), f.message, nil
 	}
-	return f.rev, f.uploaded, nil
+	return f.rev, f.uploaded, f.message, nil
 }
 
 func (f *fakeSubmitter) CanSubmitAs(_ context.Context, user string, change int, rev string) (bool, string, error) {
@@ -564,7 +566,27 @@ func TestSubmitMergeKeepsSignOffs(t *testing.T) {
 	if err := c.Run(context.Background(), 5); err != nil {
 		t.Fatal(err)
 	}
-	if want := "It was bent.\n\nSigned-off-by: Austin <austin@example.com>\nChange-Id: " + cid(5); len(m.calls) != 1 || m.calls[0].Message != want {
+	if want := "It was bent.\n\nChange-Id: " + cid(5) + "\nSigned-off-by: Austin <austin@example.com>"; len(m.calls) != 1 || m.calls[0].Message != want {
+		t.Errorf("merges %+v, want message %q", m.calls, want)
+	}
+}
+
+// A Gerrit-born PR's description leaves the commit message's trailers
+// out (messageBody), so /submit takes the sign-offs from the change's
+// commit message: the merge is the description, then the Change-Id with
+// the sign-offs under it, and none of the bridge's links block or
+// GitHub-PR trailer (team1868, 2026-11-25).
+func TestSubmitMergeSignsOffAsTheCommitDid(t *testing.T) {
+	c, h, sub, m := mergeCommands(t, "gerrit")
+	sub.message = "Fix the arm\n\nIt was bent.\n\nGitHub-PR: https://github.com/o/r/pull/1\nChange-Id: " + cid(5) +
+		"\nSigned-off-by: Austin <austin@example.com>\nSigned-off-by: Mike <mike@example.com>\n"
+	h.body = "It was bent.\n\nSigned-off-by: Mike <mike@example.com>\nSigned-off-by: Bob <bob@example.com>\n\n" + linksStart + "\nblock\n" + linksEnd + "\n\nChange-Id: " + cid(5)
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	want := "It was bent.\n\nChange-Id: " + cid(5) + "\nSigned-off-by: Austin <austin@example.com>\nSigned-off-by: Mike <mike@example.com>\nSigned-off-by: Bob <bob@example.com>"
+	if len(m.calls) != 1 || m.calls[0].Message != want {
 		t.Errorf("merges %+v, want message %q", m.calls, want)
 	}
 }

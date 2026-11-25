@@ -236,6 +236,15 @@ check "as AustinSchuh, with his linked account" test "$(pr "${N4}" .merged_by.lo
 M4=$(pr "${N4}" .merge_commit_sha)
 one_parent() { [[ "$(me api "repos/${R}/commits/${M4}" --jq '.parents | length')" == 1 ]]; }
 check "squashed" one_parent
+# Its message ends with the Change-Id and the commit's sign-off under it,
+# and has nothing of the bridge's links block.
+signed_off() {
+  local m; m=$(me api "repos/${R}/commits/${M4}" --jq .commit.message)
+  [[ "${m}" != *"bridge:links"* ]] &&
+    [[ "$(printf '%s\n' "${m}" | tail -n 2 | head -n 1)" == "Change-Id: "* ]] &&
+    [[ "$(printf '%s\n' "${m}" | tail -n 1)" == "Signed-off-by: "* ]]
+}
+check "its message ends with the Change-Id and the sign-off, without the links block" signed_off
 wait_for "Gerrit's main follows" followed main
 wait_for "change ${C4} is merged at GitHub's commit" merged_at "${C4}" "${M4}"
 

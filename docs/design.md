@@ -202,9 +202,12 @@ checklist.
   protection decides as for their own button press; never with the
   bridge's. Only at the head they could have seen, if it is the change's
   current patch set (as a Gerrit `/submit`). The message is the
-  description ending with the Change-Id. A GitHub-born PR that pulls in
-  a subtree (git subtree's commits, with `git-subtree-dir:`) gets a merge
-  commit; everything else is squashed, whatever merges it has.
+  description, without the links block, ending with the Change-Id and,
+  under it, the change's `Signed-off-by:` lines (its commit message's,
+  which the description leaves out, and the description's own). A
+  GitHub-born PR that pulls in a subtree (git subtree's commits, with
+  `git-subtree-dir:`) gets a merge commit; everything else is squashed,
+  whatever merges it has.
 - **Not reshaped.** `PrepareSubmit` and the plan's swap-and-retarget for
   replication do nothing: nothing replicates. A change that merges while
   its PR is open (a commit with its Change-Id landed some other way) has
