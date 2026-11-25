@@ -53,41 +53,82 @@ type Reviewers struct {
 	// from before: any).
 	Attention   []string          `json:"attention,omitempty"`
 	AttentionAt map[string]string `json:"attention_at,omitempty"`
-	// Requested is the GitHub accounts with pending review requests, and
-	// Noted the ids of those Gerrit was told have no Gerrit account.
-	Requested []GitHubAccount `json:"requested,omitempty"`
-	Noted     []int64         `json:"noted,omitempty"`
-	// Ending is, by GitHub account id, those in Requested whose request
-	// had ended, its end not yet carried (a lookup failed), with the
-	// GerritAt of the look that first saw it end: asked again meanwhile,
-	// they are asked anew; a turn given after that is not its to end. An
-	// empty time is one before anything in Gerrit, not none.
-	Ending map[int64]string `json:"ending,omitempty"`
+	// Requests is, by GitHub account id, each review request the sync has
+	// seen, kept after it ends until the turn it was for is settled.
+	Requests map[int64]Request `json:"requests,omitempty"`
 	// AskedFor is, by GitHub account id, the newest patch set each was
 	// asked to review again (or was found to have answered): asked once
 	// for each. GivenBack is, by Gerrit username, the abandon (its
 	// removal's time) whose taking their turn was given back on restore.
 	AskedFor  map[int64]int     `json:"asked_for,omitempty"`
 	GivenBack map[string]string `json:"given_back,omitempty"`
-	// GerritAt is the newest time Gerrit gave for anything the sync saw
-	// (Gerrit's clock, not At's). Unrecorded is, by GitHub account id,
-	// the requests left out of Requested (made while a draft, or whose
-	// Gerrit side failed: carried later as new), each with when it was
-	// first seen.
-	GerritAt   string                      `json:"gerrit_at,omitempty"`
-	Unrecorded map[int64]UnrecordedRequest `json:"unrecorded,omitempty"`
-	// Withdrawn is, by GitHub account id, the GerritAt of the last look
-	// that saw such a request before it ended: a turn given by then was
-	// answered by its end.
-	Withdrawn map[int64]string `json:"withdrawn,omitempty"`
 }
 
-// UnrecordedRequest is a review request the reviewer sync saw but left
-// out of Requested: whose (their login then), and the GerritAt of the
-// look that first saw it.
-type UnrecordedRequest struct {
-	Login string `json:"login"`
-	At    string `json:"at"`
+// Request is a GitHub review request as the reviewer sync saw it. Its
+// times are Gerrit's: the newest Gerrit gave for anything a look saw (an
+// empty one is a look before anything was done in Gerrit, not none).
+type Request struct {
+	// Login is the account's login then.
+	Login string `json:"login,omitempty"`
+	// Seen is when it was first seen: a removal after it stands. Until is
+	// when it was last seen: a turn given by then, unseen, its end takes.
+	Seen  string `json:"seen,omitempty"`
+	Until string `json:"until,omitempty"`
+	// Recorded: carried to Gerrit (or nothing to carry). Not: made while
+	// a draft, or its Gerrit side failed, to be carried later as new.
+	Recorded bool `json:"recorded,omitempty"`
+	// Noted: Gerrit was told they have no Gerrit account.
+	Noted bool `json:"noted,omitempty"`
+	// Ended: it has ended, and EndedAt is when that was first seen: a turn
+	// seen by then, its end takes. Kept until that turn is taken, gone or
+	// found to be a new one; asked again meanwhile, it is a new request.
+	Ended   bool   `json:"ended,omitempty"`
+	EndedAt string `json:"ended_at,omitempty"`
+}
+
+// UnmarshalJSON reads Reviewers, and the fields an earlier build of the
+// reviewer sync kept (requested, noted, ending, unrecorded, withdrawn) as
+// the Requests they were.
+func (r *Reviewers) UnmarshalJSON(b []byte) error {
+	type plain Reviewers
+	var v struct {
+		plain
+		Requested  []GitHubAccount  `json:"requested"`
+		Noted      []int64          `json:"noted"`
+		Ending     map[int64]string `json:"ending"`
+		Unrecorded map[int64]struct {
+			Login string `json:"login"`
+			At    string `json:"at"`
+		} `json:"unrecorded"`
+		Withdrawn map[int64]string `json:"withdrawn"`
+		GerritAt  string           `json:"gerrit_at"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*r = Reviewers(v.plain)
+	if len(v.Requested)+len(v.Unrecorded)+len(v.Withdrawn) == 0 {
+		return nil
+	}
+	if r.Requests == nil {
+		r.Requests = map[int64]Request{}
+	}
+	// gerrit_at was the last look's time; an end that waited bounded both
+	// kinds of turn; a withdrawn one, the last look that saw it.
+	for id, t := range v.Withdrawn {
+		r.Requests[id] = Request{Until: t, Ended: true, EndedAt: t}
+	}
+	for id, u := range v.Unrecorded {
+		r.Requests[id] = Request{Login: u.Login, Seen: u.At, Until: v.GerritAt}
+	}
+	for _, a := range v.Requested {
+		req := Request{Login: a.Login, Until: v.GerritAt, Recorded: true, Noted: slices.Contains(v.Noted, a.ID)}
+		if t, ok := v.Ending[a.ID]; ok {
+			req.Until, req.Ended, req.EndedAt = t, true, t
+		}
+		r.Requests[a.ID] = req
+	}
+	return nil
 }
 
 // GitHubAccount is a GitHub account: its id, and its login then.

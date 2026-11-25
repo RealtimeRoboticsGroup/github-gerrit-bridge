@@ -541,6 +541,34 @@ func TestLeaseConflictsOfAnAtomicPush(t *testing.T) {
 	}
 }
 
+// The reviewer sync's state from before its requests were one record each
+// loads as those records: recorded (noted, ending), unrecorded, withdrawn.
+func TestOldReviewerRequestsLoad(t *testing.T) {
+	old := `{"pr":3,"requested":[{"id":1,"login":"a"},{"id":2,"login":"b"}],"noted":[2],"ending":{"1":""},` +
+		`"gerrit_at":"t5","unrecorded":{"3":{"login":"c","at":"t2"}},"withdrawn":{"4":"t4"},"asked_for":{"1":2}}`
+	var got Reviewers
+	if err := json.Unmarshal([]byte(old), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := Reviewers{PR: 3, AskedFor: map[int64]int{1: 2}, Requests: map[int64]Request{
+		1: {Login: "a", Recorded: true, Ended: true},
+		2: {Login: "b", Until: "t5", Recorded: true, Noted: true},
+		3: {Login: "c", Seen: "t2", Until: "t5"},
+		4: {Until: "t4", Ended: true, EndedAt: "t4"},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Reviewers
+	if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back, want) {
+		t.Errorf("round trip of %s: %+v, %v", b, back, err)
+	}
+}
+
 // An earlier build kept a list of reviewers under "reviewers"; a state.json
 // it wrote still loads, and what the reviewer sync saw has its own key.
 func TestOldReviewersListStillLoads(t *testing.T) {

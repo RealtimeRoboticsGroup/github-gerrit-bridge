@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -119,7 +120,7 @@ func TestGerritReviewerIsAskedOnGitHub(t *testing.T) {
 	e.g.vote("mikebauer", "Code-Review", 0) // Gerrit lists reviewers at 0
 	e.sync(t)
 	e.wantAsks(t, "+mike-gh")
-	if s := e.seen(t); !slices.Equal(s.Requested, []state.GitHubAccount{{ID: 77, Login: "mike-gh"}}) {
+	if s := e.seen(t); len(s.Requests) != 1 || s.Requests[77].Login != "mike-gh" || !s.Requests[77].Recorded || s.Requests[77].Ended {
 		t.Errorf("seen = %+v", s)
 	}
 	e.sync(t) // GitHub's review_requested comes back: nothing
@@ -218,7 +219,7 @@ func TestTurnsFollowTheAttentionSet(t *testing.T) {
 	e.g.removeReviewer(austin, mike)
 	e.sync(t)
 	e.wantAsks(t, "+mike-gh", "+mike-gh", "-mike-gh", "+mike-gh", "-mike-gh")
-	if s := e.seen(t); len(e.h.requested) != 0 || len(s.Requested) != 0 {
+	if s := e.seen(t); len(e.h.requested) != 0 || len(s.Requests) != 0 {
 		t.Errorf("requested = %v, seen %+v", e.h.requested, s)
 	}
 	// Who is who unknown for now when their turn ends: tried again.
@@ -1405,7 +1406,7 @@ func TestGitHubReviewerWithoutAGerritAccount(t *testing.T) {
 	if got := e.g.reviewers["REVIEWER"]; len(got) != 1 || got[0].Username != "newcomer" {
 		t.Errorf("Gerrit reviewers = %+v", e.g.reviewers)
 	}
-	if s := e.seen(t); len(s.Noted) != 0 {
+	if s := e.seen(t); slices.ContainsFunc(slices.Collect(maps.Values(s.Requests)), func(r state.Request) bool { return r.Noted }) {
 		t.Errorf("still noted: %+v", s)
 	}
 
@@ -1691,7 +1692,7 @@ func TestAnotherPRStartsAgain(t *testing.T) {
 	e.wantAsks(t, "+mike-gh")
 	if err := updateStateFn(context.Background(), e.st, 5, "relink", func(st *state.Change) {
 		st.State.PR = 8
-		st.State.Reviewers.Requested = []state.GitHubAccount{{ID: janeGH.ID, Login: janeGH.Login}}
+		st.State.Reviewers.Requests = map[int64]state.Request{janeGH.ID: {Login: janeGH.Login, Recorded: true}}
 	}); err != nil {
 		t.Fatal(err)
 	}

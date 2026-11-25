@@ -169,7 +169,11 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	if prev == nil {
 		if s.pull.CreatedAt.Before(c.Since) {
 			// From before the bridge started: as it is.
-			return &state.Reviewers{At: s.at, PR: pr, PatchSet: s.current, Attention: attentionNow, AttentionAt: attentionAt(attention), Requested: accounts(requested)}
+			reqs := map[int64]state.Request{}
+			for id, u := range requested {
+				reqs[id] = state.Request{Login: u.Login, Recorded: true}
+			}
+			return &state.Reviewers{At: s.at, PR: pr, PatchSet: s.current, Attention: attentionNow, AttentionAt: attentionAt(attention), Requests: reqs}
 		}
 		prev = &state.Reviewers{} // new: everything on it is
 	}
@@ -192,23 +196,6 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		bridges := strings.HasPrefix(at, "*") && (strings.HasPrefix(a.Reason, reviewerReason) || a.Reason == "Reviewer was added")
 		return wasAttention[key] && (!ok || bridges || at == a.LastUpdate)
 	}
-	wasRequested := map[int64]github.User{}
-	for _, a := range prev.Requested {
-		wasRequested[a.ID] = github.User{Login: a.Login, ID: a.ID}
-	}
-	noted := map[int64]bool{}
-	for _, id := range prev.Noted {
-		noted[id] = true
-	}
-	// Asked again since their request ended, its end not yet carried: a
-	// new request (eleventh review: taken for the old one, never carried).
-	for id := range prev.Ending {
-		if _, asked := requested[id]; asked {
-			delete(wasRequested, id)
-			delete(noted, id) // said again (twelfth review)
-		}
-	}
-	ending := map[int64]string{}
 	// What this look saw: the newest time Gerrit gave for anything.
 	gerritAt := ""
 	for _, u := range s.reviewerUpdates {
@@ -223,14 +210,31 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	for _, a := range removed {
 		gerritAt = max(gerritAt, a.LastUpdate)
 	}
-	// endingAt is when a request's end was first seen. Empty is a time
-	// too: before anything in Gerrit (thirteenth review: taken for none,
-	// the end was forgotten, and a request made again never carried).
-	endingAt := func(id int64, now string) string {
-		if at, ok := prev.Ending[id]; ok {
-			return at
+	// The requests seen before, as this look finds them: one no longer
+	// asked has ended, now if not before. One asked again since it ended
+	// (its turn not settled) is a new request (eleventh review: taken for
+	// the old one, never carried; twelfth: said again).
+	reqs := map[int64]state.Request{}
+	for id, r := range prev.Requests {
+		_, asked := requested[id]
+		if asked && r.Ended {
+			continue
 		}
-		return now
+		if !asked && !r.Ended {
+			r.Ended, r.EndedAt = true, gerritAt
+		}
+		reqs[id] = r
+	}
+	// was reports whether id's request was carried before, and goes on.
+	was := func(id int64) bool {
+		r, ok := reqs[id]
+		return ok && r.Recorded && !r.Ended
+	}
+	noted := map[int64]bool{}
+	for id, r := range reqs {
+		if r.Noted && !r.Ended {
+			noted[id] = true
+		}
 	}
 	// Retries: what failed is left to look new (or gone) next time; and
 	// whom the bridge took out of the attention set is out.
@@ -240,7 +244,9 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	// stillSeen is when each was taken out, as Gerrit said ("*": put in
 	// by the bridge; "?": in, its lookup failed, so new again next time).
 	notSeen, stillSeen := map[string]bool{}, map[string]string{}
-	notRequested, stillRequested := map[int64]bool{}, map[int64]github.User{}
+	// notRequested: requests left unrecorded; taken, turns an ended
+	// request's end took (or Gerrit will not let it).
+	notRequested, taken := map[int64]bool{}, map[string]bool{}
 	// Whether a is trusted; known false: the group could not be read, and
 	// what a did waits for the next sync, unseen.
 	// Asked once a sync for each (the group is read afresh each time).
@@ -256,21 +262,6 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			trustOf[a.AccountID] = t
 		}
 		return t.trusted, t.known
-	}
-	// Requests left out of Requested that have ended: the last look that
-	// saw each (twelfth review: a turn handed while a draft, then the
-	// request withdrawn, asked again once ready).
-	withdrawn := maps.Clone(prev.Withdrawn)
-	if withdrawn == nil {
-		withdrawn = map[int64]string{}
-	}
-	for id := range prev.Unrecorded {
-		if _, asked := requested[id]; !asked {
-			withdrawn[id] = prev.GerritAt
-		}
-	}
-	for id := range requested {
-		delete(withdrawn, id)
 	}
 	askedFor := maps.Clone(prev.AskedFor)
 	if askedFor == nil {
@@ -318,7 +309,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 				notSeen[key] = true
 			} else if _, asked := requested[gh.ID]; !asked {
 				notSeen[key] = true
-			} else if _, was := wasRequested[gh.ID]; !was {
+			} else if !was(gh.ID) {
 				notSeen[key] = true
 			}
 			continue
@@ -332,19 +323,20 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		_, asked := requested[gh.ID]
-		if _, was := wasRequested[gh.ID]; linked && !asked && (was && a.LastUpdate <= endingAt(gh.ID, prev.GerritAt) || a.LastUpdate <= withdrawn[gh.ID]) {
-			// Given before the last look, when they were asked: their
-			// request has ended since, after it, and ends the turn too,
-			// whoever gave it (twelfth review: an unseen hand-off undid
-			// a withdrawal).
+		if r, ok := reqs[gh.ID]; linked && !asked && ok && r.Ended && a.LastUpdate <= r.Until {
+			// Given by a look that saw them asked: their request's end
+			// takes it, whoever gave it (twelfth review: an unseen
+			// hand-off undid a withdrawal).
 			if err := c.Gerrit.RemoveFromAttentionSet(ctx, n, a.Account.AccountID, reviewerReason+"review request ended"); err != nil {
 				c.Logger.Warn("taking someone no longer asked on GitHub out of the attention set", "change", n, "gerrit_user", a.Account.Username, "err", err)
 				if !refused(err) {
 					notSeen[key] = true
+					continue
 				}
-				continue
+			} else {
+				notSeen[key] = true
 			}
-			notSeen[key] = true
+			taken[key] = true
 			continue
 		}
 		if asked && linked {
@@ -467,7 +459,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 	if len(pending) > 0 {
 		known := true
 		for id, u := range requested {
-			if _, was := wasRequested[id]; !was {
+			if !was(id) {
 				continue // new: added as any request is
 			}
 			user, ok, err := askOnly(ctx, c.Users, u)
@@ -492,8 +484,7 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		u := requested[id]
 		// Asked again by the bridge (their request had ended since last
 		// seen): their turn in Gerrit too (fifth review).
-		_, was := wasRequested[id]
-		was = was && !askedNow[id]
+		was := was(id) && !askedNow[id]
 		if was && !noted[id] && giveBack[id] == "" || handedOn[id] {
 			// Or asked for the Gerrit turn they have: nothing to carry,
 			// and a lookup failing must not leave the request unseen
@@ -539,8 +530,8 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			continue
 		}
 		_, in := attention[key]
-		if ur, ok := prev.Unrecorded[id]; !was && ok {
-			at := ur.At
+		if r, ok := reqs[id]; ok && !r.Recorded {
+			at := r.Seen
 			// Removed as a reviewer, or taken out of the attention set
 			// by someone (not Gerrit clearing it, nor the bridge), after
 			// the request was first seen: that stands (twelfth review:
@@ -583,22 +574,22 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 			c.Logger.Info("Gerrit will not make someone asked to review on GitHub a reviewer", "change", n, "gerrit_user", user, "github_login", u.Login, "err", err)
 		}
 	}
-	// Ended: requests recorded, and those left out (twelfth review: a
+	// Ended requests: each takes the turn it was for, seen before its end
+	// was, and is kept until that turn is settled (twelfth review: a
 	// draft's, withdrawn, left the turn it was for).
-	ended := maps.Clone(wasRequested)
-	for id, r := range prev.Unrecorded {
-		if _, ok := ended[id]; !ok {
-			ended[id] = github.User{ID: id, Login: r.Login}
+	kept := map[int64]state.Request{}
+	for _, id := range slices.Sorted(maps.Keys(reqs)) {
+		r := reqs[id]
+		if _, asked := requested[id]; asked || !r.Ended {
+			continue // or asked again by the bridge: a new request
 		}
-	}
-	for _, id := range slices.Sorted(maps.Keys(ended)) {
-		if _, still := requested[id]; still {
+		if r.Login == "" {
+			kept[id] = r // from an earlier build: whose is not known
 			continue
 		}
-		u := ended[id]
-		user, _, err := askOnly(ctx, c.Users, u)
+		user, _, err := askOnly(ctx, c.Users, github.User{ID: id, Login: r.Login})
 		if err != nil {
-			stillRequested[id], ending[id] = u, endingAt(id, gerritAt)
+			kept[id] = r
 			continue
 		}
 		key := strings.ToLower(user)
@@ -606,33 +597,35 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		// review: kept, it withdrew a request made again later).
 		delete(stillSeen, key)
 		a, in := attention[key]
-		if at, ok := prev.Ending[id]; !in || !sameTurn(key, a) || ok && a.LastUpdate > at {
-			// Or given again since: not the turn the request was for
-			// (tenth review: an old request's end took a new turn;
-			// twelfth: one given after the end was seen, its carrying
-			// waiting on a lookup).
+		if !in || taken[key] || a.LastUpdate > r.EndedAt {
+			// Settled: or given after the end was seen, not the turn the
+			// request was for (tenth review: an old request's end took a
+			// new turn; twelfth: one given while its end waited).
+			continue
+		}
+		if !sameTurn(key, a) {
+			if notSeen[key] && a.LastUpdate <= r.Until {
+				kept[id] = r // taken once seen (a CC's, a draft's)
+			}
 			continue
 		}
 		// Their review ends it too (mirrored as them, it usually has).
 		if err := c.Gerrit.RemoveFromAttentionSet(ctx, n, a.Account.AccountID, reviewerReason+"review request ended"); err != nil {
 			c.Logger.Warn("taking someone no longer asked on GitHub out of the attention set", "change", n, "gerrit_user", user, "err", err)
 			if !refused(err) {
-				stillRequested[id], ending[id] = u, endingAt(id, gerritAt)
+				kept[id] = r
 			}
 			continue
 		}
-		notSeen[strings.ToLower(user)] = true
+		notSeen[key] = true
 	}
 
-	next := &state.Reviewers{At: s.at, PR: pr, PatchSet: prev.PatchSet, GerritAt: gerritAt}
+	next := &state.Reviewers{At: s.at, PR: pr, PatchSet: prev.PatchSet}
 	if len(askedFor) > 0 {
 		next.AskedFor = askedFor
 	}
 	if len(givenBack) > 0 {
 		next.GivenBack = givenBack
-	}
-	if len(withdrawn) > 0 {
-		next.Withdrawn = withdrawn
 	}
 	next.AttentionAt = map[string]string{}
 	for _, key := range attentionNow {
@@ -646,29 +639,15 @@ func (c *Comments) syncReviewers(ctx context.Context, n, pr int, s *commentSnaps
 		next.AttentionAt[key] = at
 	}
 	slices.Sort(next.Attention)
-	for id := range notRequested {
-		if next.Unrecorded == nil {
-			next.Unrecorded = map[int64]state.UnrecordedRequest{}
+	for id, u := range requested {
+		r := state.Request{Login: u.Login, Seen: gerritAt, Until: gerritAt, Recorded: !notRequested[id], Noted: noted[id] && !notRequested[id]}
+		if p, ok := reqs[id]; ok && !p.Ended && (r.Recorded || !p.Recorded) {
+			r.Seen = p.Seen // when first seen (as such, if unrecorded)
 		}
-		at := next.GerritAt
-		if ur, ok := prev.Unrecorded[id]; ok {
-			at = ur.At // empty: before anything in Gerrit
-		}
-		next.Unrecorded[id] = state.UnrecordedRequest{Login: requested[id].Login, At: at}
-		delete(requested, id)
+		kept[id] = r
 	}
-	maps.Copy(requested, stillRequested)
-	next.Requested = accounts(requested)
-	for _, a := range next.Requested {
-		if noted[a.ID] {
-			next.Noted = append(next.Noted, a.ID)
-		}
-		if at, ok := ending[a.ID]; ok {
-			if next.Ending == nil {
-				next.Ending = map[int64]string{}
-			}
-			next.Ending[a.ID] = at
-		}
+	if len(kept) > 0 {
+		next.Requests = kept
 	}
 	return next
 }
@@ -924,13 +903,4 @@ func latestReviews(rs []github.Review) []github.Review {
 		}
 	}
 	return slices.SortedFunc(maps.Values(latest), func(a, b github.Review) int { return cmp.Compare(a.User.ID, b.User.ID) })
-}
-
-// accounts is requested as the state keeps it, by id.
-func accounts(requested map[int64]github.User) []state.GitHubAccount {
-	var out []state.GitHubAccount
-	for _, id := range slices.Sorted(maps.Keys(requested)) {
-		out = append(out, state.GitHubAccount{ID: id, Login: requested[id].Login})
-	}
-	return out
 }
