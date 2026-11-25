@@ -753,6 +753,14 @@ func MakePlan(s *Snapshot) *Plan {
 	inKept := map[int]bool{}
 	for _, st := range s.Stacks {
 		nums := st.Numbers()
+		if s.GitHubOwned {
+			// GitHub keeps a merged bottom in the stack it lists: the
+			// stack is the layers above it (seen on the test instance:
+			// dissolved and made again after every merge of a bottom).
+			for len(nums) > 0 && st.PullRequests[len(st.PullRequests)-len(nums)].MergedAt != nil {
+				nums = nums[1:]
+			}
+		}
 		i := slices.IndexFunc(paths, func(w []int) bool {
 			return len(w) >= len(nums) && slices.Equal(w[:len(nums)], nums)
 		})

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/github"
 	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
@@ -159,5 +160,40 @@ func TestGitHubOwnedUnimportedRestackKeepsItsStack(t *testing.T) {
 	}
 	if got := w.stacksAsChanges(); !slices.Equal(got[0], []int{2, 3}) || len(got) != 1 {
 		t.Errorf("stacks = %v", got)
+	}
+}
+
+// GitHub keeps a merged bottom in the stack it lists (merged_at set):
+// the layers above it, imported, are still that stack, not dissolved
+// and made again (seen on the test instance, after both restacks were
+// imported).
+func TestGitHubOwnedStackKeepsItsMergedBottom(t *testing.T) {
+	w := newWorld(t)
+	w.githubOwned = true
+	w.upload(1, "a1", "m0")
+	w.upload(2, "b1", "a1")
+	w.upload(3, "c1", "b1")
+	w.converge()
+	pr1, pr2 := w.pr(1), w.pr(2)
+	pr1.State, pr1.Merged = "closed", true
+	w.gerrit[1].Status, w.gerrit[1].Revision, w.gerrit[1].Parent = "MERGED", "s1", "m0"
+	w.gerrit[1].PatchSet++
+	w.onMain["s1"] = true
+	w.branch["main"] = "s1"
+	pr2.Base.Ref = "main"
+	at := time.Now()
+	for _, st := range w.stacks {
+		for i := range st.PullRequests {
+			if st.PullRequests[i].Number == pr1.Number {
+				st.PullRequests[i].State, st.PullRequests[i].MergedAt = "closed", &at
+			}
+		}
+	}
+	w.upload(2, "b2", "s1")
+	w.upload(3, "c2", "b2")
+	for _, a := range MakePlan(w.snapshot()).Actions {
+		if isStackAction(a.Kind) {
+			t.Errorf("planned %s: the stack GitHub kept is the layers above its merged bottom", a.String())
+		}
 	}
 }
