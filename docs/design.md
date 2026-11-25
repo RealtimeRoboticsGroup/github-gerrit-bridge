@@ -272,7 +272,9 @@ above still stands on the merged change's patch set: its PR is left where
 GitHub put it, on the branch, not pinned to a frozen base, whose base
 changes would dismiss its approvals and whose old commit would conflict
 with the squash (checked 2026-11-25). A change on an outdated patch set of
-the merged one, frozen already, stays frozen.
+the merged one, frozen already, stays frozen. GitHub rebases every layer
+above at once, and the bridge imports them one at a time: a PR with a
+push not yet imported keeps the base GitHub gave it until it is.
 
 **Known gaps.** A layer GitHub does not rebase (not in a native stack, or
 its rebase conflicts) stands on a commit not on the branch until it is

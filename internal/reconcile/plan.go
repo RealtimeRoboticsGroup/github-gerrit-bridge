@@ -528,6 +528,20 @@ func MakePlan(s *Snapshot) *Plan {
 		if pr != nil {
 			d.PR = pr.Number
 		}
+		if _, known := synced[gh]; s.GitHubOwned && onGitHub && !known && pr != nil && pr.State == "open" && pr.Base.Ref != d.Base {
+			// A push to the PR not yet imported (GitHub's restack of the
+			// layers above a merged one, which are imported one at a
+			// time): its base stays as GitHub has it until it is, as the
+			// push decides what it stands on (seen on the test instance:
+			// frozen on the old patch set below, then moved back).
+			delete(refs, d.Frozen)
+			d.Frozen, d.FrozenAt, note = "", "", ""
+			d.Base = pr.Base.Ref
+			if _, ok := frozenFor(d.Base, s.Branch, s.DefaultBranch); ok {
+				d.Frozen, d.FrozenAt = d.Base, s.GitHubBranches[d.Base]
+				refs[d.Frozen] = d.FrozenAt // kept: deleting it would close the PR
+			}
+		}
 		if s.Withheld[n] || s.Foreign[n] {
 			// Nothing pushed for it, frozen bases included; the PR keeps
 			// its base, so it points at nothing that was not pushed.

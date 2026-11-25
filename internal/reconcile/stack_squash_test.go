@@ -94,3 +94,36 @@ func TestObserveMergedChangesRevisionIsOnTheBranch(t *testing.T) {
 		t.Errorf("the squash, change 1's merged revision, is not seen on main")
 	}
 }
+
+// GitHub restacks every layer above a merged bottom at once; the bridge
+// imports them one at a time. A layer whose restack is not imported yet
+// stands on the old patch set of the change below, which has a new one:
+// its PR is left as GitHub has it (seen on the test instance: frozen,
+// then moved back once imported), and nothing is pushed over it.
+func TestGitHubOwnedUnimportedRestackKeepsItsBase(t *testing.T) {
+	w := newWorld(t)
+	w.githubOwned = true
+	w.upload(1, "a1", "m0")
+	w.upload(2, "b1", "a1")
+	w.upload(3, "c1", "b1")
+	w.converge()
+	pr1, pr2 := w.pr(1), w.pr(2)
+	pr1.State, pr1.Merged = "closed", true
+	w.gerrit[1].Status, w.gerrit[1].Revision, w.gerrit[1].Parent = "MERGED", "s1", "m0"
+	w.gerrit[1].PatchSet++
+	w.onMain["s1"] = true
+	w.branch["main"] = "s1"
+	pr2.Base.Ref = "main"
+	// 2's restack imported (b2 on s1); 3's pushed by GitHub, not yet.
+	w.upload(2, "b2", "s1")
+	w.branch["gerrit/"+cid(3)] = "c1-restacked"
+	before := w.pr(3).Base.Ref
+	for _, a := range MakePlan(w.snapshot()).Actions {
+		if s := a.String(); strings.Contains(s, frozenPrefix) || (a.PR == w.pr(3).Number && a.Update != nil && a.Update.Base != nil) {
+			t.Errorf("planned %s while 3's restack waits to be imported", s)
+		}
+	}
+	if w.pr(3).Base.Ref != before {
+		t.Errorf("base moved")
+	}
+}
