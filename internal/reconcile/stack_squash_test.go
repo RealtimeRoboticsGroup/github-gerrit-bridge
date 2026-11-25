@@ -1,8 +1,11 @@
 package reconcile
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/AustinSchuh/github-gerrit-bridge/internal/state"
 )
 
 // Where GitHub owns main, a stack's bottom squash-merged on GitHub: GitHub
@@ -58,4 +61,36 @@ func TestGitHubOwnedSquashedBottomKeepsAnOutdatedChildFrozen(t *testing.T) {
 	w.branch["main"] = "s1"
 	w.converge()
 	w.checkBase(t, 2, "gerrit-base/"+cid(2))
+}
+
+// The change below merged (squashed on GitHub, marked merged in Gerrit at
+// that commit, its current revision now) and the change above imported
+// onto it: the squash is on the branch, though it is a change's revision,
+// so the change above's PR is based on the branch (seen on the test
+// instance: frozen at the squash, then moved back, its approvals
+// dismissed).
+func TestObserveMergedChangesRevisionIsOnTheBranch(t *testing.T) {
+	ctx := context.Background()
+	s, c, base := followSites(t)
+	c.GitHubOwned = true
+	squash := s.commit(base, "one.txt", "1\n", "One (#10)\n\nChange-Id: "+cid(1)+"\n")
+	s.push("github.git", squash, "refs/heads/main")
+	if err := c.Follow(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	s.change(1, cid(1), squash, "One (#10)\n\nChange-Id: "+cid(1)+"\n", "MERGED")
+	s.save(ctx, c.Store, 1, &state.Change{State: state.ChangeState{Change: 1, ChangeID: cid(1), PR: 10, Branch: "main", Origin: "gerrit",
+		HeadBranch: "gerrit/" + cid(1), Lifecycle: "NEW"}})
+	two := s.commit(squash, "two.txt", "2\n", "Two\n\nChange-Id: "+cid(2)+"\n")
+	s.change(2, cid(2), two, "Two\n\nChange-Id: "+cid(2)+"\n", "NEW")
+	snap, err := c.observe(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Changes[1] == nil {
+		t.Fatalf("setup: change 1 not in the snapshot")
+	}
+	if !snap.OnBranch[squash] {
+		t.Errorf("the squash, change 1's merged revision, is not seen on main")
+	}
 }

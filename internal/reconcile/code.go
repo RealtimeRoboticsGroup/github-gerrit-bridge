@@ -1395,9 +1395,14 @@ func (c *Code) observe(ctx context.Context, branch string, refused map[int]strin
 		return nil, err
 	}
 	c.deferOverBudget(ctx, s)
+	// Open changes' revisions are no branch's; a merged change's is its
+	// merge, on the branch (a squash on GitHub, say: the change above it,
+	// imported onto it, was frozen at it, its approvals dismissed).
 	revs := map[string]bool{}
 	for _, ch := range s.Changes {
-		revs[ch.Revision] = true
+		if ch.Status == "NEW" {
+			revs[ch.Revision] = true
+		}
 	}
 	for _, ch := range s.Changes {
 		if ch.Parent == "" || revs[ch.Parent] || s.OnBranch[ch.Parent] {
