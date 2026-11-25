@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,3 +96,24 @@ func TestGitHubOwnedReapprovalLeavesAPendingRequest(t *testing.T) {
 	}
 }
 
+// The approval given again is the bridge's post, not alice answering.
+func TestGitHubOwnedReapprovalIsTheBridgesPost(t *testing.T) {
+	e, _ := reapproveEnv(t, "pusher", "sha3", 2)
+	e.sync(t)
+	m := &commentMap{byGerrit: map[string]*state.Comment{}, byGitHub: map[string]*state.Comment{}}
+	st, err := e.st.Load(context.Background(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	for _, c := range st.Comments {
+		if strings.HasPrefix(c.GerritID, "reapproved:") {
+			c.Origin = "github" // as for an approval first given on GitHub
+			id = c.GitHubID
+		}
+		m.add(c)
+	}
+	if id == 0 || !m.reviewsFromGerrit(&commentSnapshot{})[id] {
+		t.Errorf("the approval given again (%d) reads as alice's own review", id)
+	}
+}

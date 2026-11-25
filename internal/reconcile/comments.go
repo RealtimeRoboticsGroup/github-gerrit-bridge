@@ -369,8 +369,8 @@ type commentMap struct {
 func (m *commentMap) reviewsFromGerrit(s *commentSnapshot) map[int64]bool {
 	out := map[int64]bool{}
 	for _, mc := range m.byGitHub {
-		if mc.Origin != "gerrit" {
-			continue
+		if mc.Origin != "gerrit" && !strings.HasPrefix(mc.GerritID, "reapproved:") {
+			continue // an approval the bridge gave again is its post too
 		}
 		switch mc.Kind {
 		case kindReviewBody:
