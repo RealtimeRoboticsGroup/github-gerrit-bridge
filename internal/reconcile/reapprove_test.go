@@ -83,3 +83,15 @@ func TestGitHubOwnedReapprovalOnlyForAKeptVoteAndAPush(t *testing.T) {
 		}
 	}
 }
+
+// Asked to review again since, alice is not approved again: a review as
+// her would end that request.
+func TestGitHubOwnedReapprovalLeavesAPendingRequest(t *testing.T) {
+	e, _ := reapproveEnv(t, "pusher", "sha3", 2)
+	e.h.requested = append(e.h.requested, aliceGH)
+	e.sync(t)
+	if got := approvals(e, "sha3"); got != 0 {
+		t.Errorf("approved again over a pending request: %+v", e.h.reviews)
+	}
+}
+

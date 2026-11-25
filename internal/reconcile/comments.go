@@ -2525,6 +2525,13 @@ func (c *Comments) reapprove(ctx context.Context, n, pr int, rv github.Review, m
 	if p.api == nil || p.as.ID != rv.User.ID {
 		return nil // only as them
 	}
+	for _, u := range s.pull.RequestedReviewers {
+		if u.ID == rv.User.ID {
+			// Asked to review again since: a review as them would end
+			// that request, someone's doing.
+			return nil
+		}
+	}
 	body := fmt.Sprintf("In [Gerrit](%s), @%s's Code-Review %s carried over to patch set %d; GitHub dismissed the approval on the push.",
 		c.Gerrit.ChangeURL(c.Project, n), rv.User.Login, voteString(vote.Value), ps)
 	out, err := p.api.CreateReview(ctx, pr, github.NewReview{CommitID: sha, Event: "APPROVE", Body: body})
