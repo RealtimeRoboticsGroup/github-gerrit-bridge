@@ -264,10 +264,19 @@ of whose commits carries a Change-Id.
 `/submit` squashes, but for subtree merges, so it brings only the PR's
 own message.
 
-**Known gaps.** Squash merges and stacks: once a lower layer is squashed,
-a Gerrit-born upper layer stands on a commit not on the branch (shown
-against a frozen base) until it is rebased in Gerrit; GitHub-born layers
-are rebased by their authors. The commit message GitHub writes includes
+**Stacks and squash merges.** When a stack's bottom is merged (squashed),
+GitHub moves the PR above it onto the branch and rebases its commits onto
+the squash itself, as whoever merged; the bridge imports that as a pure
+rebase (Gerrit's copy conditions keep the votes). Until it has, the change
+above still stands on the merged change's patch set: its PR is left where
+GitHub put it, on the branch, not pinned to a frozen base, whose base
+changes would dismiss its approvals and whose old commit would conflict
+with the squash (checked 2026-11-25). A change on an outdated patch set of
+the merged one, frozen already, stays frozen.
+
+**Known gaps.** A layer GitHub does not rebase (not in a native stack, or
+its rebase conflicts) stands on a commit not on the branch until it is
+rebased in Gerrit or by its author. The commit message GitHub writes includes
 the description's links block. Nothing checks Gerrit's or GitHub's
 settings beyond the merge messages; the checklist is the operator's.
 

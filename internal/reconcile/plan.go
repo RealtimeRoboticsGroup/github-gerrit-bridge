@@ -135,6 +135,30 @@ func (s *Snapshot) head(n int, changeID string) string {
 	return HeadBranch(s.Branch, s.DefaultBranch, changeID)
 }
 
+// movedByGitHub reports whether pr, of a change on parent, is GitHub's to
+// move onto the branch: parent is a patch set of a change merged into it,
+// and pr is based on that change's branch or already on the branch.
+func (s *Snapshot) movedByGitHub(pr *github.PullRequest, parent string) bool {
+	if pr == nil {
+		return false
+	}
+	for n, st := range s.State {
+		ch := s.Changes[n]
+		if st.State.Lifecycle != "MERGED" && (ch == nil || ch.Status != "MERGED") {
+			continue
+		}
+		if pr.Base.Ref != s.Branch && pr.Base.Ref != s.head(n, st.State.ChangeID) {
+			continue
+		}
+		for _, r := range st.Revisions {
+			if r.GerritSHA == parent {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // isForkHead reports whether head is a branch in a fork. No PR can be
 // based on one, so a change above it gets a frozen base.
 func isForkHead(head string) bool {
@@ -481,6 +505,14 @@ func MakePlan(s *Snapshot) *Plan {
 		case parentOf[n] != 0:
 			d.Base = s.head(parentOf[n], mirrored[parentOf[n]].ChangeID)
 		case s.OnBranch[c.Parent]:
+			d.Base = s.Branch
+		case s.GitHubOwned && s.movedByGitHub(prFor[n], c.Parent):
+			// On a patch set of a change merged on GitHub (squashed, say),
+			// and its PR on that change's branch or moved by GitHub onto
+			// the branch: GitHub does that, and in a stack rebases it onto
+			// the merge itself, which is imported. A frozen base would undo
+			// it, its base changes dismissing approvals and its old commit
+			// conflicting with the squash.
 			d.Base = s.Branch
 		default:
 			// Outdated patch set of another change, an abandoned or
