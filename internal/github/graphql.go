@@ -82,3 +82,11 @@ func (c *Client) CreateIssueComment(ctx context.Context, n int, body string) (*I
 	_, err := c.Do(ctx, http.MethodPost, c.RepoPath("issues/"+strconv.Itoa(n)+"/comments"), map[string]string{"body": body}, &ic)
 	return &ic, err
 }
+
+// ReactToIssueComment adds reaction content ("+1", "eyes", ...) to issue
+// comment id. GitHub keeps one of each per account: adding it again
+// changes nothing.
+func (c *Client) ReactToIssueComment(ctx context.Context, id int64, content string) error {
+	_, err := c.Do(ctx, http.MethodPost, c.RepoPath("issues/comments/"+strconv.FormatInt(id, 10)+"/reactions"), map[string]string{"content": content}, nil)
+	return err
+}

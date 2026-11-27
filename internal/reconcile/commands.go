@@ -90,6 +90,7 @@ type CommandsGitHub interface {
 	ListIssueComments(ctx context.Context, n int) ([]github.IssueComment, error)
 	Edits(ctx context.Context, n int) (map[int64]string, error)
 	CreateIssueComment(ctx context.Context, n int, body string) (*github.IssueComment, error)
+	ReactToIssueComment(ctx context.Context, id int64, content string) error
 	GetPull(ctx context.Context, n int) (*github.PullRequest, error)
 	Pushes(ctx context.Context, repo, ref string) ([]github.Push, error)
 }
@@ -220,6 +221,12 @@ func (c *Commands) run(ctx context.Context, n int, alone bool, read *prRead) err
 				return err
 			}
 			continue
+		}
+		// A thumbs up says it is being run: a merge or submit can take a
+		// while before the reply. Only for a command that will be
+		// answered (not past its author's budget), and never in its way.
+		if err := c.GitHub.ReactToIssueComment(ctx, ic.ID, "+1"); err != nil {
+			c.Logger.Warn("reacting to /submit", "change", n, "pr", pr, "comment", ic.ID, "err", err)
 		}
 		reply := ""
 		if editedByOther(edits, ic.ID, ic.User.Login) {

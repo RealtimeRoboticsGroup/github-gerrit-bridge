@@ -200,8 +200,9 @@ checklist.
 - **`/submit`** (optional; the merge button is the usual way) merges the
   PR on GitHub with the commenter's own linked token, so GitHub's branch
   protection decides as for their own button press; never with the
-  bridge's. Only at the head they could have seen, if it is the change's
-  current patch set (as a Gerrit `/submit`). The message is the
+  bridge's. The bot gives the comment a thumbs up as it starts on it.
+  Only at the head they could have seen, if it is the change's current
+  patch set (as a Gerrit `/submit`). The message is the
   description, without the links block, ending with the Change-Id and,
   under it, the change's `Signed-off-by:` lines (its commit message's,
   which the description leaves out, and the description's own). A

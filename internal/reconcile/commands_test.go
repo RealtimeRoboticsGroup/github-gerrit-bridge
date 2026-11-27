@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -369,9 +370,14 @@ type fakeMerger struct {
 	err    error
 	calls  []github.MergeInput
 	as     []string
+	// before, if set, runs when Merge is called.
+	before func()
 }
 
 func (f *fakeMerger) Merge(_ context.Context, u github.User, pr int, head string, m github.MergeInput) (string, bool, error) {
+	if f.before != nil {
+		f.before()
+	}
 	if !f.linked[u.Login] {
 		return "", false, nil
 	}
@@ -588,6 +594,52 @@ func TestSubmitMergeSignsOffAsTheCommitDid(t *testing.T) {
 	want := "It was bent.\n\nChange-Id: " + cid(5) + "\nSigned-off-by: Austin <austin@example.com>\nSigned-off-by: Mike <mike@example.com>\nSigned-off-by: Bob <bob@example.com>"
 	if len(m.calls) != 1 || m.calls[0].Message != want {
 		t.Errorf("merges %+v, want message %q", m.calls, want)
+	}
+}
+
+// The bridge thumbs-ups a /submit as it starts running it, before the
+// merge, so whoever posted it sees it was picked up (team1868,
+// 2026-11-27). Only once, not for one past its author's budget, and a
+// refused reaction does not stop the merge.
+func TestSubmitIsThumbedUpWhenItStarts(t *testing.T) {
+	c, h, _, m := mergeCommands(t, "gerrit")
+	h.ics = append(h.ics, github.IssueComment{ID: 1, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	var atMerge []string
+	m.before = func() { atMerge = slices.Clone(h.reactions[1]) }
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(atMerge, []string{"+1"}) {
+		t.Errorf("reactions when merging = %v, want [+1]", atMerge)
+	}
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.calls) != 1 || !slices.Equal(h.reactions[1], []string{"+1"}) {
+		t.Errorf("merges %d, reactions %v; want 1 and [+1]", len(m.calls), h.reactions)
+	}
+
+	// Past its author's budget: recorded, neither answered nor thumbed up.
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	c.Replies = &Budget{N: 1, Per: time.Hour, now: func() time.Time { return now }}
+	c.Replies.Take(context.Background(), 3)
+	h.ics = append(h.ics, github.IssueComment{ID: 2, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.reactions[2]) != 0 {
+		t.Errorf("reacted to a /submit past its author's budget: %v", h.reactions[2])
+	}
+
+	// A refused reaction is only logged.
+	c.Replies = nil
+	h.refuseReaction = errUnprocessable
+	h.ics = append(h.ics, github.IssueComment{ID: 3, Body: "/submit", User: github.User{Login: "AustinSchuh", ID: 3}})
+	if err := c.Run(context.Background(), 5); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.calls) != 2 {
+		t.Errorf("merges %d after a refused reaction, want 2", len(m.calls))
 	}
 }
 

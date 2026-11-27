@@ -414,6 +414,10 @@ func (f *fakeGerrit) user(id, path string, ps, line int, msg, inReplyTo string, 
 var fakeReads sync.Mutex
 
 type fakeGitHub struct {
+	// reactions are the bridge's reactions, by issue comment id;
+	// refuseReaction is what adding one answers.
+	reactions      map[int64][]string
+	refuseReaction error
 	// issueListings counts ListIssueComments calls.
 	issueListings int
 	// title, body and base are the PR's (GetPull; base "main" if unset).
@@ -850,6 +854,16 @@ func (f *fakeGitHub) CreateIssueComment(_ context.Context, _ int, body string) (
 	c := github.IssueComment{ID: f.id(), Body: body, User: f.who()}
 	f.ics = append(f.ics, c)
 	return &c, nil
+}
+
+func (f *fakeGitHub) ReactToIssueComment(_ context.Context, id int64, content string) error {
+	if f.reactions == nil {
+		f.reactions = map[int64][]string{}
+	}
+	if !slices.Contains(f.reactions[id], content) {
+		f.reactions[id] = append(f.reactions[id], content)
+	}
+	return f.refuseReaction
 }
 
 func (f *fakeGitHub) SetThreadResolved(_ context.Context, id string, resolved bool) error {

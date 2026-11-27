@@ -229,9 +229,11 @@ wait_for "patch set 2 reaches the PR" moved
 H4=$(pr "${N4}" .head.sha)
 wait_for "GitHub Actions builds it" check_run "${H4}" build success
 read_it
-me api "repos/${R}/issues/${N4}/comments" -f body="/submit" --silent
+SUB4=$(me api "repos/${R}/issues/${N4}/comments" -f body="/submit" --jq .id)
 merged4() { [[ "$(pr "${N4}" .merged)" == true ]]; }
 wait_for "/submit merges PR #${N4} on GitHub" merged4
+thumbs_up() { me api "repos/${R}/issues/comments/${SUB4}/reactions" --jq '.[] | select(.content == "+1") | .user.login' | grep -qx realtimeroboticsbot; }
+check "the bot thumbed up the /submit" thumbs_up
 check "as AustinSchuh, with his linked account" test "$(pr "${N4}" .merged_by.login)" == AustinSchuh
 M4=$(pr "${N4}" .merge_commit_sha)
 one_parent() { [[ "$(me api "repos/${R}/commits/${M4}" --jq '.parents | length')" == 1 ]]; }
